@@ -180,12 +180,12 @@ pub fn window_options(session: &Session, cx: &App) -> WindowOptions {
         .window_height
         .unwrap_or(800.)
         .clamp(480., 3000.);
+    // Where the window was last, if that is still on a screen (DK1).
+    let bounds = features::desktop::placement(session, cx).unwrap_or_else(|| {
+        WindowBounds::Windowed(Bounds::centered(None, size(px(width), px(height)), cx))
+    });
     WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-            None,
-            size(px(width), px(height)),
-            cx,
-        ))),
+        window_bounds: Some(bounds),
         titlebar: Some(TitlebarOptions {
             title: Some(t!("core-app-name").into()),
             ..Default::default()
@@ -255,23 +255,27 @@ pub fn run() {
     } else {
         QuitMode::Default
     };
-    gpui_kit::application()
+    let app = gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
-        .with_quit_mode(quit_mode)
-        .run(move |cx| {
-            notify::identify(cx);
-            gpui_kit::init(cx);
-            init(cx);
-            cx.set_http_client(Arc::new(images::ImageClient::new(runtime.clone())));
-            let session = cx.new(|cx| Session::new(runtime, config, credentials, cx));
-            notify::install(session.clone(), cx);
-            if let Err(e) = tray::install(session.clone(), cx) {
-                log::error!("no tray icon: {e}");
-                cx.set_quit_mode(QuitMode::Default);
-            }
-            open_main_window(session, cx);
-            cx.activate(true);
-        });
+        .with_quit_mode(quit_mode);
+    // Links the system hands a running app (macOS), and a click on the Dock
+    // icon with no window open (DK1).
+    app.on_open_urls(features::desktop::open_urls);
+    app.on_reopen(features::desktop::reopen);
+    app.run(move |cx| {
+        notify::identify(cx);
+        gpui_kit::init(cx);
+        init(cx);
+        cx.set_http_client(Arc::new(images::ImageClient::new(runtime.clone())));
+        let session = cx.new(|cx| Session::new(runtime, config, credentials, cx));
+        notify::install(session.clone(), cx);
+        if let Err(e) = tray::install(session.clone(), cx) {
+            log::error!("no tray icon: {e}");
+            cx.set_quit_mode(QuitMode::Default);
+        }
+        open_main_window(session, cx);
+        cx.activate(true);
+    });
 }
 
 /// Log to stderr, and to `ircord.log` in the settings folder (a Windows

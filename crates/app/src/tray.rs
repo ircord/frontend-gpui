@@ -25,13 +25,13 @@ pub fn keeps_running() -> bool {
 }
 
 struct Tray {
-    _icon: TrayIcon,
+    icon: TrayIcon,
 }
 impl Global for Tray {}
 
 /// A blurple disc with a white "#", drawn at `n`×`n` (the design of
-/// `packaging/icon.py`).
-fn pixels(n: usize) -> Vec<u8> {
+/// `packaging/icon.py`), as RGBA rows.
+pub fn pixels(n: usize) -> Vec<u8> {
     let mut rgba = vec![0u8; n * n * 4];
     let unit = 32.0 / n as f32;
     for y in 0..n {
@@ -55,10 +55,40 @@ fn pixels(n: usize) -> Vec<u8> {
     rgba
 }
 
-fn icon() -> Icon {
+/// The side of the tray icon in pixels on this platform.
+pub fn icon_size() -> usize {
     // Linux trays scale whatever they get; a larger image stays sharp there.
-    let n = if cfg!(target_os = "linux") { 64 } else { 32 };
+    if cfg!(target_os = "linux") { 64 } else { 32 }
+}
+
+fn icon() -> Icon {
+    let n = icon_size();
     Icon::from_rgba(pixels(n), n as u32, n as u32).expect("the icon is square RGBA")
+}
+
+/// Whether the tray icon is showing.
+pub fn installed(cx: &App) -> bool {
+    cx.has_global::<Tray>()
+}
+
+/// Replace the tray icon's picture (`icon_size()` square RGBA rows) and its
+/// tooltip, as DK1's unread mark does. Nothing happens without a tray.
+pub fn update(cx: &App, rgba: Vec<u8>, tooltip: &str) {
+    let Some(tray) = cx.try_global::<Tray>() else {
+        return;
+    };
+    let n = icon_size() as u32;
+    match Icon::from_rgba(rgba, n, n) {
+        Ok(icon) => {
+            if let Err(e) = tray.icon.set_icon(Some(icon)) {
+                log::warn!("tray icon: {e}");
+            }
+        }
+        Err(e) => log::warn!("tray icon: {e}"),
+    }
+    if let Err(e) = tray.icon.set_tooltip(Some(tooltip)) {
+        log::warn!("tray tooltip: {e}");
+    }
 }
 
 /// Whether a StatusNotifier host is on the session bus to show the icon.
@@ -89,7 +119,7 @@ pub fn install(session: Entity<Session>, cx: &mut App) -> anyhow::Result<()> {
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
         .build()?;
-    cx.set_global(Tray { _icon: icon });
+    cx.set_global(Tray { icon });
     let (show_id, quit_id) = (show.id().clone(), quit.id().clone());
     cx.spawn(async move |cx| {
         loop {

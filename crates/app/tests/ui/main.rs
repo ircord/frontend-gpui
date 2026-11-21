@@ -10,6 +10,7 @@ mod shell;
 mod appearance;
 mod channels;
 mod commands;
+mod desktop;
 mod drafts;
 mod inbox_saved;
 mod link_previews;
