@@ -1,1 +1,24 @@
 # Text for package D1. IDs start with `drafts-`.
+drafts-title = Drafts
+drafts-title-count = Drafts ({ $count })
+drafts-key = Open drafts
+drafts-sidebar = Drafts, { $count } unsent
+drafts-scope = Drafts are kept on this device only.
+drafts-not-saved = Drafts could not be saved on this device. They are kept until the app closes.
+drafts-loading = Loading drafts…
+drafts-empty-title = No drafts
+drafts-empty = Text you leave in a message box shows up here, so you can pick it up later.
+drafts-on-network = { $conversation } on { $network }
+drafts-gone-title = Unavailable conversation
+drafts-gone = This conversation is gone. The text is kept so you can copy it.
+drafts-edited-earlier = Edited earlier
+drafts-open = Open the draft in { $place }
+drafts-copy = Copy the draft in { $place }
+drafts-discard = Discard the draft in { $place }
+drafts-copied = Draft copied
+drafts-changed = That draft changed meanwhile, so it was kept.
+drafts-discarded = Draft discarded.
+drafts-undo = Undo
+drafts-undo-conflict = New text was written there since, so the discarded draft was not put back.
+drafts-undo-full = There are too many drafts to put this one back.
+drafts-copy-discarded = Copy the discarded text
