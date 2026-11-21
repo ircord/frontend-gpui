@@ -16,6 +16,8 @@ serde.workspace = true
 serde_json.workspace = true
 url.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+cssparser = "0.38"
+csscolorparser = { version = "0.9", default-features = false, features = ["std", "named-colors"] }
 dirs = "6"
 futures = "0.3"
 http = "1"

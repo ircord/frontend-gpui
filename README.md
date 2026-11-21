@@ -13,6 +13,8 @@ It runs on Windows (cross-built on Linux), Linux, and macOS (built on a Mac).
 crates/contract   types generated from the pinned openapi.json, and the socket envelope
 crates/client     HTTP, the event socket, the state store, persistence. No GPUI.
 crates/app        GPUI views and the `ircord` binary
+crates/platform   what the app asks of the OS besides drawing: sound, video, notifications. No GPUI.
+crates/video-gst  `ircord-video`, the Linux video helper: GStreamer in its own process
 xtask/            contract refresh, the build container, builds, integration test, capture
 vendor/           GPUI's Windows backend with the cross-build patch
 tools/            the build container's Dockerfile
@@ -26,9 +28,9 @@ Everything that compiles runs in a Docker image built from
 
 | Command | What it does |
 | --- | --- |
-| `cargo xtask ladder` | fmt, clippy, contract check, tests, and the Windows and Linux builds |
+| `cargo xtask ladder` | fmt, clippy (and `crates/platform` for macOS and Windows), contract check, tests, and the Windows and Linux builds |
 | `cargo xtask build windows` | cross-build `dist/ircord.exe`, with its icon and version |
-| `cargo xtask build linux` | build `dist/ircord` and `dist/ircord-linux-x86_64.tar.gz` |
+| `cargo xtask build linux` | build `dist/ircord`, `dist/ircord-video` and `dist/ircord-linux-x86_64.tar.gz` |
 | `cargo xtask build macos` | on a Mac only: build `dist/IRCord.app` (see below) |
 | `cargo xtask contract` | refresh `crates/contract` from the backend checkout |
 | `cargo xtask contract --check` | fail if the committed contract is stale |

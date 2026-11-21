@@ -1,0 +1,36 @@
+[package]
+name = "ircord-platform"
+description = "What IRCord asks of the operating system besides drawing: sound out, video decoding, notifications. No GPUI."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+log = "0.4"
+rodio = { version = "0.23", default-features = false, features = ["playback", "mp3", "mp4", "vorbis", "flac", "wav"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4.19"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Foundation", "Foundation_Collections",
+    "Media_Core", "Media_Playback",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common",
+    "Win32_System_WinRT_Direct3D11",
+    "Data_Xml_Dom", "UI_Notifications",
+] }
+windows-registry = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3.2", features = ["NSString", "NSURL", "NSDictionary", "NSValue", "NSArray", "NSError"] }
+objc2-av-foundation = { version = "0.3.2", features = ["AVPlayer", "AVPlayerItem", "AVPlayerItemOutput", "AVAsset", "objc2-core-media", "objc2-core-video"] }
+objc2-core-media = { version = "0.3.2", features = ["CMTime"] }
+objc2-core-video = { version = "0.3.2", features = ["CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
+objc2-core-foundation = "0.3.2"
+objc2-user-notifications = { version = "0.3.2", features = ["std", "block2", "UNNotificationContent", "UNNotificationRequest", "UNNotificationSound", "UNNotificationAttachment", "UNUserNotificationCenter", "UNNotificationTrigger", "UNNotification"] }

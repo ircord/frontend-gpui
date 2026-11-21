@@ -65,6 +65,36 @@ fn ladder(root: &std::path::Path) -> Result<()> {
             "warnings",
         ],
     )?;
+    step("cargo clippy for macOS and Windows (ircord-platform)");
+    container::run(
+        root,
+        &[
+            "cargo",
+            "clippy",
+            "--target",
+            "aarch64-apple-darwin",
+            "-p",
+            "ircord-platform",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )?;
+    container::run(
+        root,
+        &[
+            "cargo",
+            "xwin",
+            "clippy",
+            "--target",
+            container::WINDOWS_TARGET,
+            "-p",
+            "ircord-platform",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )?;
     step("cargo xtask contract --check");
     contract::run(root, true)?;
     step("cargo test --workspace");

@@ -144,14 +144,24 @@ pub fn build_linux(root: &Path) -> Result<()> {
             "ircord-app",
             "--bin",
             "ircord",
+            "--package",
+            "ircord-video-gst",
+            "--bin",
+            "ircord-video",
         ],
     )?;
     copy_to_dist(root, &root.join("target/release/ircord"), "ircord")?;
+    copy_to_dist(
+        root,
+        &root.join("target/release/ircord-video"),
+        "ircord-video",
+    )?;
     package_linux(root)
 }
 
-/// `dist/ircord-linux-x86_64.tar.gz`: the binary, a desktop entry, the icon
-/// and `install.sh`, which installs them for the current user.
+/// `dist/ircord-linux-x86_64.tar.gz`: the binary, the `ircord-video` helper,
+/// a desktop entry, the icon and `install.sh`, which installs them for the
+/// current user.
 fn package_linux(root: &Path) -> Result<()> {
     let stage = root.join("target/package/ircord");
     if stage.exists() {
@@ -161,6 +171,7 @@ fn package_linux(root: &Path) -> Result<()> {
     let linux = root.join("packaging/linux");
     for (from, to) in [
         (root.join("dist/ircord"), "ircord"),
+        (root.join("dist/ircord-video"), "ircord-video"),
         (
             linux.join("com.ircord.gpui.desktop"),
             "com.ircord.gpui.desktop",

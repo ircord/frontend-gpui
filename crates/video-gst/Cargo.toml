@@ -1,0 +1,15 @@
+[package]
+name = "ircord-video-gst"
+description = "IRCord's Linux video helper: GStreamer in a process of its own, so the app itself needs no GStreamer to start."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ircord-video"
+path = "src/main.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+gstreamer-video = "0.25"

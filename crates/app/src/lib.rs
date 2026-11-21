@@ -15,6 +15,7 @@ pub mod composer;
 pub mod features;
 pub mod images;
 pub mod loading;
+pub mod media;
 pub mod members;
 pub mod message;
 pub mod notify;

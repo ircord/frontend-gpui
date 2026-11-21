@@ -24,7 +24,7 @@ use ircord_client::store::link_media;
 use tokio::runtime::Runtime;
 
 use crate::features::viewer::{self, Media};
-use crate::registry::MessageCtx;
+use crate::registry::{self, MessageCtx, PlayableCtx, PlayableKind};
 use crate::theme::Theme;
 use crate::timeline::rows::{Image, MessageRow, looks_like_image};
 use crate::ui;
@@ -158,7 +158,7 @@ pub fn render(
     m: &MessageRow,
     ctx: &MessageCtx,
     theme: &Theme,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut App,
 ) -> Vec<AnyElement> {
     if m.deleted {
@@ -208,12 +208,42 @@ pub fn render(
         out.push(draw.gallery(&pictures));
     }
     for (i, file) in files.iter().enumerate() {
-        out.push(draw.file_card(i, file));
+        out.push(draw.file_card(i, file, window, cx));
     }
     for (i, _) in inline.iter().enumerate() {
         out.push(draw.single("image", &inline, i));
     }
     out
+}
+
+/// Whether media under `key` in this message is covered now: the channel
+/// is sensitive (or its settings unknown) and the person has not shown it.
+/// A playable is only offered media that is not hidden.
+pub fn hidden(ctx: &MessageCtx, key: &str, cx: &mut App) -> bool {
+    context(ctx, cx).is_some_and(|context| covered(&context, key, cx).is_some())
+}
+
+/// What a file plays as, from its content type or else its address.
+pub fn playable_kind(content_type: &str, url: &str) -> Option<PlayableKind> {
+    if content_type.starts_with("video/") {
+        return Some(PlayableKind::Video);
+    }
+    if content_type.starts_with("audio/") {
+        return Some(PlayableKind::Audio);
+    }
+    let path = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let ext = path.rsplit_once('.').map_or("", |(_, e)| e);
+    if ["mp4", "webm", "mov", "m4v"].contains(&ext) {
+        Some(PlayableKind::Video)
+    } else if ["mp3", "m4a", "ogg", "wav", "flac", "aac"].contains(&ext) {
+        Some(PlayableKind::Audio)
+    } else {
+        None
+    }
 }
 
 /// Why media under `key` is covered, unless the person already showed it.
@@ -520,8 +550,25 @@ impl Draw<'_> {
         stage.into_any_element()
     }
 
-    /// A file that is not a picture: its name, type and size, and the buttons.
-    fn file_card(&self, i: usize, media: &Media) -> AnyElement {
+    /// A file that is not a picture: a registered playable for a sound or
+    /// video, or else its name, type and size, and the buttons.
+    fn file_card(&self, i: usize, media: &Media, window: &mut Window, cx: &mut App) -> AnyElement {
+        if let Some(kind) = playable_kind(&media.content_type, &media.url) {
+            let playable = PlayableCtx {
+                session: self.ctx.session.clone(),
+                conversation: self.ctx.conversation.clone(),
+                message: self.message.to_string(),
+                key: format!("file-{}-{i}", self.message),
+                kind,
+                media: media.clone(),
+                duration: None,
+                poster: None,
+                page: media.url.clone(),
+            };
+            if let Some(element) = registry::playable(&playable, window, cx) {
+                return element;
+            }
+        }
         let kind = if media.content_type.starts_with("video/") {
             t!("uploads-file-video")
         } else if media.content_type.starts_with("audio/") {

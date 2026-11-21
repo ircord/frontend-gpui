@@ -31,6 +31,7 @@ pub mod people;
 pub mod saved;
 pub mod server_log;
 pub mod sidebar_order;
+pub mod theme_css;
 pub mod timeline;
 
 pub use documents::{Documents, Revisioned, SaveState};

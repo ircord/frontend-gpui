@@ -6,6 +6,7 @@
 use gpui_kit::App;
 
 pub mod admin;
+pub mod audio_card;
 pub mod channel_settings;
 pub mod commands;
 pub mod connection;
@@ -34,6 +35,7 @@ pub mod shortcuts;
 pub mod status;
 pub mod switcher;
 pub mod text;
+pub mod video;
 pub mod viewer;
 
 pub fn init(cx: &mut App) {
@@ -69,4 +71,6 @@ pub fn init(cx: &mut App) {
     desktop::init(cx);
     links::init(cx);
     gallery::init(cx);
+    audio_card::init(cx);
+    video::init(cx);
 }

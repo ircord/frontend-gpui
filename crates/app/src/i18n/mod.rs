@@ -70,6 +70,9 @@ pub const CATALOGS: &[(&str, &str)] = &[
     ("links_view", include_str!("../../i18n/en/links_view.ftl")),
     ("emotes", include_str!("../../i18n/en/emotes.ftl")),
     ("audit", include_str!("../../i18n/en/audit.ftl")),
+    ("media", include_str!("../../i18n/en/media.ftl")),
+    ("audio_card", include_str!("../../i18n/en/audio_card.ftl")),
+    ("video", include_str!("../../i18n/en/video.ftl")),
 ];
 
 /// Look up text by ID, with `{ $name }` placeholders filled in:

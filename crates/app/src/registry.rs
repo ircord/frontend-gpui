@@ -103,6 +103,32 @@ macro_rules! entry {
 
 // ---- Contexts handed to registered entries ----
 
+/// What a playable plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayableKind {
+    Audio,
+    Video,
+}
+
+/// A sound or video in a message (an attachment or a link's asset), offered
+/// to [`Registry::playables`] before the file card or link card is drawn.
+#[derive(Clone)]
+pub struct PlayableCtx {
+    pub session: Entity<Session>,
+    pub conversation: String,
+    pub message: String,
+    /// Unique within the window: the element ID prefix to use.
+    pub key: String,
+    pub kind: PlayableKind,
+    pub media: crate::features::viewer::Media,
+    /// Seconds, when the server said.
+    pub duration: Option<f64>,
+    /// A picture to show before playing, when there is one.
+    pub poster: Option<String>,
+    /// What "open in the browser" opens.
+    pub page: String,
+}
+
 /// A message in the timeline.
 #[derive(Clone)]
 pub struct MessageCtx {
@@ -775,6 +801,10 @@ pub struct Registry {
     pub keys: List<KeyDefault>,
     pub panes: List<Pane>,
     pub panels: List<Panel>,
+    /// Draws a sound or video in a message (the audio card, the video
+    /// player). The first slot that gives an element replaces the file or
+    /// link card; with none, the card draws as before.
+    pub playables: List<Slot<PlayableCtx>>,
 }
 
 impl Global for Registry {}
@@ -783,6 +813,13 @@ impl Registry {
     pub fn pane(&self, kind: &PaneKind) -> Option<&Pane> {
         self.panes.iter().find(|p| &p.kind == kind)
     }
+}
+
+/// The first registered playable's element for `ctx`, or `None` when no
+/// playable draws it.
+pub fn playable(ctx: &PlayableCtx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let slots = get(cx).playables.to_vec();
+    slots.iter().find_map(|slot| (slot.render)(ctx, window, cx))
 }
 
 /// Add to the registry.

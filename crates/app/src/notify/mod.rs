@@ -2,6 +2,8 @@
 //! which device alerts (`notification.alert`); this app only shows it.
 //! Clicking one opens its conversation.
 
+pub mod picture;
+
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::{Alert, AlertDelivery};

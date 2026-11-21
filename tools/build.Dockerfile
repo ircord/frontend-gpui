@@ -11,6 +11,7 @@ RUN apt-get update \
         libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev \
         libxcb1-dev libfontconfig1-dev libfreetype6-dev libvulkan-dev \
         libdbus-1-dev libssl-dev libzstd-dev libasound2-dev \
+        libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # A desktop without a screen, for `cargo xtask capture`: a virtual X display,
@@ -22,10 +23,11 @@ RUN apt-get update \
         mesa-vulkan-drivers libvulkan1 \
         dbus dbus-bin gnome-keyring libsecret-tools \
         fonts-dejavu-core \
+        gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav gstreamer1.0-tools \
     && rm -rf /var/lib/apt/lists/*
 
 RUN rustup component add rustfmt clippy \
-    && rustup target add x86_64-pc-windows-msvc \
+    && rustup target add x86_64-pc-windows-msvc aarch64-apple-darwin x86_64-apple-darwin \
     && cargo install cargo-xwin --locked --version 0.23.1 \
     && rm -rf /usr/local/cargo/registry /usr/local/cargo/git \
     && chmod -R a+rwX /usr/local/cargo /usr/local/rustup

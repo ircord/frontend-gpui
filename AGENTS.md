@@ -18,6 +18,12 @@ client; it never speaks IRC itself. Layout and commands are in
   every capture is black (see `xtask/src/capture.rs`).
 - `crates/client` must not depend on GPUI: everything except drawing is
   tested there, without a window.
+- Anything that calls the operating system for sound, video or
+  notifications lives in `crates/platform` (no GPUI). The ladder clippies it
+  for macOS and Windows too, the only compile gate for code nobody here can
+  run. Linux video is the `ircord-video` helper (`crates/video-gst`), so the
+  app itself never links GStreamer. A UI test that needs sound calls
+  `media::sound::use_null`; the fixture opens no device.
 - `crates/contract/src/generated.rs` is generated from every schema in the
   pinned contract; change it only through `xtask/src/contract.rs` and
   `cargo xtask contract`. The socket envelope in `crates/contract/src/event.rs`

@@ -27,7 +27,7 @@ use ircord_client::store::link_media::{self, Linked, Preview};
 
 use crate::features::viewer::Media;
 use crate::message::attachments;
-use crate::registry::MessageCtx;
+use crate::registry::{self, MessageCtx, PlayableCtx, PlayableKind};
 use crate::theme::Theme;
 use crate::timeline::rows::{LinkCard, MessageRow};
 use crate::ui;
@@ -131,7 +131,7 @@ fn preview(
         }
         Some(Preview::Failed { .. }) => page_card(key, link, None, Status::Failed, theme),
         Some(Preview::Ready { response, .. }) => match response.kind {
-            LinkMediaResponseKind::Media => media(key, link, &response, ctx, theme, cx),
+            LinkMediaResponseKind::Media => media(key, link, &response, ctx, theme, window, cx),
             LinkMediaResponseKind::File => file_card(key, link, &response, theme),
             LinkMediaResponseKind::Widget => player_card(key, link, &response, theme),
             LinkMediaResponseKind::Card | LinkMediaResponseKind::Unknown => {
@@ -500,6 +500,7 @@ fn media(
     r: &LinkMediaResponse,
     ctx: &MessageCtx,
     theme: &Theme,
+    window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let name = r.title.clone().unwrap_or_default();
@@ -533,6 +534,11 @@ fn media(
     }
     let post = is_post(r);
     let shown = attachments::pictures(ctx, &format!("link-{key}"), &pictures, theme, cx);
+    let players = if playable > 0 {
+        players(key, link, r, &pictures, ctx, theme, window, cx)
+    } else {
+        Vec::new()
+    };
     if !post {
         let mut column = div()
             .id(ElementId::Name(format!("link-{key}").into()))
@@ -543,7 +549,7 @@ fn media(
             .flex_col()
             .children(shown);
         if playable > 0 {
-            column = column.child(playable_card(key, link, r, theme));
+            column = column.children(players);
         }
         return column.into_any_element();
     }
@@ -629,10 +635,65 @@ fn media(
             )
         })
         .children(shown)
-        .when(playable > 0, |d| {
-            d.child(playable_card(key, link, r, theme))
-        })
+        .when(playable > 0, |d| d.children(players))
         .into_any_element()
+}
+
+/// The videos and sounds behind a link as registered playables draw them,
+/// or else the one card that opens the browser. Covered media is never
+/// offered to a playable.
+#[allow(clippy::too_many_arguments)]
+fn players(
+    key: &str,
+    link: &LinkCard,
+    r: &LinkMediaResponse,
+    pictures: &[Media],
+    ctx: &MessageCtx,
+    theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<AnyElement> {
+    let mut out = Vec::new();
+    if !attachments::hidden(ctx, &format!("link-{key}"), cx) {
+        let name = r.title.clone().unwrap_or_default();
+        let poster = pictures.first().map(|p| p.url.clone());
+        let assets = r.assets.iter().filter_map(|a| {
+            let kind = match a.kind {
+                LinkMediaAssetKind::Video => PlayableKind::Video,
+                LinkMediaAssetKind::Audio => PlayableKind::Audio,
+                _ => return None,
+            };
+            Some((kind, a))
+        });
+        for (n, (kind, a)) in assets.enumerate() {
+            let Some(url) = link_media::public_url(&a.url) else {
+                continue;
+            };
+            let playable = PlayableCtx {
+                session: ctx.session.clone(),
+                conversation: ctx.conversation.clone(),
+                message: ctx.message.clone(),
+                key: format!("link-{key}-play-{n}"),
+                kind,
+                media: Media {
+                    url,
+                    name: name.clone(),
+                    width: a.width.unwrap_or(0).max(0) as u32,
+                    height: a.height.unwrap_or(0).max(0) as u32,
+                    content_type: a.content_type.clone().unwrap_or_default(),
+                    size: None,
+                },
+                duration: a.duration,
+                poster: poster.clone(),
+                page: link.url.clone(),
+            };
+            out.extend(registry::playable(&playable, window, cx));
+        }
+    }
+    if out.is_empty() {
+        out.push(playable_card(key, link, r, theme));
+    }
+    out
 }
 
 /// A social post or an image page with something to say, rather than a

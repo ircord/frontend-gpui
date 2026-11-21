@@ -304,3 +304,87 @@ fn the_loading_screen_shows_until_the_first_bootstrap(cx: &mut TestAppContext) {
         assert_eq!(screen, "workspace");
     });
 }
+
+#[gpui_kit::test]
+fn a_registered_playable_replaces_the_file_card_of_a_sound(cx: &mut TestAppContext) {
+    use ircord_app::registry::{PlayableCtx, PlayableKind};
+    use ircord_client::contract::{Attachment, ChannelSettings, MessagePage};
+
+    let f = open_with(cx, true, |server| {
+        let mut s = crate::fixture::snapshot();
+        s.conversations[0].channel_settings = Some(ChannelSettings {
+            nsfw: false,
+            ..Default::default()
+        });
+        server.snapshot(&s);
+        server.route_fn("GET", "/api/v1/conversations/*/messages", |_| {
+            let mut m = crate::fixture::message("a1", "c-general", "");
+            m.attachments = Some(vec![Attachment {
+                url: "https://x.test/files/s/t/song.mp3".into(),
+                name: "song.mp3".into(),
+                content_type: Some("audio/mpeg".into()),
+                size: Some(3_000_000),
+                ..Default::default()
+            }]);
+            Reply::json(
+                200,
+                serde_json::to_value(MessagePage {
+                    items: vec![m],
+                    ..Default::default()
+                })
+                .unwrap(),
+            )
+        });
+    });
+    crate::fixture::wait(cx, "#general's history", |cx| {
+        f.session.read(cx).client().is_some_and(|c| {
+            c.read()
+                .timelines
+                .get("c-general")
+                .is_some_and(|t| t.loaded && t.entries.len() == 1)
+        })
+    });
+    // Nothing registered: today's file card.
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("file-a1-0-detail").visible());
+        assert!(window.try_find("sample-playable-file-a1-0").is_none());
+    })
+    .unwrap();
+    let seen: Rc<std::cell::RefCell<Vec<(String, PlayableKind, String)>>> = Rc::default();
+    let saw = seen.clone();
+    cx.update(|cx| {
+        registry::register(cx, |r| {
+            r.playables
+                .add(Slot::new("sample", move |p: &PlayableCtx, _, _| {
+                    saw.borrow_mut()
+                        .push((p.key.clone(), p.kind, p.media.url.clone()));
+                    (p.kind == PlayableKind::Audio).then(|| {
+                        div()
+                            .id(gpui_kit::ElementId::Name(
+                                format!("sample-playable-{}", p.key).into(),
+                            ))
+                            .test_support()
+                            .child("playing")
+                            .into_any_element()
+                    })
+                }));
+        });
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        window.refresh();
+        window.render_frame(cx);
+        assert!(window.find("sample-playable-file-a1-0").visible());
+        assert!(window.try_find("file-a1-0-detail").is_none());
+    })
+    .unwrap();
+    let seen = seen.borrow();
+    assert_eq!(
+        seen.last().cloned(),
+        Some((
+            "file-a1-0".to_string(),
+            PlayableKind::Audio,
+            "https://x.test/files/s/t/song.mp3".to_string()
+        ))
+    );
+}
