@@ -1,1 +1,91 @@
-# Text for package S2. IDs start with `settings-messages-`.
+# Text for package S2: Settings → Messages, Privacy and Shortcuts. IDs start with `settings-messages-`.
+
+# Messages
+settings-messages-title = Messages
+settings-messages-keywords = chat, messages, layout, timeline, font, clock, startup
+settings-messages-layout = Message layout
+settings-messages-layout-help = Cozy, compact or IRC.
+settings-messages-layout-keywords = cozy, compact, irc style, one line, avatars, density
+settings-messages-layout-cozy = Cozy
+settings-messages-layout-cozy-note = Avatars and grouped messages
+settings-messages-layout-compact = Compact
+settings-messages-layout-compact-note = Smaller avatars, tighter rows
+settings-messages-layout-irc = IRC
+settings-messages-layout-irc-note = One line per message
+settings-messages-font = Message font
+settings-messages-font-keywords = font, typeface, dyslexia, readable, serif, monospace, atkinson, lexend, literata, jetbrains mono, geist mono, atkinson mono
+settings-messages-font-sample = Ses vi på fredag? Æbler, øl & kaffe → 9:30 ☕
+settings-messages-font-interface = Interface
+settings-messages-font-atkinson = Atkinson
+settings-messages-font-lexend = Lexend
+settings-messages-font-serif = Source Serif
+settings-messages-font-literata = Literata
+settings-messages-font-jetbrains = JetBrains Mono
+settings-messages-font-geist = Geist Mono
+settings-messages-font-atkinson-mono = Atkinson Mono
+settings-messages-size = Message text size
+settings-messages-size-help = Changes chat messages. Interface scale is under Appearance.
+settings-messages-size-keywords = text size, font size, bigger, smaller, zoom
+settings-messages-pixels = { $value } px
+settings-messages-spacing = Space between groups
+settings-messages-spacing-help = Gap before each new speaker.
+settings-messages-spacing-keywords = spacing, gap, density, padding, groups
+settings-messages-clock = Clock
+settings-messages-clock-keywords = time, 24-hour, 12-hour, am, pm, timestamps
+settings-messages-clock-24 = 24-hour
+settings-messages-clock-12 = 12-hour
+settings-messages-colours = Colored names
+settings-messages-colours-help = A stable color for each person.
+settings-messages-colours-keywords = nick colours, nick colors, coloured names, colors
+settings-messages-startup = Open on startup
+settings-messages-startup-help = This choice follows your account. The last viewed conversation is remembered on this device. Changes apply next time you open IRCord.
+settings-messages-startup-keywords = startup, launch, open, first channel, default channel
+settings-messages-startup-last = Use last viewed channel
+settings-messages-startup-channel = Choose a channel
+settings-messages-startup-choose = Choose a startup channel
+settings-messages-startup-none = Join a channel to choose it here.
+settings-messages-activity = Channel activity
+settings-messages-activity-help = Joins, parts, quits and nick changes as small activity lines. Kicks, bans and topic changes remain visible.
+settings-messages-activity-keywords = joins, parts, quits, nick changes, events, hide, fold, collapse
+settings-messages-activity-show = Show
+settings-messages-activity-fold = Fold
+settings-messages-activity-hide = Hide
+settings-messages-animate = Play GIFs and animated emoji
+settings-messages-animate-help = When off, a still frame is shown.
+settings-messages-animate-keywords = animation, gif, animated, motion, autoplay
+settings-messages-reset = Reset message layout
+settings-messages-reset-keywords = reset, defaults, restore
+
+# Privacy
+settings-messages-privacy-title = Privacy
+settings-messages-privacy-keywords = privacy, nsfw, ignore, block, hidden
+settings-messages-nsfw = Show NSFW content
+settings-messages-nsfw-help = Show media and links from NSFW channels on every server. This choice is private to your account.
+settings-messages-nsfw-keywords = nsfw, sensitive, adult, media, blur
+settings-messages-ignored = Ignored people
+settings-messages-ignored-help = Their messages are hidden and never notify. A nick, or a mask like *!*@host.example.
+settings-messages-ignored-keywords = ignore, block, mute, mask, hide people
+settings-messages-ignored-empty = You are not ignoring anyone.
+settings-messages-ignore-label = Ignore a nick or mask
+settings-messages-ignore-placeholder = Add a nick or mask, press Enter
+settings-messages-ignore-add = Ignore
+settings-messages-stop-ignoring = Stop ignoring { $value }
+
+# Shortcuts
+settings-messages-shortcuts-title = Shortcuts
+settings-messages-shortcuts-keywords = keyboard, shortcuts, keys, hotkeys, bindings, rebind
+settings-messages-shortcuts-list = Keyboard shortcuts
+settings-messages-shortcuts-list-help = Add, remove or reset the keys of each action. Your changes follow your account.
+settings-messages-shortcuts-reset-all = Reset all shortcuts
+settings-messages-shortcuts-reset-keywords = reset, defaults, restore, keys
+settings-messages-shortcuts-defaults-again = Every shortcut has its default keys again.
+settings-messages-shortcuts-add = Add key
+settings-messages-shortcuts-cancel = Cancel
+settings-messages-shortcuts-reset = Reset
+settings-messages-shortcuts-remove = Remove { $chord } from { $action }
+settings-messages-shortcuts-press = Press the keys for { $action }, or Esc to cancel
+settings-messages-shortcuts-taken = { $chord } is used by { $actions }.
+settings-messages-shortcuts-move = Use it for { $action }
+settings-messages-shortcuts-reserved = { $chord } can’t be used: { $reason }
+settings-messages-shortcuts-reserved-composer = the message box uses it.
+settings-messages-shortcuts-reserved-channel = it is { $action }.
