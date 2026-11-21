@@ -131,7 +131,7 @@ pub fn snapshot() -> Snapshot {
                       "tls": false, "status": "connected", "initials": "HM", "color": "",
                       "auth": {"method": "none", "passwordSet": false}, "autoJoin": [],
                       "capabilities": [], "isupport": {"PREFIX": "(ov)@+"}, "perform": [],
-                      "features": {"typing": true}}],
+                      "features": {"typing": true, "messageLineBytes": 512}}],
         "conversations": [
             {"id": "c-general", "networkId": "n1", "kind": "channel", "name": "general",
              "favorite": false, "joined": true, "memberIds": ["m-bob", "m-eve"],

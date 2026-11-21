@@ -2,6 +2,7 @@
 //! is tested without a window.
 //!
 //! - [`address`]: server address rules.
+//! - [`commands`]: slash commands, their arguments and autocomplete.
 //! - [`config`]: the files kept between launches.
 //! - [`credentials`]: the sign-in, in the operating system's credential store.
 //! - [`api`]: HTTP commands, one file per area of the contract.
@@ -17,6 +18,7 @@
 pub mod address;
 pub mod api;
 pub mod client;
+pub mod commands;
 pub mod config;
 pub mod credentials;
 pub mod documents;
