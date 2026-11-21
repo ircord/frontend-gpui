@@ -2,14 +2,12 @@
 //!
 //! Start each case with `let Some((server, irc)) = crate::support::environment() else { return };`.
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use ircord_client::api::channels::{self as ch, Availability, CreateForm, Template};
 use ircord_client::api::{Api, ApiError};
-use ircord_client::client::{random_id, runtime, sign_in};
-use ircord_client::credentials::{CredentialStore, MemoryStore};
+use ircord_client::client::{random_id, runtime};
 use ircord_client::store::{Connection, server_log};
 use ircord_client::{Client, ServerAddress};
 
@@ -26,11 +24,11 @@ fn a_channel_is_checked_created_listed_and_joined() {
     let username = unique("gpui");
     let password = random_id();
     wait_for_backend(&rt, &address);
-    rt.block_on(setup_account(&address, &username, &password, &irc, &home));
+    let cookie = rt.block_on(setup_account(&address, &username, &password, &irc, &home));
+    // The sign-up's session, rather than a second sign-in: the backend
+    // allows an address only so many of either a minute.
     let api = Api::new(address.clone());
-    let store: Arc<dyn CredentialStore> = Arc::new(MemoryStore::default());
-    rt.block_on(sign_in(&api, store.as_ref(), &username, &password))
-        .expect("sign in");
+    api.set_cookie(Some(cookie));
     let (client, mut updates) = Client::start(rt.clone(), api.clone());
     let mut pump = |what: &str, done: &dyn Fn(&Client) -> bool| {
         let deadline = Instant::now() + Duration::from_secs(45);
