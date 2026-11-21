@@ -6,6 +6,10 @@ core-loading = Loading…
 core-sign-out = Sign out
 core-new-message = New message
 
+# Tray menu
+core-tray-show = Show IRCord
+core-tray-quit = Quit
+
 # Session
 core-saved-server-unreadable = Could not read the saved server: { $error }
 core-sign-in-missing = Enter your username and password.

@@ -77,14 +77,14 @@ fn tray_host() -> anyhow::Result<()> {
 pub fn install(session: Entity<Session>, cx: &mut App) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     tray_host()?;
-    let show = MenuItem::new("Show IRCord", true, None);
-    let quit = MenuItem::new("Quit", true, None);
+    let show = MenuItem::new(t!("core-tray-show"), true, None);
+    let quit = MenuItem::new(t!("core-tray-quit"), true, None);
     let menu = Menu::new();
     menu.append_items(&[&show, &PredefinedMenuItem::separator(), &quit])?;
     let icon = TrayIconBuilder::new()
         .with_id("ircord")
-        .with_title("IRCord")
-        .with_tooltip("IRCord")
+        .with_title(t!("core-app-name"))
+        .with_tooltip(t!("core-app-name"))
         .with_icon(icon())
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
