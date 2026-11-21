@@ -295,7 +295,9 @@ impl Render for WorkspaceView {
             Some(route) => main.child(self.route_pane(route, &theme, window, cx)),
             None => main,
         };
-        let panel = self.panel(&route, window, cx);
+        let panel = self
+            .panel(&route, window, cx)
+            .map(|panel| crate::sidebar::side_panel(panel, window, cx));
         div()
             .id("workspace")
             .size_full()

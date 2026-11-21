@@ -465,7 +465,9 @@ pub struct KeyDefault {
     pub id: SharedString,
     pub label: SharedString,
     pub order: i32,
-    /// GPUI keystrokes, such as `ctrl-k` or `alt-up`.
+    /// GPUI keystrokes, such as `ctrl-k` or `alt-up`. Empty for an action
+    /// that starts without a key: it is listed (and can be given one in the
+    /// shortcuts settings) but not bound.
     pub keys: &'static str,
     /// The key context it applies in, such as `Workspace`.
     pub context: Option<SharedString>,
@@ -618,9 +620,9 @@ pub fn bind_keys(cx: &mut App, overrides: &dyn Fn(&str) -> Option<String>) {
     let bindings: Vec<KeyBinding> = get(cx)
         .keys
         .iter()
-        .map(|k| match overrides(&k.id) {
-            Some(keys) => k.binding(&keys),
-            None => k.binding(k.keys),
+        .filter_map(|k| {
+            let keys = overrides(&k.id).unwrap_or_else(|| k.keys.to_string());
+            (!keys.trim().is_empty()).then(|| k.binding(&keys))
         })
         .collect();
     cx.bind_keys(bindings);

@@ -57,6 +57,17 @@ fn badge(count: i64, mention: bool, theme: &Theme) -> Div {
         .child(text)
 }
 
+/// The right-hand panel (the member list or a feature's panel) in its frame
+/// beside the main pane.
+pub fn side_panel(panel: AnyElement, _window: &mut Window, _cx: &mut App) -> AnyElement {
+    div()
+        .w(px(240.))
+        .h_full()
+        .flex_none()
+        .child(panel)
+        .into_any_element()
+}
+
 impl Render for SidebarView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();

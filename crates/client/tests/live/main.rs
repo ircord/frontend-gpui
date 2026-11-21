@@ -26,5 +26,6 @@ mod parties; // PT1: a group between two accounts
 mod people; // P1: whois and status
 mod search; // FD1: find a sent message
 mod server_window; // SV1: server log and latency
+mod sidebar; // N1: favourite, order, connect, leave, remove
 mod timeline; // R1: around a message, paging newer, unread
 mod uploads; // U1: upload a file into a message
