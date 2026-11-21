@@ -1,1 +1,119 @@
 # Text for package FD1. IDs start with `search-`.
+
+# The search page
+search-title = Search
+search-description = Find a conversation, someone to talk to, or a message worth revisiting.
+search-placeholder = Channels, people or messages — try from: or has:
+search-field = Search conversations, people and messages
+search-filters = Filters
+search-filters-on = Filters, { $count } on
+search-quick-filters = Quick filters
+search-results = Results
+search-conversations = Conversations
+search-jump-to = Jump to
+search-people = People
+search-messages = Messages
+search-channel = Channel
+search-direct-message = Direct message
+search-conversation-detail = { $network } · { $kind }
+search-server-window = Server window
+search-message-person = Message { $name }
+search-no-conversations = No conversations or people match “{ $query }”.
+search-searching = Searching messages
+search-failed = Couldn’t search messages. { $error }
+search-try-again = Try again
+search-no-message-query = No messages match “{ $query }”.
+search-no-message-query-filtered = No messages match “{ $query }” with these filters.
+search-no-message-filters = No messages match these filters.
+search-message-count = { $count } messages
+search-message-count-one = 1 message
+search-message-count-more = { $count } or more messages
+search-bounded-count = { $count } results in this server response
+search-server-history = Search server history
+search-server-history-needs-scope = Choose one conversation to search server history.
+search-coverage-retained = Coverage: messages retained by IRCord; server history may include more.
+search-coverage-upstream = Server results are bounded and may not include every match.
+search-fallback-unsupported-scope = Server history search is not available for this conversation. Showing retained messages.
+search-fallback-unsupported-filters = Server history cannot apply these filters. Showing retained messages.
+search-fallback-capability-unavailable = This server does not support history search. Showing retained messages.
+search-fallback-upstream-unavailable = Server history search is unavailable. Showing retained messages.
+search-fallback-continuation = Server search ended. Showing retained messages for older results.
+search-result-not-jumpable = Not in retained history; this result cannot open in the timeline.
+search-result-remote-badge = Not in history
+search-result = { $author } in { $place }, { $time }: { $text }
+search-load-more-failed = Couldn’t load more: { $error }
+search-loading-older = Loading older messages…
+search-load-older = Load older messages
+search-open-person-failed = Couldn’t open a direct message: { $error }
+search-recent-searches = Recent searches
+search-recent = Run again: { $search }
+search-clear = Clear
+search-clear-recent = Clear recent searches
+search-keyboard = ↑ ↓ to choose · Enter to open · Backspace removes a filter · Esc to return
+search-someone = Someone
+search-closed-conversation = Closed conversation
+search-remove-filter = Remove { $filter } filter: { $value }
+search-suggestions = Suggestions for { $filter }:
+search-no-suggestion = Nothing matches “{ $query }”.
+
+# Filter names, as typed and as pills
+search-from-short = From
+search-mentions-short = Mentions
+search-in-short = In
+search-has-short = Has
+search-on-short = Date
+search-from-label = From a specific person
+search-mentions-label = Mentions a specific person
+search-in-label = In a specific channel
+search-has-label = Includes a type of content
+search-on-label = Sent on a date
+search-kind-link = Link
+search-kind-image = Image
+search-kind-gif = GIF
+search-kind-video = Video
+search-kind-file = File
+search-person = Person
+search-bot = Bot
+search-bots = Bots
+search-today = Today
+search-yesterday = Yesterday
+search-week-ago = A week ago
+search-month-ago = A month ago
+
+# The filters dialog
+search-filters-title = Filters
+search-filters-from = From
+search-filters-from-help = Sent by any of these people.
+search-filters-has = Has
+search-filters-has-help = Includes any of these kinds of content.
+search-filters-mentions = Mentions
+search-filters-mentions-help = Names any of these people.
+search-filters-in = In
+search-filters-in-help = Posted in any of these channels or direct messages.
+search-filters-date = Date
+search-filters-any-time = Any time
+search-filters-on-day = On a day
+search-filters-between = Between
+search-filters-sent-on = Sent on (YYYY-MM-DD)
+search-filters-sent-after = Sent after (YYYY-MM-DD)
+search-filters-sent-before = Sent before (YYYY-MM-DD)
+search-filters-bad-day = Enter dates as YYYY-MM-DD, such as { $example }.
+search-filters-author-type = Author type
+search-filters-anyone = Anyone
+search-filters-nobody-here = Nobody to choose yet.
+search-filters-clear = Clear filters
+search-filters-apply = Apply filters
+
+# Searching inside a conversation, beside it
+search-in-conversation = Search in this conversation
+search-conversation-search = Search { $place }
+search-conversation-field = Search messages in { $place }
+search-conversation-close = Close search
+search-conversation-hint = Type at least two characters or choose a filter.
+search-conversation-no-messages-query = No messages in { $place } match “{ $query }”.
+search-conversation-everywhere = Search everywhere for “{ $query }”
+search-conversation-none = Open a conversation to search it.
+
+# Keys
+search-key-page = Search messages
+search-key-conversation = Search in this conversation

@@ -1,15 +1,2696 @@
-//! Search across conversations (package FD1).
+//! Search (package FD1), as the web client has it:
+//!
+//! - The search page ([`Route::Search`]): one list of conversations, people
+//!   and server windows by name, then messages by text. Filters (`from:`,
+//!   `mentions:`, `in:`, `has:`, `before:`, `after:`, `on:`, `author:`) are
+//!   typed into the field or chosen in the filters dialog, and show as
+//!   removable chips. Recent searches are kept on this device, per account.
+//! - Search inside a conversation, in the right-hand panel beside it, so
+//!   the panel stays for the next match while the timeline jumps.
+//! - Server history (the bouncer's or IRC server's own search) as a source
+//!   when exactly one conversation is searched.
+//!
+//! Filters, requests, sources and recent searches are in
+//! `ircord_client::search_filter`; this file draws them.
 
+use std::time::Duration;
+
+use chrono::{Local, NaiveDate};
+use gpui_kit::TestSupportExt;
+use gpui_kit::base::test_support::Observed;
+use gpui_kit::component::input::{
+    Backspace, Escape, Input, InputEvent, InputState, MoveDown, MoveUp,
+};
+use gpui_kit::prelude::*;
 use gpui_kit::*;
+use ircord_client::commands::{self as cmd, Plan};
+use ircord_client::contract::{self as c, ConversationKind};
+use ircord_client::format;
+use ircord_client::search_filter::{
+    self as sf, Author, Chip, Coverage, Filters, Has, Key, Query, RecentSearch, Source,
+};
+use ircord_client::store::Workspace;
 
-use crate::route::Route;
-use crate::session::Session;
+use crate::registry::{self, HeaderCtx, KeyDefault, Pane, Panel, PanelCtx, Slot};
+use crate::route::{PaneKind, Route};
+use crate::session::{Session, SessionEvent};
+use crate::sidebar::layout;
+use crate::theme::{self, Theme};
+use crate::ui;
+use crate::ui::icon::IconName;
 
-pub fn init(_cx: &mut App) {}
+gpui_kit::actions!(ircord_search, [OpenSearch, SearchConversation]);
+
+/// The right-hand panel's ID for searching the open conversation.
+pub const PANEL: &str = "conversation-search";
+/// Typing settles for this long before a search runs.
+const DEBOUNCE: Duration = Duration::from_millis(220);
+/// Conversations listed by name at most, with and without text typed.
+const CONVERSATIONS: usize = 12;
+const CONVERSATIONS_MATCHED: usize = 5;
+const PEOPLE: usize = 4;
+const SERVERS: usize = 4;
+const OFFERS: usize = 6;
+
+const MAC: bool = cfg!(target_os = "macos");
+
+pub fn init(cx: &mut App) {
+    registry::register(cx, |r| {
+        r.panes.add(Pane::new(PaneKind::Search, |ctx, window, cx| {
+            page_view(&ctx.session, window, cx).into_any_element()
+        }));
+        r.panels.add(Panel::new(PANEL, |ctx, window, cx| {
+            panel_view(ctx, window, cx)
+        }));
+        r.header_buttons.add(
+            Slot::new("search-conversation", |ctx: &HeaderCtx, _, cx| {
+                let session = ctx.session.clone();
+                let open = session.read(cx).panel.as_deref() == Some(PANEL);
+                Some(
+                    ui::icon::button(
+                        "search-conversation-toggle",
+                        IconName::Search,
+                        t!("search-in-conversation"),
+                        theme::get(cx),
+                        move |_, window, cx| toggle_panel(&session, !open, window, cx),
+                    )
+                    .into_any_element(),
+                )
+            })
+            .order(90),
+        );
+        r.keys.add(
+            KeyDefault::new(
+                "search-messages",
+                t!("search-key-page"),
+                if MAC { "cmd-shift-f" } else { "ctrl-shift-f" },
+                Some("Root"),
+                OpenSearch,
+            )
+            .order(5),
+        );
+        r.keys.add(
+            KeyDefault::new(
+                "search-conversation",
+                t!("search-key-conversation"),
+                if MAC { "cmd-f" } else { "ctrl-f" },
+                Some("Root"),
+                SearchConversation,
+            )
+            .order(6),
+        );
+    });
+    cx.on_action(|_: &OpenSearch, cx| {
+        if let Some(session) = layout::session(cx) {
+            open(&session, None, cx);
+        }
+    });
+    cx.on_action(|_: &SearchConversation, cx| {
+        layout::with_window(cx, |window, cx| {
+            if let Some(session) = layout::session(cx) {
+                toggle_panel(&session, true, window, cx);
+            }
+        })
+    });
+}
 
 /// Open the search page, with `query` typed in when given (the switcher's
-/// "search messages for …").
+/// "search messages for …", a conversation search's "search everywhere").
 pub fn open(session: &Entity<Session>, query: Option<&str>, cx: &mut App) {
-    let _ = query;
+    if let Some(query) = query {
+        cx.set_global(PendingQuery(Some(query.to_string())));
+    }
     session.update(cx, |s, cx| s.navigate(Route::Search, cx));
+}
+
+/// Open (or close) the search beside the open conversation.
+pub fn toggle_panel(session: &Entity<Session>, show: bool, window: &mut Window, cx: &mut App) {
+    let showing_conversation = matches!(session.read(cx).route(), Some(Route::Conversation(_)));
+    if show && !showing_conversation {
+        return;
+    }
+    session.update(cx, |s, cx| {
+        s.set_panel(show.then(|| SharedString::from(PANEL)), cx)
+    });
+    if show {
+        // Focus the field once the panel exists.
+        cx.set_global(FocusPanel(true));
+        window.refresh();
+    }
+}
+
+// ---- What a search finds and how it is running ----
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Status {
+    /// Not enough to search yet.
+    Idle,
+    Searching,
+    Failed(String),
+    Done,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum More {
+    Idle,
+    Loading,
+    Failed(String),
+}
+
+/// One running search: what is typed and chosen, and what the server found.
+/// The page and the conversation panel each keep one.
+pub struct SearchModel {
+    session: Entity<Session>,
+    /// The conversation a panel search is limited to.
+    scope: Option<String>,
+    pub filters: Filters,
+    /// What was asked for; server history applies to one conversation only.
+    pub source: Source,
+    /// The text typed so far, without a filter token being written.
+    pending: String,
+    /// The text the results are for.
+    pub text: String,
+    pub results: Vec<c::SearchResult>,
+    pub cursor: Option<String>,
+    pub coverage: Option<Coverage>,
+    pub bounded: bool,
+    pub status: Status,
+    pub more: More,
+    generation: u64,
+}
+
+impl SearchModel {
+    fn new(session: Entity<Session>, scope: Option<String>) -> Self {
+        Self {
+            session,
+            scope,
+            filters: Filters::default(),
+            source: Source::Retained,
+            pending: String::new(),
+            text: String::new(),
+            results: Vec::new(),
+            cursor: None,
+            coverage: None,
+            bounded: false,
+            status: Status::Idle,
+            more: More::Idle,
+            generation: 0,
+        }
+    }
+
+    /// The filters sent: a panel's always name its conversation.
+    fn sent_filters(&self) -> Filters {
+        match &self.scope {
+            Some(id) => self.filters.scoped(id),
+            None => self.filters.clone(),
+        }
+    }
+
+    /// Whether what is typed and chosen is a search.
+    pub fn searches(&self) -> bool {
+        sf::can_search(&self.pending, &self.filters)
+    }
+
+    /// Whether the results are not yet for what is typed.
+    pub fn searching(&self) -> bool {
+        self.pending.trim() != self.text.trim() || self.status == Status::Searching
+    }
+
+    /// Whether server history can be asked: one conversation is searched.
+    pub fn source_allowed(&self) -> bool {
+        self.sent_filters().in_.len() == 1
+    }
+
+    fn set_text(&mut self, typed: &str, cx: &mut Context<Self>) {
+        if typed == self.pending {
+            return;
+        }
+        self.pending = typed.to_string();
+        self.generation += 1;
+        let generation = self.generation;
+        let runtime = self.session.read(cx).runtime.clone();
+        let settle = runtime.spawn(async { tokio::time::sleep(DEBOUNCE).await });
+        cx.spawn(async move |this, cx| {
+            let _ = settle.await;
+            this.update(cx, |m, cx| {
+                if m.generation == generation {
+                    m.run(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Search for exactly this text now (a recent search run again).
+    fn set_search(&mut self, text: &str, filters: Filters, cx: &mut Context<Self>) {
+        self.pending = text.to_string();
+        self.filters = filters;
+        self.fix_source();
+        self.run(cx);
+    }
+
+    fn set_filters(&mut self, filters: Filters, cx: &mut Context<Self>) {
+        self.filters = filters;
+        self.fix_source();
+        self.run(cx);
+    }
+
+    fn set_source(&mut self, source: Source, cx: &mut Context<Self>) {
+        self.source = source;
+        self.fix_source();
+        self.run(cx);
+    }
+
+    /// Server history goes back off once it no longer applies.
+    fn fix_source(&mut self) {
+        if !self.source_allowed() {
+            self.source = Source::Retained;
+        }
+    }
+
+    fn run(&mut self, cx: &mut Context<Self>) {
+        self.generation += 1;
+        self.text = self.pending.clone();
+        self.cursor = None;
+        self.more = More::Idle;
+        if !self.searches() {
+            self.results.clear();
+            self.coverage = None;
+            self.bounded = false;
+            self.status = Status::Idle;
+            cx.notify();
+            return;
+        }
+        let Some(client) = self.session.read(cx).client().cloned() else {
+            return;
+        };
+        self.status = Status::Searching;
+        let query = Query::new(self.text.clone(), self.sent_filters(), self.source);
+        let generation = self.generation;
+        let request = client.request(move |api| async move { api.search(&query).await });
+        cx.spawn(async move |this, cx| {
+            let result = request.await;
+            this.update(cx, |m, cx| {
+                if m.generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(Ok(page)) => {
+                        m.coverage = sf::coverage(&page);
+                        m.bounded = sf::is_bounded(&page);
+                        m.cursor = page.next_cursor.filter(|c| !c.is_empty());
+                        m.results = page.items;
+                        m.status = Status::Done;
+                    }
+                    Ok(Err(e)) => m.status = Status::Failed(e.to_string()),
+                    Err(e) => m.status = Status::Failed(e.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn retry(&mut self, cx: &mut Context<Self>) {
+        self.run(cx);
+    }
+
+    fn load_more(&mut self, cx: &mut Context<Self>) {
+        let Some(cursor) = self.cursor.clone() else {
+            return;
+        };
+        if self.more == More::Loading {
+            return;
+        }
+        let Some(client) = self.session.read(cx).client().cloned() else {
+            return;
+        };
+        self.more = More::Loading;
+        let mut query = Query::new(self.text.clone(), self.sent_filters(), self.source);
+        query.cursor = Some(cursor);
+        let generation = self.generation;
+        let request = client.request(move |api| async move { api.search(&query).await });
+        cx.spawn(async move |this, cx| {
+            let result = request.await;
+            this.update(cx, |m, cx| {
+                if m.generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(Ok(page)) => {
+                        for item in page.items {
+                            // A repeated message keeps its last place.
+                            m.results.retain(|r| r.message.id != item.message.id);
+                            m.results.push(item);
+                        }
+                        m.cursor = page.next_cursor.filter(|c| !c.is_empty());
+                        m.more = More::Idle;
+                    }
+                    Ok(Err(e)) => m.more = More::Failed(e.to_string()),
+                    Err(e) => m.more = More::Failed(e.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The count to announce and show once a search settles.
+    fn count_text(&self) -> String {
+        let n = self.results.len();
+        if self.bounded {
+            t!("search-bounded-count", count = n)
+        } else if self.cursor.is_some() {
+            t!("search-message-count-more", count = n)
+        } else if n == 1 {
+            t!("search-message-count-one").to_string()
+        } else {
+            t!("search-message-count", count = n)
+        }
+    }
+}
+
+// ---- Names, labels and what a typed filter can be ----
+
+fn conversation_label(c: &c::Conversation) -> String {
+    match c.kind {
+        ConversationKind::Channel => format!("#{}", c.name),
+        _ => format!("@{}", c.name),
+    }
+}
+
+fn member_name(m: &c::Member) -> String {
+    if m.display_name.is_empty() {
+        m.nick.clone()
+    } else {
+        m.display_name.clone()
+    }
+}
+
+/// Everyone to choose from, by name, without yourself.
+fn people(w: &Workspace) -> Vec<&c::Member> {
+    let mut people: Vec<&c::Member> = w.members.values().filter(|m| m.id != w.user.id).collect();
+    people.sort_by_key(|m| member_name(m).to_lowercase());
+    people.dedup_by_key(|m| m.id.clone());
+    people
+}
+
+fn kind_label(kind: Has) -> &'static str {
+    match kind {
+        Has::Link => t!("search-kind-link"),
+        Has::Image => t!("search-kind-image"),
+        Has::Gif => t!("search-kind-gif"),
+        Has::Video => t!("search-kind-video"),
+        Has::File => t!("search-kind-file"),
+    }
+}
+
+fn author_label(author: Author) -> &'static str {
+    match author {
+        Author::User => t!("search-person"),
+        Author::Bot => t!("search-bot"),
+    }
+}
+
+/// What a chip shows after its key.
+fn chip_label(w: &Workspace, chip: &Chip) -> String {
+    match chip {
+        Chip::From(id) | Chip::Mentions(id) => w
+            .members
+            .get(id)
+            .map(member_name)
+            .unwrap_or_else(|| t!("search-someone").to_string()),
+        Chip::In(id) => w
+            .conversation(id)
+            .map(conversation_label)
+            .unwrap_or_else(|| t!("search-closed-conversation").to_string()),
+        Chip::Has(kind) => kind_label(*kind).to_string(),
+        Chip::Author(author) => author_label(*author).to_string(),
+        Chip::Before(day) | Chip::After(day) | Chip::On(day) => day.clone(),
+    }
+}
+
+fn today() -> NaiveDate {
+    Local::now().date_naive()
+}
+
+/// A day typed as a word or as `YYYY-MM-DD`.
+fn typed_day(value: &str, today: NaiveDate) -> Option<String> {
+    let value = value.trim().to_lowercase();
+    if sf::is_day(&value) {
+        return Some(value);
+    }
+    let named = [
+        (t!("search-today").to_lowercase(), 0),
+        (t!("search-yesterday").to_lowercase(), 1),
+    ];
+    named
+        .iter()
+        .find(|(word, _)| *word == value)
+        .map(|(_, back)| sf::days_before(today, *back))
+}
+
+fn date_chip(key: Key, day: String) -> Option<Chip> {
+    match key {
+        Key::Before => Some(Chip::Before(day)),
+        Key::After => Some(Chip::After(day)),
+        Key::On => Some(Chip::On(day)),
+        _ => None,
+    }
+}
+
+/// The chip a finished `key:value` token names exactly, if any.
+fn resolve(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Option<Chip> {
+    let bare = value.trim_start_matches(['@', '#']);
+    match key {
+        Key::From | Key::Mentions => {
+            let m = people(w)
+                .into_iter()
+                .find(|m| m.nick.eq_ignore_ascii_case(bare))?;
+            Some(if key == Key::From {
+                Chip::From(m.id.clone())
+            } else {
+                Chip::Mentions(m.id.clone())
+            })
+        }
+        Key::In => w
+            .conversations
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(bare))
+            .map(|c| Chip::In(c.id.clone())),
+        Key::Has => Has::parse(bare)
+            .or_else(|| {
+                Has::ALL
+                    .into_iter()
+                    .find(|h| kind_label(*h).eq_ignore_ascii_case(bare))
+            })
+            .map(Chip::Has),
+        Key::Author => Author::parse(bare).map(Chip::Author),
+        Key::Before | Key::After | Key::On => date_chip(key, typed_day(value, today)?),
+    }
+}
+
+/// A choice offered for the token being typed.
+#[derive(Clone, Debug)]
+struct Offer {
+    chip: Chip,
+    label: String,
+}
+
+/// What the token being typed could be, best first.
+fn offers(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Vec<Offer> {
+    let needle = value.trim_start_matches(['@', '#']).to_lowercase();
+    let matches = |name: &str| needle.is_empty() || name.to_lowercase().contains(&needle);
+    let mut offers: Vec<Offer> = match key {
+        Key::From | Key::Mentions => people(w)
+            .into_iter()
+            .filter(|m| matches(&m.nick) || matches(&member_name(m)))
+            .map(|m| Offer {
+                chip: if key == Key::From {
+                    Chip::From(m.id.clone())
+                } else {
+                    Chip::Mentions(m.id.clone())
+                },
+                label: format!("{} (@{})", member_name(m), m.nick),
+            })
+            .collect(),
+        Key::In => w
+            .conversations
+            .iter()
+            .filter(|c| matches(&c.name))
+            .map(|c| Offer {
+                chip: Chip::In(c.id.clone()),
+                label: conversation_label(c),
+            })
+            .collect(),
+        Key::Has => Has::ALL
+            .into_iter()
+            .filter(|h| matches(h.as_str()) || matches(kind_label(*h)))
+            .map(|h| Offer {
+                chip: Chip::Has(h),
+                label: kind_label(h).to_string(),
+            })
+            .collect(),
+        Key::Author => [Author::User, Author::Bot]
+            .into_iter()
+            .filter(|a| matches(a.as_str()) || matches(author_label(*a)))
+            .map(|a| Offer {
+                chip: Chip::Author(a),
+                label: author_label(a).to_string(),
+            })
+            .collect(),
+        Key::Before | Key::After | Key::On => {
+            let mut days: Vec<(String, String)> = [
+                (t!("search-today"), 0),
+                (t!("search-yesterday"), 1),
+                (t!("search-week-ago"), 7),
+                (t!("search-month-ago"), 30),
+            ]
+            .into_iter()
+            .filter(|(name, _)| matches(name))
+            .map(|(name, back)| {
+                let day = sf::days_before(today, back);
+                (format!("{name} · {day}"), day)
+            })
+            .collect();
+            if sf::is_day(value) {
+                days.insert(0, (value.to_string(), value.to_string()));
+            }
+            days.into_iter()
+                .filter_map(|(label, day)| {
+                    Some(Offer {
+                        chip: date_chip(key, day)?,
+                        label,
+                    })
+                })
+                .collect()
+        }
+    };
+    offers.truncate(OFFERS);
+    offers
+}
+
+/// A message result's time, in local time.
+fn result_time(created_at: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(created_at)
+        .map(|t| t.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default()
+}
+
+fn coverage_text(coverage: Coverage) -> &'static str {
+    use c::SearchSourceReason as R;
+    match coverage {
+        Coverage::Retained => t!("search-coverage-retained"),
+        Coverage::Upstream => t!("search-coverage-upstream"),
+        Coverage::Fallback(reason) => match reason {
+            R::UnsupportedMinusScope => t!("search-fallback-unsupported-scope"),
+            R::UnsupportedMinusFilters => t!("search-fallback-unsupported-filters"),
+            R::CapabilityMinusUnavailable => t!("search-fallback-capability-unavailable"),
+            R::UpstreamMinusUnavailable => t!("search-fallback-upstream-unavailable"),
+            R::Continuation => t!("search-fallback-continuation"),
+            R::Unknown => t!("search-coverage-retained"),
+        },
+    }
+}
+
+// ---- Recent searches on this device ----
+
+fn account(session: &Session) -> Option<String> {
+    session.client().map(|c| c.read().user.id.clone())
+}
+
+fn load_recent(session: &Session) -> Vec<RecentSearch> {
+    account(session)
+        .map(|account| sf::load_recent(&session.config, &account))
+        .unwrap_or_default()
+}
+
+fn save_recent(session: &Session, list: &[RecentSearch]) {
+    let Some(account) = account(session) else {
+        return;
+    };
+    if let Err(e) = sf::save_recent(&session.config, &account, list) {
+        log::warn!("save recent searches: {e}");
+    }
+}
+
+// ---- Shared pieces of view ----
+
+/// Open a result in the timeline, or say why it cannot be.
+fn open_result(
+    session: &Entity<Session>,
+    result: &c::SearchResult,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if !sf::is_jumpable(result) {
+        return ui::toast::info(window, cx, t!("search-result-not-jumpable"));
+    }
+    crate::timeline::reveal(
+        session,
+        &result.conversation.id,
+        &result.message.id,
+        window,
+        cx,
+    );
+}
+
+fn list_label(text: impl Into<SharedString>, theme: &Theme) -> Div {
+    div()
+        .px_3()
+        .pt_3()
+        .pb_1()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.muted)
+        .child(text.into())
+}
+
+/// A small text button.
+fn text_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    theme: &Theme,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Observed<Stateful<Div>> {
+    let label: SharedString = label.into();
+    div()
+        .id(id)
+        .test_support()
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .px_2()
+        .py_1()
+        .rounded_md()
+        .cursor_pointer()
+        .text_sm()
+        .bg(theme.input)
+        .text_color(theme.text)
+        .hover({
+            let hover = theme.hover;
+            move |d| d.bg(hover)
+        })
+        .child(label)
+        .on_click(on_click)
+}
+
+/// A pill that is on or off.
+fn toggle_pill(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    on: bool,
+    theme: &Theme,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Observed<Stateful<Div>> {
+    let label: SharedString = label.into();
+    div()
+        .id(id)
+        .test_support()
+        .role(Role::CheckBox)
+        .aria_label(label.clone())
+        .aria_toggled(if on { Toggled::True } else { Toggled::False })
+        .px_2()
+        .py_0p5()
+        .rounded_full()
+        .cursor_pointer()
+        .text_sm()
+        .when(on, |d| d.bg(theme.accent).text_color(theme.on_accent))
+        .when(!on, |d| {
+            let hover = theme.hover;
+            d.bg(theme.input)
+                .text_color(theme.text)
+                .hover(move |d| d.bg(hover))
+        })
+        .child(label)
+        .on_click(on_click)
+}
+
+/// The server history switch, disabled with the reason when it cannot apply.
+fn source_switch(
+    id: &'static str,
+    model: &Entity<SearchModel>,
+    help: bool,
+    theme: &Theme,
+    cx: &App,
+) -> Div {
+    let m = model.read(cx);
+    let allowed = m.source_allowed();
+    let on = m.source == Source::Upstream;
+    let model = model.clone();
+    div()
+        .px_3()
+        .py_1()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_2()
+        .text_xs()
+        .text_color(theme.muted)
+        .when(help && !allowed, |d| {
+            d.child(t!("search-server-history-needs-scope"))
+        })
+        .child(
+            div()
+                .id(id)
+                .test_support()
+                .role(Role::Switch)
+                .aria_label(t!("search-server-history"))
+                .aria_toggled(if on { Toggled::True } else { Toggled::False })
+                .flex()
+                .items_center()
+                .gap_1p5()
+                .when(allowed, |d| d.cursor_pointer())
+                .when(!allowed, |d| d.opacity(0.5))
+                .child(
+                    div()
+                        .w(px(26.))
+                        .h(px(14.))
+                        .rounded_full()
+                        .bg(if on { theme.accent } else { theme.selected })
+                        .flex()
+                        .when(on, |d| d.justify_end())
+                        .child(div().size(px(14.)).rounded_full().bg(theme.text)),
+                )
+                .child(t!("search-server-history"))
+                .when(allowed, |d| {
+                    d.on_click(move |_, _, cx| {
+                        model.update(cx, |m, cx| {
+                            let next = if m.source == Source::Upstream {
+                                Source::Retained
+                            } else {
+                                Source::Upstream
+                            };
+                            m.set_source(next, cx)
+                        })
+                    })
+                }),
+        )
+}
+
+/// The removable chips for what is chosen.
+fn chips_row(
+    prefix: &'static str,
+    model: &Entity<SearchModel>,
+    theme: &Theme,
+    cx: &App,
+) -> Option<Div> {
+    let session = model.read(cx).session.read(cx);
+    let client = session.client()?.clone();
+    let w = client.read();
+    let chips = model.read(cx).filters.chips();
+    if chips.is_empty() {
+        return None;
+    }
+    let mut row = div().flex().flex_wrap().gap_1();
+    for (i, chip) in chips.into_iter().enumerate() {
+        let value = chip_label(&w, &chip);
+        let key = chip.key().as_str();
+        let label = t!("search-remove-filter", filter = key, value = value.clone());
+        let model = model.clone();
+        row = row.child(
+            div()
+                .id(ElementId::Name(format!("{prefix}-chip-{i}").into()))
+                .test_support()
+                .role(Role::Button)
+                .aria_label(SharedString::from(label))
+                .px_2()
+                .py_0p5()
+                .rounded_full()
+                .cursor_pointer()
+                .bg(theme.selected)
+                .text_sm()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(div().text_color(theme.accent).child(format!("{key}:")))
+                .child(div().text_color(theme.text).child(value))
+                .child(ui::icon::icon(IconName::Close, theme.muted))
+                .on_click(move |_, _, cx| {
+                    model.update(cx, |m, cx| {
+                        let next = m.filters.without(&chip);
+                        m.set_filters(next, cx)
+                    })
+                }),
+        );
+    }
+    Some(row)
+}
+
+/// One message result.
+#[allow(clippy::too_many_arguments)]
+fn result_row(
+    id: String,
+    w: &Workspace,
+    result: &c::SearchResult,
+    show_place: bool,
+    selected: bool,
+    theme: &Theme,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Observed<Stateful<Div>> {
+    let network = &result.conversation.network_id;
+    let member = w
+        .member(&result.message.sender_id, network)
+        .map(member_name);
+    let author = sf::result_author(result, member).unwrap_or_else(|| t!("search-someone").into());
+    let place = w
+        .conversation(&result.conversation.id)
+        .map(conversation_label)
+        .unwrap_or_else(|| conversation_label(&result.conversation));
+    let time = result_time(&result.message.created_at);
+    let text = format::strip(&result.message.text);
+    let jumpable = sf::is_jumpable(result);
+    let mut label = t!(
+        "search-result",
+        author = author.clone(),
+        place = place.clone(),
+        time = time.clone(),
+        text = text.clone()
+    );
+    if !jumpable {
+        label = format!("{label}. {}", t!("search-result-not-jumpable"));
+    }
+    div()
+        .id(ElementId::Name(id.into()))
+        .test_support()
+        .role(Role::ListBoxOption)
+        .aria_label(SharedString::from(label))
+        .aria_selected(selected)
+        .mx_2()
+        .px_2()
+        .py_1p5()
+        .rounded_md()
+        .flex()
+        .flex_col()
+        .gap_0p5()
+        .when(jumpable, |d| d.cursor_pointer())
+        .when(selected, |d| d.bg(theme.selected))
+        .when(!selected, |d| {
+            let hover = theme.row_hover;
+            d.hover(move |d| d.bg(hover))
+        })
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_sm()
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text)
+                        .child(author),
+                )
+                .when(show_place, |d| {
+                    d.child(div().text_color(theme.muted).child(place))
+                })
+                .child(div().text_xs().text_color(theme.faint).child(time))
+                .when(!jumpable, |d| {
+                    d.child(
+                        div()
+                            .px_1p5()
+                            .rounded_sm()
+                            .bg(theme.input)
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child(t!("search-result-remote-badge")),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme.text)
+                .line_clamp(3)
+                .child(text),
+        )
+        .on_click(on_click)
+}
+
+/// The messages part: status, results and "load older".
+#[allow(clippy::too_many_arguments)]
+fn messages_part(
+    prefix: &'static str,
+    model: &Entity<SearchModel>,
+    session: &Entity<Session>,
+    selected: Option<usize>,
+    offset: usize,
+    show_place: bool,
+    empty_text: String,
+    theme: &Theme,
+    cx: &App,
+) -> Div {
+    let m = model.read(cx);
+    let mut part = div().flex().flex_col().gap_0p5();
+    if m.searching() {
+        return part.child(
+            div()
+                .id(ElementId::Name(format!("{prefix}-searching").into()))
+                .test_support()
+                .role(Role::Status)
+                .aria_label(t!("search-searching"))
+                .px_3()
+                .py_2()
+                .text_sm()
+                .text_color(theme.muted)
+                .child(t!("search-searching")),
+        );
+    }
+    if let Status::Failed(error) = &m.status {
+        let model = model.clone();
+        let text = t!("search-failed", error = error.clone());
+        return part.child(
+            div()
+                .id(ElementId::Name(format!("{prefix}-failed").into()))
+                .test_support()
+                .role(Role::Alert)
+                .aria_label(SharedString::from(text.clone()))
+                .px_3()
+                .py_2()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .text_sm()
+                .text_color(theme.danger)
+                .child(text)
+                .child(text_button(
+                    ElementId::Name(format!("{prefix}-retry").into()),
+                    t!("search-try-again"),
+                    theme,
+                    move |_, _, cx| model.update(cx, |m, cx| m.retry(cx)),
+                )),
+        );
+    }
+    if m.status != Status::Done {
+        return part;
+    }
+    let count = if m.results.is_empty() {
+        empty_text
+    } else {
+        m.count_text()
+    };
+    part = part.child(
+        div()
+            .id(ElementId::Name(format!("{prefix}-count").into()))
+            .test_support()
+            .role(Role::Status)
+            .aria_label(SharedString::from(count.clone()))
+            .px_3()
+            .py_1()
+            .text_xs()
+            .text_color(theme.muted)
+            .child(count),
+    );
+    if let Some(coverage) = m.coverage {
+        let note = coverage_text(coverage);
+        part = part.child(
+            div()
+                .id(ElementId::Name(format!("{prefix}-coverage").into()))
+                .test_support()
+                .role(Role::Note)
+                .aria_label(note)
+                .px_3()
+                .pb_1()
+                .text_xs()
+                .text_color(theme.muted)
+                .child(note),
+        );
+    }
+    let Some(client) = session.read(cx).client().cloned() else {
+        return part;
+    };
+    let w = client.read();
+    for (i, result) in m.results.iter().enumerate() {
+        let session = session.clone();
+        let model = model.clone();
+        let r = result.clone();
+        part = part.child(result_row(
+            format!("{prefix}-result-{i}"),
+            &w,
+            result,
+            show_place,
+            selected == Some(offset + i),
+            theme,
+            move |_, window, cx| {
+                model.update(cx, |_, cx| cx.emit(Opened));
+                open_result(&session, &r, window, cx)
+            },
+        ));
+    }
+    if let More::Failed(error) = &m.more {
+        let text = t!("search-load-more-failed", error = error.clone());
+        part = part.child(
+            div()
+                .id(ElementId::Name(format!("{prefix}-more-failed").into()))
+                .test_support()
+                .role(Role::Alert)
+                .aria_label(SharedString::from(text.clone()))
+                .px_3()
+                .text_sm()
+                .text_color(theme.danger)
+                .child(text),
+        );
+    }
+    if m.cursor.is_some() {
+        let loading = m.more == More::Loading;
+        let model = model.clone();
+        part = part.child(div().px_3().py_2().child(text_button(
+            ElementId::Name(format!("{prefix}-load-older").into()),
+            if loading {
+                t!("search-loading-older")
+            } else {
+                t!("search-load-older")
+            },
+            theme,
+            move |_, _, cx| model.update(cx, |m, cx| m.load_more(cx)),
+        )));
+    }
+    part
+}
+
+/// A result was opened (the page remembers the search).
+pub struct Opened;
+impl EventEmitter<Opened> for SearchModel {}
+
+/// Offers for the token being typed, as a row of buttons.
+fn offers_row(
+    prefix: &'static str,
+    input: &Entity<InputState>,
+    model: &Entity<SearchModel>,
+    exclude_in: bool,
+    theme: &Theme,
+    cx: &App,
+) -> Option<AnyElement> {
+    let raw = input.read(cx).value().to_string();
+    let token = sf::active_token(&raw)?;
+    if exclude_in && token.key == Key::In {
+        return None;
+    }
+    let session = model.read(cx).session.read(cx);
+    let client = session.client()?.clone();
+    let offers = offers(&client.read(), token.key, &token.value, today());
+    let mut row = div()
+        .id(ElementId::Name(format!("{prefix}-offers").into()))
+        .test_support()
+        .role(Role::Group)
+        .aria_label(SharedString::from(t!(
+            "search-suggestions",
+            filter = token.key.as_str()
+        )))
+        .px_3()
+        .py_1()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_1()
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme.muted)
+                .child(t!("search-suggestions", filter = token.key.as_str())),
+        );
+    if offers.is_empty() {
+        return Some(
+            row.child(
+                div()
+                    .text_xs()
+                    .text_color(theme.faint)
+                    .child(t!("search-no-suggestion", query = token.value.clone())),
+            )
+            .into_any_element(),
+        );
+    }
+    for (i, offer) in offers.into_iter().enumerate() {
+        let (input, model) = (input.clone(), model.clone());
+        let chip = offer.chip.clone();
+        row = row.child(text_button(
+            ElementId::Name(format!("{prefix}-offer-{i}").into()),
+            offer.label,
+            theme,
+            move |_, window, cx| apply_offer(&input, &model, chip.clone(), window, cx),
+        ));
+    }
+    Some(row.into_any_element())
+}
+
+/// Turn the token being typed into `chip`.
+fn apply_offer(
+    input: &Entity<InputState>,
+    model: &Entity<SearchModel>,
+    chip: Chip,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let raw = input.read(cx).value().to_string();
+    let rest = match sf::active_token(&raw).or_else(|| sf::finished_token(&raw)) {
+        Some(token) => sf::without_token(&raw, &token).to_string(),
+        None => raw,
+    };
+    model.update(cx, |m, cx| {
+        let next = m.filters.with(chip);
+        m.set_filters(next, cx)
+    });
+    input.update(cx, |i, cx| i.set_value(rest, window, cx));
+    input.focus_handle(cx).focus(window, cx);
+}
+
+/// The first offer for the token being typed, if one is being typed.
+fn first_offer(input: &Entity<InputState>, model: &Entity<SearchModel>, cx: &App) -> Option<Chip> {
+    let raw = input.read(cx).value().to_string();
+    let token = sf::active_token(&raw)?;
+    let session = model.read(cx).session.read(cx);
+    let client = session.client()?.clone();
+    let w = client.read();
+    resolve(&w, token.key, &token.value, today()).or_else(|| {
+        offers(&w, token.key, &token.value, today())
+            .into_iter()
+            .next()
+            .map(|o| o.chip)
+    })
+}
+
+/// Backspace in an empty field removes the last chip. Returns whether it did.
+fn remove_last_chip(input: &Entity<InputState>, model: &Entity<SearchModel>, cx: &mut App) -> bool {
+    if !input.read(cx).value().is_empty() {
+        return false;
+    }
+    let Some(last) = model.read(cx).filters.chips().pop() else {
+        return false;
+    };
+    model.update(cx, |m, cx| {
+        let next = m.filters.without(&last);
+        m.set_filters(next, cx)
+    });
+    true
+}
+
+/// What the field changed to: a finished token that names something
+/// becomes a chip; the rest is the text to search.
+fn field_changed(
+    input: &Entity<InputState>,
+    model: &Entity<SearchModel>,
+    exclude_in: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let raw = input.read(cx).value().to_string();
+    if let Some(token) = sf::finished_token(&raw)
+        && !(exclude_in && token.key == Key::In)
+    {
+        let chip = {
+            let session = model.read(cx).session.read(cx);
+            session
+                .client()
+                .and_then(|client| resolve(&client.read(), token.key, &token.value, today()))
+        };
+        if let Some(chip) = chip {
+            return apply_offer(input, model, chip, window, cx);
+        }
+    }
+    let typed = sf::typed_text(&raw).to_string();
+    model.update(cx, |m, cx| m.set_text(&typed, cx));
+}
+
+// ---- The search page ----
+
+/// Query text handed to the page before it shows.
+struct PendingQuery(Option<String>);
+impl Global for PendingQuery {}
+
+/// The one page view, kept across visits so a search stays.
+#[derive(Clone)]
+struct PageGlobal(Entity<SearchPage>);
+impl Global for PageGlobal {}
+
+fn page_view(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> Entity<SearchPage> {
+    let view = match cx.try_global::<PageGlobal>() {
+        Some(PageGlobal(view)) if view.read(cx).session == *session => view.clone(),
+        _ => {
+            let view = cx.new(|cx| SearchPage::new(session.clone(), window, cx));
+            cx.set_global(PageGlobal(view.clone()));
+            view
+        }
+    };
+    if let Some(PendingQuery(Some(query))) = cx.try_global::<PendingQuery>() {
+        let query = query.clone();
+        cx.set_global(PendingQuery(None));
+        view.update(cx, |v, cx| {
+            v.input
+                .update(cx, |i, cx| i.set_value(query.clone(), window, cx));
+            v.focus = true;
+            let model = v.model.clone();
+            model.update(cx, |m, cx| {
+                m.set_search(sf::typed_text(&query), m.filters.clone(), cx)
+            });
+        });
+    }
+    view
+}
+
+/// One thing the page's list can open.
+#[derive(Clone, Debug, PartialEq)]
+enum Item {
+    Conversation(String),
+    Server(String),
+    Person(String),
+    Nickname(String),
+    Message(usize),
+}
+
+pub struct SearchPage {
+    session: Entity<Session>,
+    model: Entity<SearchModel>,
+    input: Entity<InputState>,
+    selected: usize,
+    recent: Vec<RecentSearch>,
+    focus: bool,
+    error: Option<String>,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl SearchPage {
+    fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let model = cx.new(|_| SearchModel::new(session.clone(), None));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("search-placeholder")));
+        let field = cx.subscribe_in(
+            &input,
+            window,
+            |this: &mut Self, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    field_changed(input, &this.model, false, window, cx);
+                    this.selected = 0;
+                    cx.notify();
+                }
+                InputEvent::PressEnter { .. } => this.enter(window, cx),
+                _ => {}
+            },
+        );
+        let changed = cx.observe(&model, |this: &mut Self, _, cx| {
+            this.selected = this.selected.min(this.items(cx).len().saturating_sub(1));
+            cx.notify();
+        });
+        let opened = cx.subscribe(&model, |this: &mut Self, _, _: &Opened, cx| {
+            this.remember(cx)
+        });
+        let workspace = cx.subscribe(&session, |_, _, event: &SessionEvent, cx| {
+            if matches!(event, SessionEvent::Changed(_)) {
+                cx.notify();
+            }
+        });
+        let recent = load_recent(session.read(cx));
+        Self {
+            session,
+            model,
+            input,
+            selected: 0,
+            recent,
+            focus: true,
+            error: None,
+            _subscriptions: vec![field, changed, opened, workspace],
+        }
+    }
+
+    fn typed(&self, cx: &App) -> String {
+        sf::typed_text(&self.input.read(cx).value()).to_string()
+    }
+
+    fn needle(&self, cx: &App) -> String {
+        self.typed(cx)
+            .to_lowercase()
+            .trim_start_matches(['#', '@'])
+            .to_string()
+    }
+
+    /// Conversations, server windows and people by name (only while no
+    /// filter is chosen), then messages.
+    fn items(&self, cx: &App) -> Vec<Item> {
+        let mut items = Vec::new();
+        let m = self.model.read(cx);
+        if m.filters.is_empty()
+            && let Some(client) = self.session.read(cx).client()
+        {
+            let w = client.read();
+            let needle = self.needle(cx);
+            items.extend(
+                conversations(&w, &needle)
+                    .into_iter()
+                    .map(Item::Conversation),
+            );
+            if !needle.is_empty() {
+                let window_name = t!("search-server-window").to_lowercase();
+                items.extend(
+                    w.networks
+                        .iter()
+                        .filter(|n| {
+                            format!("{window_name} {}", n.name.to_lowercase()).contains(&needle)
+                        })
+                        .take(SERVERS)
+                        .map(|n| Item::Server(n.id.clone())),
+                );
+                let found: Vec<&c::Member> = people(&w)
+                    .into_iter()
+                    .filter(|p| {
+                        p.nick.to_lowercase().contains(&needle)
+                            || member_name(p).to_lowercase().contains(&needle)
+                    })
+                    .take(PEOPLE)
+                    .collect();
+                let typed = self.typed(cx);
+                let typed = typed.trim_start_matches('@');
+                let known = found.iter().any(|p| p.nick.eq_ignore_ascii_case(typed))
+                    || people(&w)
+                        .iter()
+                        .any(|p| p.nick.eq_ignore_ascii_case(typed));
+                items.extend(found.into_iter().map(|p| Item::Person(p.id.clone())));
+                let network = self.session.read(cx).network.clone();
+                let limit = network
+                    .as_deref()
+                    .and_then(|n| w.network(n))
+                    .map_or(30, |n| cmd::run::nickname_limit(&n.isupport));
+                if !known
+                    && network.is_some()
+                    && !typed.is_empty()
+                    && cmd::run::nickname_error(typed, limit).is_none()
+                {
+                    items.push(Item::Nickname(typed.to_string()));
+                }
+            }
+        }
+        if m.searches() && !m.searching() && m.status == Status::Done {
+            items.extend((0..m.results.len()).map(Item::Message));
+        }
+        items
+    }
+
+    fn enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(chip) = first_offer(&self.input, &self.model, cx) {
+            return apply_offer(&self.input, &self.model, chip, window, cx);
+        }
+        let items = self.items(cx);
+        if let Some(item) = items.get(self.selected).cloned() {
+            self.choose(item, window, cx);
+        }
+    }
+
+    fn choose(&mut self, item: Item, window: &mut Window, cx: &mut Context<Self>) {
+        let session = self.session.clone();
+        match item {
+            Item::Conversation(id) => session.update(cx, |s, cx| s.select_conversation(&id, cx)),
+            Item::Server(id) => session.update(cx, |s, cx| s.navigate(Route::ServerWindow(id), cx)),
+            Item::Person(id) => self.direct(Some(id), None, window, cx),
+            Item::Nickname(nick) => self.direct(None, Some(nick), window, cx),
+            Item::Message(i) => {
+                let result = self.model.read(cx).results.get(i).cloned();
+                if let Some(result) = result {
+                    self.remember(cx);
+                    open_result(&session, &result, window, cx);
+                }
+            }
+        }
+    }
+
+    /// Open a direct conversation with someone, by member or by nickname.
+    fn direct(
+        &mut self,
+        member: Option<String>,
+        nickname: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session = self.session.read(cx);
+        let Some(client) = session.client().cloned() else {
+            return;
+        };
+        let network = member
+            .as_deref()
+            .and_then(|id| {
+                let w = client.read();
+                w.conversations
+                    .iter()
+                    .find(|c| c.member_ids.iter().any(|m| m == id))
+                    .map(|c| c.network_id.clone())
+            })
+            .or_else(|| session.network.clone());
+        let Some(network) = network else {
+            return;
+        };
+        let task = cmd::execute(
+            &client,
+            Plan::Direct {
+                network,
+                member,
+                nickname,
+                text: None,
+            },
+        );
+        self.error = None;
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(Ok(done)) => {
+                        if let Some(id) = done.open {
+                            this.session
+                                .update(cx, |s, cx| s.select_conversation(&id, cx));
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        this.error = Some(t!("search-open-person-failed", error = e.to_string()))
+                    }
+                    Err(e) => {
+                        this.error = Some(t!("search-open-person-failed", error = e.to_string()))
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn remember(&mut self, cx: &mut Context<Self>) {
+        let m = self.model.read(cx);
+        if !sf::can_search(&m.text, &m.filters) {
+            return;
+        }
+        let entry = RecentSearch {
+            text: m.text.clone(),
+            filters: m.filters.clone(),
+        };
+        self.recent = sf::remember(&self.recent, entry);
+        save_recent(self.session.read(cx), &self.recent);
+        cx.notify();
+    }
+
+    fn forget(&mut self, cx: &mut Context<Self>) {
+        self.recent.clear();
+        save_recent(self.session.read(cx), &self.recent);
+        cx.notify();
+    }
+
+    fn recall(&mut self, entry: RecentSearch, window: &mut Window, cx: &mut Context<Self>) {
+        self.input
+            .update(cx, |i, cx| i.set_value(entry.text.clone(), window, cx));
+        self.model
+            .update(cx, |m, cx| m.set_search(&entry.text, entry.filters, cx));
+        self.input.focus_handle(cx).focus(window, cx);
+    }
+
+    /// Start typing a filter: `from:` at the end of the field.
+    fn start(&mut self, key: Key, window: &mut Window, cx: &mut Context<Self>) {
+        let raw = self.input.read(cx).value().to_string();
+        let raw = match sf::active_token(&raw) {
+            Some(token) => sf::without_token(&raw, &token).to_string(),
+            None => raw,
+        };
+        let space = if raw.is_empty() || raw.ends_with(' ') {
+            ""
+        } else {
+            " "
+        };
+        let next = format!("{raw}{space}{}:", key.as_str());
+        self.input.update(cx, |i, cx| i.set_value(next, window, cx));
+        self.input.focus_handle(cx).focus(window, cx);
+    }
+
+    fn open_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        open_filters(&self.model, false, window, cx);
+    }
+
+    fn render_list(&self, theme: &Theme, cx: &App) -> Div {
+        let items = self.items(cx);
+        let selected = (!items.is_empty()).then_some(self.selected);
+        let m = self.model.read(cx);
+        let mut list = div().flex().flex_col().gap_0p5().pb_4();
+        let Some(client) = self.session.read(cx).client().cloned() else {
+            return list;
+        };
+        let w = client.read();
+        let needle = self.needle(cx);
+        let raw = self.input.read(cx).value().to_string();
+        if raw.is_empty() && m.filters.is_empty() && !self.recent.is_empty() {
+            list = list.child(self.render_recent(&w, theme, cx));
+        }
+        let mut index = 0;
+        if m.filters.is_empty() {
+            let conversations: Vec<&Item> = items
+                .iter()
+                .filter(|i| matches!(i, Item::Conversation(_) | Item::Server(_)))
+                .collect();
+            if !conversations.is_empty() || needle.is_empty() {
+                list = list.child(list_label(
+                    if needle.is_empty() {
+                        t!("search-jump-to")
+                    } else {
+                        t!("search-conversations")
+                    },
+                    theme,
+                ));
+            }
+            for item in conversations {
+                list = list.child(self.name_row(item, index, selected, &w, theme, cx));
+                index += 1;
+            }
+            let found: Vec<&Item> = items
+                .iter()
+                .filter(|i| matches!(i, Item::Person(_) | Item::Nickname(_)))
+                .collect();
+            if !found.is_empty() {
+                list = list.child(list_label(t!("search-people"), theme));
+            }
+            for item in found {
+                list = list.child(self.name_row(item, index, selected, &w, theme, cx));
+                index += 1;
+            }
+            if index == 0 && !needle.is_empty() && !m.searches() {
+                list = list.child(ui::empty::empty(
+                    "search-nothing",
+                    t!("search-no-conversations", query = self.typed(cx)),
+                    None,
+                    theme,
+                ));
+            }
+        }
+        if m.searches() {
+            list = list
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .flex_wrap()
+                        .child(list_label(t!("search-messages"), theme))
+                        .child(source_switch(
+                            "search-server-history",
+                            &self.model,
+                            true,
+                            theme,
+                            cx,
+                        )),
+                )
+                .child(messages_part(
+                    "search",
+                    &self.model,
+                    &self.session,
+                    selected,
+                    index,
+                    true,
+                    empty_text(&m.text, &m.filters, None),
+                    theme,
+                    cx,
+                ));
+        }
+        if let Some(error) = &self.error {
+            list = list.child(
+                div()
+                    .id("search-error")
+                    .test_support()
+                    .role(Role::Alert)
+                    .aria_label(SharedString::from(error.clone()))
+                    .px_3()
+                    .py_2()
+                    .text_sm()
+                    .text_color(theme.danger)
+                    .child(error.clone()),
+            );
+        }
+        list
+    }
+
+    fn name_row(
+        &self,
+        item: &Item,
+        index: usize,
+        selected: Option<usize>,
+        w: &Workspace,
+        theme: &Theme,
+        cx: &App,
+    ) -> AnyElement {
+        let (icon, title, detail, badge) = match item {
+            Item::Conversation(id) => {
+                let Some(c) = w.conversation(id) else {
+                    return div().into_any_element();
+                };
+                let network = w
+                    .network(&c.network_id)
+                    .map(|n| n.name.clone())
+                    .unwrap_or_default();
+                let kind = if c.kind == ConversationKind::Channel {
+                    t!("search-channel")
+                } else {
+                    t!("search-direct-message")
+                };
+                let badge = if c.mention_count > 0 {
+                    Some(c.mention_count.to_string())
+                } else {
+                    (c.unread_count > 0).then(|| "•".to_string())
+                };
+                (
+                    (c.kind != ConversationKind::Channel).then_some(IconName::User),
+                    conversation_label(c),
+                    t!("search-conversation-detail", network = network, kind = kind),
+                    badge,
+                )
+            }
+            Item::Server(id) => (
+                Some(IconName::SquareTerminal),
+                t!("search-server-window").to_string(),
+                w.network(id).map(|n| n.name.clone()).unwrap_or_default(),
+                None,
+            ),
+            Item::Person(id) => {
+                let Some(p) = w.members.get(id) else {
+                    return div().into_any_element();
+                };
+                (
+                    Some(IconName::User),
+                    member_name(p),
+                    format!("@{}", p.nick),
+                    None,
+                )
+            }
+            Item::Nickname(nick) => (Some(IconName::User), nick.clone(), format!("@{nick}"), None),
+            Item::Message(_) => return div().into_any_element(),
+        };
+        let is_selected = selected == Some(index);
+        let label = match item {
+            Item::Person(_) | Item::Nickname(_) => {
+                t!("search-message-person", name = title.clone())
+            }
+            _ => format!("{title}, {detail}"),
+        };
+        let item = item.clone();
+        let view = PageGlobalHandle::get(cx);
+        div()
+            .id(ElementId::Name(format!("search-item-{index}").into()))
+            .test_support()
+            .role(Role::ListBoxOption)
+            .aria_label(SharedString::from(label))
+            .aria_selected(is_selected)
+            .mx_2()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .flex()
+            .items_center()
+            .gap_2()
+            .cursor_pointer()
+            .when(is_selected, |d| d.bg(theme.selected))
+            .when(!is_selected, |d| {
+                let hover = theme.row_hover;
+                d.hover(move |d| d.bg(hover))
+            })
+            .child(
+                div()
+                    .w(px(16.))
+                    .children(icon.map(|icon| ui::icon::icon(icon, theme.muted))),
+            )
+            .child(div().text_sm().text_color(theme.text).child(title))
+            .child(
+                div()
+                    .flex_1()
+                    .truncate()
+                    .text_xs()
+                    .text_color(theme.faint)
+                    .child(detail),
+            )
+            .children(badge.map(|b| {
+                div()
+                    .px_1p5()
+                    .rounded_full()
+                    .text_xs()
+                    .bg(theme.mention)
+                    .text_color(theme.on_accent)
+                    .child(b)
+            }))
+            .on_click(move |_, window, cx| {
+                if let Some(view) = view.clone() {
+                    let item = item.clone();
+                    view.update(cx, |v, cx| v.choose(item, window, cx));
+                }
+            })
+            .into_any_element()
+    }
+
+    fn render_recent(&self, w: &Workspace, theme: &Theme, cx: &App) -> Div {
+        let view = PageGlobalHandle::get(cx);
+        let mut chips = div().px_3().pb_2().flex().flex_wrap().gap_1p5();
+        for (i, entry) in self.recent.iter().enumerate() {
+            let mut parts: Vec<String> = entry
+                .filters
+                .chips()
+                .iter()
+                .map(|chip| format!("{}:{}", chip.key().as_str(), chip_label(w, chip)))
+                .collect();
+            if !entry.text.is_empty() {
+                parts.push(entry.text.clone());
+            }
+            let shown = parts.join(" ");
+            let entry = entry.clone();
+            let view = view.clone();
+            chips = chips.child(
+                text_button(
+                    ElementId::Name(format!("search-recent-{i}").into()),
+                    shown.clone(),
+                    theme,
+                    move |_, window, cx| {
+                        if let Some(view) = view.clone() {
+                            let entry = entry.clone();
+                            view.update(cx, |v, cx| v.recall(entry, window, cx));
+                        }
+                    },
+                )
+                .aria_label(SharedString::from(t!("search-recent", search = shown))),
+            );
+        }
+        let clear = text_button("search-clear-recent", t!("search-clear"), theme, {
+            let view = view.clone();
+            move |_, _, cx| {
+                if let Some(view) = view.clone() {
+                    view.update(cx, |v, cx| v.forget(cx));
+                }
+            }
+        })
+        .aria_label(t!("search-clear-recent"));
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .pr_3()
+                    .child(list_label(t!("search-recent-searches"), theme))
+                    .child(clear),
+            )
+            .child(chips)
+    }
+}
+
+/// The page view from inside its own rows' handlers.
+struct PageGlobalHandle;
+impl PageGlobalHandle {
+    fn get(cx: &App) -> Option<Entity<SearchPage>> {
+        cx.try_global::<PageGlobal>().map(|g| g.0.clone())
+    }
+}
+
+/// Conversations by name: without a needle, what needs attention, then the
+/// rest; with one, exact, prefix, then substring matches.
+fn conversations(w: &Workspace, needle: &str) -> Vec<String> {
+    let urgency = |c: &c::Conversation| {
+        if c.mention_count > 0 {
+            0
+        } else if c.kind == ConversationKind::Direct && c.unread_count > 0 {
+            1
+        } else if c.unread_count > 0 {
+            2
+        } else {
+            3
+        }
+    };
+    let score = |c: &c::Conversation| {
+        let name = c.name.to_lowercase();
+        if needle.is_empty() || name == needle {
+            Some(0)
+        } else if name.starts_with(needle) {
+            Some(1)
+        } else if name.contains(needle) {
+            Some(2)
+        } else {
+            None
+        }
+    };
+    let mut found: Vec<(u8, u8, String, String)> = w
+        .conversations
+        .iter()
+        .filter_map(|c| Some((score(c)?, urgency(c), c.name.to_lowercase(), c.id.clone())))
+        .collect();
+    found.sort();
+    let limit = if needle.is_empty() {
+        CONVERSATIONS
+    } else {
+        CONVERSATIONS_MATCHED
+    };
+    found.into_iter().take(limit).map(|f| f.3).collect()
+}
+
+/// What an empty result says.
+fn empty_text(text: &str, filters: &Filters, place: Option<&str>) -> String {
+    match (text.is_empty(), place) {
+        (false, Some(place)) => t!(
+            "search-conversation-no-messages-query",
+            place = place,
+            query = text
+        ),
+        (false, None) if !filters.is_empty() => {
+            t!("search-no-message-query-filtered", query = text)
+        }
+        (false, None) => t!("search-no-message-query", query = text),
+        (true, _) => t!("search-no-message-filters").to_string(),
+    }
+}
+
+impl Render for SearchPage {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::get(cx).clone();
+        if std::mem::take(&mut self.focus) {
+            self.input.focus_handle(cx).focus(window, cx);
+        }
+        let count = self.items(cx).len();
+        let filters = self.model.read(cx).filters.count();
+        let filters_label = if filters > 0 {
+            t!("search-filters-on", count = filters)
+        } else {
+            t!("search-filters").to_string()
+        };
+        let quick = [
+            (Key::From, t!("search-from-short"), t!("search-from-label")),
+            (
+                Key::Mentions,
+                t!("search-mentions-short"),
+                t!("search-mentions-label"),
+            ),
+            (Key::In, t!("search-in-short"), t!("search-in-label")),
+            (Key::Has, t!("search-has-short"), t!("search-has-label")),
+            (Key::On, t!("search-on-short"), t!("search-on-label")),
+        ];
+        let mut pills = div()
+            .id("search-quick-filters")
+            .test_support()
+            .role(Role::Group)
+            .aria_label(t!("search-quick-filters"))
+            .flex()
+            .flex_wrap()
+            .gap_1p5();
+        for (key, short, label) in quick {
+            pills = pills.child(
+                text_button(
+                    ElementId::Name(format!("search-quick-{}", key.as_str()).into()),
+                    short,
+                    &theme,
+                    cx.listener(move |this, _, window, cx| this.start(key, window, cx)),
+                )
+                .aria_label(label),
+            );
+        }
+        let toolbar = div()
+            .px_4()
+            .py_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .border_b_1()
+            .border_color(theme.rail)
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.muted)
+                    .child(t!("search-description")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div().flex_1().child(
+                            Input::new(&self.input)
+                                .id("search-input")
+                                .aria_label(t!("search-field")),
+                        ),
+                    )
+                    .child(
+                        text_button(
+                            "search-filters-button",
+                            filters_label.clone(),
+                            &theme,
+                            cx.listener(|this, _, window, cx| this.open_filters(window, cx)),
+                        )
+                        .aria_label(SharedString::from(filters_label)),
+                    ),
+            )
+            .children(chips_row("search", &self.model, &theme, cx))
+            .children(offers_row(
+                "search",
+                &self.input,
+                &self.model,
+                false,
+                &theme,
+                cx,
+            ))
+            .child(pills);
+        let list = div()
+            .id("search-results")
+            .test_support()
+            .role(Role::ListBox)
+            .aria_label(t!("search-results"))
+            .child(self.render_list(&theme, cx));
+        let footer = div()
+            .px_4()
+            .py_1()
+            .border_t_1()
+            .border_color(theme.rail)
+            .text_xs()
+            .text_color(theme.faint)
+            .child(t!("search-keyboard"));
+        let body = div()
+            .id("search-page-root")
+            .flex()
+            .flex_col()
+            .capture_action(cx.listener(move |this, _: &MoveDown, _, cx| {
+                if count > 0 {
+                    this.selected = (this.selected + 1) % count;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .capture_action(cx.listener(move |this, _: &MoveUp, _, cx| {
+                if count > 0 {
+                    this.selected = (this.selected + count - 1) % count;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &Backspace, _, cx| {
+                if remove_last_chip(&this.input, &this.model, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &Escape, window, cx| {
+                this.session.update(cx, |s, cx| s.go_back(cx));
+                window.refresh();
+                cx.stop_propagation();
+            }))
+            .child(toolbar)
+            .child(list)
+            .child(footer);
+        ui::page::Page::new("search-page", t!("search-title"), body).render(&theme)
+    }
+}
+
+// ---- The filters dialog ----
+
+#[derive(Clone, Copy, PartialEq)]
+enum When {
+    Any,
+    On,
+    Between,
+}
+
+struct FiltersDialog {
+    model: Entity<SearchModel>,
+    scoped: bool,
+    draft: Filters,
+    when: When,
+    on: Entity<InputState>,
+    after: Entity<InputState>,
+    before: Entity<InputState>,
+    error: Option<String>,
+}
+
+/// Choose every filter at once. Apply changes them together; closing the
+/// dialog leaves the search as it was.
+fn open_filters(model: &Entity<SearchModel>, scoped: bool, window: &mut Window, cx: &mut App) {
+    let draft = model.read(cx).filters.clone();
+    let day_input = |value: &Option<String>, window: &mut Window, cx: &mut App| {
+        let value = value.clone().unwrap_or_default();
+        cx.new(|cx| {
+            let mut state = InputState::new(window, cx).placeholder("YYYY-MM-DD");
+            state.set_value(value, window, cx);
+            state
+        })
+    };
+    let on = day_input(&draft.on, window, cx);
+    let after = day_input(&draft.after, window, cx);
+    let before = day_input(&draft.before, window, cx);
+    let when = if draft.on.is_some() {
+        When::On
+    } else if draft.before.is_some() || draft.after.is_some() {
+        When::Between
+    } else {
+        When::Any
+    };
+    let view = cx.new(|_| FiltersDialog {
+        model: model.clone(),
+        scoped,
+        draft,
+        when,
+        on,
+        after,
+        before,
+        error: None,
+    });
+    ui::dialog::open(
+        window,
+        cx,
+        t!("search-filters-title"),
+        move |dialog, _, _| dialog.w(px(560.)).child(view.clone()),
+    );
+}
+
+impl FiltersDialog {
+    fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut result = self.draft.clone();
+        let day = |input: &Entity<InputState>, cx: &App| {
+            let v = input.read(cx).value().trim().to_string();
+            (!v.is_empty()).then_some(v)
+        };
+        let (on, after, before) = (
+            day(&self.on, cx),
+            day(&self.after, cx),
+            day(&self.before, cx),
+        );
+        let bad = [&on, &after, &before]
+            .iter()
+            .any(|d| d.as_deref().is_some_and(|d| !sf::is_day(d)));
+        result.on = None;
+        result.after = None;
+        result.before = None;
+        match self.when {
+            When::Any => {}
+            When::On => result.on = on.clone(),
+            When::Between => {
+                result.after = after.clone();
+                result.before = before.clone();
+            }
+        }
+        let used_bad = match self.when {
+            When::Any => false,
+            When::On => on.as_deref().is_some_and(|d| !sf::is_day(d)),
+            When::Between => bad && (after.iter().chain(before.iter())).any(|d| !sf::is_day(d)),
+        };
+        if used_bad {
+            self.error = Some(t!(
+                "search-filters-bad-day",
+                example = today().format("%Y-%m-%d").to_string()
+            ));
+            cx.notify();
+            return;
+        }
+        self.model.update(cx, |m, cx| m.set_filters(result, cx));
+        ui::dialog::close(window, cx);
+    }
+
+    fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft = Filters::default();
+        self.when = When::Any;
+        for input in [&self.on, &self.after, &self.before] {
+            input.update(cx, |i, cx| i.set_value("", window, cx));
+        }
+        cx.notify();
+    }
+
+    /// A toggle for one value of a multi-choice filter.
+    fn toggle(&mut self, chip: Chip, cx: &mut Context<Self>) {
+        let on = self.draft.chips().contains(&chip);
+        self.draft = if on {
+            self.draft.without(&chip)
+        } else {
+            self.draft.with(chip)
+        };
+        cx.notify();
+    }
+}
+
+fn field(title: &'static str, help: Option<&'static str>, theme: &Theme) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text)
+                .child(title),
+        )
+        .when_some(help, |d, help| {
+            d.child(div().text_xs().text_color(theme.muted).child(help))
+        })
+}
+
+impl Render for FiltersDialog {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::get(cx).clone();
+        let session = self.model.read(cx).session.clone();
+        let client = session.read(cx).client().cloned();
+        let mut body = div()
+            .id("search-filters-dialog")
+            .test_support()
+            .role(Role::Group)
+            .aria_label(t!("search-filters-title"))
+            .flex()
+            .flex_col()
+            .gap_3()
+            .max_h(px(560.))
+            .overflow_y_scroll();
+        let chips = self.draft.chips();
+        if let Some(client) = client {
+            let w = client.read();
+            let everyone = people(&w);
+            let person_section = |key: Key,
+                                  title: &'static str,
+                                  help: &'static str,
+                                  cx: &mut Context<Self>| {
+                let mut pills = div().flex().flex_wrap().gap_1();
+                if everyone.is_empty() {
+                    pills = pills.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.faint)
+                            .child(t!("search-filters-nobody-here")),
+                    );
+                }
+                for p in &everyone {
+                    let chip = if key == Key::From {
+                        Chip::From(p.id.clone())
+                    } else {
+                        Chip::Mentions(p.id.clone())
+                    };
+                    let on = chips.contains(&chip);
+                    pills = pills.child(toggle_pill(
+                        ElementId::Name(format!("search-filter-{}-{}", key.as_str(), p.id).into()),
+                        format!("{} (@{})", member_name(p), p.nick),
+                        on,
+                        &theme,
+                        cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
+                    ));
+                }
+                field(title, Some(help), &theme).child(pills)
+            };
+            let from = person_section(
+                Key::From,
+                t!("search-filters-from"),
+                t!("search-filters-from-help"),
+                cx,
+            );
+            let mentions = person_section(
+                Key::Mentions,
+                t!("search-filters-mentions"),
+                t!("search-filters-mentions-help"),
+                cx,
+            );
+            let mut kinds = div().flex().flex_wrap().gap_1();
+            for kind in Has::ALL {
+                let chip = Chip::Has(kind);
+                let on = chips.contains(&chip);
+                kinds = kinds.child(toggle_pill(
+                    ElementId::Name(format!("search-filter-has-{}", kind.as_str()).into()),
+                    kind_label(kind),
+                    on,
+                    &theme,
+                    cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
+                ));
+            }
+            body = body.child(from).child(
+                field(
+                    t!("search-filters-has"),
+                    Some(t!("search-filters-has-help")),
+                    &theme,
+                )
+                .child(kinds),
+            );
+            body = body.child(mentions);
+            if !self.scoped {
+                let mut places = div().flex().flex_wrap().gap_1();
+                for c in &w.conversations {
+                    let chip = Chip::In(c.id.clone());
+                    let on = chips.contains(&chip);
+                    places = places.child(toggle_pill(
+                        ElementId::Name(format!("search-filter-in-{}", c.id).into()),
+                        conversation_label(c),
+                        on,
+                        &theme,
+                        cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
+                    ));
+                }
+                body = body.child(
+                    field(
+                        t!("search-filters-in"),
+                        Some(t!("search-filters-in-help")),
+                        &theme,
+                    )
+                    .child(places),
+                );
+            }
+        }
+        let mut when = div().flex().gap_1();
+        for (value, id, label) in [
+            (When::Any, "any", t!("search-filters-any-time")),
+            (When::On, "on", t!("search-filters-on-day")),
+            (When::Between, "between", t!("search-filters-between")),
+        ] {
+            when = when.child(
+                toggle_pill(
+                    ElementId::Name(format!("search-filter-when-{id}").into()),
+                    label,
+                    self.when == value,
+                    &theme,
+                    cx.listener(move |this, _, _, cx| {
+                        this.when = value;
+                        cx.notify();
+                    }),
+                )
+                .role(Role::RadioButton),
+            );
+        }
+        let mut date = field(t!("search-filters-date"), None, &theme).child(when);
+        match self.when {
+            When::Any => {}
+            When::On => {
+                date = date.child(
+                    Input::new(&self.on)
+                        .id("search-filter-on")
+                        .aria_label(t!("search-filters-sent-on")),
+                )
+            }
+            When::Between => {
+                date = date
+                    .child(
+                        Input::new(&self.after)
+                            .id("search-filter-after")
+                            .aria_label(t!("search-filters-sent-after")),
+                    )
+                    .child(
+                        Input::new(&self.before)
+                            .id("search-filter-before")
+                            .aria_label(t!("search-filters-sent-before")),
+                    )
+            }
+        }
+        let mut authors = div().flex().gap_1();
+        for (value, id, label) in [
+            (None, "any", t!("search-filters-anyone")),
+            (Some(Author::User), "user", t!("search-people")),
+            (Some(Author::Bot), "bot", t!("search-bots")),
+        ] {
+            authors = authors.child(
+                toggle_pill(
+                    ElementId::Name(format!("search-filter-author-{id}").into()),
+                    label,
+                    self.draft.author == value,
+                    &theme,
+                    cx.listener(move |this, _, _, cx| {
+                        this.draft.author = value;
+                        cx.notify();
+                    }),
+                )
+                .role(Role::RadioButton),
+            );
+        }
+        body = body
+            .child(date)
+            .child(field(t!("search-filters-author-type"), None, &theme).child(authors));
+        if let Some(error) = &self.error {
+            body = body.child(
+                div()
+                    .id("search-filters-error")
+                    .test_support()
+                    .role(Role::Alert)
+                    .aria_label(SharedString::from(error.clone()))
+                    .text_sm()
+                    .text_color(theme.danger)
+                    .child(error.clone()),
+            );
+        }
+        body.child(
+            div()
+                .flex()
+                .justify_end()
+                .gap_2()
+                .child(text_button(
+                    "search-filters-clear",
+                    t!("search-filters-clear"),
+                    &theme,
+                    cx.listener(|this, _, window, cx| this.clear(window, cx)),
+                ))
+                .child(text_button(
+                    "search-filters-cancel",
+                    t!("core-cancel"),
+                    &theme,
+                    |_, window, cx| ui::dialog::close(window, cx),
+                ))
+                .child(
+                    text_button(
+                        "search-filters-apply",
+                        t!("search-filters-apply"),
+                        &theme,
+                        cx.listener(|this, _, window, cx| this.apply(window, cx)),
+                    )
+                    .bg(theme.accent)
+                    .text_color(theme.on_accent),
+                ),
+        )
+    }
+}
+
+// ---- Searching inside a conversation ----
+
+/// Focus the panel's field on its next draw.
+struct FocusPanel(bool);
+impl Global for FocusPanel {}
+
+#[derive(Clone)]
+struct PanelGlobal(Entity<ConversationSearch>);
+impl Global for PanelGlobal {}
+
+fn panel_view(ctx: &PanelCtx, window: &mut Window, cx: &mut App) -> AnyElement {
+    let Some(conversation) = ctx.conversation.clone() else {
+        let theme = theme::get(cx).clone();
+        return ui::empty::empty(
+            "conversation-search-none",
+            t!("search-conversation-none"),
+            None,
+            &theme,
+        )
+        .into_any_element();
+    };
+    let view = match cx.try_global::<PanelGlobal>() {
+        Some(PanelGlobal(view))
+            if view.read(cx).session == ctx.session
+                && view.read(cx).conversation == conversation =>
+        {
+            view.clone()
+        }
+        _ => {
+            let session = ctx.session.clone();
+            let view = cx.new(|cx| ConversationSearch::new(session, conversation, window, cx));
+            cx.set_global(PanelGlobal(view.clone()));
+            view
+        }
+    };
+    if cx.try_global::<FocusPanel>().is_some_and(|f| f.0) {
+        cx.set_global(FocusPanel(false));
+        let input = view.read(cx).input.clone();
+        input.focus_handle(cx).focus(window, cx);
+    }
+    view.into_any_element()
+}
+
+pub struct ConversationSearch {
+    session: Entity<Session>,
+    conversation: String,
+    model: Entity<SearchModel>,
+    input: Entity<InputState>,
+    selected: usize,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl ConversationSearch {
+    fn new(
+        session: Entity<Session>,
+        conversation: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let model = cx.new(|_| SearchModel::new(session.clone(), Some(conversation.clone())));
+        let place = place_name(&session, &conversation, cx);
+        let input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("search-conversation-search", place = place))
+        });
+        let field = cx.subscribe_in(
+            &input,
+            window,
+            |this: &mut Self, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    field_changed(input, &this.model, true, window, cx);
+                    this.selected = 0;
+                    cx.notify();
+                }
+                InputEvent::PressEnter { .. } => this.enter(window, cx),
+                _ => {}
+            },
+        );
+        let changed = cx.observe(&model, |this: &mut Self, model, cx| {
+            let n = model.read(cx).results.len();
+            this.selected = this.selected.min(n.saturating_sub(1));
+            cx.notify();
+        });
+        Self {
+            session,
+            conversation,
+            model,
+            input,
+            selected: 0,
+            _subscriptions: vec![field, changed],
+        }
+    }
+
+    fn enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let raw = self.input.read(cx).value().to_string();
+        if sf::active_token(&raw).is_some_and(|t| t.key != Key::In)
+            && let Some(chip) = first_offer(&self.input, &self.model, cx)
+        {
+            return apply_offer(&self.input, &self.model, chip, window, cx);
+        }
+        let result = self.model.read(cx).results.get(self.selected).cloned();
+        if let Some(result) = result {
+            open_result(&self.session, &result, window, cx);
+        }
+    }
+
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let session = self.session.clone();
+        toggle_panel(&session, false, window, cx);
+    }
+
+    fn everywhere(&mut self, cx: &mut Context<Self>) {
+        let query = self.model.read(cx).text.clone();
+        open(&self.session, Some(&query), cx);
+    }
+}
+
+fn place_name(session: &Entity<Session>, conversation: &str, cx: &App) -> String {
+    session
+        .read(cx)
+        .client()
+        .and_then(|c| c.read().conversation(conversation).map(conversation_label))
+        .unwrap_or_default()
+}
+
+impl Render for ConversationSearch {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _ = window;
+        let theme = theme::get(cx).clone();
+        let place = place_name(&self.session, &self.conversation, cx);
+        let m = self.model.read(cx);
+        let count = m.results.len();
+        let filters = m.filters.count();
+        let searches = m.searches();
+        let text = m.text.clone();
+        let filters_label = if filters > 0 {
+            t!("search-filters-on", count = filters)
+        } else {
+            t!("search-filters").to_string()
+        };
+        let header = div()
+            .px_3()
+            .pt_3()
+            .pb_2()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(
+                div().flex_1().min_w_0().child(
+                    Input::new(&self.input)
+                        .id("conversation-search-input")
+                        .aria_label(SharedString::from(t!(
+                            "search-conversation-field",
+                            place = place.clone()
+                        ))),
+                ),
+            )
+            .child(ui::icon::button(
+                "conversation-search-filters",
+                IconName::Settings2,
+                filters_label,
+                &theme,
+                {
+                    let model = self.model.clone();
+                    move |_, window, cx| open_filters(&model, true, window, cx)
+                },
+            ))
+            .child(ui::icon::button(
+                "conversation-search-close",
+                IconName::Close,
+                t!("search-conversation-close"),
+                &theme,
+                cx.listener(|this, _, window, cx| this.close(window, cx)),
+            ));
+        let mut list = div()
+            .id("conversation-search-results")
+            .test_support()
+            .role(Role::ListBox)
+            .aria_label(SharedString::from(t!(
+                "search-conversation-search",
+                place = place.clone()
+            )))
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col();
+        if searches {
+            list = list.child(messages_part(
+                "conversation-search",
+                &self.model,
+                &self.session,
+                Some(self.selected),
+                0,
+                false,
+                empty_text(&text, &Filters::default(), Some(&place)),
+                &theme,
+                cx,
+            ));
+        } else {
+            list = list.child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .text_sm()
+                    .text_color(theme.muted)
+                    .child(t!("search-conversation-hint")),
+            );
+        }
+        if !text.trim().is_empty() {
+            list = list.child(div().px_3().py_2().child(text_button(
+                "conversation-search-everywhere",
+                t!("search-conversation-everywhere", query = text.clone()),
+                &theme,
+                cx.listener(|this, _, _, cx| this.everywhere(cx)),
+            )));
+        }
+        div()
+            .id("conversation-search")
+            .test_support()
+            .role(Role::Complementary)
+            .aria_label(SharedString::from(t!(
+                "search-conversation-search",
+                place = place
+            )))
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(theme.sidebar)
+            .capture_action(cx.listener(move |this, _: &MoveDown, _, cx| {
+                if count > 0 {
+                    this.selected = (this.selected + 1) % count;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .capture_action(cx.listener(move |this, _: &MoveUp, _, cx| {
+                if count > 0 {
+                    this.selected = (this.selected + count - 1) % count;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &Backspace, _, cx| {
+                if remove_last_chip(&this.input, &this.model, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &Escape, window, cx| {
+                this.close(window, cx);
+                cx.stop_propagation();
+            }))
+            .child(header)
+            .children(chips_row("conversation-search", &self.model, &theme, cx).map(|r| r.px_3()))
+            .children(offers_row(
+                "conversation-search",
+                &self.input,
+                &self.model,
+                true,
+                &theme,
+                cx,
+            ))
+            .child(source_switch(
+                "conversation-search-server-history",
+                &self.model,
+                false,
+                &theme,
+                cx,
+            ))
+            .child(list)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::NaiveDate;
+    use ircord_client::search_filter::{Author, Chip, Has, Key};
+    use ircord_client::store::Workspace;
+    use ircord_client::testing::SnapshotBuilder;
+
+    use super::{conversations, offers, resolve};
+
+    fn workspace() -> Workspace {
+        SnapshotBuilder::new()
+            .network("n1", "Home")
+            .channel("c-general", "general")
+            .channel("c-random", "random")
+            .member("m-bob", "bob")
+            .member("m-eve", "eve")
+            .workspace()
+    }
+
+    fn day() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 11, 21).unwrap()
+    }
+
+    #[test]
+    fn finished_tokens_resolve_to_what_they_name() {
+        let w = workspace();
+        assert_eq!(
+            resolve(&w, Key::From, "@Bob", day()),
+            Some(Chip::From("m-bob".into()))
+        );
+        assert_eq!(
+            resolve(&w, Key::Mentions, "eve", day()),
+            Some(Chip::Mentions("m-eve".into()))
+        );
+        assert_eq!(resolve(&w, Key::From, "nobody", day()), None);
+        assert_eq!(
+            resolve(&w, Key::In, "#general", day()),
+            Some(Chip::In("c-general".into()))
+        );
+        assert_eq!(
+            resolve(&w, Key::Has, "GIF", day()),
+            Some(Chip::Has(Has::Gif))
+        );
+        assert_eq!(
+            resolve(&w, Key::On, "yesterday", day()),
+            Some(Chip::On("2026-11-20".into()))
+        );
+        assert_eq!(
+            resolve(&w, Key::Before, "2026-10-01", day()),
+            Some(Chip::Before("2026-10-01".into()))
+        );
+        assert_eq!(resolve(&w, Key::After, "soon", day()), None);
+        assert_eq!(
+            resolve(&w, Key::Author, "bot", day()),
+            Some(Chip::Author(Author::Bot))
+        );
+    }
+
+    #[test]
+    fn offers_match_what_is_typed() {
+        let w = workspace();
+        let people = offers(&w, Key::From, "b", day());
+        assert_eq!(people.len(), 1);
+        assert_eq!(people[0].chip, Chip::From("m-bob".into()));
+        assert_eq!(offers(&w, Key::Mentions, "", day()).len(), 2);
+        let places = offers(&w, Key::In, "#rand", day());
+        assert_eq!(places[0].chip, Chip::In("c-random".into()));
+        assert_eq!(
+            offers(&w, Key::Has, "im", day())[0].chip,
+            Chip::Has(Has::Image)
+        );
+        let days = offers(&w, Key::After, "", day());
+        assert_eq!(days.len(), 4);
+        assert_eq!(days[2].chip, Chip::After("2026-11-14".into()));
+        let typed = offers(&w, Key::On, "2026-01-05", day());
+        assert_eq!(typed[0].chip, Chip::On("2026-01-05".into()));
+    }
+
+    #[test]
+    fn conversations_rank_exact_then_prefix_then_substring() {
+        let w = SnapshotBuilder::new()
+            .network("n1", "Home")
+            .channel("c1", "rust-help")
+            .channel("c2", "rust")
+            .channel("c3", "trusty")
+            .channel("c4", "other")
+            .workspace();
+        assert_eq!(conversations(&w, "rust"), ["c2", "c1", "c3"]);
+        assert_eq!(conversations(&w, "").len(), 4);
+    }
 }
