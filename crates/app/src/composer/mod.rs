@@ -1,6 +1,11 @@
 //! The message box under the timeline, with its registered slots: bars
 //! above the box, buttons beside it, suggestions while typing, and send
 //! filters that see the text before it is sent.
+//!
+//! The box owns its keys: Up and Down move through the suggestions, Tab or
+//! Enter takes one and Escape hides them; Tab with no suggestions completes
+//! a nick; the formatting keys wrap the selection in Markdown markers; and
+//! typing while nothing else takes text brings the focus here.
 
 pub mod drafts;
 pub mod expressions;
@@ -12,17 +17,62 @@ use gpui_kit::TestSupportExt;
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use ircord_client::commands::complete::{self, TabCycle};
 use ircord_client::contract::ConversationKind;
 
 use crate::registry::{self, ComposerCtx, SendOutcome, Suggestion};
+use crate::route::Route;
 use crate::session::{Session, SessionEvent};
 use crate::theme;
+
+gpui_kit::actions!(
+    composer,
+    [
+        /// Wrap the selection in `**`, sent as IRC bold.
+        FormatBold,
+        /// Wrap the selection in `*`, sent as IRC italic.
+        FormatItalic,
+        /// Wrap the selection in `__`, sent as IRC underline.
+        FormatUnderline,
+    ]
+);
+
+/// The key context the composer's keys apply in.
+pub const KEY_CONTEXT: &str = "Composer";
+
+/// Each composer's text and caret as of its last draw or key, for slots and
+/// suggestion providers, which run while the composer is being updated and
+/// so cannot read it.
+#[derive(Default)]
+struct Typed(std::collections::HashMap<EntityId, (String, usize)>);
+
+impl Global for Typed {}
+
+/// The text in `composer` and the caret in it (a byte offset).
+pub fn typed(composer: &Entity<ComposerView>, cx: &App) -> (String, usize) {
+    cx.try_global::<Typed>()
+        .and_then(|t| t.0.get(&composer.entity_id()).cloned())
+        .unwrap_or_default()
+}
 
 pub struct ComposerView {
     session: Entity<Session>,
     pub input: Entity<TextareaState>,
+    /// The highlighted suggestion.
+    selected: usize,
+    /// The highlight was moved by hand, so Enter takes it instead of sending.
+    picked: bool,
+    /// The text and caret when Escape hid the suggestions; they stay hidden
+    /// until either changes.
+    dismissed: Option<(String, usize)>,
+    tab: Option<TabCycle>,
+    /// Keeps the highlighted suggestion in view.
+    scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
+
+/// The tallest the suggestion list grows before it scrolls.
+const SUGGESTIONS_HEIGHT: f32 = 280.;
 
 impl ComposerView {
     pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -33,6 +83,7 @@ impl ComposerView {
             state.set_submit_on_enter(true, cx);
             state
         });
+        let this = cx.entity().downgrade();
         let subscriptions = vec![
             cx.subscribe_in(
                 &input,
@@ -43,6 +94,10 @@ impl ComposerView {
                         this.submit(text, window, cx);
                     }
                     InputEvent::Change => {
+                        this.selected = 0;
+                        this.picked = false;
+                        this.tab = None;
+                        this.scroll.scroll_to_item(0);
                         let has_text = !state.read(cx).value().is_empty();
                         let session = this.session.read(cx);
                         if let (Some(client), Some(id)) = (session.client(), &session.conversation)
@@ -59,10 +114,20 @@ impl ComposerView {
                 SessionEvent::Changed(changes) if changes.sidebar => cx.notify(),
                 _ => {}
             }),
+            cx.intercept_keystrokes(move |event, window, cx| {
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, |this, cx| this.on_key(event, window, cx));
+                }
+            }),
         ];
         Self {
             session,
             input,
+            selected: 0,
+            picked: false,
+            dismissed: None,
+            tab: None,
+            scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -133,12 +198,32 @@ impl ComposerView {
         self.input.read(cx).value().to_string()
     }
 
+    /// The caret, as a byte offset into [`Self::text`].
+    pub fn caret(&self, cx: &App) -> usize {
+        self.input.read(cx).cursor()
+    }
+
     pub fn set_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.input
             .update(cx, |s, cx| s.set_value(text.to_string(), window, cx));
     }
 
-    /// Put a suggestion in place of the text it replaces.
+    /// Replace the text and put the caret at `caret` (a byte offset).
+    pub fn set_text_at(
+        &mut self,
+        text: &str,
+        caret: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_text(text, window, cx);
+        let caret = caret.min(text.len());
+        self.input
+            .update(cx, |s, cx| s.set_selected_range(caret..caret, cx));
+        cx.notify();
+    }
+
+    /// Put a suggestion in place of the text it replaces, the caret after it.
     pub fn apply(&mut self, suggestion: &Suggestion, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.text(cx);
         let range =
@@ -152,12 +237,42 @@ impl ComposerView {
             suggestion.insert,
             &text[range.end..]
         );
-        self.set_text(&next, window, cx);
+        let caret = range.start + suggestion.insert.len();
+        self.set_text_at(&next, caret, window, cx);
+        self.input.update(cx, |s, cx| s.focus(window, cx));
+        self.selected = 0;
+        self.picked = false;
     }
 
-    fn suggestions(&self, ctx: &ComposerCtx, cx: &App) -> Vec<Suggestion> {
+    /// Wrap the selection (or nothing, at the caret) in `marker`, keeping it selected.
+    pub fn wrap(&mut self, marker: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.text(cx);
+        let range = self.input.read(cx).selected_range();
+        let (start, end) = (range.start.min(text.len()), range.end.min(text.len()));
+        if !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+            return;
+        }
+        let next = format!(
+            "{}{marker}{}{marker}{}",
+            &text[..start],
+            &text[start..end],
+            &text[end..]
+        );
+        self.set_text(&next, window, cx);
+        let (from, to) = (start + marker.len(), end + marker.len());
+        self.input
+            .update(cx, |s, cx| s.set_selected_range(from..to, cx));
+        cx.notify();
+    }
+
+    /// What the registered providers suggest for the text now; the first
+    /// provider with suggestions wins.
+    pub fn suggestions(&self, ctx: &ComposerCtx, cx: &App) -> Vec<Suggestion> {
         let text = self.text(cx);
         if text.is_empty() {
+            return Vec::new();
+        }
+        if self.dismissed.as_ref() == Some(&(text.clone(), self.caret(cx))) {
             return Vec::new();
         }
         for provider in registry::get(cx).composer.suggestions.iter() {
@@ -167,6 +282,164 @@ impl ComposerView {
             }
         }
         Vec::new()
+    }
+
+    /// Keep [`typed`] current before slots and providers run.
+    fn remember(&self, cx: &mut Context<Self>) {
+        let now = (self.text(cx), self.caret(cx));
+        let id = cx.entity_id();
+        cx.default_global::<Typed>().0.insert(id, now);
+    }
+
+    fn focused(&self, window: &Window, cx: &App) -> bool {
+        self.input.read(cx).focus_handle(cx).is_focused(window)
+    }
+
+    /// The composer's keys, before anything else sees them.
+    fn on_key(&mut self, event: &KeystrokeEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = &event.keystroke;
+        let m = key.modifiers;
+        if !self.focused(window, cx) {
+            self.type_to_compose(event, window, cx);
+            return;
+        }
+        let Some(ctx) = self.ctx(cx) else {
+            return;
+        };
+        self.remember(cx);
+        let suggestions = self.suggestions(&ctx, cx);
+        let plain = !m.modified();
+        if !suggestions.is_empty() {
+            let count = suggestions.len();
+            let selected = self.selected.min(count - 1);
+            match key.key.as_str() {
+                "up" | "down" if plain => {
+                    let step = if key.key == "down" { 1 } else { count - 1 };
+                    self.selected = (selected + step) % count;
+                    self.picked = true;
+                    self.scroll.scroll_to_item(self.selected);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "tab" if plain => {
+                    self.apply(&suggestions[selected], window, cx);
+                    cx.stop_propagation();
+                }
+                "enter" if plain => {
+                    // A suggestion typed out in full: Enter sends it, unless picked.
+                    let s = &suggestions[selected];
+                    let text = self.text(cx);
+                    let typed = text.get(s.replace.clone()).unwrap_or_default();
+                    if self.picked || typed != s.insert.trim_end() {
+                        self.apply(s, window, cx);
+                        cx.stop_propagation();
+                    }
+                }
+                "escape" if plain => {
+                    self.dismissed = Some((self.text(cx), self.caret(cx)));
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                _ => {}
+            }
+            return;
+        }
+        if key.key == "tab" && plain && self.tab_complete(&ctx, window, cx) {
+            cx.stop_propagation();
+        }
+    }
+
+    /// Tab completes the nick before the caret, adding the `@`; Tab again
+    /// cycles through the other matches.
+    fn tab_complete(
+        &mut self,
+        ctx: &ComposerCtx,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let (text, caret) = (self.text(cx), self.caret(cx));
+        let session = ctx.session.read(cx);
+        let Some(client) = session.client() else {
+            return false;
+        };
+        let w = client.read();
+        let Some(conversation) = w.conversation(&ctx.conversation) else {
+            return false;
+        };
+        let unignore = text.to_lowercase().starts_with("/unignore ");
+        let ignored = w
+            .documents
+            .notification_settings
+            .value()
+            .and_then(|s| s.ignore.clone())
+            .unwrap_or_default();
+        let found = complete::tab(&text, caret, self.tab.take(), |word| {
+            let word = word.to_lowercase();
+            if unignore {
+                ignored
+                    .iter()
+                    .filter(|m| m.to_lowercase().starts_with(&word))
+                    .cloned()
+                    .collect()
+            } else {
+                complete::members(&w, conversation, &word)
+                    .into_iter()
+                    .map(|m| m.nick.clone())
+                    .collect()
+            }
+        });
+        drop(w);
+        let Some((next, caret, cycle)) = found else {
+            return false;
+        };
+        self.set_text_at(&next, caret, window, cx);
+        self.tab = Some(cycle);
+        true
+    }
+
+    /// A printable key typed while nothing that takes text has the focus
+    /// goes into the box.
+    fn type_to_compose(
+        &mut self,
+        event: &KeystrokeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = &event.keystroke;
+        let m = key.modifiers;
+        if m.control || m.alt || m.platform || m.function {
+            return;
+        }
+        let Some(ch) = key.key_char.as_deref() else {
+            return;
+        };
+        if ch.is_empty() || ch.chars().any(|c| c.is_control() || c.is_whitespace()) {
+            return;
+        }
+        if event.context_stack.iter().any(|c| c.contains("Input")) {
+            return;
+        }
+        let shown = {
+            let session = self.session.read(cx);
+            let joined = match (session.client(), &session.conversation) {
+                (Some(client), Some(id)) => {
+                    client.read().conversation(id).is_some_and(|c| c.joined)
+                }
+                _ => false,
+            };
+            joined && matches!(session.route(), Some(Route::Conversation(_)))
+        };
+        if !shown {
+            return;
+        }
+        let ch = ch.to_string();
+        self.input.update(cx, |s, cx| {
+            s.focus(window, cx);
+            let end = s.value().len();
+            s.set_selected_range(end..end, cx);
+            s.insert(ch, window, cx);
+        });
+        cx.stop_propagation();
     }
 }
 
@@ -185,7 +458,17 @@ impl Render for ComposerView {
             }),
             _ => None,
         };
-        let root = div().id("composer").test_support().px_4().pb_4();
+        let root = div()
+            .id("composer")
+            .test_support()
+            .key_context(KEY_CONTEXT)
+            .on_action(cx.listener(|this, _: &FormatBold, window, cx| this.wrap("**", window, cx)))
+            .on_action(cx.listener(|this, _: &FormatItalic, window, cx| this.wrap("*", window, cx)))
+            .on_action(
+                cx.listener(|this, _: &FormatUnderline, window, cx| this.wrap("__", window, cx)),
+            )
+            .px_4()
+            .pb_4();
         let Some((name, true)) = target else {
             return root
                 .text_sm()
@@ -195,6 +478,7 @@ impl Render for ComposerView {
         let Some(ctx) = self.ctx(cx) else {
             return root;
         };
+        self.remember(cx);
         let slots = registry::get(cx);
         let (above, buttons) = (
             slots.composer.above.to_vec(),
@@ -209,6 +493,7 @@ impl Render for ComposerView {
             .filter_map(|s| (s.render)(&ctx, window, cx))
             .collect();
         let suggestions = self.suggestions(&ctx, cx);
+        let selected = self.selected.min(suggestions.len().saturating_sub(1));
         let mut root = root.children(above);
         if !suggestions.is_empty() {
             let mut list = div()
@@ -220,9 +505,12 @@ impl Render for ComposerView {
                 .p_1()
                 .rounded_md()
                 .bg(theme.sidebar)
+                .max_h(px(SUGGESTIONS_HEIGHT))
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
                 .flex()
                 .flex_col();
-            for suggestion in suggestions {
+            for (i, suggestion) in suggestions.into_iter().enumerate() {
                 let hover = theme.hover;
                 let label = suggestion.label.clone();
                 let detail = suggestion.detail.clone();
@@ -234,12 +522,14 @@ impl Render for ComposerView {
                         .test_support()
                         .role(Role::ListBoxOption)
                         .aria_label(label.clone())
+                        .aria_selected(i == selected)
                         .px_2()
                         .py_1()
                         .rounded_md()
                         .flex()
                         .gap_2()
                         .cursor_pointer()
+                        .when(i == selected, |d| d.bg(hover))
                         .hover(move |d| d.bg(hover))
                         .child(div().text_color(theme.text).child(label))
                         .when_some(detail, |d, detail| {

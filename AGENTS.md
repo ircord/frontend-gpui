@@ -36,6 +36,10 @@ client; it never speaks IRC itself. Layout and commands are in
   tests fail on a missing or unused ID). Colours come from `theme::get(cx)`.
   UI tests share `tests/ui/fixture.rs`, which runs the app against the
   `CannedServer`; wait with `fixture::wait`, not one `run_until_parked`.
+  Composer slots and suggestion providers run while the composer is being
+  updated: read its text and caret with `composer::typed`, never
+  `ctx.composer.read`. A view a slash command opens (`/list`, `/server`,
+  `/gif`…) is wired with `features::commands::on_view`.
 - Your own messages carry your member ID as `senderId`, not `you`; use
   `Workspace::is_self`.
 - `vendor/gpui-pre-windows` is GPUI's Windows backend with
