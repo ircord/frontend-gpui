@@ -620,7 +620,11 @@ impl ModeListView {
                 this.examples = !this.examples;
                 cx.notify();
             }));
-        let mut out = div().flex().flex_col().gap_2().child(toggle);
+        let mut out = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().flex().child(toggle));
         if !self.examples {
             return out;
         }
@@ -761,16 +765,18 @@ impl Render for ModeListView {
             ))
             .child(self.render_builder(&theme, cx))
             .child(
-                Button::new("channel-settings-mask-advanced")
-                    .ghost()
-                    .label(t!("channel-settings-mask-advanced"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.advanced = !this.advanced;
-                        if this.advanced {
-                            this.mask.focus_handle(cx).focus(window, cx);
-                        }
-                        cx.notify();
-                    })),
+                div().flex().child(
+                    Button::new("channel-settings-mask-advanced")
+                        .ghost()
+                        .label(t!("channel-settings-mask-advanced"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.advanced = !this.advanced;
+                            if this.advanced {
+                                this.mask.focus_handle(cx).focus(window, cx);
+                            }
+                            cx.notify();
+                        })),
+                ),
             );
         if show_field {
             form = form
