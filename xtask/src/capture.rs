@@ -5,8 +5,10 @@
 //! In the build container it starts a session bus with GNOME Keyring, signs
 //! up an account (with an IRC network and a channel) over HTTP, signs in
 //! through the app's own form, captures the workspace, checks the sign-in is
-//! in the keyring, types a server emoji into the message box, then restarts
-//! the app to show it signs in from there.
+//! in the keyring, types a server emoji into the message box, plays a test
+//! video sent to the channel (printing the app's resident memory 2 s and
+//! 32 s after it starts), then restarts the app to show it signs in from
+//! there.
 //! Screenshots and the app's logs land in `target/capture/`; look at them.
 //!
 //! Xvfb runs without its COMPOSITE extension. With it, GPUI picks a 32-bit
@@ -110,6 +112,40 @@ xdotool type --delay 30 "hello :capture: there"
 sleep 2
 shot 5-emoji-in-box
 xdotool key ctrl+a BackSpace
+
+# A video in a message plays in place (through the ircord-video helper
+# beside the app): a 6 s test video (colour bars and a tone), uploaded and
+# sent to #capture over HTTP, then played by clicking its play button.
+gst-launch-1.0 -q videotestsrc num-buffers=180 ! video/x-raw,width=1280,height=720,framerate=30/1 \
+  ! vp8enc deadline=1 ! webmmux name=m ! filesink location=/tmp/capture.webm \
+  audiotestsrc num-buffers=260 ! audioconvert ! vorbisenc ! m.
+set -- $(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" "$SERVER/api/v1/bootstrap" | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+c = [c for c in s["conversations"] if c["name"].lstrip("#").lower() == "capture"][0]
+print(c["id"], c["networkId"])')
+CONVERSATION=$1 NETWORK=$2
+set -- $(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" \
+  -F "file=@/tmp/capture.webm;type=video/webm" "$SERVER/api/v1/uploads?networkId=$NETWORK" \
+  | python3 -c 'import json, sys; u = json.load(sys.stdin); print(u["id"], u["url"])')
+UPLOAD=$1 VIDEO_URL=$2
+curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+  -d "{\"clientId\":\"capture-video\",\"text\":\"$VIDEO_URL\",\"attachments\":[\"$UPLOAD\"]}" \
+  "$SERVER/api/v1/conversations/$CONVERSATION/messages"
+sleep 3
+shot 6-video-idle
+# The play button: the middle of the newest message's 400x225 box, in
+# the window (which starts 40 px right of the screen's left edge).
+xdotool mousemove --window "$WIN" ${VIDEO_X:-520} ${VIDEO_Y:-555} click 1
+sleep 2
+shot 7-video-playing
+rss() { ps -o rss= -p "$1" 2>/dev/null | tr -d ' '; }
+HELPER=$(ps -eo pid=,args= | awk '$2 ~ /ircord-video$/ {print $1}' | tail -1)
+ps -eo pid,rss,args | grep -v grep | grep -E "dist/ircord" | cut -c1-200 >"$OUT/video-ps.txt" || true
+echo "resident memory at 2 s: app $(rss "$APP") kB, helper $(rss "$HELPER") kB" | tee "$OUT/video-memory.txt"
+sleep 30
+echo "resident memory at 32 s: app $(rss "$APP") kB, helper $(rss "$HELPER") kB" | tee -a "$OUT/video-memory.txt"
+shot 8-video-ended
 
 # A fresh start signs in from the keyring alone.
 stop_app 1

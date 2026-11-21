@@ -56,6 +56,10 @@ entry and icon (`install.sh --uninstall` removes them). Settings live in
 `~/.config/com.ircord.gpui`. The sign-in is kept in the Secret Service (GNOME
 Keyring or KWallet); without one running, sign-in says so. The binary needs
 Vulkan, which every current desktop has (Mesa's drivers, or a GPU vendor's).
+Videos in messages play in the app when GStreamer and its base, good and libav
+plugins are installed (Debian and Ubuntu: `gstreamer1.0-plugins-base
+gstreamer1.0-plugins-good gstreamer1.0-libav`); `ircord-video`, installed
+beside `ircord`, plays them. Without them a video's card opens the browser.
 
 **macOS** (11 or later) is built on a Mac, since GPUI's macOS backend needs
 Apple's SDK and Metal compiler. With Xcode (not only the command line tools),
