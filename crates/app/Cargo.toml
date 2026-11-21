@@ -18,7 +18,7 @@ env_logger = "0.11"
 futures = "0.3"
 gpui-kit = "=0.10.0"
 # Frame types only, to hold an animated picture on its first frame.
-image = { version = "0.25", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 log = "0.4"
 tokio = { version = "1", features = ["rt"] }
 

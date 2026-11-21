@@ -40,6 +40,10 @@ enum Banner {
 }
 
 impl WorkspaceView {
+    pub fn session(&self) -> &Entity<Session> {
+        &self.session
+    }
+
     pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar = cx.new(|cx| SidebarView::new(session.clone(), cx));
         let timeline = cx.new(|cx| TimelineView::new(session.clone(), cx));

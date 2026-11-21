@@ -19,6 +19,7 @@ mod networks;
 mod notifications;
 mod parties;
 mod people;
+mod profile;
 mod search;
 mod server_window;
 mod settings;

@@ -250,7 +250,9 @@ impl Session {
         .detach();
     }
 
-    fn start(&mut self, server: ServerAddress, cookie: String, cx: &mut Context<Self>) {
+    /// Start the signed-in session with a session `cookie` already saved in
+    /// the credential store (after signing in or signing up).
+    pub fn start(&mut self, server: ServerAddress, cookie: String, cx: &mut Context<Self>) {
         let api = Api::new(server.clone());
         api.set_cookie(Some(cookie));
         let (client, mut updates) = Client::start(self.runtime.clone(), api);

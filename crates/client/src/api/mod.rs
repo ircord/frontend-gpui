@@ -20,7 +20,7 @@ use crate::address::ServerAddress;
 
 mod admin;
 mod app_data;
-mod auth;
+pub mod auth;
 pub mod channels;
 mod conversations;
 mod devices;
