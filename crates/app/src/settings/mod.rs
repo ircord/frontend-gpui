@@ -1,7 +1,18 @@
-//! The settings page: every registered section, listed on the left and
-//! drawn on the right. Each section lives in its own file and registers
-//! itself from its `init`, so a section can be built and tested before the
-//! settings shell (package S0) lands. This minimal shell is S0's to replace.
+//! The settings page: the registered sections listed under their group
+//! headings on the left, the open one on the right, a search over every
+//! section's rows, and whether the latest change is saved.
+//!
+//! A section lives in its own file and registers itself from its `init`
+//! (`registry::SettingsSection`), listing its controls as
+//! `registry::SettingsRow`s so search can find them. It draws each control
+//! with [`row`] (a label and a control) or [`block`] (a heading over a form
+//! or list) under the same row ID, so a search result can open the section
+//! and land on the row. Settings the server stores in a revisioned document
+//! show their saving state here by themselves; a setting kept on this device
+//! calls [`saved`] once it is written.
+//!
+//! The page opens from the gear in a conversation's header, with [`open`],
+//! or with N1's Ctrl+, (Cmd+, on a Mac).
 
 pub mod about;
 pub mod account;
@@ -15,15 +26,27 @@ pub mod privacy;
 pub mod profile;
 pub mod shortcuts;
 
+use std::cell::Cell;
+use std::rc::Rc;
+use std::time::Duration;
+
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use ircord_client::store::{SaveState, Workspace};
 
-use crate::registry::{self, Pane, SettingsCtx};
-use crate::route::PaneKind;
-use crate::session::Session;
-use crate::theme;
+use crate::registry::{
+    self, HeaderCtx, Pane, RowTarget, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection,
+    Slot,
+};
+use crate::route::{PaneKind, Route};
+use crate::session::{Session, SessionEvent};
+use crate::theme::{self, Theme};
 use crate::ui;
+
+/// How long "Saved" shows after a change on this device is written.
+const SAVED_FOR: Duration = Duration::from_secs(3);
 
 pub fn init(cx: &mut App) {
     about::init(cx);
@@ -38,41 +61,260 @@ pub fn init(cx: &mut App) {
     profile::init(cx);
     shortcuts::init(cx);
     registry::register(cx, |r| {
-        r.panes.add(Pane::new(PaneKind::Settings, |ctx, _, cx| {
-            view(&ctx.session, cx).into_any_element()
-        }));
+        r.panes
+            .add(Pane::new(PaneKind::Settings, |ctx, window, cx| {
+                view(&ctx.session, window, cx).into_any_element()
+            }));
+        r.header_buttons.add(
+            Slot::new("settings", |ctx: &HeaderCtx, _, cx| {
+                let session = ctx.session.clone();
+                Some(
+                    ui::icon::button(
+                        "open-settings",
+                        ui::icon::IconName::Settings,
+                        t!("settings-open"),
+                        theme::get(cx),
+                        move |_, _, cx| open(&session, None, cx),
+                    )
+                    .into_any_element(),
+                )
+            })
+            .order(100),
+        );
     });
 }
 
+/// Open the settings page, on `row` (a [`SettingsRow`] ID) when given.
+pub fn open(session: &Entity<Session>, row: Option<&str>, cx: &mut App) {
+    if let Some(row) = row
+        && let Some(section) = section_of(row, cx)
+    {
+        let pending = Some((section, SharedString::from(row.to_string())));
+        cx.set_global(Pending(pending));
+    }
+    session.update(cx, |s, cx| s.navigate(Route::Settings, cx));
+}
+
+/// A row to land on once the view exists.
+struct Pending(Option<(SharedString, SharedString)>);
+impl Global for Pending {}
+
+fn section_of(row: &str, cx: &App) -> Option<SharedString> {
+    registry::get(cx)
+        .settings_sections
+        .iter()
+        .find(|s| s.id == row || s.rows.iter().any(|r| r.id == row))
+        .map(|s| s.id.clone())
+}
+
+/// Say that a change kept on this device was written: the header shows
+/// "Saved" for a moment.
+pub fn saved(cx: &mut App) {
+    if let Some(Settings(view)) = cx.try_global::<Settings>().cloned() {
+        view.update(cx, |v, cx| v.flash_saved(cx));
+    }
+}
+
 /// The one settings view, kept across visits so the open section stays.
+#[derive(Clone)]
 struct Settings(Entity<SettingsView>);
 impl Global for Settings {}
 
-fn view(session: &Entity<Session>, cx: &mut App) -> Entity<SettingsView> {
-    if let Some(Settings(view)) = cx.try_global::<Settings>()
-        && view.read(cx).session == *session
-    {
-        return view.clone();
+fn view(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> Entity<SettingsView> {
+    let view = match cx.try_global::<Settings>() {
+        Some(Settings(view)) if view.read(cx).session == *session => view.clone(),
+        _ => {
+            let view = cx.new(|cx| SettingsView::new(session.clone(), window, cx));
+            cx.set_global(Settings(view.clone()));
+            view
+        }
+    };
+    if let Some(Pending(Some((section, row)))) = cx.try_global::<Pending>() {
+        let (section, row) = (section.clone(), row.clone());
+        cx.set_global(Pending(None));
+        view.update(cx, |v, cx| v.land(section, Some(row), window, cx));
     }
-    let view = cx.new(|_| SettingsView {
-        session: session.clone(),
-        open: None,
-    });
-    cx.set_global(Settings(view.clone()));
     view
+}
+
+/// What one search finds: a row, or a section without rows that matches.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Found {
+    pub section: SharedString,
+    pub section_title: SharedString,
+    pub row: Option<SettingsRow>,
+}
+
+/// Search every section: rows whose words match, in section order; a
+/// section whose title or keywords match lists all its rows (or itself).
+pub fn search(sections: &[SettingsSection], query: &str) -> Vec<Found> {
+    if query.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    for section in ordered(sections) {
+        let whole = section.matches(query);
+        let rows: Vec<_> = section
+            .rows
+            .iter()
+            .filter(|r| whole || r.matches(query))
+            .collect();
+        if rows.is_empty() && whole {
+            found.push(Found {
+                section: section.id.clone(),
+                section_title: section.title.clone(),
+                row: None,
+            });
+        }
+        found.extend(rows.into_iter().map(|r| Found {
+            section: section.id.clone(),
+            section_title: section.title.clone(),
+            row: Some(r.clone()),
+        }));
+    }
+    found
+}
+
+/// Sections in nav order: by group, then by their order.
+fn ordered(sections: &[SettingsSection]) -> Vec<&SettingsSection> {
+    let mut list: Vec<_> = sections.iter().collect();
+    list.sort_by_key(|s| s.group);
+    list
+}
+
+fn group_title(group: SettingsGroup) -> &'static str {
+    match group {
+        SettingsGroup::User => t!("settings-group-user"),
+        SettingsGroup::App => t!("settings-group-app"),
+        SettingsGroup::Server => t!("settings-group-server"),
+    }
 }
 
 pub struct SettingsView {
     session: Entity<Session>,
     /// The open section's ID; the first section when `None`.
     open: Option<SharedString>,
+    /// The row the last search result landed on.
+    target: Option<SharedString>,
+    /// Scroll to the target once it is laid out.
+    scroll_pending: Rc<Cell<bool>>,
+    query: Entity<InputState>,
+    scroll: ScrollHandle,
+    /// A change on this device was just written.
+    flash: Option<Task<()>>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl SettingsView {
+    fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let query =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("settings-search-placeholder")));
+        let scroll = ScrollHandle::new();
+        let subscriptions = vec![
+            cx.subscribe_in(
+                &query,
+                window,
+                |this: &mut Self, _, event, window, cx| match event {
+                    InputEvent::Change => cx.notify(),
+                    InputEvent::PressEnter { .. } => this.pick_first(window, cx),
+                    _ => {}
+                },
+            ),
+            cx.subscribe(&session, |_, _, event: &SessionEvent, cx| {
+                if let SessionEvent::Changed(changes) = event
+                    && changes
+                        .topics
+                        .contains_key(ircord_client::store::topic::DOCUMENTS)
+                {
+                    cx.notify();
+                }
+            }),
+        ];
+        Self {
+            session,
+            open: None,
+            target: None,
+            scroll_pending: Rc::default(),
+            query,
+            scroll,
+            flash: None,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    /// Open a section; the search closes and the page scrolls to the top.
     pub fn open(&mut self, id: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.open = Some(id.into());
+        self.target = None;
+        self.scroll.set_offset(Point::default());
         cx.notify();
     }
+
+    /// Open `section` on `row`, clearing the search.
+    fn land(
+        &mut self,
+        section: SharedString,
+        row: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open(section, cx);
+        self.scroll_pending.set(row.is_some());
+        self.target = row;
+        self.query.update(cx, |q, cx| q.set_value("", window, cx));
+    }
+
+    fn pick_first(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.query.read(cx).value().to_string();
+        let sections = registry::get(cx).settings_sections.to_vec();
+        if let Some(found) = search(&sections, &query).into_iter().next() {
+            self.land(found.section, found.row.map(|r| r.id), window, cx);
+        }
+    }
+
+    fn flash_saved(&mut self, cx: &mut Context<Self>) {
+        self.flash = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVED_FOR).await;
+            let _ = this.update(cx, |this, cx| {
+                this.flash = None;
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// What the header says about saving: the server's documents first, then
+    /// a change on this device.
+    fn save_state(&self, cx: &App) -> Option<SaveState> {
+        let from_documents = self
+            .session
+            .read(cx)
+            .client()
+            .and_then(|client| documents_state(&client.read()));
+        from_documents.or_else(|| self.flash.as_ref().map(|_| SaveState::Saved))
+    }
+}
+
+/// The saving state across the server's documents: any saving, else any
+/// failure, else any saved.
+pub fn documents_state(w: &Workspace) -> Option<SaveState> {
+    let d = &w.documents;
+    let states = [
+        d.preferences.save_state(),
+        d.appearance.save_state(),
+        d.themes.save_state(),
+        d.library.save_state(),
+        d.notification_settings.save_state(),
+    ];
+    if states.contains(&&SaveState::Saving) {
+        return Some(SaveState::Saving);
+    }
+    if let Some(failed) = states.iter().find(|s| matches!(s, SaveState::Failed(_))) {
+        return Some((*failed).clone());
+    }
+    states
+        .contains(&&SaveState::Saved)
+        .then_some(SaveState::Saved)
 }
 
 impl Render for SettingsView {
@@ -83,21 +325,46 @@ impl Render for SettingsView {
             .open
             .clone()
             .filter(|id| sections.iter().any(|s| &s.id == id))
-            .or_else(|| sections.first().map(|s| s.id.clone()));
+            .or_else(|| ordered(&sections).first().map(|s| s.id.clone()));
+        let query = self.query.read(cx).value().to_string();
+
         let mut nav = div()
             .id("settings-sections")
             .test_support()
             .role(Role::TabList)
             .aria_label(t!("settings-title"))
-            .w(px(200.))
+            .w(px(220.))
             .flex_none()
+            .h_full()
+            .overflow_y_scroll()
             .p_2()
             .flex()
             .flex_col()
             .gap_0p5()
-            .bg(theme.sidebar);
-        for section in &sections {
-            let active = open.as_ref() == Some(&section.id);
+            .bg(theme.sidebar)
+            .child(
+                div().pb_2().child(
+                    Input::new(&self.query)
+                        .id("settings-search")
+                        .aria_label(t!("settings-search")),
+                ),
+            );
+        let mut last_group = None;
+        for section in ordered(&sections) {
+            if last_group != Some(section.group) {
+                last_group = Some(section.group);
+                nav = nav.child(
+                    div()
+                        .pt_2()
+                        .pb_1()
+                        .px_2()
+                        .text_xs()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.faint)
+                        .child(group_title(section.group).to_uppercase()),
+                );
+            }
+            let active = query.trim().is_empty() && open.as_ref() == Some(&section.id);
             let id = section.id.clone();
             let hover = theme.hover;
             nav = nav.child(
@@ -108,6 +375,7 @@ impl Render for SettingsView {
                     .test_support()
                     .role(Role::Tab)
                     .aria_label(section.title.clone())
+                    .aria_selected(active)
                     .px_2()
                     .py_1()
                     .rounded_md()
@@ -116,32 +384,337 @@ impl Render for SettingsView {
                     .when(active, |d| d.bg(theme.selected))
                     .when(!active, |d| d.hover(move |d| d.bg(hover)))
                     .child(section.title.clone())
-                    .on_click(cx.listener(move |this, _, _, cx| this.open(id.clone(), cx))),
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let id = id.clone();
+                        this.land(id, None, window, cx);
+                    })),
             );
         }
-        let ctx = SettingsCtx {
-            session: self.session.clone(),
-            target: None,
+
+        let content = if !query.trim().is_empty() {
+            self.results(&sections, &query, &theme, cx)
+                .into_any_element()
+        } else {
+            match sections.iter().find(|s| Some(&s.id) == open.as_ref()) {
+                Some(section) => {
+                    let ctx = SettingsCtx {
+                        session: self.session.clone(),
+                        target: self.target.clone().map(|id| RowTarget {
+                            id,
+                            reached: scroll_to(self.scroll.clone(), self.scroll_pending.clone()),
+                        }),
+                    };
+                    div()
+                        .id("settings-content")
+                        .test_support()
+                        .role(Role::TabPanel)
+                        .aria_label(section.title.clone())
+                        .size_full()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .child(
+                            div()
+                                .max_w(px(760.))
+                                .p_6()
+                                .flex()
+                                .flex_col()
+                                .gap_4()
+                                .child(
+                                    div()
+                                        .text_xl()
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme.text)
+                                        .child(section.title.clone()),
+                                )
+                                .child((section.render)(&ctx, window, cx)),
+                        )
+                        .into_any_element()
+                }
+                None => ui::empty::empty("settings-empty", t!("settings-empty"), None, &theme)
+                    .into_any_element(),
+            }
         };
-        let content = match sections.iter().find(|s| Some(&s.id) == open.as_ref()) {
-            Some(section) => div()
-                .id("settings-content")
-                .test_support()
-                .role(Role::TabPanel)
-                .aria_label(section.title.clone())
-                .flex_1()
-                .min_w_0()
-                .p_4()
-                .child((section.render)(&ctx, window, cx))
-                .into_any_element(),
-            None => ui::empty::empty("settings-empty", t!("settings-empty"), None, &theme)
-                .into_any_element(),
-        };
-        ui::page::Page::new(
+        let mut page = ui::page::Page::new(
             "settings",
             t!("settings-title"),
-            div().size_full().flex().child(nav).child(content),
+            div()
+                .size_full()
+                .flex()
+                .child(nav)
+                .child(div().flex_1().min_w_0().h_full().child(content)),
+        );
+        if let Some(state) = self.save_state(cx) {
+            page = page.action(save_indicator(&state, &theme));
+        }
+        page.render(&theme)
+    }
+}
+
+impl SettingsView {
+    fn results(
+        &self,
+        sections: &[SettingsSection],
+        query: &str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let found = search(sections, query);
+        if found.is_empty() {
+            return ui::empty::empty(
+                "settings-no-matches",
+                t!("settings-no-matches", query = query.trim()),
+                Some(t!("settings-no-matches-hint").into()),
+                theme,
+            )
+            .into_any_element();
+        }
+        let mut list = div()
+            .id("settings-results")
+            .test_support()
+            .role(Role::List)
+            .aria_label(t!("settings-results"))
+            .size_full()
+            .overflow_y_scroll()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_1();
+        for found in found {
+            let (id, label, description) = match &found.row {
+                Some(row) => (
+                    format!("settings-result-{}", row.id),
+                    row.label.clone(),
+                    row.description.clone(),
+                ),
+                None => (
+                    format!("settings-result-{}", found.section),
+                    found.section_title.clone(),
+                    None,
+                ),
+            };
+            let aria = t!(
+                "settings-result-label",
+                label = label,
+                section = found.section_title
+            );
+            let (section, row) = (found.section.clone(), found.row.map(|r| r.id));
+            let hover = theme.hover;
+            list = list.child(
+                div()
+                    .id(ElementId::Name(id.into()))
+                    .test_support()
+                    .role(Role::ListItem)
+                    .aria_label(SharedString::from(aria))
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(move |d| d.bg(hover))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(div().text_color(theme.text).child(label))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.faint)
+                                    .child(found.section_title.clone()),
+                            ),
+                    )
+                    .when_some(description, |d, text| {
+                        d.child(div().text_sm().text_color(theme.muted).child(text))
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.land(section.clone(), row.clone(), window, cx)
+                    })),
+            );
+        }
+        list.into_any_element()
+    }
+}
+
+fn save_indicator(state: &SaveState, theme: &Theme) -> impl IntoElement + use<> {
+    let (text, color): (SharedString, Hsla) = match state {
+        SaveState::Idle => ("".into(), theme.muted),
+        SaveState::Saving => (t!("settings-saving").into(), theme.muted),
+        SaveState::Saved => (t!("settings-saved").into(), theme.online),
+        SaveState::Failed(error) => (
+            t!("settings-save-failed", error = error).into(),
+            theme.danger,
+        ),
+    };
+    div()
+        .id("settings-save-state")
+        .test_support()
+        .role(Role::Status)
+        .aria_label(text.clone())
+        .text_sm()
+        .text_color(color)
+        .child(text)
+}
+
+/// A setting: its label (and a short description) beside its control, under
+/// the row ID settings search lands on.
+pub fn row<L: Into<SharedString>, C: IntoElement>(
+    ctx: &SettingsCtx,
+    id: &str,
+    label: L,
+    description: Option<SharedString>,
+    control: C,
+    theme: &Theme,
+) -> impl IntoElement + use<L, C> {
+    let label: SharedString = label.into();
+    frame(ctx, id, label.clone(), theme)
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(div().text_color(theme.text).child(label))
+                .when_some(description, |d, text| {
+                    d.child(div().text_sm().text_color(theme.muted).child(text))
+                }),
         )
-        .render(&theme)
+        .child(div().flex_none().child(control))
+        .test_support()
+}
+
+/// A heading over a form or a list, under the row ID settings search lands on.
+pub fn block<H: Into<SharedString>, B: IntoElement>(
+    ctx: &SettingsCtx,
+    id: &str,
+    heading: H,
+    body: B,
+    theme: &Theme,
+) -> impl IntoElement + use<H, B> {
+    let heading: SharedString = heading.into();
+    frame(ctx, id, heading.clone(), theme)
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text)
+                .child(heading),
+        )
+        .child(body)
+        .test_support()
+}
+
+/// The row's frame: its ID, its name, and the highlight and scroll anchor
+/// when a search landed on it. The caller ends it with `.test_support()`.
+fn frame(ctx: &SettingsCtx, id: &str, label: SharedString, theme: &Theme) -> Stateful<Div> {
+    let target = ctx.target.as_ref().filter(|t| t.id.as_ref() == id);
+    div()
+        .id(ElementId::Name(format!("setting-{id}").into()))
+        .role(Role::Group)
+        .aria_label(label)
+        .p_3()
+        .rounded_md()
+        .bg(theme.sidebar)
+        .border_1()
+        .border_color(if target.is_some() {
+            theme.accent
+        } else {
+            theme.sidebar
+        })
+        .when_some(target, |d, target| {
+            let reached = target.reached.clone();
+            d.relative().child(
+                canvas(
+                    move |bounds, window, cx| reached(bounds, window, cx),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+        })
+}
+
+/// What the landed-on row calls with its bounds: once, scroll the page so
+/// the row sits near the top, and draw again.
+#[allow(clippy::type_complexity)]
+fn scroll_to(
+    scroll: ScrollHandle,
+    pending: Rc<Cell<bool>>,
+) -> Rc<dyn Fn(Bounds<Pixels>, &mut Window, &mut App)> {
+    Rc::new(move |row, window, _| {
+        if !pending.replace(false) {
+            return;
+        }
+        let offset = scroll.offset();
+        let top = scroll.bounds().origin.y + px(16.);
+        let y = (offset.y - (row.origin.y - top)).min(px(0.));
+        let y = y.max(-scroll.max_offset().y);
+        scroll.set_offset(point(offset.x, y));
+        window.refresh();
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SettingsGroup, SettingsRow, SettingsSection, Workspace, documents_state, search};
+    use gpui_kit::{IntoElement, div};
+
+    fn section(id: &str, group: SettingsGroup, rows: &[(&str, &str, &str)]) -> SettingsSection {
+        let mut s = SettingsSection::new(id.to_string(), id.to_string(), |_, _, _| {
+            div().into_any_element()
+        })
+        .group(group);
+        for (rid, label, keywords) in rows {
+            s = s.row(SettingsRow::new(rid.to_string(), label.to_string()).keywords(keywords));
+        }
+        s
+    }
+
+    #[test]
+    fn search_lists_rows_in_nav_order() {
+        let sections = vec![
+            section("about", SettingsGroup::Server, &[]),
+            section(
+                "account",
+                SettingsGroup::User,
+                &[
+                    ("password", "Change password", "security"),
+                    ("log-out", "Log out", "sign out"),
+                ],
+            ),
+            section(
+                "notifications",
+                SettingsGroup::App,
+                &[("sound", "Notification sound", "")],
+            ),
+        ];
+        let rows = |q| -> Vec<String> {
+            search(&sections, q)
+                .into_iter()
+                .map(|f| f.row.map(|r| r.id.to_string()).unwrap_or(f.section.into()))
+                .collect()
+        };
+        assert_eq!(rows("password"), ["password"]);
+        assert_eq!(rows("out"), ["log-out", "about"], "about has 'out' in it");
+        assert_eq!(
+            rows("account"),
+            ["password", "log-out"],
+            "a section's title"
+        );
+        assert_eq!(rows("sound"), ["sound"]);
+        assert!(rows("  ").is_empty());
+        assert!(rows("nothing like this").is_empty());
+    }
+
+    #[test]
+    fn the_saving_state_follows_the_documents() {
+        let w = Workspace::default();
+        assert_eq!(documents_state(&w), None);
     }
 }

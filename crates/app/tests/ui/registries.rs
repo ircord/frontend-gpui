@@ -199,6 +199,9 @@ fn settings_panes_panels_and_history(cx: &mut TestAppContext) {
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find("settings-section-sample").visible());
+        // Account comes first; the sample is under "App settings".
+        window.click("settings-section-sample", cx);
+        window.render_frame(cx);
         assert!(window.find("sample-settings-body").visible());
         assert!(
             window.try_find("timeline").is_none(),

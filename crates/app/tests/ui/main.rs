@@ -9,6 +9,7 @@ mod shell;
 
 mod commands;
 mod message_actions;
+mod settings;
 mod sidebar;
 mod text;
 mod timeline;

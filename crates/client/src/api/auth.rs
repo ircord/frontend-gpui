@@ -1,6 +1,7 @@
 //! Sign-in, sessions and the account: `/api/v1/auth/*` and `/api/v1/bootstrap`.
 //!
-//! Package S0 adds password and account deletion here, S4 sign-up,
+//! Package S0 added the account, password, account deletion and the
+//! server's release notes (`/api/v1/changelog`); S4 adds sign-up,
 //! registration and onboarding (`/auth/signup`, `/auth/registration`,
 //! `/auth/username`, `/auth/onboarding/complete`).
 
@@ -9,6 +10,13 @@ use reqwest::header;
 use std::time::Duration;
 
 use super::{Api, ApiError, Method, session_cookie};
+
+/// `GET /api/v1/auth/session`: the signed-in account, `null` when signed out.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct SessionAnswer {
+    #[serde(default)]
+    account: Option<c::Account>,
+}
 
 impl Api {
     /// Check that the address is an IRCord server: `GET /api/v1/auth/session`
@@ -79,5 +87,40 @@ impl Api {
     pub async fn bootstrap(&self) -> Result<c::Snapshot, ApiError> {
         self.json(self.request(Method::GET, "/api/v1/bootstrap"))
             .await
+    }
+
+    /// The signed-in account (username, when it was created and when it
+    /// expires without a visit); `None` when the server says nobody is.
+    pub async fn account(&self) -> Result<Option<c::Account>, ApiError> {
+        let answer: SessionAnswer = self.get("/api/v1/auth/session").await?;
+        Ok(answer.account)
+    }
+
+    /// Change the password. A wrong `current` password is a 403 whose detail
+    /// says so.
+    pub async fn change_password(&self, current: &str, password: &str) -> Result<(), ApiError> {
+        let body = c::PasswordChange {
+            current: current.to_string(),
+            password: password.to_string(),
+        };
+        self.call_empty(Method::POST, "/api/v1/auth/password", &body)
+            .await
+    }
+
+    /// Delete the account for good. Needs its password; 403 means it is wrong.
+    /// The session ends with it.
+    pub async fn delete_account(&self, password: &str) -> Result<(), ApiError> {
+        let body = c::AccountDeletion {
+            password: password.to_string(),
+        };
+        self.call_empty(Method::DELETE, "/api/v1/auth/account", &body)
+            .await?;
+        self.set_cookie(None);
+        Ok(())
+    }
+
+    /// The server's version and its release notes, newest first.
+    pub async fn changelog(&self) -> Result<c::BackendChangelog, ApiError> {
+        self.get("/api/v1/changelog").await
     }
 }
