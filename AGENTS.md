@@ -18,10 +18,15 @@ client; it never speaks IRC itself. Layout and commands are in
   every capture is black (see `xtask/src/capture.rs`).
 - `crates/client` must not depend on GPUI: everything except drawing is
   tested there, without a window.
-- `crates/contract/src/generated.rs` is generated; change `xtask/src/contract.rs`
-  (its `ROOTS` list picks the schemas) and run `cargo xtask contract`. The
-  socket envelope in `crates/contract/src/event.rs` is hand-written on purpose
-  so unknown events decode as `Unknown`. Gate features on the server's
+- `crates/contract/src/generated.rs` is generated from every schema in the
+  pinned contract; change it only through `xtask/src/contract.rs` and
+  `cargo xtask contract`. The socket envelope in `crates/contract/src/event.rs`
+  is hand-written on purpose so unknown events decode as `Unknown`; a backend
+  bump that adds an event type fails `crates/contract/tests/events.rs`.
+- A feature adds no method to `client.rs` and no field to `Workspace` or
+  `Changes`: it fills its pre-created files under `crates/client/src/api/` and
+  `store/`, runs requests with `Client::call`, and tests against
+  `ircord_client::testing::CannedServer` (feature `test-support`). Gate features on the server's
   `features` and `capabilities`, never on a version number.
 - Your own messages carry your member ID as `senderId`, not `you`; use
   `Workspace::is_self`.
