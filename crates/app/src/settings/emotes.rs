@@ -1055,7 +1055,7 @@ impl EmotesView {
             provider_name(emote.source).unwrap_or_default().into()
         };
         let aliases = emote.aliases.clone().unwrap_or_default();
-        let mut name = div().flex_1().min_w_0().flex().flex_col().child(
+        let mut name = div().flex_1().min_w(px(160.)).flex().flex_col().child(
             div()
                 .flex()
                 .gap_1()
@@ -1081,6 +1081,13 @@ impl EmotesView {
                     .child(t!("emotes-also", aliases = aliases.join(", "))),
             );
         }
+        // Where it came from, and who made it, under the name.
+        let mut credit = source.to_string();
+        if let Some(creator) = emote.creator.as_deref().filter(|c| !c.is_empty()) {
+            credit.push_str(" · ");
+            credit.push_str(&t!("emotes-by", creator = creator));
+        }
+        name = name.child(div().text_xs().text_color(theme.muted).child(credit));
         let id = &emote.id;
         let mut row = div()
             .id(ElementId::Name(format!("emote-{id}").into()))
@@ -1103,20 +1110,7 @@ impl EmotesView {
                         d.child(crate::message::emoji::picture(url, theme.faint))
                     }),
             )
-            .child(name)
-            .child(
-                div()
-                    .w(px(140.))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .text_sm()
-                    .text_color(theme.muted)
-                    .child(source)
-                    .when_some(emote.creator.clone().filter(|c| !c.is_empty()), |d, c| {
-                        d.child(div().text_xs().child(t!("emotes-by", creator = c)))
-                    }),
-            );
+            .child(name);
         if manage {
             let busy = self.busy;
             let button = |kind: &str, label: &'static str| {
