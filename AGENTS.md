@@ -36,6 +36,8 @@ client; it never speaks IRC itself. Layout and commands are in
   tests fail on a missing or unused ID). Colours come from `theme::get(cx)`.
   UI tests share `tests/ui/fixture.rs`, which runs the app against the
   `CannedServer`; wait with `fixture::wait`, not one `run_until_parked`.
+  `window.click` refuses an element scrolled out of view: scroll its
+  container with `window.scroll` first.
   Composer slots and suggestion providers run while the composer is being
   updated: read its text and caret with `composer::typed`, never
   `ctx.composer.read`. A view a slash command opens (`/list`, `/server`,
