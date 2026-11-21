@@ -117,6 +117,18 @@ start_app
 sleep 7
 shot 4-restarted
 stop_app 2
+
+# A personal theme whose CSS sets the accent and the rail, switched on for
+# the account, then a fresh start: the app draws the theme's CSS.
+THEME='{"format":1,"id":"t-capture-css","name":"Capture CSS","updatedAt":"c1","base":{"dark":"ircord-dark","light":"ircord-light"},"colors":{},"css":":root { --accent: #e0457b; --rail: #2a1f3d } .x { color: red }"}'
+api() { curl -fsS -o /dev/null -X "$1" -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' -d "$2" "$SERVER$3"; }
+api PUT "{\"theme\":$THEME}" /api/v1/app/themes/t-capture-css
+api PATCH '{"customCss":true}' /api/v1/app/themes
+api PUT '{"settings":{"mode":"dark","theme":"t-capture-css"}}' /api/v1/app/appearance
+start_app
+sleep 7
+shot 6-css-theme
+stop_app 3
 "##;
 
 pub fn run(root: &Path) -> Result<()> {
