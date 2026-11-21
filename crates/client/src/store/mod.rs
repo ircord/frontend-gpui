@@ -5,52 +5,61 @@
 //! durable events advance a cursor one at a time; a gap means the client
 //! missed something and must bootstrap again; a replayed event at or below
 //! the cursor is ignored, except a send acknowledgement.
+//!
+//! Each later feature owns one sub-state file here: a `State` struct (a field
+//! of [`Workspace`] named after the file), an `apply` hook called for every
+//! fresh event after this file's own handling, and a `reset` hook called on
+//! every bootstrap. A hook reports what it touched as a topic in [`Changes`]
+//! (each file names its own `TOPIC`), so no feature adds a field to
+//! `Changes` or an arm to the match below.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use ircord_contract::event::{Durable, ServerEvent};
+use ircord_contract::event::{Document, Durable, ServerEvent};
 use ircord_contract::*;
 
-/// The newest messages kept per conversation while it follows the live end.
-pub const TIMELINE_LIMIT: usize = 2000;
+pub mod appearance;
+pub mod documents;
+pub mod drafts;
+pub mod emoji;
+pub mod inbox;
+pub mod link_media;
+pub mod notify_settings;
+pub mod outbox;
+pub mod parties;
+pub mod people;
+pub mod saved;
+pub mod server_log;
+pub mod sidebar_order;
+pub mod timeline;
+
+pub use documents::{Documents, Revisioned, SaveState};
+pub use outbox::{PendingSend, SendState};
+pub use timeline::{Entry, TIMELINE_LIMIT, Timeline};
+
 /// How long a typing indicator lasts without a renewal, in milliseconds.
 pub const TYPING_TTL_MS: i64 = 6000;
 /// The sender ID the server uses for the signed-in user.
 pub const SELF_ID: &str = "you";
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Entry {
-    /// `createdAt` in milliseconds, parsed once.
-    pub at: i64,
-    pub message: Message,
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Timeline {
-    pub entries: Vec<Entry>,
-    /// The `nextCursor` for the page before the oldest entry. `None` once all
-    /// history is loaded.
-    pub older: Option<String>,
-    /// The newest page has arrived (until then the entries are live events
-    /// that arrived while it loaded).
-    pub loaded: bool,
-    pub loading_older: bool,
-    pub sync_error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SendState {
-    Sending,
-    Failed(String),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PendingSend {
-    pub client_id: String,
-    pub conversation_id: String,
-    pub text: String,
-    pub action: bool,
-    pub state: SendState,
+/// Topics the workspace itself reports for events no sub-state owns.
+pub mod topic {
+    /// `attract`: someone asked for attention in a conversation (the ID).
+    pub const ATTRACT: &str = "attract";
+    /// `channel-services.updated` for a conversation (the ID).
+    pub const CHANNEL_SERVICES: &str = "channel_services";
+    /// `connection.updated` for a network (the ID).
+    pub const CONNECTION: &str = "connection";
+    /// `devices.updated`: the account's device list changed.
+    pub const DEVICES: &str = "devices";
+    /// A revisioned document's state in [`super::Workspace::documents`]
+    /// changed (read, edited, saved); the ID is [`super::documents::document_id`].
+    pub const DOCUMENTS: &str = "documents";
+    /// The server announced a newer revision of a document (same IDs as
+    /// [`DOCUMENTS`]); a watched document reads itself again.
+    pub const REVISIONS: &str = "revisions";
+    /// `emotes.updated`: the emoji catalog has a new version.
+    pub const EMOTES: &str = "emotes";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +74,15 @@ pub enum Connection {
         reason: String,
         retry_ms: u64,
     },
+}
+
+/// Which parts of a topic changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Touched {
+    /// The whole topic.
+    All,
+    /// Only these IDs (conversations, networks, messages: the topic says which).
+    Ids(BTreeSet<String>),
 }
 
 /// What an operation touched, so the app redraws only those views.
@@ -82,6 +100,8 @@ pub struct Changes {
     pub resync: bool,
     /// The whole workspace was replaced.
     pub reset: bool,
+    /// Everything else, by topic: each sub-state file and [`topic`] name theirs.
+    pub topics: BTreeMap<&'static str, Touched>,
 }
 
 impl Changes {
@@ -98,6 +118,9 @@ impl Changes {
         self.notices.extend(other.notices);
         self.resync |= other.resync;
         self.reset |= other.reset;
+        for (topic, touched) in other.topics {
+            self.touch(topic, touched);
+        }
     }
 
     fn timeline(conversation: &str) -> Self {
@@ -105,6 +128,50 @@ impl Changes {
             timelines: BTreeSet::from([conversation.to_string()]),
             ..Default::default()
         }
+    }
+
+    /// A change to the whole of `topic`.
+    pub fn topic(topic: &'static str) -> Self {
+        let mut c = Changes::default();
+        c.touch(topic, Touched::All);
+        c
+    }
+
+    /// A change to one ID within `topic`.
+    pub fn topic_id(topic: &'static str, id: impl Into<String>) -> Self {
+        let mut c = Changes::default();
+        c.touch(topic, Touched::Ids(BTreeSet::from([id.into()])));
+        c
+    }
+
+    /// Add a touch to `topic`; touching all of it absorbs single IDs.
+    pub fn touch(&mut self, topic: &'static str, touched: Touched) {
+        use std::collections::btree_map::Entry;
+        match self.topics.entry(topic) {
+            Entry::Vacant(e) => {
+                e.insert(touched);
+            }
+            Entry::Occupied(mut e) => match (e.get_mut(), touched) {
+                (Touched::All, _) => {}
+                (existing, Touched::All) => *existing = Touched::All,
+                (Touched::Ids(have), Touched::Ids(more)) => have.extend(more),
+            },
+        }
+    }
+
+    /// Whether anything in `topic` changed, or the whole workspace was replaced.
+    pub fn touches(&self, topic: &str) -> bool {
+        self.reset || self.topics.contains_key(topic)
+    }
+
+    /// Whether `id` within `topic` changed (or all of the topic, or everything).
+    pub fn touches_id(&self, topic: &str, id: &str) -> bool {
+        self.reset
+            || match self.topics.get(topic) {
+                Some(Touched::All) => true,
+                Some(Touched::Ids(ids)) => ids.contains(id),
+                None => false,
+            }
     }
 }
 
@@ -123,6 +190,38 @@ pub struct Workspace {
     pub cursor: i64,
     pub connection: Option<Connection>,
     pub demo: bool,
+    /// The newest revision the server announced for each revisioned document.
+    pub revisions: BTreeMap<Document, String>,
+    /// The revisioned documents, once watched (see `crate::documents`).
+    pub documents: documents::Documents,
+
+    // One sub-state per feature, each owned by its file (see the module docs).
+    /// R1: reading state across timelines.
+    pub reading: timeline::State,
+    /// A1: outbox state beyond the pending sends.
+    pub sending: outbox::State,
+    /// N1: the user's sidebar order and collapsed sections.
+    pub sidebar_order: sidebar_order::State,
+    /// SV1: each network's server window.
+    pub server_log: server_log::State,
+    /// P1: profiles, statuses and the ignore list.
+    pub people: people::State,
+    /// FD2: the inbox.
+    pub inbox: inbox::State,
+    /// FD2: saved messages.
+    pub saved: saved::State,
+    /// L1: link previews and their media.
+    pub link_media: link_media::State,
+    /// E1: the emoji catalog and recent emoji.
+    pub emoji: emoji::State,
+    /// D1: unsent drafts.
+    pub drafts: drafts::State,
+    /// PT1: groups and their invitations.
+    pub parties: parties::State,
+    /// S1: appearance state beyond the documents.
+    pub appearance: appearance::State,
+    /// S3: notification state beyond the settings document.
+    pub notify_settings: notify_settings::State,
 }
 
 pub fn parse_time(text: &str) -> i64 {
@@ -131,78 +230,25 @@ pub fn parse_time(text: &str) -> i64 {
         .unwrap_or(0)
 }
 
-fn entry(message: Message) -> Entry {
-    Entry {
-        at: parse_time(&message.created_at),
-        message,
-    }
-}
-
-fn order(a: &Entry, b: &Entry) -> std::cmp::Ordering {
-    a.at.cmp(&b.at)
-        .then(
-            a.message
-                .position
-                .unwrap_or(0)
-                .cmp(&b.message.position.unwrap_or(0)),
-        )
-        .then(a.message.id.cmp(&b.message.id))
-}
-
-impl Timeline {
-    /// Insert or replace one message, keeping the order.
-    fn put(&mut self, message: Message) {
-        let new = entry(message);
-        if let Some(i) = self
-            .entries
-            .iter()
-            .position(|e| e.message.id == new.message.id)
-        {
-            self.entries.remove(i);
-        }
-        let at = self
-            .entries
-            .partition_point(|e| order(e, &new) == std::cmp::Ordering::Less);
-        self.entries.insert(at, new);
-        self.trim();
-    }
-
-    fn trim(&mut self) {
-        if self.entries.len() > TIMELINE_LIMIT {
-            let drop = self.entries.len() - TIMELINE_LIMIT;
-            self.entries.drain(..drop);
-            // Page on from the oldest message kept, as the web client does.
-            let first = &self.entries[0].message.id;
-            self.older = Some(format!("message:{}", urlencode(first)));
-        }
-    }
-
-    fn merge(&mut self, items: Vec<Message>) {
-        let mut by_id: HashMap<String, Entry> = self
-            .entries
-            .drain(..)
-            .map(|e| (e.message.id.clone(), e))
-            .collect();
-        for message in items {
-            // A live copy that arrived first is newer than the page's copy.
-            by_id
-                .entry(message.id.clone())
-                .or_insert_with(|| entry(message));
-        }
-        let mut entries: Vec<Entry> = by_id.into_values().collect();
-        entries.sort_by(order);
-        self.entries = entries;
-    }
-
-    pub fn find(&self, id: &str) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.message.id == id)
-    }
-}
-
-fn urlencode(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes())
-        .collect::<String>()
-        .replace('+', "%20")
+/// Every sub-state's hooks, in one fixed order. This list is written once.
+macro_rules! each_part {
+    ($hook:ident($w:expr, $($arg:expr),*)) => {{
+        let mut changes = Changes::default();
+        changes.merge(timeline::$hook($w, $($arg),*));
+        changes.merge(outbox::$hook($w, $($arg),*));
+        changes.merge(sidebar_order::$hook($w, $($arg),*));
+        changes.merge(server_log::$hook($w, $($arg),*));
+        changes.merge(people::$hook($w, $($arg),*));
+        changes.merge(inbox::$hook($w, $($arg),*));
+        changes.merge(saved::$hook($w, $($arg),*));
+        changes.merge(link_media::$hook($w, $($arg),*));
+        changes.merge(emoji::$hook($w, $($arg),*));
+        changes.merge(drafts::$hook($w, $($arg),*));
+        changes.merge(parties::$hook($w, $($arg),*));
+        changes.merge(appearance::$hook($w, $($arg),*));
+        changes.merge(notify_settings::$hook($w, $($arg),*));
+        changes
+    }};
 }
 
 impl Workspace {
@@ -215,6 +261,7 @@ impl Workspace {
     /// Replace everything the server owns with a fresh bootstrap. Pending
     /// sends survive; timelines are dropped and load again when opened.
     pub fn reset(&mut self, snapshot: Snapshot) -> Changes {
+        let parts = each_part!(reset(self, &snapshot));
         self.user = snapshot.user;
         self.networks = snapshot.networks;
         self.conversations = snapshot.conversations;
@@ -229,12 +276,14 @@ impl Workspace {
         self.demo = snapshot.demo;
         self.timelines.clear();
         self.typing.clear();
-        Changes {
+        let mut changes = Changes {
             reset: true,
             sidebar: true,
             members: true,
             ..Default::default()
-        }
+        };
+        changes.merge(parts);
+        changes
     }
 
     pub fn conversation(&self, id: &str) -> Option<&Conversation> {
@@ -327,31 +376,48 @@ impl Workspace {
     // ---- Socket events -------------------------------------------------
 
     /// Apply one frame from the event socket. `now_ms` drives typing expiry.
+    ///
+    /// The workspace handles what it owns first, then every sub-state's
+    /// `apply` hook sees the event, unless it was a replay already seen, a
+    /// gap, or a frame this client cannot read.
     pub fn apply(&mut self, event: &ServerEvent, now_ms: i64) -> Changes {
-        match event {
+        let mut changes = match event {
             ServerEvent::Typing(t) => self.set_typing(t, now_ms),
-            ServerEvent::Resync(_) => Changes {
-                resync: true,
-                ..Default::default()
-            },
-            ServerEvent::CommandError(e) => {
-                if let Some(id) = &e.client_id
-                    && let Some(changes) = self.fail_send(id, &e.message)
-                {
-                    return changes;
-                }
-                Changes {
+            ServerEvent::Resync(_) => {
+                return Changes {
+                    resync: true,
+                    ..Default::default()
+                };
+            }
+            ServerEvent::CommandError(e) => e
+                .client_id
+                .as_deref()
+                .and_then(|id| self.fail_send(id, &e.message))
+                .unwrap_or_else(|| Changes {
                     notices: vec![e.message.clone()],
                     ..Default::default()
+                }),
+            ServerEvent::Attract(a) => Changes::topic_id(topic::ATTRACT, &a.conversation_id),
+            ServerEvent::EmotesUpdated(_) => Changes::topic(topic::EMOTES),
+            ServerEvent::DevicesUpdated => Changes::topic(topic::DEVICES),
+            ServerEvent::Durable { seq, event } => {
+                if let Some(skip) = self.accept(*seq, event, now_ms) {
+                    return skip;
                 }
+                self.apply_durable(event, now_ms)
             }
-            ServerEvent::Durable { seq, event } => self.apply_durable(*seq, event, now_ms),
             ServerEvent::Unknown { seq: Some(seq), .. } => {
                 // An event this client cannot read still counts toward the cursor.
-                self.advance(*seq).unwrap_or_default()
+                return self.advance(*seq).unwrap_or_default();
             }
-            _ => Changes::default(),
-        }
+            ServerEvent::Ready(_)
+            | ServerEvent::Synced(_)
+            | ServerEvent::Alert(_)
+            | ServerEvent::Routing(_)
+            | ServerEvent::Unknown { seq: None, .. } => Changes::default(),
+        };
+        changes.merge(each_part!(apply(self, event, now_ms)));
+        changes
     }
 
     /// `Some(changes)` when the event must be skipped (already seen, or a gap).
@@ -369,19 +435,21 @@ impl Workspace {
         None
     }
 
-    fn apply_durable(&mut self, seq: i64, event: &Durable, now_ms: i64) -> Changes {
+    /// Advance the cursor for a durable event; `Some(changes)` when it is not fresh.
+    fn accept(&mut self, seq: i64, event: &Durable, now_ms: i64) -> Option<Changes> {
         if seq <= self.cursor {
             // A retried command is acknowledged again with its original number.
             if let Durable::MessageCreated(m) = event
                 && m.client_id.is_some()
             {
-                return self.put_message(m.clone(), now_ms);
+                return Some(self.put_message(m.clone(), now_ms));
             }
-            return Changes::default();
+            return Some(Changes::default());
         }
-        if let Some(skip) = self.advance(seq) {
-            return skip;
-        }
+        self.advance(seq)
+    }
+
+    fn apply_durable(&mut self, event: &Durable, now_ms: i64) -> Changes {
         match event {
             Durable::MessageCreated(m) | Durable::MessageUpdated(m) => {
                 self.put_message(m.clone(), now_ms)
@@ -491,7 +559,24 @@ impl Workspace {
                 ],
                 ..Default::default()
             },
-            Durable::ConnectionUpdated(_) | Durable::Other(_) => Changes::default(),
+            Durable::ConnectionUpdated(c) => Changes::topic_id(topic::CONNECTION, &c.network_id),
+            Durable::ChannelServicesUpdated(c) => {
+                Changes::topic_id(topic::CHANNEL_SERVICES, &c.conversation_id)
+            }
+            Durable::DocumentUpdated { document, update } => {
+                self.revisions.insert(*document, update.revision.clone());
+                Changes::topic_id(topic::REVISIONS, documents::document_id(*document))
+            }
+            // Each of these belongs to a sub-state, whose hook handles it.
+            Durable::PartyUpdated(_)
+            | Durable::PartyRemoved(_)
+            | Durable::ServerLine(_)
+            | Durable::ServerLogUpdated(_)
+            | Durable::SavedAdded(_)
+            | Durable::SavedRemoved(_)
+            | Durable::InboxAdded(_)
+            | Durable::InboxUpdated(_)
+            | Durable::Other(_) => Changes::default(),
         }
     }
 
@@ -534,101 +619,6 @@ impl Workspace {
     }
 
     // ---- Explicit operations --------------------------------------------
-
-    /// Start loading a conversation: live events arriving meanwhile are kept.
-    pub fn begin_load(&mut self, conversation: &str) {
-        self.timelines.entry(conversation.to_string()).or_default();
-    }
-
-    /// The newest page arrived.
-    pub fn load_newest(&mut self, conversation: &str, page: MessagePage) -> Changes {
-        let t = self.timelines.entry(conversation.to_string()).or_default();
-        t.merge(page.items);
-        t.older = page.next_cursor;
-        t.loaded = true;
-        t.sync_error = page.sync_error;
-        t.trim();
-        Changes::timeline(conversation)
-    }
-
-    /// Mark an older page as loading. Returns its cursor, or `None` when
-    /// there is nothing older or a load is already running.
-    pub fn begin_older(&mut self, conversation: &str) -> Option<String> {
-        let t = self.timelines.get_mut(conversation)?;
-        if !t.loaded || t.loading_older {
-            return None;
-        }
-        let cursor = t.older.clone()?;
-        t.loading_older = true;
-        Some(cursor)
-    }
-
-    pub fn load_older(&mut self, conversation: &str, page: Option<MessagePage>) -> Changes {
-        let Some(t) = self.timelines.get_mut(conversation) else {
-            return Changes::default();
-        };
-        t.loading_older = false;
-        if let Some(page) = page {
-            t.merge(page.items);
-            t.older = page.next_cursor;
-            if page.sync_error.is_some() {
-                t.sync_error = page.sync_error;
-            }
-        }
-        Changes::timeline(conversation)
-    }
-
-    pub fn queue_send(&mut self, pending: PendingSend) -> Changes {
-        let id = pending.conversation_id.clone();
-        self.outbox.retain(|p| p.client_id != pending.client_id);
-        self.outbox.push(pending);
-        Changes::timeline(&id)
-    }
-
-    /// The server answered a send.
-    pub fn send_answered(&mut self, response: &CommandResponse) -> Changes {
-        use CommandResponseState as S;
-        match response.state {
-            S::Failed | S::Discarded => self
-                .fail_send(
-                    &response.client_id,
-                    response
-                        .error
-                        .as_deref()
-                        .unwrap_or("The message was not sent."),
-                )
-                .unwrap_or_default(),
-            _ => {
-                let mut changes = Changes::default();
-                if let Some(m) = &response.message
-                    && (m.confirmed == Some(true)
-                        || (m.unconfirmed != Some(true) && m.upstream_id.is_some()))
-                {
-                    changes.merge(self.put_message(m.clone(), 0));
-                }
-                changes
-            }
-        }
-    }
-
-    pub fn fail_send(&mut self, client_id: &str, reason: &str) -> Option<Changes> {
-        let p = self.outbox.iter_mut().find(|p| p.client_id == client_id)?;
-        p.state = SendState::Failed(reason.to_string());
-        Some(Changes::timeline(&p.conversation_id.clone()))
-    }
-
-    pub fn retry_send(&mut self, client_id: &str) -> Option<PendingSend> {
-        let p = self.outbox.iter_mut().find(|p| p.client_id == client_id)?;
-        p.state = SendState::Sending;
-        Some(p.clone())
-    }
-
-    pub fn pending_in(&self, conversation: &str) -> Vec<&PendingSend> {
-        self.outbox
-            .iter()
-            .filter(|p| p.conversation_id == conversation)
-            .collect()
-    }
 
     /// Clear the counts locally once the server has been told.
     pub fn mark_read(&mut self, conversation: &str) -> Changes {

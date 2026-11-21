@@ -4,21 +4,30 @@
 //! - [`address`]: server address rules.
 //! - [`config`]: the files kept between launches.
 //! - [`credentials`]: the sign-in, in the operating system's credential store.
-//! - [`api`]: HTTP commands.
+//! - [`api`]: HTTP commands, one file per area of the contract.
 //! - [`events`] and [`socket`]: the event socket with resume, replay and resync.
-//! - [`store`]: the workspace and its pure `apply(event)`.
+//! - [`store`]: the workspace and its pure `apply(event)`, with one sub-state
+//!   file per feature.
 //! - [`format`]: IRC formatting codes and links.
-//! - [`client`]: the handle the app holds.
+//! - [`client`]: the handle the app holds, with the generic `call`, and
+//!   [`documents`]: the server's revisioned documents.
+//! - [`features`] and [`irc`]: what a network allows, channel ranks.
+//! - [`testing`] (feature `test-support`): a canned server and fixtures.
 
 pub mod address;
 pub mod api;
 pub mod client;
 pub mod config;
 pub mod credentials;
+pub mod documents;
 pub mod events;
+pub mod features;
 pub mod format;
+pub mod irc;
 pub mod socket;
 pub mod store;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 
 pub use address::ServerAddress;
 pub use client::Client;

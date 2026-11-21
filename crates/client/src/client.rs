@@ -1,11 +1,22 @@
 //! The client handle the app holds: it owns a small Tokio runtime, the shared
 //! workspace, the event task and the HTTP commands.
+//!
+//! A feature does not add a method here. It runs a request with
+//! [`Client::call`] (or [`Handle::call`] from a background task), which runs
+//! it off the UI thread and applies the result to the workspace in one step;
+//! it reacts to what changed with [`Client::watch`]; and it keeps a
+//! revisioned server document with [`Client::watch_document`] and
+//! [`Client::edit_document`] (the specs are in [`crate::documents`]).
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use ircord_contract as c;
+use ircord_contract::event::Document;
 use tokio::runtime::Runtime;
 use tokio::sync::{Notify, mpsc};
 
@@ -13,7 +24,213 @@ use crate::api::{Api, ApiError};
 use crate::credentials::CredentialStore;
 use crate::events::{self, Shared, Timing, Update};
 use crate::socket::WsTransport;
-use crate::store::{Changes, PendingSend, SendState, Workspace};
+use crate::store::documents::document_id;
+use crate::store::{Changes, PendingSend, Revisioned, SendState, Workspace, topic};
+
+/// How long an edit to a revisioned document waits before it is saved, so a
+/// burst of edits is one request.
+pub const DOCUMENT_SAVE_DELAY: Duration = Duration::from_millis(400);
+
+/// A boxed future, as [`DocumentSpec`]'s calls return.
+pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+
+/// A watcher sees every set of changes before the app does, on the network thread.
+type Watcher = Arc<dyn Fn(&Handle, &Changes) + Send + Sync>;
+
+/// How one revisioned document is read, written and kept in the workspace.
+/// Declare it as a `static` in the feature that owns the document.
+pub struct DocumentSpec<T: 'static> {
+    pub document: Document,
+    /// Where the document lives in the workspace (a field of the feature's sub-state).
+    pub state: fn(&mut Workspace) -> &mut Revisioned<T>,
+    pub read: fn(Api) -> BoxFuture<Result<T, ApiError>>,
+    /// Store an edit; the answer is the document as the server stored it.
+    pub write: fn(Api, T) -> BoxFuture<Result<T, ApiError>>,
+}
+
+impl<T> DocumentSpec<T> {
+    /// What every change to this document's state reports.
+    fn changes(&self) -> Changes {
+        Changes::topic_id(topic::DOCUMENTS, document_id(self.document))
+    }
+}
+
+/// A cheap, cloneable handle to the client's workspace and server, for
+/// background work and watchers. [`Client`] hands one out with [`Client::handle`].
+#[derive(Clone)]
+pub struct Handle {
+    runtime: tokio::runtime::Handle,
+    api: Api,
+    store: Arc<RwLock<Workspace>>,
+    updates: UnboundedSender<Update>,
+    watchers: Arc<Mutex<Vec<Watcher>>>,
+}
+
+impl Handle {
+    pub fn api(&self) -> &Api {
+        &self.api
+    }
+
+    /// Read the workspace. Do not hold the guard across an `await`.
+    pub fn read(&self) -> RwLockReadGuard<'_, Workspace> {
+        self.store.read().unwrap()
+    }
+
+    /// Change the workspace and tell watchers and the app what changed.
+    pub fn change(&self, f: impl FnOnce(&mut Workspace) -> Changes) {
+        let changes = f(&mut self.store.write().unwrap());
+        if !changes.is_empty() {
+            self.emit(Update::Changed(changes));
+        }
+    }
+
+    /// Tell the app, running the watchers first on this thread for changes.
+    /// The workspace lock must not be held.
+    fn emit(&self, update: Update) {
+        if let Update::Changed(changes) = &update {
+            let watchers = self.watchers.lock().unwrap().clone();
+            for watcher in watchers {
+                watcher(self, changes);
+            }
+        }
+        let _ = self.updates.unbounded_send(update);
+    }
+
+    /// Run `request` against the server off the UI thread, then apply its
+    /// result to the workspace with `apply` and report what that changed.
+    ///
+    /// `apply` also sees failures, so it can record them; an expired session
+    /// additionally signs the app out.
+    pub fn call<T, Fut>(
+        &self,
+        request: impl FnOnce(Api) -> Fut + Send + 'static,
+        apply: impl FnOnce(&mut Workspace, Result<T, ApiError>) -> Changes + Send + 'static,
+    ) -> tokio::task::JoinHandle<()>
+    where
+        T: Send + 'static,
+        Fut: Future<Output = Result<T, ApiError>> + Send + 'static,
+    {
+        let handle = self.clone();
+        self.runtime.spawn(async move {
+            let result = request(handle.api.clone()).await;
+            if matches!(result, Err(ApiError::Unauthorized)) {
+                let _ = handle.updates.unbounded_send(Update::SignedOut);
+            }
+            handle.change(|w| apply(w, result));
+        })
+    }
+
+    /// Run `request` off the UI thread and hand back its result, for answers
+    /// a view keeps itself (a search, a whois). Awaiting the handle works on
+    /// any executor. An expired session also signs the app out.
+    pub fn request<T, Fut>(
+        &self,
+        request: impl FnOnce(Api) -> Fut + Send + 'static,
+    ) -> tokio::task::JoinHandle<Result<T, ApiError>>
+    where
+        T: Send + 'static,
+        Fut: Future<Output = Result<T, ApiError>> + Send + 'static,
+    {
+        let api = self.api.clone();
+        let updates = self.clone();
+        self.runtime.spawn(async move {
+            let result = request(api).await;
+            if matches!(result, Err(ApiError::Unauthorized)) {
+                updates.emit(Update::SignedOut);
+            }
+            result
+        })
+    }
+
+    /// Call `f` with every set of changes from now on, before the app sees it.
+    /// It runs on the network thread: keep it short and spawn real work with
+    /// [`Handle::call`].
+    pub fn watch(&self, f: impl Fn(&Handle, &Changes) + Send + Sync + 'static) {
+        self.watchers.lock().unwrap().push(Arc::new(f));
+    }
+
+    /// Keep a revisioned document: read it now, and again whenever the server
+    /// announces a newer revision or the workspace is bootstrapped again.
+    pub fn watch_document<T: Clone + Send + Sync + 'static>(&self, spec: &'static DocumentSpec<T>) {
+        self.watch(move |handle, changes| {
+            let id = document_id(spec.document);
+            if changes.touches_id(topic::REVISIONS, id) {
+                let mut store = handle.store.write().unwrap();
+                (spec.state)(&mut store).remote();
+                drop(store);
+                handle.sync_document(spec);
+            }
+        });
+        self.sync_document(spec);
+    }
+
+    /// Show an edit to a revisioned document now and save it shortly.
+    pub fn edit_document<T: Clone + Send + Sync + 'static>(
+        &self,
+        spec: &'static DocumentSpec<T>,
+        value: T,
+    ) {
+        self.change(|w| {
+            (spec.state)(w).edit(value);
+            spec.changes()
+        });
+        let handle = self.clone();
+        self.runtime.spawn(async move {
+            tokio::time::sleep(DOCUMENT_SAVE_DELAY).await;
+            handle.sync_document(spec);
+        });
+    }
+
+    /// Start whatever the document needs next: a save of a waiting edit, or a read.
+    fn sync_document<T: Clone + Send + Sync + 'static>(&self, spec: &'static DocumentSpec<T>) {
+        let next = {
+            let mut store = self.store.write().unwrap();
+            let state = (spec.state)(&mut store);
+            match state.begin_save() {
+                Some(value) => Some(Ok(value)),
+                None => state.begin_read().then_some(Err(())),
+            }
+        };
+        let Some(next) = next else { return };
+        let handle = self.clone();
+        self.runtime.spawn(async move {
+            let api = handle.api.clone();
+            let unauthorized = |r: &Result<T, ApiError>| matches!(r, Err(ApiError::Unauthorized));
+            match next {
+                Ok(value) => {
+                    let result = (spec.write)(api, value).await;
+                    if unauthorized(&result) {
+                        let _ = handle.updates.unbounded_send(Update::SignedOut);
+                    }
+                    let failed = result.as_ref().err().map(|e| e.to_string());
+                    handle.change(|w| {
+                        (spec.state)(w).save_done(result.map_err(|e| e.to_string()));
+                        let mut changes = spec.changes();
+                        changes.notices.extend(failed);
+                        changes
+                    });
+                }
+                Err(()) => {
+                    let result = (spec.read)(api).await;
+                    if unauthorized(&result) {
+                        let _ = handle.updates.unbounded_send(Update::SignedOut);
+                    }
+                    handle.change(|w| {
+                        (spec.state)(w).read_done(result.map_err(|e| e.to_string()));
+                        spec.changes()
+                    });
+                    // A failed read waits for the next event or edit instead of
+                    // retrying at once; only an edit made meanwhile goes on.
+                    let waiting = (spec.state)(&mut handle.store.write().unwrap()).needs_save();
+                    if !waiting {
+                        return;
+                    }
+                }
+            }
+            handle.sync_document(spec);
+        });
+    }
+}
 
 /// How many messages one history page asks for.
 pub const PAGE_SIZE: u32 = 60;
@@ -68,7 +285,7 @@ pub struct Client {
     api: Api,
     shared: Arc<Shared>,
     socket: mpsc::UnboundedSender<String>,
-    updates: UnboundedSender<Update>,
+    handle: Handle,
     activity: Arc<Mutex<Activity>>,
     activity_changed: Arc<Notify>,
     typing: Mutex<TypingState>,
@@ -94,10 +311,16 @@ impl Client {
         api: Api,
         timing: Timing,
     ) -> (Client, UnboundedReceiver<Update>) {
-        let (updates, rx) = unbounded();
+        // Updates go straight to the app from the thread that made them, as
+        // the app's tests rely on; the watchers run first on that thread.
+        // Only the event task's updates pass through a forwarder, because
+        // its shared state predates the watchers.
+        let (app, rx) = unbounded();
+        let (from_events, internal) = unbounded();
+        let watchers: Arc<Mutex<Vec<Watcher>>> = Arc::default();
         let shared = Arc::new(Shared {
             store: Arc::new(RwLock::new(Workspace::default())),
-            updates: updates.clone(),
+            updates: from_events,
             routing: Mutex::new(None),
             routing_changed: Notify::new(),
             tab: random_id(),
@@ -118,16 +341,24 @@ impl Client {
             activity.clone(),
             activity_changed.clone(),
         ));
+        let handle = Handle {
+            runtime: runtime.handle().clone(),
+            api: api.clone(),
+            store: shared.store.clone(),
+            updates: app,
+            watchers,
+        };
+        let forwarder = runtime.spawn(forward(handle.clone(), internal));
         let client = Client {
             runtime,
             api,
             shared,
             socket,
-            updates,
+            handle,
             activity,
             activity_changed,
             typing: Mutex::default(),
-            tasks: vec![events, reporter],
+            tasks: vec![events, reporter, forwarder],
         };
         (client, rx)
     }
@@ -140,6 +371,55 @@ impl Client {
         &self.runtime
     }
 
+    /// A cloneable handle for background work.
+    pub fn handle(&self) -> &Handle {
+        &self.handle
+    }
+
+    /// See [`Handle::call`].
+    pub fn call<T, Fut>(
+        &self,
+        request: impl FnOnce(Api) -> Fut + Send + 'static,
+        apply: impl FnOnce(&mut Workspace, Result<T, ApiError>) -> Changes + Send + 'static,
+    ) -> tokio::task::JoinHandle<()>
+    where
+        T: Send + 'static,
+        Fut: Future<Output = Result<T, ApiError>> + Send + 'static,
+    {
+        self.handle.call(request, apply)
+    }
+
+    /// See [`Handle::request`].
+    pub fn request<T, Fut>(
+        &self,
+        request: impl FnOnce(Api) -> Fut + Send + 'static,
+    ) -> tokio::task::JoinHandle<Result<T, ApiError>>
+    where
+        T: Send + 'static,
+        Fut: Future<Output = Result<T, ApiError>> + Send + 'static,
+    {
+        self.handle.request(request)
+    }
+
+    /// See [`Handle::watch`].
+    pub fn watch(&self, f: impl Fn(&Handle, &Changes) + Send + Sync + 'static) {
+        self.handle.watch(f)
+    }
+
+    /// See [`Handle::watch_document`].
+    pub fn watch_document<T: Clone + Send + Sync + 'static>(&self, spec: &'static DocumentSpec<T>) {
+        self.handle.watch_document(spec)
+    }
+
+    /// See [`Handle::edit_document`].
+    pub fn edit_document<T: Clone + Send + Sync + 'static>(
+        &self,
+        spec: &'static DocumentSpec<T>,
+        value: T,
+    ) {
+        self.handle.edit_document(spec, value)
+    }
+
     /// Read the workspace. Hold the guard only while drawing.
     pub fn read(&self) -> RwLockReadGuard<'_, Workspace> {
         self.shared.store.read().unwrap()
@@ -147,10 +427,7 @@ impl Client {
 
     /// Change the workspace locally and tell the app what changed.
     pub fn change(&self, f: impl FnOnce(&mut Workspace) -> Changes) {
-        let changes = f(&mut self.shared.store.write().unwrap());
-        if !changes.is_empty() {
-            let _ = self.updates.unbounded_send(Update::Changed(changes));
-        }
+        self.handle.change(f)
     }
 
     /// Show a conversation: load its newest page unless it is already loaded.
@@ -170,16 +447,16 @@ impl Client {
         self.shared.store.write().unwrap().begin_load(conversation);
         let api = self.api.clone();
         let store = self.shared.store.clone();
-        let updates = self.updates.clone();
+        let updates = self.handle.clone();
         let id = conversation.to_string();
         self.runtime.spawn(async move {
             match api.messages(&id, None, PAGE_SIZE).await {
                 Ok(page) => {
                     let changes = store.write().unwrap().load_newest(&id, page);
-                    let _ = updates.unbounded_send(Update::Changed(changes));
+                    updates.emit(Update::Changed(changes));
                 }
                 Err(ApiError::Unauthorized) => {
-                    let _ = updates.unbounded_send(Update::SignedOut);
+                    updates.emit(Update::SignedOut);
                 }
                 Err(e) => {
                     let mut changes = store.write().unwrap().load_newest(
@@ -191,7 +468,7 @@ impl Client {
                         },
                     );
                     changes.notices.push(e.to_string());
-                    let _ = updates.unbounded_send(Update::Changed(changes));
+                    updates.emit(Update::Changed(changes));
                 }
             }
         });
@@ -204,7 +481,7 @@ impl Client {
         };
         let api = self.api.clone();
         let store = self.shared.store.clone();
-        let updates = self.updates.clone();
+        let updates = self.handle.clone();
         let id = conversation.to_string();
         self.runtime.spawn(async move {
             let result = api.messages(&id, Some(&cursor), PAGE_SIZE).await;
@@ -215,7 +492,7 @@ impl Client {
             if let Err(e) = result {
                 changes.notices.push(e.to_string());
             }
-            let _ = updates.unbounded_send(Update::Changed(changes));
+            updates.emit(Update::Changed(changes));
         });
     }
 
@@ -260,7 +537,7 @@ impl Client {
     fn post(&self, pending: PendingSend, retry: bool) {
         let api = self.api.clone();
         let store = self.shared.store.clone();
-        let updates = self.updates.clone();
+        let updates = self.handle.clone();
         self.runtime.spawn(async move {
             let result = if retry {
                 match api.retry_send(&pending.client_id).await {
@@ -279,7 +556,7 @@ impl Client {
                     .fail_send(&pending.client_id, &e.to_string())
                     .unwrap_or_default(),
             };
-            let _ = updates.unbounded_send(Update::Changed(changes));
+            updates.emit(Update::Changed(changes));
         });
     }
 
@@ -295,12 +572,12 @@ impl Client {
         self.change(|w| w.mark_read(conversation));
         let api = self.api.clone();
         let id = conversation.to_string();
-        let updates = self.updates.clone();
+        let updates = self.handle.clone();
         self.runtime.spawn(async move {
             if let Err(e) = api.mark_read(&id).await {
                 log::warn!("mark read failed: {e}");
                 if matches!(e, ApiError::Unauthorized) {
-                    let _ = updates.unbounded_send(Update::SignedOut);
+                    updates.emit(Update::SignedOut);
                 }
             }
         });
@@ -378,6 +655,13 @@ impl Client {
                 log::warn!("forget session: {e}");
             }
         })
+    }
+}
+
+/// Pass the event task's updates to the app, letting the watchers see changes first.
+async fn forward(handle: Handle, mut internal: UnboundedReceiver<Update>) {
+    while let Some(update) = internal.next().await {
+        handle.emit(update);
     }
 }
 

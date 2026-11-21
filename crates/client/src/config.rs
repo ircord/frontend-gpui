@@ -2,17 +2,23 @@
 //! in `com.ircord.gpui` (so it sits beside the Tauri app without sharing files):
 //!
 //! - `server`: the server origin, one line.
-//! - `state.json`: the last conversation viewed and the window size.
+//! - `state.json`: the last conversation viewed and the window size, and
+//!   under `features` one open section per feature (see [`ConfigDir::section`]).
 //!
 //! The sign-in itself is not here: it lives in the operating system's
 //! credential store (see [`crate::credentials`]).
 
 use crate::address::ServerAddress;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::io;
 use std::path::{Path, PathBuf};
 
 pub const APP_ID: &str = "com.ircord.gpui";
+
+/// The key in `state.json` that holds the features' sections.
+const FEATURES: &str = "features";
 
 #[derive(Debug, Clone)]
 pub struct ConfigDir(PathBuf);
@@ -73,8 +79,47 @@ impl ConfigDir {
             .unwrap_or_default()
     }
 
+    /// Save the app's own state, keeping every feature's section.
     pub fn save_state(&self, state: &AppState) -> io::Result<()> {
-        self.write("state.json", &serde_json::to_vec_pretty(state)?)
+        let mut doc = self.state_document();
+        let Value::Object(fields) = serde_json::to_value(state)? else {
+            unreachable!("AppState serialises to an object")
+        };
+        doc.extend(fields);
+        self.write("state.json", &serde_json::to_vec_pretty(&doc)?)
+    }
+
+    /// A feature's own section of the device state, by a name the feature
+    /// picks (its module name). A missing or unreadable section is the default.
+    pub fn section<T: DeserializeOwned + Default>(&self, name: &str) -> T {
+        self.state_document()
+            .get(FEATURES)
+            .and_then(|f| f.get(name))
+            .and_then(|v| T::deserialize(v).ok())
+            .unwrap_or_default()
+    }
+
+    /// Replace a feature's section, keeping everything else in the file.
+    pub fn save_section<T: Serialize>(&self, name: &str, value: &T) -> io::Result<()> {
+        let mut doc = self.state_document();
+        let features = doc
+            .entry(FEATURES)
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !features.is_object() {
+            *features = Value::Object(Map::new());
+        }
+        features
+            .as_object_mut()
+            .expect("made an object above")
+            .insert(name.to_string(), serde_json::to_value(value)?);
+        self.write("state.json", &serde_json::to_vec_pretty(&doc)?)
+    }
+
+    fn state_document(&self) -> Map<String, Value> {
+        std::fs::read(self.0.join("state.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
     }
 
     /// Write through a temporary file and rename, so a crash never leaves half a file.
@@ -114,6 +159,31 @@ mod tests {
         };
         config.save_state(&state).unwrap();
         assert_eq!(config.state(), state);
+    }
+
+    #[test]
+    fn feature_sections_survive_each_other_and_the_app_state() {
+        #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+        struct Drafts {
+            text: String,
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let config = ConfigDir::at(dir.path());
+        assert_eq!(config.section::<Drafts>("drafts"), Drafts::default());
+        let drafts = Drafts { text: "hi".into() };
+        config.save_section("drafts", &drafts).unwrap();
+        config.save_section("sidebar", &vec!["c1"]).unwrap();
+        config
+            .save_state(&AppState {
+                last_conversation: Some("c1".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(config.section::<Drafts>("drafts"), drafts);
+        assert_eq!(config.section::<Vec<String>>("sidebar"), ["c1"]);
+        assert_eq!(config.state().last_conversation.as_deref(), Some("c1"));
+        // A section of the wrong shape reads as the default.
+        assert_eq!(config.section::<u32>("drafts"), 0);
     }
 
     #[test]
