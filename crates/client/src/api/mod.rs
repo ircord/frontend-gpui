@@ -33,7 +33,7 @@ mod notifications;
 mod parties;
 pub mod people;
 mod saved;
-mod search;
+pub mod search;
 pub mod uploads;
 
 pub const SESSION_COOKIE: &str = "ircord_session";

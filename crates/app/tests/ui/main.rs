@@ -12,6 +12,7 @@ mod inbox_saved;
 mod message_actions;
 mod networks;
 mod people;
+mod search;
 mod server_window;
 mod settings;
 mod sidebar;

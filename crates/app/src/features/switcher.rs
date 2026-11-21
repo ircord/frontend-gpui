@@ -13,7 +13,6 @@ use ircord_client::contract::ConversationKind;
 use ircord_client::store::Workspace;
 use ircord_client::store::sidebar_order as order;
 
-use crate::route::Route;
 use crate::session::{Session, SessionEvent};
 use crate::sidebar::layout;
 use crate::theme;
@@ -196,10 +195,13 @@ impl SwitcherView {
             return;
         };
         ui::dialog::close(window, cx);
+        if let Pick::Search(query) = &pick {
+            return crate::features::search::open(&self.session, Some(query), cx);
+        }
         self.session.update(cx, |s, cx| match pick {
             Pick::Conversation(id) => s.select_conversation(&id, cx),
             Pick::Network(id) => s.select_network(&id, cx),
-            Pick::Search(_) => s.navigate(Route::Search, cx),
+            Pick::Search(_) => {}
         });
     }
 }

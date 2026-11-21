@@ -13,6 +13,8 @@
 //! - [`client`]: the handle the app holds, with the generic `call`, and
 //!   [`documents`]: the server's revisioned documents.
 //! - [`features`] and [`irc`]: what a network allows, channel ranks.
+//! - [`search_filter`]: message search filters, recent searches and where
+//!   results come from.
 //! - [`testing`] (feature `test-support`): a canned server and fixtures.
 
 pub mod address;
@@ -26,6 +28,7 @@ pub mod events;
 pub mod features;
 pub mod format;
 pub mod irc;
+pub mod search_filter;
 pub mod socket;
 pub mod store;
 #[cfg(any(test, feature = "test-support"))]
