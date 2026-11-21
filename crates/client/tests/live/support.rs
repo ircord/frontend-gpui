@@ -142,7 +142,6 @@ pub async fn irc_user(
 
 /// Make `username` a server owner with the operator token `cargo xtask
 /// integration` gives the backend, or `None` when no token was given.
-#[allow(dead_code)] // Used by the AD1 case in `admin.rs`.
 pub async fn make_owner(address: &ServerAddress, username: &str) -> Option<()> {
     let token = std::env::var("IRCORD_IT_ADMIN_TOKEN").ok()?;
     let response = reqwest::Client::new()

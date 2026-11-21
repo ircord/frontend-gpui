@@ -47,6 +47,10 @@ client; it never speaks IRC itself. Layout and commands are in
   `impl IntoElement` and call `.test_support()` at the use.
   Enter in a dialog's field also fires the dialog's Confirm, which closes
   it: a form that submits on Enter gives the dialog `.on_ok(|_, _, _| false)`.
+  GPUI timers never fire in the headless tests: a debounce sleeps on the
+  session's tokio runtime (`Session::runtime`), as `features/links.rs` does.
+- A live case that needs a server owner calls `support::make_owner`; `cargo
+  xtask integration` gives the backend an operator token for it.
 - Your own messages carry your member ID as `senderId`, not `you`; use
   `Workspace::is_self`.
 - `vendor/gpui-pre-windows` is GPUI's Windows backend with
