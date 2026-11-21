@@ -13,6 +13,7 @@ mod commands;
 mod drafts;
 mod inbox_saved;
 mod link_previews;
+mod links_view;
 mod message_actions;
 mod networks;
 mod notifications;
