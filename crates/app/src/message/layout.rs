@@ -18,12 +18,13 @@ use gpui_kit::TestSupportExt;
 use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use ircord_client::contract::{Appearance, AppearanceMessageFont, AppearanceMessageLayout};
-use ircord_client::store::Workspace;
+use ircord_client::contract::{Appearance, AppearanceMessageFont, AppearanceMessageLayout, Member};
+use ircord_client::store::{Workspace, people};
 
 use super::{MessageView, attachments, body, links, reactions, toolbar};
 use crate::registry::{self, MemberCtx};
 use crate::theme::{self, Theme};
+use crate::timeline::rows::MessageRow;
 use crate::ui;
 
 /// Message text size in pixels: the web client's range and default.
@@ -168,10 +169,61 @@ pub fn look(cx: &App) -> u64 {
     h.finish()
 }
 
+/// Who sent a row, read from the workspace when it is drawn: their member
+/// (for the picture), the server pictures may load from, and the row with
+/// the web's name and name colour for them.
+struct Sender {
+    member: Option<Member>,
+    server: Option<url::Url>,
+    row: MessageRow,
+    /// The nick, which an action's text starts with, as on the web.
+    nick: String,
+}
+
+fn sender(view: &MessageView, colored_names: bool, theme: &Theme, cx: &App) -> Sender {
+    let mut row = (*view.row).clone();
+    let session = view.ctx.session.read(cx);
+    let server = session.server().map(|s| s.url().clone());
+    let mut member = None;
+    let mut nick = row.sender.clone();
+    if let Some(client) = session.client() {
+        let w = client.read();
+        if let Some(network) = w
+            .conversation(&view.ctx.conversation)
+            .map(|c| c.network_id.clone())
+        {
+            member = people::person(&w, &row.sender_id, &network).cloned();
+            if w.is_self(&row.sender_id, &network) {
+                if let Some(name) = people::self_name(&w, &network) {
+                    row.sender = name;
+                }
+                nick = people::self_nick(&w, &network);
+            } else if let Some(m) = &member {
+                nick = m.nick.clone();
+            }
+        }
+    }
+    row.sender_color = member
+        .as_ref()
+        .and_then(|m| ui::avatar::name_color(m, colored_names, theme));
+    Sender {
+        member,
+        server,
+        row,
+        nick,
+    }
+}
+
 pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut App) -> AnyElement {
     let look = settings(cx);
-    let m = &view.row;
-    let sender_color = m.sender_color.filter(|_| look.colored_names);
+    let Sender {
+        member,
+        server,
+        row,
+        nick,
+    } = sender(&view, look.colored_names, theme, cx);
+    let m = &row;
+    let sender_color = m.sender_color;
     let name_color = sender_color.map(theme::hex).unwrap_or(theme.text);
     // A click on the name or picture opens the person (`Registry::open_person`).
     let open_person = registry::get(cx).open_person.clone().map(|open| {
@@ -241,8 +293,21 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
     });
     let inline = registry::get(cx).inline_renderers.to_vec();
     // A message of uploads only has no text left to draw.
+    // An action's text starts with the nick, as on the web; in the IRC
+    // layout the nick column ("* sage") already names them.
+    let spoken = match (m.action, look.layout) {
+        (true, Layout::Irc) => MessageRow {
+            action: false,
+            ..m.clone()
+        },
+        (true, _) => MessageRow {
+            sender: nick.clone(),
+            ..m.clone()
+        },
+        _ => m.clone(),
+    };
     let body = (!(m.body.text.trim().is_empty() && !m.attachments.is_empty()))
-        .then(|| body::render(m, &view.ctx, theme, &inline, window, cx));
+        .then(|| body::render(&spoken, &view.ctx, theme, &inline, window, cx));
     let extras: Vec<AnyElement> = reactions::render(m, &view.ctx, theme, window, cx)
         .into_iter()
         .chain(attachments::render(m, &view.ctx, theme, window, cx))
@@ -305,7 +370,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                             .text_color(name_color)
                             .truncate()
                             .hover(|d| d.underline())
-                            .child(m.sender.clone()),
+                            .child(nick.clone()),
                     )
                     .child(div().text_color(faint).child(after)),
                 format!("sender-{}", m.id),
@@ -342,7 +407,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
             let compact = look.layout == Layout::Compact;
             let avatar = if compact { 24. } else { 40. };
             let mut column = text(div()).flex_1().min_w_0().flex().flex_col().gap_0p5();
-            if m.header && !m.action {
+            if m.header {
                 column = column.child(
                     div()
                         .flex()
@@ -367,26 +432,29 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                 );
             }
             column = column.children(reply).children(body).children(extras);
-            let gutter = if m.header && !m.action {
+            let gutter = if m.header {
+                let face = match &member {
+                    Some(member) => ui::avatar::person(
+                        ui::avatar::Person {
+                            member,
+                            name: &m.sender,
+                            server: server.as_ref(),
+                            presence: false,
+                            key: &format!("message-{}", m.id),
+                        },
+                        px(avatar),
+                        theme,
+                    ),
+                    None => ui::avatar::avatar(&m.sender, None, px(avatar), theme),
+                };
                 person(
-                    ui::avatar::avatar(&m.sender, sender_color.map(theme::hex), px(avatar), theme),
+                    face.mt_0p5(),
                     format!("sender-avatar-{}", m.id),
                     m.sender.clone(),
                 )
             } else {
-                // Compact rows keep the text column without the time.
-                div()
-                    .w(px(avatar))
-                    .flex_none()
-                    .text_xs()
-                    .text_color(theme.faint)
-                    .pt_0p5()
-                    .child(if m.action && !compact {
-                        m.time.clone()
-                    } else {
-                        String::new()
-                    })
-                    .into_any_element()
+                // Grouped rows keep the text column, with no time.
+                div().w(px(avatar)).flex_none().into_any_element()
             };
             let space = if compact {
                 look.spacing as f32 / 2.

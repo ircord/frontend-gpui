@@ -548,6 +548,127 @@ pub fn online_count(w: &Workspace, conversation: &str) -> usize {
         .unwrap_or(0)
 }
 
+// ---- Pictures, tones and name colours ----
+
+/// The address to load a person's picture from, or `None` to show their
+/// initial: the web client's rule (#278, `instance-image.ts`). Anyone on
+/// IRC can point their avatar at a host they control, and loading it would
+/// tell that host the viewer's address and when they are online, so only
+/// pictures on this IRCord server load. A relative path is on the server.
+/// The web's `data:` and `blob:` previews have no counterpart here.
+pub fn picture_url(avatar_url: Option<&str>, server: &url::Url) -> Option<url::Url> {
+    let value = avatar_url?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let url = server.join(value).ok()?;
+    let usable = matches!(url.scheme(), "https" | "http")
+        && url.username().is_empty()
+        && url.password().is_none();
+    (usable && url.origin() == server.origin()).then_some(url)
+}
+
+/// The fallback disc's fill and letter colours for a member's tone name, as
+/// the web's `identity.css`; an unknown or empty tone is lavender.
+pub fn tone(color: &str) -> (u32, u32) {
+    match color {
+        "peach" => (0xe2b89e, 0x6b4232),
+        "rose" => (0xdab6c7, 0x684354),
+        "yellow" => (0xd6c69a, 0x65552b),
+        "mint" => (0xb8d6c4, 0x355944),
+        "blue" => (0xaabfd9, 0x354a65),
+        _ => (0xc6b7e8, 0x423456),
+    }
+}
+
+/// The name colours the web hashes people into, per scheme.
+const NAME_PALETTE_DARK: [u32; 8] = [
+    0xe7a1bc, 0x98b8f0, 0xc1a4ec, 0xe4b66c, 0x95ceb8, 0xe8ad89, 0x91cbd1, 0xc6c995,
+];
+const NAME_PALETTE_LIGHT: [u32; 8] = [
+    0x984263, 0x3e649d, 0x7852a0, 0x816021, 0x34705a, 0x945c36, 0x307177, 0x676c27,
+];
+
+/// `#rrggbb`, the only form a chosen name colour takes.
+fn parse_hex(value: Option<&str>) -> Option<u32> {
+    let digits = value?.strip_prefix('#')?;
+    (digits.len() == 6 && digits.chars().all(|c| c.is_ascii_hexdigit()))
+        .then(|| u32::from_str_radix(digits, 16).ok())
+        .flatten()
+}
+
+/// A person's name colour on `background`, as the web's `memberNameColor`
+/// (`identity.ts`): their own `nameColor` when set, else a stable colour
+/// hashed from `id:account`, moved until it reads at 4.5:1.
+pub fn name_color(m: &Member, dark: bool, background: u32) -> u32 {
+    use super::appearance::readable_on;
+    if let Some(own) = chosen_name_color(m) {
+        return readable_on(own, background, 4.5);
+    }
+    // FNV-1a over each character's first UTF-16 unit (the web's
+    // `for … of` with `charCodeAt(0)`), then a murmur finaliser.
+    let mut hash: u32 = 2_166_136_261;
+    for c in format!("{}:{}", m.id, m.account).chars() {
+        let unit = c.encode_utf16(&mut [0; 2])[0];
+        hash = (hash ^ u32::from(unit)).wrapping_mul(16_777_619);
+    }
+    hash = (hash ^ (hash >> 16)).wrapping_mul(0x85eb_ca6b);
+    hash = (hash ^ (hash >> 13)).wrapping_mul(0xc2b2_ae35);
+    hash ^= hash >> 16;
+    let palette = if dark {
+        &NAME_PALETTE_DARK
+    } else {
+        &NAME_PALETTE_LIGHT
+    };
+    readable_on(palette[hash as usize % palette.len()], background, 4.5)
+}
+
+/// The name colour a person picked, which shows even with coloured names
+/// off, as on the web.
+pub fn chosen_name_color(m: &Member) -> Option<u32> {
+    parse_hex(m.name_color.as_deref())
+}
+
+/// The nick the backend gives an account before any network names it.
+const PLACEHOLDER_NICK: &str = "ircord";
+
+/// Your name on a network, as the web's `selfForNetwork`: the name you set
+/// in your profile, else the network's real name, else your nick there.
+/// `None` while nothing names you yet (the web shows "You").
+pub fn self_name(w: &Workspace, network: &str) -> Option<String> {
+    use ircord_contract::MemberNameSource;
+    let me = me(w, Some(network));
+    let explicit = match me.name_source {
+        Some(MemberNameSource::Profile) => me.display_name.clone(),
+        Some(_) => String::new(),
+        None if me.display_name == "You" || me.display_name == me.nick => String::new(),
+        None => me.display_name.clone(),
+    };
+    if !explicit.trim().is_empty() {
+        return Some(explicit);
+    }
+    let n = w.network(network);
+    if let Some(real) = n
+        .and_then(|n| n.realname.as_deref())
+        .filter(|r| !r.trim().is_empty() && *r != "IRCord")
+    {
+        return Some(real.to_string());
+    }
+    match n.map(|n| n.nick.as_str()).filter(|nick| !nick.is_empty()) {
+        Some(nick) => Some(nick.to_string()),
+        None if me.nick == PLACEHOLDER_NICK || me.nick.is_empty() => None,
+        None => Some(me.nick.clone()),
+    }
+}
+
+/// Your nick on a network: the network's, else your member's.
+pub fn self_nick(w: &Workspace, network: &str) -> String {
+    w.network(network)
+        .map(|n| n.nick.clone())
+        .filter(|nick| !nick.is_empty())
+        .unwrap_or_else(|| me(w, Some(network)).nick.clone())
+}
+
 // ---- Finding people ----
 
 /// People known on `network` whose nick, account or display name matches
@@ -746,6 +867,110 @@ mod tests {
         assert_eq!(found, ["eve"]);
         assert_eq!(find_people(&w, "n1", "", 2).len(), 2);
         assert!(find_people(&w, "n2", "", 10).is_empty());
+    }
+
+    #[test]
+    fn name_colours_are_the_web_clients() {
+        // Vectors from the web's `memberNameColor` (identity.ts) for the
+        // same members: light on #ffffff, dark on #1e1e24, light on #e8e5ef.
+        let cases: [(&str, &str, Option<&str>, [u32; 3]); 7] = [
+            ("m-bob", "bob", None, [0x816021, 0xe4b66c, 0x816021]),
+            ("m-eve", "eve", None, [0x34705a, 0x95ceb8, 0x34705a]),
+            ("u-me", "me", None, [0x945c36, 0xe8ad89, 0x8d5733]),
+            ("m-zoë", "zoë", None, [0x945c36, 0xe8ad89, 0x8d5733]),
+            ("m-😀", "", None, [0x307177, 0x91cbd1, 0x2e6b71]),
+            (
+                "m-bob",
+                "bob",
+                Some("#ffff00"),
+                [0x737300, 0xffff00, 0x666600],
+            ),
+            (
+                "m-bob",
+                "bob",
+                Some("#FFFF0"),
+                [0x816021, 0xe4b66c, 0x816021],
+            ),
+        ];
+        for (id, account, own, want) in cases {
+            let mut m = member(id, "x");
+            m.account = account.into();
+            m.name_color = own.map(String::from);
+            let got = [
+                name_color(&m, false, 0xffffff),
+                name_color(&m, true, 0x1e1e24),
+                name_color(&m, false, 0xe8e5ef),
+            ];
+            assert_eq!(got, want, "{id}:{account} {own:?}");
+        }
+        let mut m = member("m-bob", "bob");
+        m.name_color = Some("lavender".into());
+        assert_eq!(chosen_name_color(&m), None, "a tone name is not a colour");
+        assert_eq!(tone("mint"), (0xb8d6c4, 0x355944));
+        assert_eq!(tone(""), tone("lavender"));
+    }
+
+    #[test]
+    fn pictures_load_only_from_this_server() {
+        // The web's `instance-image.test.ts`, for a native client whose only
+        // origin is the server it signed in to.
+        let server = url::Url::parse("https://chat.example/").unwrap();
+        let load = |v: &str| picture_url(Some(v), &server).map(|u| u.to_string());
+        assert_eq!(
+            load("/avatars/defaults/fox.webp").as_deref(),
+            Some("https://chat.example/avatars/defaults/fox.webp")
+        );
+        let upload = format!(
+            "https://chat.example/files/{}/{}/me.png",
+            "a".repeat(32),
+            "b".repeat(48)
+        );
+        assert_eq!(load(&upload), Some(upload.clone()));
+        for other in [
+            "https://tracker.example/me.png",
+            "https://chat.example.tracker.example/me.png",
+            "//tracker.example/me.png",
+            "https://other.example/files/a/b/me.png",
+            "https://chat.example:8443/me.png",
+            "http://chat.example/me.png",
+            "https://user:pass@chat.example/me.png",
+            "javascript:alert(1)",
+            "data:image/png;base64,AAAA",
+            "",
+            "   ",
+        ] {
+            assert_eq!(load(other), None, "{other}");
+        }
+        assert_eq!(picture_url(None, &server), None);
+        let local = url::Url::parse("http://127.0.0.1:8080/").unwrap();
+        assert!(picture_url(Some("http://127.0.0.1:8080/files/x/y/a.png"), &local).is_some());
+        assert!(picture_url(Some("http://127.0.0.1:9090/a.png"), &local).is_none());
+    }
+
+    #[test]
+    fn your_own_name_follows_the_network() {
+        let mut w = workspace();
+        // The account's member still carries the backend's placeholder nick.
+        w.user = member("u-me", "ircord");
+        w.networks[0].nick = "captain".into();
+        assert_eq!(self_name(&w, "n1").as_deref(), Some("captain"));
+        assert_eq!(self_nick(&w, "n1"), "captain");
+        w.networks[0].realname = Some("IRCord".into());
+        assert_eq!(
+            self_name(&w, "n1").as_deref(),
+            Some("captain"),
+            "the default real name"
+        );
+        w.networks[0].realname = Some("Karbowiak".into());
+        assert_eq!(self_name(&w, "n1").as_deref(), Some("Karbowiak"));
+        w.user.display_name = "Kar".into();
+        w.user.name_source = Some(ircord_contract::MemberNameSource::Profile);
+        assert_eq!(self_name(&w, "n1").as_deref(), Some("Kar"));
+        w.user.name_source = Some(ircord_contract::MemberNameSource::Nick);
+        assert_eq!(self_name(&w, "n1").as_deref(), Some("Karbowiak"));
+        w.networks[0].realname = None;
+        w.networks[0].nick.clear();
+        assert_eq!(self_name(&w, "n1"), None, "nothing names you yet");
     }
 
     #[test]

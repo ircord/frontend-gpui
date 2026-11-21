@@ -12,8 +12,8 @@ use crate::ui::focus::Reachable;
 use std::rc::{Rc, Weak};
 
 use gpui_kit::TestSupportExt;
-use gpui_kit::component::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::{Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::Client;
@@ -815,6 +815,52 @@ fn info_rows(
     list.into_any_element()
 }
 
+/// Facts as tiles side by side, the value over its label, as the web's card.
+fn fact_tiles(
+    id: &'static str,
+    label: &'static str,
+    facts: Vec<(String, String)>,
+    theme: &Theme,
+) -> AnyElement {
+    let mut tiles = div()
+        .id(id)
+        .test_support()
+        .role(Role::List)
+        .aria_label(label)
+        .flex()
+        .flex_wrap()
+        .gap_px()
+        .rounded(theme.radius_large)
+        .overflow_hidden()
+        .bg(theme.border);
+    for (i, (key, value)) in facts.into_iter().enumerate() {
+        tiles = tiles.child(
+            div()
+                .id(ElementId::Name(format!("{id}-{i}").into()))
+                .test_support()
+                .role(Role::ListItem)
+                .aria_label(SharedString::from(format!("{key}: {value}")))
+                .flex_1()
+                .min_w(px(110.))
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .px_3()
+                .py_2p5()
+                .bg(theme.sidebar)
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text)
+                        .child(value),
+                )
+                .child(div().text_xs().text_color(theme.muted).child(key)),
+        );
+    }
+    tiles.into_any_element()
+}
+
 fn badge(id: String, text: SharedString, theme: &Theme) -> AnyElement {
     div()
         .id(ElementId::Name(id.into()))
@@ -830,29 +876,23 @@ fn badge(id: String, text: SharedString, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// Their picture, or the initial of their name.
+/// Their picture, or the initial of their name, with their presence. The
+/// picture loads only from this server (`people::picture_url`, the web's
+/// #278 rule): an address elsewhere would learn who looks at the card.
 pub fn picture(m: &Member, session: &Session, size: Pixels, theme: &Theme) -> AnyElement {
-    let url = m.avatar_url.clone().unwrap_or_default();
-    let url = if url.starts_with("https://") || url.starts_with("http://") {
-        Some(url)
-    } else if url.starts_with('/') {
-        session.server().map(|s| s.join(&url).to_string())
-    } else {
-        None
-    };
-    match url {
-        Some(url) => img(crate::images::still(url.into()))
-            .size(size)
-            .flex_none()
-            .rounded_full()
-            .into_any_element(),
-        None => {
-            let color = u32::from_str_radix(m.color.trim_start_matches('#'), 16)
-                .ok()
-                .map(theme::hex);
-            ui::avatar::avatar(people::name(m), color, size, theme).into_any_element()
-        }
-    }
+    let server = session.server().map(|s| s.url().clone());
+    ui::avatar::person(
+        ui::avatar::Person {
+            member: m,
+            name: people::name(m),
+            server: server.as_ref(),
+            presence: true,
+            key: &format!("person-{}", m.id),
+        },
+        size,
+        theme,
+    )
+    .into_any_element()
 }
 
 fn presence(m: &Member) -> &'static str {
@@ -941,34 +981,96 @@ impl Render for ProfileCard {
             )),
             _ => {}
         }
+        // A banner, the picture over its edge, the name in their colour.
+        let colored = crate::message::layout::settings(cx).colored_names;
+        let name_color = ui::avatar::name_color(&m, colored, &theme)
+            .map(theme::hex)
+            .unwrap_or(theme.text);
+        let server = self.session.read(cx).server().map(|s| s.url().clone());
+        let banner_url = server
+            .as_ref()
+            .and_then(|s| people::picture_url(m.banner_url.as_deref(), s));
+        let accent = m
+            .profile_accent_color
+            .as_deref()
+            .and_then(|c| u32::from_str_radix(c.strip_prefix('#')?, 16).ok())
+            .map(theme::hex)
+            .unwrap_or(theme.accent);
+        let banner = div()
+            .id("profile-banner")
+            .test_support()
+            .h(px(96.))
+            .w_full()
+            .flex_none()
+            .overflow_hidden()
+            .rounded(theme.radius_large)
+            .bg(accent.opacity(0.3))
+            .children(banner_url.map(|url| {
+                img(crate::images::still(url.to_string().into()))
+                    .size_full()
+                    .object_fit(ObjectFit::Cover)
+            }));
+        let face = div()
+            .mt(px(-56.))
+            .ml_3()
+            .p_1()
+            .flex_none()
+            .rounded_full()
+            .bg(theme.main)
+            .child(ui::avatar::person(
+                ui::avatar::Person {
+                    member: &m,
+                    name: people::name(&m),
+                    server: server.as_ref(),
+                    presence: true,
+                    key: "profile",
+                },
+                px(ui::avatar::LARGE),
+                &theme,
+            ));
+        let dot = match m.status {
+            MemberStatus::Online => theme.online,
+            MemberStatus::Away => theme.away,
+            _ => theme.offline,
+        };
+        let mut handle = div()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .text_sm()
+            .text_color(theme.muted)
+            .child(format!("@{}", m.nick))
+            .child(div().size(px(7.)).rounded_full().bg(dot))
+            .child(presence(&m));
+        if let Some(p) = m.pronouns.as_deref().filter(|p| !p.is_empty()) {
+            handle = handle.child(format!("· {p}"));
+        }
         let mut names = div()
             .flex()
             .flex_col()
+            .gap_0p5()
             .min_w_0()
             .child(
                 div()
                     .id("profile-name")
                     .test_support()
                     .aria_label(SharedString::from(people::name(&m).to_string()))
-                    .text_lg()
+                    .text_2xl()
                     .font_weight(FontWeight::BOLD)
+                    .text_color(name_color)
                     .child(people::name(&m).to_string()),
             )
-            .child(div().text_sm().text_color(theme.muted).child(
-                match m.pronouns.as_deref().filter(|p| !p.is_empty()) {
-                    Some(p) => format!("{} · {p} · {}", m.nick, presence(&m)),
-                    None => format!("{} · {}", m.nick, presence(&m)),
-                },
-            ));
+            .child(handle);
         if !badges.is_empty() {
             names = names.child(div().flex().flex_wrap().gap_1().pt_1().children(badges));
         }
         card = card.child(
             div()
                 .flex()
-                .items_center()
-                .gap_3()
-                .child(picture(&m, self.session.read(cx), px(64.), &theme))
+                .flex_col()
+                .gap_2()
+                .child(banner)
+                .child(face)
                 .child(names),
         );
         if let Some(headline) = m.headline.clone().filter(|h| !h.is_empty()) {
@@ -1010,6 +1112,9 @@ impl Render for ProfileCard {
                     .id("profile-bio")
                     .test_support()
                     .aria_label(SharedString::from(m.bio.clone()))
+                    .pl_3()
+                    .border_l_2()
+                    .border_color(accent)
                     .text_sm()
                     .child(m.bio.clone()),
             );
@@ -1072,6 +1177,7 @@ impl Render for ProfileCard {
             for (id, name) in channels {
                 let session = self.session.clone();
                 let text = format!("#{}", name.trim_start_matches('#'));
+                let hover = theme.hover;
                 list = list.child(
                     div()
                         .id(ElementId::Name(format!("profile-channel-{id}").into()))
@@ -1079,13 +1185,20 @@ impl Render for ProfileCard {
                         .role(Role::Link)
                         .reachable(&theme)
                         .aria_label(SharedString::from(text.clone()))
-                        .px_2()
-                        .rounded_md()
-                        .bg(theme.accent.opacity(0.15))
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .px_2p5()
+                        .py_0p5()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(theme.border)
                         .text_sm()
-                        .text_color(theme.link)
+                        .text_color(theme.text)
                         .cursor_pointer()
-                        .child(text)
+                        .hover(move |d| d.bg(hover))
+                        .child(div().text_color(theme.faint).child("#"))
+                        .child(name.trim_start_matches('#').to_string())
                         .on_click(move |_, window, cx| {
                             ui::dialog::close(window, cx);
                             session.update(cx, |s, cx| s.select_conversation(&id, cx));
@@ -1127,7 +1240,7 @@ impl Render for ProfileCard {
             details.push((t!("people-profile-timezone").to_string(), tz));
         }
         if !details.is_empty() {
-            card = card.child(info_rows(
+            card = card.child(fact_tiles(
                 "profile-details",
                 t!("people-profile-details"),
                 details,
@@ -1217,7 +1330,9 @@ impl Render for ProfileCard {
             let asking = matches!(ctcp, Some(Lookup::Loading));
             let (client2, network, nick) = (client.clone(), self.network.clone(), m.nick.clone());
             let ask = Button::new("profile-ask-client")
-                .ghost()
+                .outline()
+                .small()
+                .icon(IconName::RefreshCw)
                 .label(if asking {
                     t!("people-ctcp-asking")
                 } else if ctcp.is_some() {
@@ -1302,9 +1417,10 @@ impl Render for ProfileCard {
                 );
             }
             let (network, member, nick) = (self.network.clone(), m.id.clone(), m.nick.clone());
-            actions = actions.child(
+            actions = actions.w_full().flex_col().child(
                 Button::new("profile-message")
                     .primary()
+                    .w_full()
                     .label(t!("people-menu-message"))
                     .on_click(move |_, window, cx| {
                         message(&network, Some(member.clone()), &nick, window, cx)
@@ -1398,13 +1514,17 @@ fn direct_intro(ctx: &ConversationCtx, _window: &mut Window, cx: &mut App) -> Op
             .flex()
             .flex_col()
             .gap_3()
-            .child(picture(&m, session, px(72.), &theme))
+            .child(picture(&m, session, px(ui::avatar::LARGE), &theme))
             .child(column)
             .child(
-                Button::new("direct-intro-profile")
-                    .ghost()
-                    .label(t!("people-menu-profile"))
-                    .on_click(move |_, window, cx| open(&open_ctx, window, cx)),
+                div().flex().child(
+                    Button::new("direct-intro-profile")
+                        .outline()
+                        .small()
+                        .icon(IconName::User)
+                        .label(t!("people-menu-profile"))
+                        .on_click(move |_, window, cx| open(&open_ctx, window, cx)),
+                ),
             )
             .into_any_element(),
     )

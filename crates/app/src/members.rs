@@ -98,6 +98,8 @@ impl Render for MembersView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
         let filter = self.filter(window, cx);
+        let colored_names = crate::message::layout::settings(cx).colored_names;
+        let server = self.session.read(cx).server().map(|s| s.url().clone());
         let session = self.session.read(cx);
         let (Some(client), Some(id)) = (session.client().cloned(), session.conversation.clone())
         else {
@@ -205,18 +207,29 @@ impl Render for MembersView {
                     .font_weight(FontWeight::BOLD)
                     .text_color(theme.muted)
                     .child(label.to_uppercase())
-                    .child(div().text_color(theme.faint).child(count.to_string())),
+                    .child(
+                        div()
+                            .px_1p5()
+                            .rounded_full()
+                            .bg(theme.selected.opacity(0.6))
+                            .text_size(px(10.))
+                            .font_weight(FontWeight::NORMAL)
+                            .text_color(theme.faint)
+                            .child(count.to_string()),
+                    ),
             );
             for (mid, prefix) in group.members {
                 let Some(m) = w.members.get(&mid) else {
                     continue;
                 };
-                let dot = match m.status {
-                    MemberStatus::Online => theme.online,
-                    MemberStatus::Away => theme.away,
-                    _ => theme.offline,
+                // Your own record can still carry the backend's placeholder
+                // nick; the network knows what you are called there.
+                let name = if w.is_self(&m.id, &conversation.network_id) {
+                    people::self_name(&w, &conversation.network_id)
+                        .unwrap_or_else(|| people::name(m).to_string())
+                } else {
+                    people::name(m).to_string()
                 };
-                let name = people::name(m).to_string();
                 let ignored = people::is_ignored(&ignore, m);
                 let status = people::status_label(m, now);
                 let bot = m.role == MemberRole::Bot;
@@ -248,13 +261,21 @@ impl Render for MembersView {
                 let name_color = if faded {
                     theme.faint
                 } else {
-                    Some(m.name_color.clone().unwrap_or_default())
-                        .filter(|c| !c.is_empty())
-                        .or_else(|| (!m.color.is_empty()).then(|| m.color.clone()))
-                        .and_then(|c| u32::from_str_radix(c.trim_start_matches('#'), 16).ok())
+                    ui::avatar::name_color(m, colored_names, &theme)
                         .map(theme::hex)
                         .unwrap_or(theme.text)
                 };
+                let picture = ui::avatar::person(
+                    ui::avatar::Person {
+                        member: m,
+                        name: &name,
+                        server: server.as_ref(),
+                        presence: true,
+                        key: &format!("member-{}", m.id),
+                    },
+                    px(ui::avatar::SMALL),
+                    &theme,
+                );
                 panel = panel.child(
                     div()
                         .id(ElementId::Name(format!("member-{}", m.id).into()))
@@ -270,10 +291,17 @@ impl Render for MembersView {
                         .gap_2()
                         .cursor_pointer()
                         .hover(|d| d.bg(theme.hover))
-                        .when(m.status == MemberStatus::Offline, |d| d.opacity(0.5))
-                        .child(div().size(px(10.)).flex_none().rounded_full().bg(dot))
+                        .child(picture.when(m.status == MemberStatus::Offline, |d| d.opacity(0.45)))
                         .when(!prefix.is_empty(), |d| {
-                            d.child(div().text_color(theme.online).text_sm().child(prefix))
+                            d.child(
+                                div()
+                                    .mr(px(-6.))
+                                    .font_family(theme.mono_font.clone())
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(theme.online)
+                                    .text_sm()
+                                    .child(prefix),
+                            )
                         })
                         .child(
                             div()

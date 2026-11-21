@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
-use gpui_kit::{AppContext, Entity, MouseButton, TestAppContext};
+use gpui_kit::{AppContext, Entity, MouseButton, ScrollDelta, TestAppContext, point, px};
 use ircord_app::Screen;
 use ircord_app::composer::ComposerView;
 use ircord_app::timeline::rows::Row;
@@ -226,6 +226,14 @@ fn the_card_looks_them_up_and_asks_their_client(cx: &mut TestAppContext) {
     assert_eq!(label(&f, cx, "profile-bio"), "Sails a lot.");
     assert!(shows(&f, cx, "profile-channel-c-general"));
 
+    // The card scrolls under its banner and picture.
+    frame(&f, cx, |window, cx| {
+        window.scroll(
+            "profile-card",
+            ScrollDelta::Pixels(point(px(0.), px(-800.))),
+            cx,
+        )
+    });
     click(&f, cx, "profile-ask-client");
     wait_for(&f, cx, "profile-ctcp-2");
     assert_eq!(
@@ -237,6 +245,50 @@ fn the_card_looks_them_up_and_asks_their_client(cx: &mut TestAppContext) {
     assert_eq!(label(&f, cx, "profile-ctcp-0"), "Client: HexChat 2.16");
     assert_eq!(label(&f, cx, "profile-ctcp-1"), "Their time: No reply");
     assert_eq!(label(&f, cx, "profile-ctcp-2"), "Ping: 42 ms");
+}
+
+#[gpui_kit::test]
+fn pictures_show_from_this_server_and_you_by_your_nick(cx: &mut TestAppContext) {
+    let mut s = workspace();
+    for m in &mut s.members {
+        if m.id == "m-bob" {
+            m.avatar_url = Some("/files/bob/avatar.png".into());
+        }
+        if m.id == "m-eve" {
+            // Somewhere else: loading it would tell that host who looks.
+            m.avatar_url = Some("https://tracker.example/eve.png".into());
+        }
+    }
+    // Your own record still carries the backend's placeholder nick.
+    let mut me = s.members[0].clone();
+    me.id = "u-me".into();
+    me.nick = "ircord".into();
+    me.account = "me".into();
+    me.avatar_url = None;
+    s.members.push(me);
+    s.conversations[0].member_ids.push("u-me".into());
+    s.networks[0].nick = "captain".into();
+    let f = open(cx, s, |_| {});
+    wait_for(&f, cx, "sender-avatar-1");
+    assert!(shows(&f, cx, "avatar-picture-message-1"), "bob's message");
+    assert!(
+        shows(&f, cx, "avatar-picture-member-m-bob"),
+        "bob's member row"
+    );
+    assert!(
+        !shows(&f, cx, "avatar-picture-member-m-eve"),
+        "an address elsewhere"
+    );
+    assert!(shows(&f, cx, "member-m-eve"));
+    assert_eq!(label(&f, cx, "member-u-me"), "captain");
+
+    // The card follows the same rule.
+    click(&f, cx, "member-m-eve");
+    wait_for(&f, cx, "profile-card");
+    assert!(!shows(&f, cx, "avatar-picture-profile"));
+    frame(&f, cx, |window, cx| window.press("escape", cx));
+    click(&f, cx, "member-m-bob");
+    wait_for(&f, cx, "avatar-picture-profile");
 }
 
 #[gpui_kit::test]
