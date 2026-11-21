@@ -38,8 +38,7 @@ use gpui_kit::*;
 use ircord_client::store::{SaveState, Workspace};
 
 use crate::registry::{
-    self, HeaderCtx, Pane, RowTarget, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection,
-    Slot,
+    self, Pane, RowTarget, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection,
 };
 use crate::route::{PaneKind, Route};
 use crate::session::{Session, SessionEvent};
@@ -66,22 +65,6 @@ pub fn init(cx: &mut App) {
             .add(Pane::new(PaneKind::Settings, |ctx, window, cx| {
                 view(&ctx.session, window, cx).into_any_element()
             }));
-        r.header_buttons.add(
-            Slot::new("settings", |ctx: &HeaderCtx, _, cx| {
-                let session = ctx.session.clone();
-                Some(
-                    ui::icon::button(
-                        "open-settings",
-                        ui::icon::IconName::Settings,
-                        t!("settings-open"),
-                        theme::get(cx),
-                        move |_, _, cx| open(&session, None, cx),
-                    )
-                    .into_any_element(),
-                )
-            })
-            .order(100),
-        );
     });
 }
 

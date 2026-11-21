@@ -191,7 +191,7 @@ fn the_member_list_counts_filters_marks_and_hides(cx: &mut TestAppContext) {
 
     click(&f, cx, "hide-members");
     assert!(!shows(&f, cx, "member-list"));
-    click(&f, cx, "show-members");
+    click(&f, cx, "members-toggle");
     assert!(shows(&f, cx, "member-list"));
 }
 

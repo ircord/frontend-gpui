@@ -2,7 +2,6 @@
 
 settings-title = Settings
 settings-empty = No settings yet.
-settings-open = Settings
 
 # The headings the sections are listed under
 settings-group-user = User settings

@@ -14,7 +14,6 @@ people-members-count = { $online } of { $total } online
 people-members-filter = Find someone here
 people-members-no-matches = Nobody here matches “{ $filter }”.
 people-members-hide = Hide the member list
-people-members-show = Show the member list
 people-group-owners = Owners
 people-group-admins = Admins
 people-group-operators = Operators

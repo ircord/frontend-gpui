@@ -4,8 +4,8 @@
 //! your messages and direct messages, newest first under day headings, in
 //! six views (all, unread, mentions, replies, direct, dismissed). Opening an
 //! item jumps to it in its conversation; dismissing one only hides it here.
-//! Neither marks the conversation read. The button in the conversation
-//! header opens it and shows the unread count. Follows the web client's
+//! Neither marks the conversation read. Its row at the top of the sidebar
+//! opens it and shows the unread count. Follows the web client's
 //! `InboxPage.vue`.
 //!
 //! The row helpers at the bottom are shared with `features::saved`.
@@ -20,7 +20,7 @@ use ircord_client::contract::{
 use ircord_client::store::inbox::{self, Filter, List};
 use ircord_client::store::{Connection, Workspace, parse_time};
 
-use crate::registry::{self, HeaderCtx, Pane, Slot};
+use crate::registry::{self, Pane, SidebarCtx, Slot};
 use crate::route::{PaneKind, Route};
 use crate::session::{Session, SessionEvent};
 use crate::theme::{self, Theme};
@@ -32,11 +32,11 @@ pub fn init(cx: &mut App) {
         r.panes.add(Pane::new(PaneKind::Inbox, |ctx, _, cx| {
             view(&ctx.session, cx).into_any_element()
         }));
-        r.header_buttons.add(
-            Slot::new("inbox", |ctx: &HeaderCtx, _, cx| {
+        r.sidebar_footer.add(
+            Slot::new("inbox", |ctx: &SidebarCtx, _, cx| {
                 Some(badge(&ctx.session, cx).into_any_element())
             })
-            .order(80),
+            .order(-40),
         );
     });
 }
@@ -112,12 +112,10 @@ pub struct BadgeView {
 
 impl BadgeView {
     fn new(session: Entity<Session>, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.subscribe(&session, |_, _, event: &SessionEvent, cx| {
-            if let SessionEvent::Changed(changes) = event
-                && changes.touches(inbox::TOPIC)
-            {
-                cx.notify();
-            }
+        let subscription = cx.subscribe(&session, |_, _, event: &SessionEvent, cx| match event {
+            SessionEvent::Changed(changes) if changes.touches(inbox::TOPIC) => cx.notify(),
+            SessionEvent::Route | SessionEvent::Selection => cx.notify(),
+            _ => {}
         });
         Self {
             session,
@@ -129,7 +127,9 @@ impl BadgeView {
 impl Render for BadgeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
-        let unread = match self.session.read(cx).client() {
+        let session = self.session.read(cx);
+        let active = session.route() == Some(Route::Inbox);
+        let unread = match session.client() {
             Some(client) => {
                 inbox::keep(client);
                 client.read().inbox.unread.unwrap_or(0)
@@ -141,40 +141,24 @@ impl Render for BadgeView {
         } else {
             t!("inbox-saved-inbox").into()
         };
+        let count = (unread > 0).then(|| {
+            if unread > 99 {
+                "99+".to_string()
+            } else {
+                unread.to_string()
+            }
+        });
         let session = self.session.clone();
-        div()
-            .relative()
-            .child(ui::icon::button(
-                "open-inbox",
-                IconName::Inbox,
-                label,
-                &theme,
-                move |_, _, cx| open(&session, cx),
-            ))
-            .when(unread > 0, |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .top(px(-4.))
-                        .right(px(-4.))
-                        .min_w(px(16.))
-                        .h(px(16.))
-                        .px_1()
-                        .rounded_full()
-                        .bg(theme.danger)
-                        .text_color(theme.on_accent)
-                        .text_xs()
-                        .font_weight(FontWeight::BOLD)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(if unread > 99 {
-                            "99+".to_string()
-                        } else {
-                            unread.to_string()
-                        }),
-                )
-            })
+        crate::sidebar::page_row(
+            "open-inbox",
+            IconName::Inbox,
+            t!("inbox-saved-inbox"),
+            label,
+            count,
+            active,
+            &theme,
+            move |_, _, cx| open(&session, cx),
+        )
     }
 }
 

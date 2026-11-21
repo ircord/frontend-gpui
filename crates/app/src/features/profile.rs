@@ -28,10 +28,7 @@ use ircord_client::store::people::{self, Device, Lookup};
 use ircord_client::store::{Changes, parse_time, timeline, topic};
 
 use crate::composer::ComposerView;
-use crate::members;
-use crate::registry::{
-    self, ConversationCtx, HeaderCtx, MemberCtx, MenuItem, NetworkCtx, RowFilter, Slot,
-};
+use crate::registry::{self, ConversationCtx, MemberCtx, MenuItem, NetworkCtx, RowFilter, Slot};
 use crate::route::Route;
 use crate::session::{NO_PANEL, Session, SessionEvent};
 use crate::theme::{self, Theme};
@@ -249,34 +246,6 @@ pub fn init(cx: &mut App) {
 
         r.timeline_start
             .add(Slot::new("people-direct-intro", direct_intro));
-
-        r.header_buttons.add(
-            Slot::new("people-show-members", |ctx: &HeaderCtx, _, cx| {
-                let session = ctx.session.read(cx);
-                let id = ctx.route.conversation()?;
-                let channel = session
-                    .client()?
-                    .read()
-                    .conversation(id)
-                    .is_some_and(|c| c.kind == ConversationKind::Channel);
-                if !channel || !members::hidden(session) {
-                    return None;
-                }
-                let theme = theme::get(cx).clone();
-                let target = ctx.session.clone();
-                Some(
-                    ui::icon::button(
-                        "show-members",
-                        IconName::PanelRightOpen,
-                        t!("people-members-show"),
-                        &theme,
-                        move |_, _, cx| members::set_hidden(&target, false, cx),
-                    )
-                    .into_any_element(),
-                )
-            })
-            .order(90),
-        );
     });
 }
 
