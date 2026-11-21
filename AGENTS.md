@@ -34,6 +34,9 @@ client; it never speaks IRC itself. Layout and commands are in
   goes through `t!("id")`, with the text in its own
   `crates/app/i18n/en/<area>.ftl` (IDs start with the file name; the `i18n`
   tests fail on a missing or unused ID). Colours come from `theme::get(cx)`.
+  A control drawn from a `div` takes `.reachable(&theme)` (`ui/focus.rs`)
+  after `.test_support()`, so Tab reaches it; `tests/ui/audit.rs` fails on
+  any shown control without a role, a name or keyboard reach.
   UI tests share `tests/ui/fixture.rs`, which runs the app against the
   `CannedServer`; wait with `fixture::wait`, not one `run_until_parked`.
   `window.click` refuses an element scrolled out of view: scroll its

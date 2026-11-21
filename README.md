@@ -76,6 +76,13 @@ or quits. On Linux the icon is a StatusNotifierItem, which KDE, Cinnamon, XFCE
 and Ubuntu's GNOME show; plain GNOME needs the AppIndicator extension. With no
 tray to show it, closing the window quits IRCord instead.
 
+**Keyboard and screen readers.** Tab and Shift+Tab move through every
+control, Enter or Space runs the one with the ring, and Ctrl+/ lists the
+other keys. IRCord exposes its controls to the system's accessibility
+interface (UI Automation on Windows, AT-SPI on Linux, NSAccessibility on
+macOS), and a screen reader hears new messages in the open conversation as
+one short update every few seconds at most.
+
 The icons in `packaging/` are drawn by `packaging/icon.py`; change the design
 there and run it again.
 
