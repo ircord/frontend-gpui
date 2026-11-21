@@ -940,6 +940,7 @@ impl Render for SidebarView {
         } else {
             Button::new("self-menu")
                 .ghost()
+                .accessibility_label(t!("sidebar-self-menu"))
                 .tooltip(t!("sidebar-self-menu"))
                 .flex_1()
                 .min_w_0()

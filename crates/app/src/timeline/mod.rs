@@ -9,6 +9,7 @@
 //! message unread, folded join and part runs, rows to retry history that
 //! failed to load, marked mentions, and exporting a conversation's log.
 
+pub mod announce;
 pub mod export;
 pub mod rows;
 
@@ -50,6 +51,41 @@ actions!(
         JumpToPresent
     ]
 );
+
+/// An announcement in the catalog's words.
+fn announcement(say: announce::Say) -> String {
+    let who = |who: String| {
+        if who.is_empty() {
+            t!("audit-someone").to_string()
+        } else {
+            who
+        }
+    };
+    let count = |count: usize| {
+        if count == 1 {
+            t!("audit-new-message").to_string()
+        } else {
+            t!("audit-new-messages", count = count).to_string()
+        }
+    };
+    match say {
+        announce::Say::Latest { who: w, text } => {
+            t!("audit-latest-single", who = who(w), text = text).to_string()
+        }
+        announce::Say::Several {
+            count: n,
+            who: w,
+            text,
+        } => t!(
+            "audit-latest-multiple",
+            count = count(n),
+            who = who(w),
+            text = text
+        )
+        .to_string(),
+        announce::Say::Count(n) => count(n),
+    }
+}
 
 /// The timeline view on screen, for the keys.
 #[derive(Default)]
@@ -535,6 +571,12 @@ pub struct TimelineView {
     detached: bool,
     /// The message settings the rows were measured with (`layout::look`).
     look: u64,
+    /// New messages for screen readers (Q1).
+    announcer: announce::Announcer,
+    /// The live region's text.
+    announcement: SharedString,
+    /// An announcement waits for the pace.
+    announce_waiting: bool,
     _subscription: Subscription,
 }
 
@@ -577,6 +619,9 @@ impl TimelineView {
             at_end: true,
             detached: false,
             look: 0,
+            announcer: announce::Announcer::default(),
+            announcement: SharedString::default(),
+            announce_waiting: false,
             _subscription: subscription,
         };
         view.install_scroll_handler(cx);
@@ -634,6 +679,7 @@ impl TimelineView {
         let switched = conversation != self.conversation;
         let mut target = None;
         let mut detached = false;
+        let mut seen = Vec::new();
         // The message settings shown (`layout::look`).
         let look = message::layout::look(cx);
         let rows = match (&client, &conversation) {
@@ -648,6 +694,7 @@ impl TimelineView {
                 });
                 let w = client.read();
                 detached = w.timelines.get(id).is_some_and(|t| t.has_newer);
+                seen = announce::seen(&w, id);
                 let focused = w.focused(id).map(str::to_string);
                 if w.reading.focus_seq != self.jumped {
                     target = focused.clone().map(|m| (m, w.reading.focus_seq));
@@ -704,7 +751,50 @@ impl TimelineView {
         }
         self.keys = keys;
         self.rows = Rc::new(rows);
+        if switched {
+            self.announcement = SharedString::default();
+        }
+        let following = self.at_end && !self.detached;
+        if self
+            .announcer
+            .observe(self.conversation.as_deref(), &seen, following)
+        {
+            self.announce(cx);
+        }
         cx.notify();
+    }
+
+    /// Say what is new now, or once the pace allows it.
+    fn announce(&mut self, cx: &mut Context<Self>) {
+        let now = std::time::Instant::now();
+        if let Some(say) = self.announcer.take(now) {
+            self.announcement = announcement(say).into();
+            cx.notify();
+            return;
+        }
+        let wait = self.announcer.wait(now);
+        if self.announce_waiting || wait.is_zero() {
+            return;
+        }
+        self.announce_waiting = true;
+        // GPUI timers do not run in the headless tests; the session's
+        // runtime does.
+        let runtime = self.session.read(cx).runtime.clone();
+        let paced = runtime.spawn(async move { tokio::time::sleep(wait).await });
+        cx.spawn(async move |this, cx| {
+            let _ = paced.await;
+            this.update(cx, |this, cx| {
+                this.announce_waiting = false;
+                this.announce(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The live region's text, for tests.
+    pub fn announcement(&self) -> &str {
+        &self.announcement
     }
 
     pub fn row_count(&self) -> usize {
@@ -1192,6 +1282,8 @@ impl Render for TimelineView {
         div()
             .id("timeline")
             .test_support()
+            .role(Role::Log)
+            .aria_label(t!("audit-timeline"))
             .relative()
             .flex_1()
             .min_h_0()
@@ -1215,5 +1307,19 @@ impl Render for TimelineView {
                     .child(typing_text(&typing)),
             )
             .children(jump)
+            .child(
+                // The one live region for new messages (`announce`).
+                div()
+                    .id("timeline-announcement")
+                    .test_support()
+                    .role(Role::Status)
+                    .aria_label(self.announcement.clone())
+                    .a11y_synthetic_children(|tree| {
+                        tree.parent_node().set_live(accesskit::Live::Polite);
+                    })
+                    .absolute()
+                    .size_0()
+                    .overflow_hidden(),
+            )
     }
 }

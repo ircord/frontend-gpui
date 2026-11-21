@@ -252,9 +252,22 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
 
     let on_hover = view.on_hover.clone();
     let row_hover = theme.row_hover;
+    // A screen reader names the row by who and when, as the web client does;
+    // its text and controls are read inside it.
+    let row_label = if m.mention {
+        t!(
+            "audit-message-row-mention",
+            sender = m.sender,
+            time = m.time
+        )
+    } else {
+        t!("audit-message-row", sender = m.sender, time = m.time)
+    };
     let mut frame = div()
         .id(ElementId::Name(format!("message-{}", m.id).into()))
         .test_support()
+        .role(Role::Article)
+        .aria_label(SharedString::from(row_label))
         .relative()
         .w_full()
         .px_4()

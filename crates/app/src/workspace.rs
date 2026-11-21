@@ -123,7 +123,7 @@ impl WorkspaceView {
         theme: &Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
+    ) -> impl IntoElement + use<> {
         let session = self.session.read(cx);
         let (title, topic, kind, party) = session
             .client()
@@ -161,8 +161,12 @@ impl WorkspaceView {
             .iter()
             .filter_map(|slot| (slot.render)(&ctx, window, cx))
             .collect();
+        let heading = format!("{prefix}{title}");
         div()
             .id("conversation-header")
+            .test_support()
+            .role(Role::Banner)
+            .aria_label(SharedString::from(heading.clone()))
             .h(px(48.))
             .flex_none()
             .px_4()
@@ -173,6 +177,11 @@ impl WorkspaceView {
             .border_color(theme.rail)
             .child(
                 div()
+                    .id("conversation-title")
+                    .test_support()
+                    .role(Role::Heading)
+                    .aria_level(1)
+                    .aria_label(SharedString::from(heading))
                     .flex()
                     .gap_1()
                     .font_weight(FontWeight::BOLD)
@@ -306,6 +315,9 @@ impl Render for WorkspaceView {
             main = main.child(
                 div()
                     .id("notice")
+                    .test_support()
+                    .role(Role::Status)
+                    .aria_label(SharedString::from(notice.clone()))
                     .px_4()
                     .py_1()
                     .text_sm()

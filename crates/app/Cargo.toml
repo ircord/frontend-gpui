@@ -10,6 +10,10 @@ name = "ircord"
 path = "src/main.rs"
 
 [dependencies]
+# The node type GPUI's accessibility tree is built from, for the live
+# region that announces new messages (timeline/announce.rs). Keep it the
+# version gpui-kit uses.
+accesskit = "0.24"
 ircord-client.workspace = true
 anyhow.workspace = true
 url.workspace = true
