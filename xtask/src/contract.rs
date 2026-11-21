@@ -78,14 +78,23 @@ pub fn run(root: &Path, check: bool) -> Result<()> {
 
 /// The backend checkout: `IRCORD_BACKEND`, or `../ircord-backend` beside this repository.
 fn backend_dir(root: &Path) -> Result<PathBuf> {
-    let dir = match std::env::var_os("IRCORD_BACKEND") {
-        Some(dir) => PathBuf::from(dir),
-        None => root.join("../ircord-backend"),
+    let (dir, from_env) = match std::env::var_os("IRCORD_BACKEND") {
+        Some(dir) => (PathBuf::from(dir), true),
+        None => (root.join("../ircord-backend"), false),
     };
     if !dir.join("openapi.json").is_file() {
+        let shown = dir.canonicalize().unwrap_or(dir);
+        if from_env {
+            bail!(
+                "IRCORD_BACKEND names {}, which is not an ircord-backend checkout (it has no openapi.json)",
+                shown.display()
+            );
+        }
         bail!(
-            "no backend checkout at {} (set IRCORD_BACKEND to the ircord-backend checkout)",
-            dir.display()
+            "no backend checkout at {} (the default, beside this repository). \
+             Set IRCORD_BACKEND to the ircord-backend checkout, for example \
+             `IRCORD_BACKEND=/path/to/ircord-backend cargo xtask ladder`",
+            shown.display()
         );
     }
     Ok(dir)
