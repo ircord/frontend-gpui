@@ -43,6 +43,7 @@ notifications-delivery-open = While open
 notifications-delivery-push = Push
 notifications-sound = Sound
 notifications-sound-off = Off
+notifications-sound-test = Play sound
 notifications-preview = Show message previews
 
 # Levels

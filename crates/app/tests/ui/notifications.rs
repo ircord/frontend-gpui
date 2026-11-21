@@ -2,15 +2,22 @@
 //! server: the settings document round-trips, this device is set up and
 //! tested, and another device's choices save.
 
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext, TestAppContext};
+use gpui_kit::{AppContext, SystemNotificationResponse, TestAppContext};
+use ircord_app::media::sound;
+use ircord_app::notify::picture::Fixed;
+use ircord_client::contract::{Alert, AlertDelivery};
 use ircord_client::testing::{CannedServer, Reply};
+use ircord_platform::toast::Toast;
 use serde_json::{Value, json};
 
-use crate::fixture::{Fixture, bootstrap, open_with, wait};
+use crate::fixture::{Fixture, bootstrap, open, open_with, wait};
 
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -229,6 +236,7 @@ fn account_wide_settings_round_trip(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn this_device_is_set_up_once_tested_and_its_choices_save(cx: &mut TestAppContext) {
+    let toasts = record_toasts(cx);
     let f = signed_in(cx, false);
     // The server alerts no device that was never set up: the app does it.
     let setup = f
@@ -245,12 +253,11 @@ fn this_device_is_set_up_once_tested_and_its_choices_save(cx: &mut TestAppContex
     assert!(selected(&f, cx, "notifications-device-choice-open"));
     click(&f, cx, "notifications-send-test");
     shows(&f, cx, "notifications-test-result");
-    let shown = cx.shown_system_notifications();
+    let shown = toasts.borrow().clone();
     assert!(
-        shown
-            .iter()
-            .any(|n| n.tag.as_ref() == "ircord-test-notification"
-                && n.body.as_ref() == "This is a test notification."),
+        shown.iter().any(
+            |n| n.tag == "ircord-test-notification" && n.body == "This is a test notification."
+        ),
         "a test notification shows: {shown:?}"
     );
 
@@ -351,4 +358,151 @@ fn search_finds_notification_rows(cx: &mut TestAppContext) {
         label(&f, cx, "settings-content").as_deref(),
         Some("Notifications")
     );
+}
+
+/// One toast as the test sink saw it.
+#[derive(Clone, Debug)]
+pub(crate) struct Shown {
+    pub tag: String,
+    pub title: String,
+    pub body: String,
+    pub sound: bool,
+    pub picture: Option<PathBuf>,
+}
+
+/// Send every toast to the returned list instead of the system, and play
+/// through a device that makes no sound.
+pub(crate) fn record_toasts(cx: &mut TestAppContext) -> Rc<RefCell<Vec<Shown>>> {
+    let shown = Rc::new(RefCell::new(Vec::new()));
+    let log = shown.clone();
+    cx.update(|cx| {
+        sound::use_null(cx);
+        ircord_app::notify::set_sink(
+            cx,
+            Rc::new(move |toast: &Toast| {
+                log.borrow_mut().push(Shown {
+                    tag: toast.tag.clone(),
+                    title: toast.title.clone(),
+                    body: toast.body.clone(),
+                    sound: toast.sound,
+                    picture: toast.picture.clone(),
+                });
+            }),
+        );
+    });
+    shown
+}
+
+/// An alert for `conversation`, as the server sends it.
+fn alert_in(conversation: &str, delivery: AlertDelivery, sound: bool) -> Alert {
+    Alert {
+        alert_id: "a1".into(),
+        conversation_id: conversation.into(),
+        title: "bob in #random".into(),
+        body: "are you there?".into(),
+        delivery,
+        preview: true,
+        sound,
+        ..Default::default()
+    }
+}
+
+#[gpui_kit::test]
+fn an_alert_with_the_window_away_is_a_toast_with_its_picture(cx: &mut TestAppContext) {
+    let f = open(cx, true);
+    bootstrap(&f, cx);
+    let toasts = record_toasts(cx);
+    let picture = PathBuf::from("avatar.png");
+    cx.update(|cx| cx.set_global(Fixed(Some(picture.clone()))));
+    f.session.update(cx, |s, _| s.set_window_active(false));
+    f.session.update(cx, |s, cx| {
+        ircord_app::notify::show(s, alert_in("c-random", AlertDelivery::Os, true), cx)
+    });
+    cx.run_until_parked();
+
+    // Linux plays the chime itself; Windows and macOS let the toast play it.
+    let system = cfg!(any(windows, target_os = "macos"));
+    let shown = toasts.borrow().clone();
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert_eq!(shown[0].title, "bob in #random");
+    assert_eq!(shown[0].body, "are you there?");
+    assert_eq!(shown[0].sound, system);
+    assert_eq!(shown[0].picture, Some(picture));
+    cx.update(|cx| assert_eq!(sound::chimes(cx), u32::from(!system)));
+}
+
+#[gpui_kit::test]
+fn the_window_in_use_gets_a_chime_and_no_toast(cx: &mut TestAppContext) {
+    let f = open(cx, true);
+    bootstrap(&f, cx);
+    let toasts = record_toasts(cx);
+    f.session.update(cx, |s, _| s.set_window_active(true));
+    f.session.update(cx, |s, cx| {
+        ircord_app::notify::show(s, alert_in("c-random", AlertDelivery::Os, true), cx)
+    });
+    cx.run_until_parked();
+    assert!(toasts.borrow().is_empty(), "{:?}", toasts.borrow());
+    cx.update(|cx| assert_eq!(sound::chimes(cx), 1));
+}
+
+#[gpui_kit::test]
+fn a_sound_delivery_is_a_chime_and_never_a_toast(cx: &mut TestAppContext) {
+    let f = open(cx, true);
+    bootstrap(&f, cx);
+    let toasts = record_toasts(cx);
+    f.session.update(cx, |s, _| s.set_window_active(false));
+    f.session.update(cx, |s, cx| {
+        ircord_app::notify::show(s, alert_in("c-random", AlertDelivery::Sound, true), cx)
+    });
+    cx.run_until_parked();
+    assert!(toasts.borrow().is_empty(), "{:?}", toasts.borrow());
+    cx.update(|cx| assert_eq!(sound::chimes(cx), 1));
+}
+
+#[gpui_kit::test]
+fn a_conversation_being_read_makes_no_noise(cx: &mut TestAppContext) {
+    let f = open(cx, true);
+    bootstrap(&f, cx);
+    let toasts = record_toasts(cx);
+    f.session.update(cx, |s, _| s.set_window_active(true));
+    f.session
+        .update(cx, |s, cx| s.select_conversation("c-random", cx));
+    f.session.update(cx, |s, cx| {
+        ircord_app::notify::show(s, alert_in("c-random", AlertDelivery::Os, true), cx)
+    });
+    cx.run_until_parked();
+    assert!(toasts.borrow().is_empty(), "{:?}", toasts.borrow());
+    cx.update(|cx| assert_eq!(sound::chimes(cx), 0));
+}
+
+#[gpui_kit::test]
+fn a_toast_click_selects_its_conversation(cx: &mut TestAppContext) {
+    let f = open(cx, true);
+    bootstrap(&f, cx);
+    let toasts = record_toasts(cx);
+    f.session.update(cx, |s, _| s.set_window_active(false));
+    f.session.update(cx, |s, cx| {
+        ircord_app::notify::show(s, alert_in("c-random", AlertDelivery::Os, true), cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(toasts.borrow().len(), 1);
+
+    // The platform reports a click from its own thread; then GPUI's own
+    // response, which macOS and the fallback use.
+    cx.update(|cx| ircord_app::notify::install(f.session.clone(), cx));
+    cx.update(|cx| ircord_app::notify::click(cx, "a1"));
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(f.session.read(cx).conversation.as_deref(), Some("c-random"));
+    });
+    f.session
+        .update(cx, |s, cx| s.select_conversation("c-general", cx));
+    cx.simulate_system_notification_response(SystemNotificationResponse {
+        tag: "a1".into(),
+        action_id: None,
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(f.session.read(cx).conversation.as_deref(), Some("c-random"));
+    });
 }

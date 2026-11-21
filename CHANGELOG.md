@@ -8,6 +8,7 @@
 
 ### New
 
+- Notifications behave as on the web: an alert while IRCord is in the background shows a notification with the app's icon, a sound-only alert plays the chime, and the settings' test button plays it too.
 - Connect to your IRCord server, sign in, and stay signed in between launches, with the sign-in kept in your system's credential store.
 - Browse your networks and conversations with unread and mention counts, favourites first.
 - Read conversations with formatting, links, inline images, day separators, replies and reactions, and load older history by scrolling up.

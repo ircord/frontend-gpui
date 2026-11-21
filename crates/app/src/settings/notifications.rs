@@ -14,8 +14,9 @@
 //! The account-wide rules are the server's notification settings document
 //! (edited through `ircord_client::store::notify_settings`); the device
 //! choices are each device's record (`/auth/devices/{id}/notifications`).
-//! The server routes every alert, so nothing here decides what shows; the
-//! notification sound itself plays in RA1.
+//! The server routes every alert, so nothing here decides what shows; how an
+//! alert shows on this device is `notify::plan`, and its chime plays through
+//! `media::sound`.
 
 use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
@@ -572,16 +573,6 @@ pub fn device_status(state: &ns::State) -> DeviceStatus {
     }
 }
 
-/// Show a test notification on this device only.
-fn send_test(cx: &mut App) {
-    cx.show_system_notification(SystemNotification {
-        tag: "ircord-test-notification".into(),
-        title: t!("core-app-name").into(),
-        body: t!("notifications-test-body").into(),
-        actions: Vec::new(),
-    });
-}
-
 impl Render for NotificationsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
@@ -768,7 +759,7 @@ impl NotificationsView {
                         .small()
                         .label(t!("notifications-send-test"))
                         .on_click(cx.listener(|this, _, _, cx| {
-                            send_test(cx);
+                            crate::notify::send_test(cx);
                             this.tested = Some(true);
                             cx.notify();
                         })),
@@ -1368,35 +1359,53 @@ fn device_choices(
         ));
     }
     let s = save.clone();
+    let sound = choice(
+        &format!("{key}-sound"),
+        t!("notifications-sound"),
+        vec![
+            (Sound::Off, "off", t!("notifications-sound-off").into()),
+            (
+                Sound::Mentions,
+                "mentions",
+                level_label(Level::Mentions).into(),
+            ),
+            (Sound::All, "all", level_label(Level::All).into()),
+        ],
+        Some(match n.sound {
+            Sound::Off => Sound::Off,
+            Sound::All => Sound::All,
+            _ => Sound::Mentions,
+        }),
+        busy,
+        theme,
+        move |sound, _, _| {
+            s(DeviceChange {
+                sound: Some(sound),
+                ..Default::default()
+            })
+        },
+    );
+    // This device's chime is played here, so it can be tried here.
+    let local = key == "this-device";
     body = body.child(labelled(
         t!("notifications-sound"),
-        choice(
-            &format!("{key}-sound"),
-            t!("notifications-sound"),
-            vec![
-                (Sound::Off, "off", t!("notifications-sound-off").into()),
-                (
-                    Sound::Mentions,
-                    "mentions",
-                    level_label(Level::Mentions).into(),
-                ),
-                (Sound::All, "all", level_label(Level::All).into()),
-            ],
-            Some(match n.sound {
-                Sound::Off => Sound::Off,
-                Sound::All => Sound::All,
-                _ => Sound::Mentions,
-            }),
-            busy,
-            theme,
-            move |sound, _, _| {
-                s(DeviceChange {
-                    sound: Some(sound),
-                    ..Default::default()
-                })
-            },
-        )
-        .into_any_element(),
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(sound.into_any_element())
+            .when(local, |row| {
+                row.child(
+                    Button::new("notifications-sound-test")
+                        .small()
+                        .label(t!("notifications-sound-test"))
+                        .on_click(|_, _, cx| {
+                            crate::media::sound::chime(ircord_platform::audio::Chime::Mention, cx);
+                        })
+                        .into_any_element(),
+                )
+            })
+            .into_any_element(),
     ));
     let s = save.clone();
     body = body.child(labelled(

@@ -123,11 +123,15 @@ fn a_live_message_appears_and_a_notification_opens_its_conversation(cx: &mut Tes
         preview: true,
         ..Default::default()
     };
+    // Away from the window, the alert is a toast: it goes to the test sink.
+    let toasts = crate::notifications::record_toasts(cx);
+    f.session.update(cx, |s, _| s.set_window_active(false));
     f.session
         .update(cx, |s, cx| ircord_app::notify::show(s, alert, cx));
-    let shown = cx.shown_system_notifications();
+    cx.run_until_parked();
+    let shown = toasts.borrow().clone();
     assert_eq!(shown.len(), 1);
-    assert_eq!(shown[0].title.as_ref(), "bob in #random");
+    assert_eq!(shown[0].title, "bob in #random");
     cx.update(|cx| ircord_app::notify::install(f.session.clone(), cx));
     cx.simulate_system_notification_response(SystemNotificationResponse {
         tag: "a1".into(),
