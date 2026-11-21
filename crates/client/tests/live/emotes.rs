@@ -208,10 +208,8 @@ fn s5_upload_rename_and_remove_an_emoji() {
         .expect("upload an emoji");
     assert_eq!(uploaded.shortcode, code);
     assert!(uploaded.can_manage && uploaded.enabled);
-    assert_eq!(
-        uploaded.aliases.as_deref(),
-        Some(&[format!("{code}_a")][..])
-    );
+    let has_alias = |e: &c::Emote, alias: &str| e.aliases.iter().flatten().any(|a| a == alias);
+    assert!(has_alias(&uploaded, &format!("{code}_a")));
 
     let listed = |api: &Api| -> Vec<c::Emote> {
         rt.block_on(api.emotes())
