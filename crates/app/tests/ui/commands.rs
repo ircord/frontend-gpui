@@ -249,7 +249,7 @@ fn view_commands_go_to_the_view_that_handles_them(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn ignore_edits_the_ignore_list_once_the_settings_are_read(cx: &mut TestAppContext) {
+fn ignore_edits_the_ignore_list_read_at_start(cx: &mut TestAppContext) {
     let settings = json!({"allDevicesDelay": 0, "autoAwayDelay": 0, "channelDefault": "all",
         "directDefault": "all", "lastDeviceDelay": 0, "levels": {}, "ignore": ["eve"],
         "quietHours": {"enabled": false, "start": "22:00", "end": "07:00", "timezone": "UTC"}});
@@ -260,10 +260,7 @@ fn ignore_edits_the_ignore_list_once_the_settings_are_read(cx: &mut TestAppConte
             Reply::json(200, r.json())
         });
     });
-    type_in(&f, cx, "/ignore bob");
-    press(&f, cx, "enter");
-    // The settings are read first; the command stays for another try.
-    assert_eq!(text(&f, cx), "/ignore bob");
+    // The settings are read at start (P1 hides ignored people's messages).
     f.server
         .wait_for("GET", "/api/v1/notifications/settings", WAIT);
     wait(cx, "the settings", |cx| {
@@ -271,6 +268,7 @@ fn ignore_edits_the_ignore_list_once_the_settings_are_read(cx: &mut TestAppConte
         let w = session.client().unwrap().read();
         w.documents.notification_settings.is_loaded()
     });
+    type_in(&f, cx, "/ignore bob");
     press(&f, cx, "enter");
     assert_eq!(text(&f, cx), "");
     let put = f
