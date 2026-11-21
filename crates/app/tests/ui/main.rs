@@ -15,6 +15,7 @@ mod commands;
 mod desktop;
 mod drafts;
 mod emoji;
+mod emotes;
 mod inbox_saved;
 mod link_previews;
 mod links_view;
