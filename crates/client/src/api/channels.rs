@@ -102,6 +102,183 @@ impl Api {
     }
 }
 
+// ---- Channel settings and moderation (package CH2) ----
+//
+// Topics, modes and list entries go out as raw IRC lines
+// (`store::server_log::send_raw`), as the web client sends them; the lines
+// are built in `crate::channel_modes`. These are the calls with their own
+// routes.
+
+fn conversation_path(conversation: &str, rest: &str) -> String {
+    format!("/api/v1/conversations/{}/{rest}", segment(conversation))
+}
+
+impl Api {
+    /// The entries of a list mode (`b`, `e`, `I`, `q`…).
+    pub async fn mode_list(
+        &self,
+        conversation: &str,
+        mode: char,
+    ) -> Result<Vec<c::ChannelListEntry>, ApiError> {
+        let path = conversation_path(
+            conversation,
+            &format!("lists/{}", segment(&mode.to_string())),
+        );
+        self.get::<c::ItemsChannelListEntry>(&path)
+            .await
+            .map(|page| page.items)
+    }
+
+    /// Change the channel-wide settings: notifications, group mentions, NSFW.
+    pub async fn channel_settings(
+        &self,
+        conversation: &str,
+        body: &c::ChannelSettingsPatchBody,
+    ) -> Result<c::Conversation, ApiError> {
+        let path = conversation_path(conversation, "channel-settings");
+        self.call(Method::PUT, &path, body).await
+    }
+
+    /// The channel's registration with services. A network without a
+    /// ChanServ IRCord can manage answers 501.
+    pub async fn registration(
+        &self,
+        conversation: &str,
+    ) -> Result<c::ChannelRegistration, ApiError> {
+        self.get(&conversation_path(conversation, "registration"))
+            .await
+    }
+
+    /// Register the channel to your services account.
+    pub async fn register_channel(
+        &self,
+        conversation: &str,
+    ) -> Result<c::ChannelRegistration, ApiError> {
+        let path = conversation_path(conversation, "registration");
+        self.json(self.request(Method::POST, &path)).await
+    }
+
+    pub async fn unregister_channel(&self, conversation: &str) -> Result<(), ApiError> {
+        self.delete(&conversation_path(conversation, "registration"))
+            .await
+    }
+
+    /// The access list: roles services give by account. Founders and
+    /// people with admin or operator access may read it; others get 403.
+    pub async fn channel_access(
+        &self,
+        conversation: &str,
+    ) -> Result<Vec<c::AccessEntry>, ApiError> {
+        self.get::<c::ItemsAccessEntry>(&conversation_path(conversation, "access"))
+            .await
+            .map(|page| page.items)
+    }
+
+    /// Give `account` a role; the answer is the list as it now stands.
+    pub async fn set_channel_access(
+        &self,
+        conversation: &str,
+        account: &str,
+        mode: c::AccessChangeBodyMode,
+    ) -> Result<Vec<c::AccessEntry>, ApiError> {
+        let path = conversation_path(conversation, &format!("access/{}", segment(account)));
+        self.call::<_, c::ItemsAccessEntry>(Method::PUT, &path, &c::AccessChangeBody { mode })
+            .await
+            .map(|page| page.items)
+    }
+
+    pub async fn remove_channel_access(
+        &self,
+        conversation: &str,
+        account: &str,
+    ) -> Result<Vec<c::AccessEntry>, ApiError> {
+        let path = conversation_path(conversation, &format!("access/{}", segment(account)));
+        self.json::<c::ItemsAccessEntry>(self.request(Method::DELETE, &path))
+            .await
+            .map(|page| page.items)
+    }
+
+    /// Offer the channel to `account`. `Pending` until they accept.
+    pub async fn transfer_channel(
+        &self,
+        conversation: &str,
+        account: &str,
+    ) -> Result<c::TransferResult, ApiError> {
+        let body = c::TransferChannelRequest {
+            account: account.to_string(),
+        };
+        self.call(
+            Method::POST,
+            &conversation_path(conversation, "transfer"),
+            &body,
+        )
+        .await
+    }
+
+    /// This channel's place in the server's channel guide.
+    pub async fn guide_listing(
+        &self,
+        conversation: &str,
+    ) -> Result<c::ChannelGuideListing, ApiError> {
+        self.get(&conversation_path(conversation, "channel-guide"))
+            .await
+    }
+
+    /// Ask the server owners to list the channel (or update the request).
+    pub async fn request_guide_listing(
+        &self,
+        conversation: &str,
+        body: &c::ChannelGuideRequestInput,
+    ) -> Result<c::ChannelGuideListing, ApiError> {
+        let path = conversation_path(conversation, "channel-guide");
+        self.call(Method::PUT, &path, body).await
+    }
+
+    pub async fn withdraw_guide_listing(
+        &self,
+        conversation: &str,
+    ) -> Result<c::ChannelGuideListing, ApiError> {
+        let path = conversation_path(conversation, "channel-guide");
+        self.json(self.request(Method::DELETE, &path)).await
+    }
+
+    /// Count `member`'s messages in the channel over `range` (`1h`, `24h`, `7d`).
+    pub async fn recent_messages(
+        &self,
+        conversation: &str,
+        member: &str,
+        range: &str,
+    ) -> Result<c::RecentMessagesPreview, ApiError> {
+        let path = conversation_path(
+            conversation,
+            &format!("members/{}/recent-messages", segment(member)),
+        );
+        self.get_query(&path, &[("range", range)]).await
+    }
+
+    /// Start deleting what [`Api::recent_messages`] counted; poll the job.
+    pub async fn delete_recent_messages(
+        &self,
+        conversation: &str,
+        member: &str,
+        body: &c::DeleteRecentMessagesRequest,
+    ) -> Result<c::PurgeJob, ApiError> {
+        let path = conversation_path(
+            conversation,
+            &format!("members/{}/recent-messages/deletion", segment(member)),
+        );
+        self.call(Method::POST, &path, body).await
+    }
+
+    pub async fn recent_messages_deletion(&self, job: &str) -> Result<c::PurgeJob, ApiError> {
+        self.get(&format!(
+            "/api/v1/recent-messages-deletions/{}",
+            segment(job)
+        ))
+        .await
+    }
+}
+
 /// Put a joined or created channel into the workspace, if it is not there.
 pub fn remember(w: &mut Workspace, conversation: c::Conversation) -> Changes {
     if w.conversation(&conversation.id).is_some() {
