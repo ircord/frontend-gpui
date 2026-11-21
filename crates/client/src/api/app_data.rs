@@ -5,6 +5,7 @@
 
 #[allow(unused_imports)]
 use super::{Api, ApiError, Method, segment};
+use ircord_contract as c;
 
 // ---- S1: personal themes ----
 
@@ -34,6 +35,27 @@ impl Api {
     /// Remove one personal theme; answers the whole library.
     pub async fn delete_theme(&self, id: &str) -> Result<Themes, ApiError> {
         let path = format!("/api/v1/app/themes/{}", segment(id));
+        self.json(self.request(Method::DELETE, &path)).await
+    }
+}
+
+// ---- E1: the picker library ----
+
+impl Api {
+    /// Add emoji picks to the picker library (E1); answers the library.
+    pub async fn update_library(&self, patch: &c::LibraryPatch) -> Result<c::Library, ApiError> {
+        self.call(Method::PATCH, "/api/v1/app/library", patch).await
+    }
+
+    /// Save a GIF to the picker library, or move it to the front (E1).
+    pub async fn save_gif(&self, gif: &c::SavePickerGIF) -> Result<c::Library, ApiError> {
+        self.call(Method::POST, "/api/v1/app/library/gifs", gif)
+            .await
+    }
+
+    /// Take a saved GIF out of the picker library (E1).
+    pub async fn delete_gif(&self, id: &str) -> Result<c::Library, ApiError> {
+        let path = format!("/api/v1/app/library/gifs/{}", segment(id));
         self.json(self.request(Method::DELETE, &path)).await
     }
 }
