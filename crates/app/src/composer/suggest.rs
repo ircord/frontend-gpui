@@ -1,16 +1,21 @@
 //! Suggestions while typing (package C1): `/` commands, `@` people and
 //! `#` channels, each a provider registered by `features/commands.rs`. The
 //! matching itself is `ircord_client::commands::complete`.
+//!
+//! The rows look like the web's: commands under "Commands" with their
+//! usage in monospace and what they do below it; people under "Members
+//! matching @m" with their picture, their name, and their `@nick` at the
+//! right.
 
 use gpui_kit::{App, SharedString};
 use ircord_client::commands::catalog::{self, Place};
 use ircord_client::commands::complete::{self, TokenKind};
 use ircord_client::features::Context as Allowed;
 use ircord_client::irc::channel_rights_for;
-use ircord_client::store::Connection;
+use ircord_client::store::{Connection, people};
 
 use crate::features::commands::{args_text, description};
-use crate::registry::{ComposerCtx, Suggestion};
+use crate::registry::{ComposerCtx, Suggestion, SuggestionLook};
 
 /// How many people or channels the list shows.
 const LIMIT: usize = 12;
@@ -41,22 +46,24 @@ pub fn commands(ctx: &ComposerCtx, text: &str, cx: &App) -> Vec<Suggestion> {
         }),
         operator: channel_rights_for(allowed.own_modes(), allowed.conversation, allowed.network).op,
     };
+    let heading = SharedString::from(t!("composer-commands"));
     catalog::matching(&token.query, place)
         .into_iter()
         .map(|spec| {
             let args = args_text(spec.name);
-            let detail = if args.is_empty() {
-                description(spec.name).to_string()
+            let usage = if args.is_empty() {
+                format!("/{}", spec.name)
             } else {
-                format!("{args} \u{2014} {}", description(spec.name))
+                format!("/{} {args}", spec.name)
             };
             Suggestion {
                 id: format!("command-{}", spec.name).into(),
-                label: format!("/{}", spec.name).into(),
-                detail: Some(detail.into()),
+                label: usage.into(),
+                detail: Some(description(spec.name).to_string().into()),
                 replace: token.range.clone(),
                 insert: format!("/{} ", spec.name),
-                ..Default::default()
+                heading: Some(heading.clone()),
+                look: SuggestionLook::Stacked,
             }
         })
         .collect()
@@ -75,17 +82,20 @@ pub fn people(ctx: &ComposerCtx, text: &str, cx: &App) -> Vec<Suggestion> {
     let Some(conversation) = w.conversation(&ctx.conversation) else {
         return Vec::new();
     };
+    let heading = SharedString::from(t!("composer-people", query = token.query.as_str()));
     complete::members(&w, conversation, &token.query)
         .into_iter()
         .take(LIMIT)
         .map(|m| Suggestion {
             id: format!("person-{}", m.nick).into(),
-            label: format!("@{}", m.nick).into(),
-            detail: (!m.display_name.is_empty() && m.display_name != m.nick)
-                .then(|| SharedString::from(m.display_name.clone())),
+            label: people::name(m).to_string().into(),
+            detail: Some(format!("@{}", m.nick).into()),
             replace: token.range.clone(),
             insert: format!("@{} ", m.nick),
-            ..Default::default()
+            heading: Some(heading.clone()),
+            look: SuggestionLook::Person {
+                member: m.id.clone(),
+            },
         })
         .collect()
 }
@@ -106,6 +116,7 @@ pub fn channels(ctx: &ComposerCtx, text: &str, cx: &App) -> Vec<Suggestion> {
     else {
         return Vec::new();
     };
+    let heading = SharedString::from(t!("composer-channels", query = token.query.as_str()));
     complete::channels(&w, &network, &token.query)
         .into_iter()
         .take(LIMIT)
@@ -115,7 +126,8 @@ pub fn channels(ctx: &ComposerCtx, text: &str, cx: &App) -> Vec<Suggestion> {
             detail: (!c.topic.is_empty()).then(|| SharedString::from(c.topic.clone())),
             replace: token.range.clone(),
             insert: format!("#{} ", c.name),
-            ..Default::default()
+            heading: Some(heading.clone()),
+            look: SuggestionLook::Inline,
         })
         .collect()
 }

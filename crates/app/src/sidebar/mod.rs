@@ -35,7 +35,7 @@ use ircord_client::store::inbox;
 use ircord_client::store::sidebar_order::{
     self as order, Activity, Filter, PANEL_WIDTH, Place, SIDEBAR_WIDTH, Section,
 };
-use ircord_client::store::{Workspace, parties, topic};
+use ircord_client::store::{Workspace, parties, people, topic};
 
 use crate::registry::{self, ConversationCtx, NetworkCtx, SidebarCtx};
 use crate::session::{Session, SessionEvent};
@@ -291,6 +291,10 @@ fn number_label(n: usize) -> String {
 }
 
 impl SidebarView {
+    /// One conversation's row. A direct conversation shows the other
+    /// person as the web does: their picture with their presence, and their
+    /// name rather than their nick.
+    #[allow(clippy::too_many_arguments)]
     fn conversation_row(
         &self,
         w: &Workspace,
@@ -298,11 +302,52 @@ impl SidebarView {
         section: Section,
         number: Option<usize>,
         active: bool,
+        server: Option<&url::Url>,
         theme: &Theme,
     ) -> AnyElement {
         let unread = c.unread_count > 0 || c.unread_from.is_some();
         let muted = order::muted(w, c);
-        let name = parties::title(w, c);
+        let direct = c.kind == ConversationKind::Direct && c.party.is_none();
+        let partner = direct.then(|| people::direct_partner(w, &c.id)).flatten();
+        let name = match partner {
+            Some(m) => people::name(m).to_string(),
+            None => parties::title(w, c),
+        };
+        let size = px(ui::avatar::TINY);
+        let marker = match partner {
+            Some(m) => ui::avatar::person(
+                ui::avatar::Person {
+                    member: m,
+                    name: &name,
+                    server,
+                    presence: true,
+                    key: &format!("conversation-{}", c.id),
+                },
+                size,
+                theme,
+            )
+            .into_any_element(),
+            None if direct => ui::avatar::avatar(&name, None, size, theme).into_any_element(),
+            None => div()
+                // The prefix, with the channel's Ctrl+number raised beside it.
+                .relative()
+                .w(px(14.))
+                .flex_none()
+                .text_color(theme.faint)
+                .child(prefix(c))
+                .when_some(number, |d, n| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .top(px(-5.))
+                            .left(px(9.))
+                            .text_size(px(9.))
+                            .font_weight(FontWeight::NORMAL)
+                            .child(n.to_string()),
+                    )
+                })
+                .into_any_element(),
+        };
         let id = c.id.clone();
         let session = self.session.clone();
         let mut row = div()
@@ -333,26 +378,7 @@ impl SidebarView {
             })
             .when(unread && !muted, |d| d.font_weight(FontWeight::SEMIBOLD))
             .when(!c.joined || muted, |d| d.opacity(0.6))
-            .child(
-                // The prefix, with the channel's Ctrl+number raised beside it.
-                div()
-                    .relative()
-                    .w(px(14.))
-                    .flex_none()
-                    .text_color(theme.faint)
-                    .child(prefix(c))
-                    .when_some(number, |d, n| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .top(px(-5.))
-                                .left(px(9.))
-                                .text_size(px(9.))
-                                .font_weight(FontWeight::NORMAL)
-                                .child(n.to_string()),
-                        )
-                    }),
-            )
+            .child(marker)
             .child(div().flex_1().truncate().child(name.clone()))
             .on_click(move |_, _, cx| session.update(cx, |s, cx| s.select_conversation(&id, cx)));
         if let Some(n) = number {
@@ -534,6 +560,7 @@ impl SidebarView {
         network: &str,
         selected: Option<&str>,
         layout: &order::Layout,
+        server: Option<&url::Url>,
         theme: &Theme,
     ) -> AnyElement {
         let mut list = div()
@@ -558,7 +585,15 @@ impl SidebarView {
             for c in &view.shown {
                 let number = numbers.iter().position(|id| *id == c.id).map(|i| i + 1);
                 let active = selected == Some(c.id.as_str());
-                list = list.child(self.conversation_row(w, c, view.section, number, active, theme));
+                list = list.child(self.conversation_row(
+                    w,
+                    c,
+                    view.section,
+                    number,
+                    active,
+                    server,
+                    theme,
+                ));
             }
             if view.section == Section::Directs && view.items.is_empty() && !view.collapsed {
                 list = list.child(
@@ -687,6 +722,7 @@ impl Render for SidebarView {
         let selected_network = session.network.clone();
         let selected = session.conversation.clone();
         let route = session.route();
+        let pictures_from = session.server().map(|s| s.url().clone());
         // Slots draw first: they may read the workspace too.
         let slot_ctx = SidebarCtx {
             session: self.session.clone(),
@@ -866,7 +902,14 @@ impl Render for SidebarView {
         }
 
         let list = match network {
-            Some(n) => self.list(&w, &n.id, selected.as_deref(), &layout, &theme),
+            Some(n) => self.list(
+                &w,
+                &n.id,
+                selected.as_deref(),
+                &layout,
+                pictures_from.as_ref(),
+                &theme,
+            ),
             None => div().id("conversation-list").flex_1().into_any_element(),
         };
         drop(w);

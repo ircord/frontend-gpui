@@ -10,6 +10,10 @@
 //! Registered token providers mark stretches of the text (a server emoji's
 //! `:name:`) that the box draws as a picture and edits as one unit; the
 //! text itself never changes.
+//!
+//! It looks like the web's: a raised, rounded box whose placeholder names
+//! the conversation ("Message #general"), the registered buttons (GIF,
+//! emoji, attach), then a send arrow that fills once there is text.
 
 pub mod drafts;
 pub mod expressions;
@@ -28,10 +32,13 @@ use gpui_kit::*;
 use ircord_client::commands::complete::{self, TabCycle};
 use ircord_client::contract::ConversationKind;
 
-use crate::registry::{self, ComposerCtx, SendOutcome, Suggestion, TokenView};
+use crate::registry::{self, ComposerCtx, SendOutcome, Suggestion, SuggestionLook, TokenView};
 use crate::route::Route;
 use crate::session::{Session, SessionEvent};
-use crate::theme;
+use crate::theme::{self, Theme};
+use crate::ui;
+use crate::ui::focus::Reachable;
+use crate::ui::icon::IconName;
 
 gpui_kit::actions!(
     composer,
@@ -90,6 +97,8 @@ pub struct ComposerView {
     tab: Option<TabCycle>,
     /// Keeps the highlighted suggestion in view.
     scroll: ScrollHandle,
+    /// The placeholder given to the box, which names the conversation.
+    placeholder: SharedString,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -99,9 +108,7 @@ const SUGGESTIONS_HEIGHT: f32 = 280.;
 impl ComposerView {
     pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| {
-            let mut state = TextareaState::new(window, cx)
-                .auto_grow(1, 10)
-                .placeholder(t!("composer-placeholder"));
+            let mut state = TextareaState::new(window, cx).auto_grow(1, 10);
             state.set_submit_on_enter(true, cx);
             state
         });
@@ -152,6 +159,7 @@ impl ComposerView {
             dismissed: None,
             tab: None,
             scroll: ScrollHandle::new(),
+            placeholder: SharedString::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -516,6 +524,12 @@ impl Render for ComposerView {
         let Some(ctx) = self.ctx(cx) else {
             return root;
         };
+        let placeholder = SharedString::from(t!("composer-placeholder", target = name));
+        if self.placeholder != placeholder {
+            self.placeholder = placeholder.clone();
+            self.input
+                .update(cx, |s, cx| s.set_placeholder(placeholder, window, cx));
+        }
         self.remember(cx);
         let slots = registry::get(cx);
         let (above, buttons) = (
@@ -534,58 +548,19 @@ impl Render for ComposerView {
         let selected = self.selected.min(suggestions.len().saturating_sub(1));
         let mut root = root.children(above);
         if !suggestions.is_empty() {
-            let mut list = div()
-                .id("composer-suggestions")
-                .test_support()
-                .role(Role::ListBox)
-                .aria_label(t!("composer-suggestions"))
-                .mb_1()
-                .p_1()
-                .rounded_md()
-                .bg(theme.sidebar)
-                .max_h(px(SUGGESTIONS_HEIGHT))
-                .overflow_y_scroll()
-                .track_scroll(&self.scroll)
-                .flex()
-                .flex_col();
-            for (i, suggestion) in suggestions.into_iter().enumerate() {
-                let hover = theme.hover;
-                let label = suggestion.label.clone();
-                let detail = suggestion.detail.clone();
-                list = list.child(
-                    div()
-                        .id(ElementId::Name(
-                            format!("suggestion-{}", suggestion.id).into(),
-                        ))
-                        .test_support()
-                        .role(Role::ListBoxOption)
-                        .aria_label(label.clone())
-                        .aria_selected(i == selected)
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .flex()
-                        .gap_2()
-                        .cursor_pointer()
-                        .when(i == selected, |d| d.bg(hover))
-                        .hover(move |d| d.bg(hover))
-                        .child(div().text_color(theme.text).child(label))
-                        .when_some(detail, |d, detail| {
-                            d.child(div().text_color(theme.muted).text_sm().child(detail))
-                        })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.apply(&suggestion, window, cx)
-                        })),
-                );
-            }
-            root = root.child(list);
+            root = root.child(self.suggestion_list(suggestions, selected, &theme, cx));
         }
+        let has_text = !self.text(cx).trim().is_empty();
         root.child(
             div()
-                .rounded_lg()
+                .rounded(theme.radius_large)
+                .border_1()
+                .border_color(theme.control_border)
                 .bg(theme.input)
-                .px_2()
-                .py_1()
+                .shadow_sm()
+                .pl_3()
+                .pr_1p5()
+                .py_1p5()
                 .flex()
                 .items_end()
                 .gap_1()
@@ -595,6 +570,7 @@ impl Render for ComposerView {
                         .test_support()
                         .flex_1()
                         .min_w_0()
+                        .py_0p5()
                         .child(
                             Textarea::new(&self.input)
                                 .token(draw_token)
@@ -602,8 +578,201 @@ impl Render for ComposerView {
                                 .aria_label(t!("composer-label", target = name)),
                         ),
                 )
-                .children(buttons),
+                .children(buttons)
+                .child(self.send_button(has_text, &theme, cx)),
         )
+    }
+}
+
+impl ComposerView {
+    /// The suggestions above the box, under the heading the first one
+    /// carries.
+    fn suggestion_list(
+        &self,
+        suggestions: Vec<Suggestion>,
+        selected: usize,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let session = self.session.read(cx);
+        let server = session.server().map(|s| s.url().clone());
+        let client = session.client().cloned();
+        let heading = suggestions.first().and_then(|s| s.heading.clone());
+        let mut list = div()
+            .id("composer-suggestions")
+            .test_support()
+            .role(Role::ListBox)
+            .aria_label(
+                heading
+                    .clone()
+                    .unwrap_or_else(|| t!("composer-suggestions").into()),
+            )
+            .mb_1()
+            .p_1()
+            .rounded(theme.radius_large)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.raised)
+            .shadow_md()
+            .max_h(px(SUGGESTIONS_HEIGHT))
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .flex()
+            .flex_col();
+        if let Some(heading) = heading {
+            list = list.child(
+                div()
+                    .id("composer-suggestions-heading")
+                    .test_support()
+                    .px_2()
+                    .pt_1()
+                    .pb_0p5()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(heading),
+            );
+        }
+        for (i, suggestion) in suggestions.into_iter().enumerate() {
+            let hover = theme.hover;
+            let label = suggestion.label.clone();
+            let detail = suggestion.detail.clone();
+            let row = div()
+                .id(ElementId::Name(
+                    format!("suggestion-{}", suggestion.id).into(),
+                ))
+                .test_support()
+                .role(Role::ListBoxOption)
+                .aria_label(label.clone())
+                .aria_selected(i == selected)
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .cursor_pointer()
+                .when(i == selected, |d| d.bg(hover))
+                .hover(move |d| d.bg(hover));
+            let row = match &suggestion.look {
+                SuggestionLook::Inline => row
+                    .flex()
+                    .items_baseline()
+                    .gap_2()
+                    .child(div().flex_none().text_color(theme.text).child(label))
+                    .when_some(detail, |d, detail| {
+                        d.child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme.muted)
+                                .text_sm()
+                                .child(detail),
+                        )
+                    }),
+                SuggestionLook::Stacked => row
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .font_family(theme.mono_font.clone())
+                            .text_sm()
+                            .text_color(theme.text)
+                            .child(label),
+                    )
+                    .when_some(detail, |d, detail| {
+                        d.child(div().text_xs().text_color(theme.muted).child(detail))
+                    }),
+                SuggestionLook::Person { member } => {
+                    let picture = client.as_ref().and_then(|client| {
+                        let w = client.read();
+                        let m = w.members.get(member)?;
+                        Some(ui::avatar::person(
+                            ui::avatar::Person {
+                                member: m,
+                                name: &label,
+                                server: server.as_ref(),
+                                presence: true,
+                                key: &format!("suggestion-{}", suggestion.id),
+                            },
+                            px(ui::avatar::TINY),
+                            theme,
+                        ))
+                    });
+                    let picture = picture.unwrap_or_else(|| {
+                        ui::avatar::avatar(&label, None, px(ui::avatar::TINY), theme)
+                    });
+                    row.flex()
+                        .items_center()
+                        .gap_2()
+                        .child(picture)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme.text)
+                                .child(label),
+                        )
+                        .when_some(detail, |d, detail| {
+                            d.child(
+                                div()
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(theme.muted)
+                                    .child(detail),
+                            )
+                        })
+                }
+            };
+            list = list.child(row.on_click(
+                cx.listener(move |this, _, window, cx| this.apply(&suggestion, window, cx)),
+            ));
+        }
+        list
+    }
+
+    /// The send arrow: quiet while the box is empty, filled once there is
+    /// something to send.
+    fn send_button(
+        &self,
+        has_text: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let label = SharedString::from(t!("composer-send"));
+        let (fill, ink) = if has_text {
+            (theme.accent, theme.on_accent)
+        } else {
+            (gpui_kit::transparent_black(), theme.faint)
+        };
+        let hover = if has_text { theme.accent } else { theme.hover };
+        div()
+            .id("composer-send")
+            .test_support()
+            .role(Role::Button)
+            .reachable(theme)
+            .aria_label(label.clone())
+            .tooltip(ui::tooltip::text(label))
+            .size(px(30.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .cursor_pointer()
+            .bg(fill)
+            .hover(move |d| d.bg(hover))
+            .child(if has_text {
+                div()
+                    .id("composer-send-filled")
+                    .test_support()
+                    .flex()
+                    .child(ui::icon::icon(IconName::ArrowUp, ink))
+                    .into_any_element()
+            } else {
+                ui::icon::icon(IconName::ArrowUp, ink).into_any_element()
+            })
+            .on_click(cx.listener(|this, _, window, cx| {
+                let text = this.text(cx);
+                this.submit(text, window, cx);
+            }))
     }
 }
 

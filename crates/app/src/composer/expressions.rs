@@ -3,8 +3,8 @@
 //! One view, [`PickerView`], with two tabs, as the web client's
 //! `ExpressionPicker.vue`:
 //!
-//! - **Emoji**: search, a group bar (frequently used, the server's emoji,
-//!   7TV, then the Unicode groups) and a skin tone. Picking writes the emoji
+//! - **Emoji**: search, a group rail down the left (frequently used, the
+//!   server's emoji, 7TV, then the Unicode groups) and a skin tone. Picking writes the emoji
 //!   into the message box, or reacts with it when the picker was opened from
 //!   a message.
 //! - **GIFs**: Klipy's categories, trending and search, and your saved GIFs;
@@ -564,9 +564,15 @@ impl PickerView {
             .test_support()
             .role(Role::TabList)
             .aria_label(t!("emoji-groups"))
+            .flex_none()
             .flex()
-            .flex_wrap()
-            .gap_0p5();
+            .flex_col()
+            .items_center()
+            .gap_0p5()
+            .pr_1()
+            .border_r_1()
+            .border_color(theme.border)
+            .overflow_y_scroll();
         for group in GROUPS {
             if (group == "workspace" && !has_workspace) || (group == "7tv" && !has_7tv) {
                 continue;
@@ -584,7 +590,10 @@ impl PickerView {
                         .aria_label(label.clone())
                         .aria_selected(on)
                         .tooltip(ui::tooltip::text(label))
-                        .px_1()
+                        .size(px(28.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .rounded_md()
                         .cursor_pointer()
                         .when(on, |d| d.bg(theme.selected))
@@ -1083,20 +1092,27 @@ impl Render for PickerView {
         if self.tab == Tab::Emoji && self.tones_open {
             root = root.child(self.tones(&theme, cx));
         }
-        if self.tab == Tab::Emoji {
-            root = root.child(self.groups(&theme, cx));
-        }
         let body = match self.tab {
             Tab::Emoji => self.emoji_body(&theme, cx),
             Tab::Gifs => self.gif_body(&theme, cx),
         };
+        let body = div()
+            .id("expression-body")
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .child(body);
+        // Emoji groups run down the left, as on the web.
+        let rail = (self.tab == Tab::Emoji).then(|| self.groups(&theme, cx));
         root.child(
             div()
-                .id("expression-body")
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
-                .track_scroll(&self.scroll)
+                .flex()
+                .gap_2()
+                .children(rail)
                 .child(body),
         )
     }

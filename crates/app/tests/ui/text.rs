@@ -1,6 +1,8 @@
 //! Tests for package T1, message text: code blocks, quotes and lists, mention
 //! and channel pills, joining a channel from its name, message-link pills,
-//! and Markdown in the box sent as IRC formatting.
+//! and Markdown in the box sent as IRC formatting; and for package V6, the
+//! message box as the web's (its placeholder, the send arrow, headed
+//! suggestions with pictures) and direct conversations in the sidebar.
 
 use std::time::Duration;
 
@@ -34,8 +36,16 @@ fn history(origin: &str) -> Vec<Message> {
 }
 
 fn open(cx: &mut TestAppContext, setup: impl FnOnce(&CannedServer)) -> Fixture {
+    open_on(cx, snapshot(), setup)
+}
+
+fn open_on(
+    cx: &mut TestAppContext,
+    snapshot: Snapshot,
+    setup: impl FnOnce(&CannedServer),
+) -> Fixture {
     let f = open_with(cx, true, |server| {
-        server.snapshot(&snapshot());
+        server.snapshot(&snapshot);
         let page = serde_json::to_value(MessagePage {
             items: history(&server.address().origin()),
             ..Default::default()
@@ -186,4 +196,136 @@ fn markdown_in_the_box_is_sent_as_irc_formatting(cx: &mut TestAppContext) {
         .wait_for("POST", "/api/v1/conversations/c-general/messages", WAIT)
         .json();
     assert_eq!(body["text"], "\x02bold\x02 and \x11code\x11");
+}
+
+// ---- V6: the message box and direct conversations as on the web ----
+
+/// bob as "Bob" with a picture on this server, and a direct conversation
+/// with him.
+fn with_bob() -> Snapshot {
+    let mut s = snapshot();
+    for m in &mut s.members {
+        if m.id == "m-bob" {
+            m.display_name = "Bob".into();
+            m.avatar_url = Some("/files/bob/avatar.png".into());
+        }
+    }
+    s.conversations.push(
+        serde_json::from_value(json!({
+            "id": "c-bob", "networkId": "n1", "kind": "direct", "name": "bob",
+            "favorite": false, "joined": true, "memberIds": ["m-bob"], "memberModes": {},
+            "modes": "", "topic": "", "unreadCount": 0, "mentionCount": 0}))
+        .unwrap(),
+    );
+    s
+}
+
+fn shows(f: &Fixture, cx: &mut TestAppContext, id: &'static str) -> bool {
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).is_some()
+    })
+    .unwrap()
+}
+
+fn label_of(f: &Fixture, cx: &mut TestAppContext, id: &'static str) -> String {
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.find(id).label().unwrap_or_default().to_string()
+    })
+    .unwrap()
+}
+
+fn type_text(f: &Fixture, cx: &mut TestAppContext, text: &str) {
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("composer-input", cx);
+        window.input(text, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn the_box_names_the_conversation_and_its_arrow_fills_and_sends(cx: &mut TestAppContext) {
+    let f = open(cx, |server| {
+        server.route_fn("POST", "/api/v1/conversations/*/messages", |r| {
+            let body = r.json();
+            Reply::json(
+                202,
+                json!({"clientId": body["clientId"], "conversationId": "c-general",
+                       "state": "queued"}),
+            )
+        });
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let input = window.find_by_label("Message #general");
+        assert_eq!(input.placeholder(), Some("Message #general"));
+        assert!(window.find("composer-send").visible());
+    })
+    .unwrap();
+    assert!(
+        !shows(&f, cx, "composer-send-filled"),
+        "empty: a quiet arrow"
+    );
+    type_text(&f, cx, "hello");
+    assert!(
+        shows(&f, cx, "composer-send-filled"),
+        "text: a filled arrow"
+    );
+    cx.update_window(f.window, |_, window, cx| window.click("composer-send", cx))
+        .unwrap();
+    cx.run_until_parked();
+    let body = f
+        .server
+        .wait_for("POST", "/api/v1/conversations/c-general/messages", WAIT)
+        .json();
+    assert_eq!(body["text"], "hello");
+    assert!(!shows(&f, cx, "composer-send-filled"), "sent: empty again");
+}
+
+#[gpui_kit::test]
+fn commands_are_listed_under_a_heading_with_their_usage(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    type_text(&f, cx, "/jo");
+    assert_eq!(label_of(&f, cx, "composer-suggestions"), "Commands");
+    assert!(shows(&f, cx, "composer-suggestions-heading"));
+    assert!(
+        label_of(&f, cx, "suggestion-command-join").starts_with("/join <"),
+        "the usage is the row's first line"
+    );
+}
+
+#[gpui_kit::test]
+fn people_are_suggested_with_their_picture_and_name(cx: &mut TestAppContext) {
+    let f = open_on(cx, with_bob(), |_| {});
+    type_text(&f, cx, "hey @b");
+    assert_eq!(
+        label_of(&f, cx, "composer-suggestions"),
+        "Members matching @b"
+    );
+    assert_eq!(label_of(&f, cx, "suggestion-person-bob"), "Bob");
+    assert!(shows(&f, cx, "avatar-picture-suggestion-person-bob"));
+}
+
+#[gpui_kit::test]
+fn a_direct_conversation_shows_the_person_in_the_sidebar(cx: &mut TestAppContext) {
+    let f = open_on(cx, with_bob(), |_| {});
+    assert_eq!(label_of(&f, cx, "conversation-c-bob"), "Bob");
+    assert!(shows(&f, cx, "avatar-picture-conversation-c-bob"));
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("conversation-c-bob", cx);
+    })
+    .unwrap();
+    wait(cx, "the direct conversation to open", |cx| {
+        f.session.read(cx).conversation.as_deref() == Some("c-bob")
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let input = window.find_by_label("Message @bob");
+        assert_eq!(input.placeholder(), Some("Message @bob"));
+    })
+    .unwrap();
 }
