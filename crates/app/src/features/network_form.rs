@@ -487,6 +487,9 @@ impl NetworkFormView {
         fields
             .host
             .update(cx, |s, cx| s.set_placeholder("irc.example.org", window, cx));
+        fields.name.update(cx, |s, cx| {
+            s.set_placeholder(t!("networks-name-placeholder"), window, cx)
+        });
         let mut subscriptions = Vec::new();
         for (input, address) in [
             (&fields.name, false),
@@ -837,7 +840,7 @@ fn fieldset(
     id: &'static str,
     legend: SharedString,
     theme: &Theme,
-) -> gpui_kit::base::test_support::Observed<Stateful<Div>> {
+) -> impl ParentElement + IntoElement + use<> {
     div()
         .id(id)
         .test_support()
