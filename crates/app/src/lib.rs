@@ -47,6 +47,7 @@ use workspace::WorkspaceView;
 /// `gpui_kit::init`.
 pub fn init(cx: &mut App) {
     theme::init(cx);
+    ui::focus::init(cx);
     cx.default_global::<registry::Registry>();
     settings::init(cx);
     features::init(cx);

@@ -10,9 +10,35 @@
 //! The wrapper passes styles, children and handlers through, so it goes
 //! anywhere in the chain after `.test_support()` (usually beside the role),
 //! and headless tests see the focus binding.
+//!
+//! [`init`] keeps Tab working when nothing holds focus, as after the
+//! focused control went away with the page that drew it: `gpui-kit` binds
+//! Tab only inside its root, which a key without a focused element never
+//! reaches.
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+
+pub fn init(cx: &mut App) {
+    cx.intercept_keystrokes(|event, window, cx| {
+        let k = &event.keystroke;
+        let m = &k.modifiers;
+        if k.key != "tab" || m.control || m.alt || m.platform || m.function {
+            return;
+        }
+        // Inside the root, gpui-kit's own Tab binding moves focus.
+        if event.context_stack.iter().any(|c| c.contains("Root")) {
+            return;
+        }
+        if m.shift {
+            window.focus_prev(cx);
+        } else {
+            window.focus_next(cx);
+        }
+        cx.stop_propagation();
+    })
+    .detach();
+}
 
 /// A control made a Tab stop; see the module docs.
 pub struct Reach<E> {

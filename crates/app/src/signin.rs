@@ -120,12 +120,17 @@ impl SignInView {
                 this.load_policy(cx);
                 cx.notify()
             }),
-            cx.subscribe(&session, |this, _, event: &SessionEvent, cx| {
-                if let SessionEvent::Phase = event {
-                    this.mode = Mode::SignIn;
-                    cx.notify();
-                }
-            }),
+            cx.subscribe_in(
+                &session,
+                window,
+                |this, _, event: &SessionEvent, window, cx| {
+                    if let SessionEvent::Phase = event {
+                        this.mode = Mode::SignIn;
+                        this.focus_first(window, cx);
+                        cx.notify();
+                    }
+                },
+            ),
         ];
         let mut view = Self {
             session,
@@ -145,7 +150,22 @@ impl SignInView {
             _subscriptions: subscriptions,
         };
         view.load_policy(cx);
+        view.focus_first(window, cx);
         view
+    }
+
+    /// Put the keyboard in the form's first field, so typing and Tab work
+    /// as soon as the screen shows.
+    fn focus_first(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let first = if self.choosing_server(cx) {
+            &self.address
+        } else {
+            match self.mode {
+                Mode::SignIn => &self.username,
+                Mode::SignUp => &self.new_username,
+            }
+        };
+        first.focus_handle(cx).focus(window, cx);
     }
 
     /// Read whether the chosen server takes new accounts, once per server.

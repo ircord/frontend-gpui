@@ -9,6 +9,7 @@ mod shell;
 
 mod admin;
 mod appearance;
+mod audit;
 mod channel_settings;
 mod channels;
 mod commands;
