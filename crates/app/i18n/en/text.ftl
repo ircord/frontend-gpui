@@ -1,1 +1,18 @@
 # Text for package T1. IDs start with `text-`.
+text-join-title = Join { $channel } on { $network }?
+text-join-body = You are not in this channel yet. Joining creates it if nobody else is in it, so check the name.
+text-join-ok = Join
+text-join-failed = Could not open { $target }: { $error }
+text-irc-invalid = This IRC link is not valid.
+text-irc-unknown-network = You have not added the network { $host } yet.
+text-message-link-missing = That message is in a conversation you are not in.
+text-message-link = Message in { $place }
+text-message-link-here = Message
+text-open-channel = Open { $channel }
+text-join-channel = Join { $channel }
+text-open-link = Open { $url }
+text-mention = Mention of { $name }
+text-code = Code
+text-code-language = { $language } code
+text-code-copy = Copy code
+text-code-copied = Code copied

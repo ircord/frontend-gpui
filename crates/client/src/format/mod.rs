@@ -1,6 +1,19 @@
 //! Message text: mIRC formatting codes and links, a port of the web client's
 //! `parseFormatting` (`shared/utils/irc.ts`). The result is plain text plus
 //! styled byte ranges, which the app turns into GPUI text runs.
+//!
+//! The rest of the web client's text rules live beside it: fenced code,
+//! quotes and lists ([`blocks`]), `@nick` and group mentions ([`mentions`]),
+//! the pieces of a line that become pills or links ([`inline`]), message and
+//! `irc://` links ([`links`]), Markdown typed in the box ([`markdown`]) and
+//! code highlighting ([`highlight`]).
+
+pub mod blocks;
+pub mod highlight;
+pub mod inline;
+pub mod links;
+pub mod markdown;
+pub mod mentions;
 
 use std::ops::Range;
 
@@ -187,7 +200,13 @@ fn hex(b: &[u8]) -> Option<u32> {
     u32::from_str_radix(std::str::from_utf8(&b[..6]).ok()?, 16).ok()
 }
 
-/// `http://`, `https://` and `www.` links, without trailing punctuation.
+/// Text without formatting codes, for excerpts, search and notifications.
+pub fn strip(input: &str) -> String {
+    parse(input).text
+}
+
+/// `http://`, `https://`, `irc://`, `ircs://` and `www.` links, without
+/// trailing punctuation.
 pub fn find_links(text: &str) -> Vec<(Range<usize>, String)> {
     let mut links = Vec::new();
     let mut i = 0;
@@ -197,10 +216,13 @@ pub fn find_links(text: &str) -> Vec<(Range<usize>, String)> {
             || text[..i]
                 .chars()
                 .next_back()
-                .is_some_and(|c| c.is_whitespace() || "([{<\"'".contains(c));
-        let scheme = ["https://", "http://", "www."].into_iter().find(|p| {
-            rest.len() > p.len() && rest.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes())
-        });
+                .is_some_and(|c| c.is_whitespace() || "([{<\"'`".contains(c));
+        let scheme = ["https://", "http://", "ircs://", "irc://", "www."]
+            .into_iter()
+            .find(|p| {
+                rest.len() > p.len()
+                    && rest.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes())
+            });
         let Some(scheme) = scheme.filter(|_| at_word_start) else {
             i += rest.chars().next().map_or(1, char::len_utf8);
             continue;

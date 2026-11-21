@@ -17,3 +17,4 @@
 - Run IRCord on Linux, installed from a tarball with a menu entry, and on macOS, built from source on a Mac; keep it in the tray on both, with the sign-in in the Secret Service or the login keychain.
 - See the IRCord icon and version on the Windows `.exe` and its window.
 - Attach files by picking, dragging or pasting them, watch them upload, and send several as one gallery; open pictures in a full-window viewer with zoom, and download, copy or open any attachment, with sensitive channels' media covered until you show it.
+- See quotes, nested lists and code blocks with syntax highlighting and a copy button in messages, with mentions, `#channels` and message links as pills; click a channel to open it (or join it, after asking), and open `irc://` and message links in the app. `**bold**`, `*italic*`, `__underline__`, `~~strike~~` and `` `code` `` typed in the box are sent as IRC formatting.
