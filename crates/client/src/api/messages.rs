@@ -1,6 +1,7 @@
 //! Messages: `/conversations/{id}/messages`, `/messages/{id}`, `/commands/*`
 //! and `/outbox`.
 //!
+//! Reading around a message and locating one are package R1's.
 //! Editing, deleting, reactions (`/conversations/{id}/reactions`),
 //! discarding a failed send and reading the outbox are package A1's.
 
@@ -24,6 +25,29 @@ impl Api {
             request = request.query(&[("before", before)]);
         }
         self.json(request).await
+    }
+
+    /// A window of history centred on `message`, for jumping to an old
+    /// message and for paging towards the present (`hasNewer`).
+    pub async fn messages_around(
+        &self,
+        conversation: &str,
+        message: &str,
+        limit: u32,
+    ) -> Result<c::MessagePage, ApiError> {
+        let path = format!("/api/v1/conversations/{}/messages", segment(conversation));
+        let request = self.request(Method::GET, &path).query(&[
+            ("limit", limit.to_string()),
+            ("around", message.to_string()),
+        ]);
+        self.json(request).await
+    }
+
+    /// Your copy of a message, found by its ID or its shared ID; its
+    /// `conversationId` names the conversation it is in.
+    pub async fn locate_message(&self, message: &str) -> Result<c::Message, ApiError> {
+        let path = format!("/api/v1/messages/{}", segment(message));
+        self.json(self.request(Method::GET, &path)).await
     }
 
     pub async fn send_message(

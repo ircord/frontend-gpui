@@ -18,6 +18,21 @@ use crate::session::{Session, SessionEvent};
 use crate::theme::{self, Theme};
 use rows::Row;
 
+/// Register the timeline's menu entries and keys (package R1).
+pub fn init(_cx: &mut App) {}
+
+/// Show `message` in `conversation`: open the conversation, load the history
+/// around the message if it is not loaded, scroll to it and mark it. Other
+/// views (a reply's quote, search, the inbox) jump through this.
+pub fn reveal(
+    _session: &Entity<Session>,
+    _conversation: &str,
+    _message: &str,
+    _window: &mut Window,
+    _cx: &mut App,
+) {
+}
+
 pub struct TimelineView {
     session: Entity<Session>,
     conversation: Option<String>,

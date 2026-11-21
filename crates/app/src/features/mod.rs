@@ -37,6 +37,8 @@ pub mod text;
 pub mod viewer;
 
 pub fn init(cx: &mut App) {
+    // Timeline reading (R1) lives with the timeline it extends.
+    crate::timeline::init(cx);
     admin::init(cx);
     text::init(cx);
     message_actions::init(cx);

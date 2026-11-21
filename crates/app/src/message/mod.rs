@@ -57,11 +57,28 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
     }
     if let Some((nick, text)) = &m.reply {
         let quoted = ircord_client::format::parse(text).text;
-        column = column.child(div().text_xs().text_color(theme.muted).truncate().child(t!(
-            "core-message-reply-line",
-            nick = nick,
-            text = quoted
-        )));
+        let line = t!("core-message-reply-line", nick = nick, text = quoted);
+        let hover_text = theme.text;
+        let mut reply = div()
+            .id(ElementId::Name(format!("reply-{}", m.id).into()))
+            .test_support()
+            .text_xs()
+            .text_color(theme.muted)
+            .truncate()
+            .child(line.clone());
+        // Clicking the quote goes to the original (`timeline::reveal`).
+        if let Some(original) = m.reply_id.clone() {
+            let ctx = view.ctx.clone();
+            reply = reply
+                .role(Role::Link)
+                .aria_label(line)
+                .cursor_pointer()
+                .hover(move |d| d.text_color(hover_text))
+                .on_click(move |_, window, cx| {
+                    crate::timeline::reveal(&ctx.session, &ctx.conversation, &original, window, cx)
+                });
+        }
+        column = column.child(reply);
     }
     let inline = registry::get(cx).inline_renderers.to_vec();
     // A message of uploads only has no text left to draw.
@@ -101,6 +118,14 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
         .py_0p5()
         .flex()
         .gap_4()
+        .when(m.mention || m.focused, |d| {
+            let mark = if m.focused {
+                theme.accent
+            } else {
+                theme.mention
+            };
+            d.bg(mark.opacity(0.12)).border_l_2().border_color(mark)
+        })
         .hover(move |d| d.bg(row_hover))
         .on_hover(move |over: &bool, window, cx| on_hover(*over, window, cx))
         .child(gutter)

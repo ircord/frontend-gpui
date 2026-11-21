@@ -10,4 +10,5 @@ mod shell;
 mod commands;
 mod message_actions;
 mod text;
+mod timeline;
 mod uploads;

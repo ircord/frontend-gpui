@@ -58,6 +58,12 @@ pub struct MessageRow {
     pub edited: bool,
     pub deleted: bool,
     pub reply: Option<(String, String)>,
+    /// The message `reply` quotes, to jump to it.
+    pub reply_id: Option<String>,
+    /// It mentions you or one of your highlight words: drawn marked.
+    pub mention: bool,
+    /// The message a jump landed on: drawn marked until you move on.
+    pub focused: bool,
     pub reactions: Vec<(String, usize)>,
     /// Uploaded files, in the order they were sent (`message/attachments.rs`
     /// draws them as one gallery and file cards). Their URLs are left out of
@@ -249,6 +255,9 @@ fn message_row(
             .reply_to
             .as_ref()
             .map(|r| (r.nick.clone(), r.text.clone())),
+        reply_id: m.reply_to.as_ref().map(|r| r.id.clone()),
+        mention: false,
+        focused: false,
         reactions: m
             .reactions
             .iter()

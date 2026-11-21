@@ -19,4 +19,16 @@ impl Api {
             .await
             .map(drop)
     }
+
+    /// Make `message` and everything after it unread again, on every device.
+    pub async fn mark_unread(&self, conversation: &str, message: &str) -> Result<(), ApiError> {
+        let path = format!("/api/v1/conversations/{}", segment(conversation));
+        let body = c::ConversationPatchBody {
+            unread_from: Some(message.to_string()),
+            ..Default::default()
+        };
+        self.send(self.request(Method::PATCH, &path).json(&body))
+            .await
+            .map(drop)
+    }
 }
