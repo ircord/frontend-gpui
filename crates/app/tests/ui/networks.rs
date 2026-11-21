@@ -293,16 +293,8 @@ fn an_edit_saves_without_a_check_and_remove_asks_first(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
-fn the_network_menu_disconnects_and_changes_the_nick(cx: &mut TestAppContext) {
+fn the_network_menu_edits_and_changes_the_nick(cx: &mut TestAppContext) {
     let f = open(cx, |server| {
-        let mut down: Network = serde_json::from_value(answer("n1", "Home", "irc")).unwrap();
-        down.status = NetworkStatus::Disconnected;
-        server.route(
-            "PATCH",
-            "/api/v1/networks/n1",
-            200,
-            serde_json::to_value(down).unwrap(),
-        );
         let mut renamed: Network = serde_json::from_value(answer("n1", "Home", "irc")).unwrap();
         renamed.nick = "newme".into();
         renamed.status = NetworkStatus::Connected;
@@ -326,7 +318,7 @@ fn the_network_menu_disconnects_and_changes_the_nick(cx: &mut TestAppContext) {
             "already connected"
         );
         assert!(window.find_by_label("Edit network…").visible());
-        assert!(window.find_by_label("Remove network…").visible());
+        assert!(window.find_by_label("Add a network…").visible());
     })
     .unwrap();
     press_label(&f, cx, "Change nickname…");
@@ -341,15 +333,8 @@ fn the_network_menu_disconnects_and_changes_the_nick(cx: &mut TestAppContext) {
     })
     .unwrap();
     cx.run_until_parked();
-    press_label(&f, cx, "Disconnect");
-    let patch = f.server.wait_for("PATCH", "/api/v1/networks/n1", WAIT);
-    assert_eq!(patch.json(), json!({"status": "disconnected"}));
-    wait(cx, "the network to show disconnected", |cx| {
-        let session = f.session.read(cx);
-        let w = session.client().unwrap().read();
-        w.network("n1")
-            .is_some_and(|n| n.status == NetworkStatus::Disconnected)
-    });
+    press_label(&f, cx, "Edit network…");
+    wait_showing(&f, cx, "network-form", true);
 }
 
 #[gpui_kit::test]
@@ -364,6 +349,14 @@ fn settings_list_the_networks_and_register_channels(cx: &mut TestAppContext) {
         server.route_fn("PUT", "/api/v1/app/preferences", |r| {
             Reply::json(200, json!({"preferences": r.json()["preferences"]}))
         });
+        let mut down: Network = serde_json::from_value(answer("n1", "Home", "irc")).unwrap();
+        down.status = NetworkStatus::Disconnected;
+        server.route(
+            "PATCH",
+            "/api/v1/networks/n1",
+            200,
+            serde_json::to_value(down).unwrap(),
+        );
     });
     f.session
         .update(cx, |s, cx| s.navigate(Route::Settings, cx));
@@ -383,6 +376,31 @@ fn settings_list_the_networks_and_register_channels(cx: &mut TestAppContext) {
     click(&f, cx, "network-register-channels-switch");
     let saved = f.server.wait_for("PUT", "/api/v1/app/preferences", WAIT);
     assert_eq!(saved.json()["preferences"]["registerChannels"], false);
+    // Disconnect from the list.
+    click(&f, cx, "network-connect-n1");
+    let patch = f.server.wait_for("PATCH", "/api/v1/networks/n1", WAIT);
+    assert_eq!(patch.json(), json!({"status": "disconnected"}));
+    wait(cx, "the network to show disconnected", |cx| {
+        let session = f.session.read(cx);
+        let w = session.client().unwrap().read();
+        w.network("n1")
+            .is_some_and(|n| n.status == NetworkStatus::Disconnected)
+    });
+    let deadline = std::time::Instant::now() + WAIT;
+    while cx
+        .update_window(f.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.find("network-status-n1").label() != Some("Disconnected")
+        })
+        .unwrap()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the list never redrew"
+        );
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
     click(&f, cx, "network-edit-n1");
     wait_showing(&f, cx, "network-form", true);
 }

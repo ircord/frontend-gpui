@@ -3,8 +3,8 @@
 //! on-connect fieldsets, the server checking a new address before saving,
 //! and a question before typed changes are thrown away. An account with no
 //! networks gets the quick set-up page instead (nickname first, the rest
-//! folded away). The network menu connects, disconnects, changes your nick
-//! and real name, edits, adds and removes.
+//! folded away). The network menu edits, adds and changes your nick and
+//! real name; the sidebar's own entries (N1) connect, disconnect and remove.
 //!
 //! The form's rules live in `ircord_client::api::networks::Form`, tested
 //! there; this file draws it.
@@ -58,45 +58,15 @@ pub fn init(cx: &mut App) {
             PaneKind::Page(SETUP_PAGE.into()),
             |ctx, window, cx| setup_page(&ctx.session, window, cx).into_any_element(),
         ));
+        // Connect, disconnect and remove are the sidebar's (N1), at 500 and 900.
         let menu = &mut r.network_menu;
-        menu.add(
-            MenuItem::new(
-                "network-connect",
-                t!("networks-menu-connect"),
-                |n: &NetworkCtx, window, cx| connect(&n.session, &n.network, true, window, cx),
-            )
-            .order(100)
-            .when(|n, cx| {
-                status(n, cx).is_some_and(|s| {
-                    !matches!(s, NetworkStatus::Connected | NetworkStatus::Connecting)
-                })
-            }),
-        );
-        menu.add(
-            MenuItem::new(
-                "network-disconnect",
-                t!("networks-menu-disconnect"),
-                |n: &NetworkCtx, window, cx| connect(&n.session, &n.network, false, window, cx),
-            )
-            .order(100)
-            .when(|n, cx| status(n, cx) == Some(NetworkStatus::Connected)),
-        );
-        menu.add(
-            MenuItem::new(
-                "network-cancel-connect",
-                t!("networks-menu-cancel-connect"),
-                |n: &NetworkCtx, window, cx| connect(&n.session, &n.network, false, window, cx),
-            )
-            .order(100)
-            .when(|n, cx| status(n, cx) == Some(NetworkStatus::Connecting)),
-        );
         menu.add(
             MenuItem::new(
                 "network-change-nick",
                 t!("networks-menu-change-nick"),
                 |n: &NetworkCtx, window, cx| change_self(n.clone(), SelfField::Nick, window, cx),
             )
-            .order(110)
+            .order(530)
             .when(|n, cx| status(n, cx) == Some(NetworkStatus::Connected)),
         );
         menu.add(
@@ -107,7 +77,7 @@ pub fn init(cx: &mut App) {
                     change_self(n.clone(), SelfField::Realname, window, cx)
                 },
             )
-            .order(111)
+            .order(531)
             .when(|n, cx| {
                 with_network(&n.session, &n.network, cx, |n| {
                     n.status == NetworkStatus::Connected && n.features.setname
@@ -121,7 +91,7 @@ pub fn init(cx: &mut App) {
                 t!("networks-menu-edit"),
                 |n: &NetworkCtx, window, cx| open_edit(&n.session, &n.network, window, cx),
             )
-            .order(120),
+            .order(520),
         );
         menu.add(
             MenuItem::new(
@@ -129,18 +99,7 @@ pub fn init(cx: &mut App) {
                 t!("networks-menu-add"),
                 |n: &NetworkCtx, window, cx| open_add(&n.session, window, cx),
             )
-            .order(130),
-        );
-        menu.add(
-            MenuItem::new(
-                "network-remove",
-                t!("networks-menu-remove"),
-                |n: &NetworkCtx, window, cx| {
-                    confirm_remove(n.session.clone(), n.network.clone(), None, window, cx)
-                },
-            )
-            .order(140)
-            .danger(),
+            .order(800),
         );
     });
 }

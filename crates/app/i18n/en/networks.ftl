@@ -88,7 +88,7 @@ networks-remove-body = Its conversations and history on this server are deleted.
 networks-remove-confirm = Remove
 networks-removed = Removed { $name }.
 
-# The network menu
+# The network menu (connect and disconnect are also the settings list's buttons)
 networks-menu-connect = Connect
 networks-menu-disconnect = Disconnect
 networks-menu-cancel-connect = Stop connecting
@@ -96,7 +96,6 @@ networks-menu-change-nick = Change nickname…
 networks-menu-change-realname = Change real name…
 networks-menu-edit = Edit network…
 networks-menu-add = Add a network…
-networks-menu-remove = Remove network…
 networks-change-nick-title = Your nickname on { $name }
 networks-change-realname-title = Your real name on { $name }
 networks-change = Change
