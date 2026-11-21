@@ -222,6 +222,9 @@ impl WorkspaceView {
             .as_ref()
             .and_then(|r| r.conversation())
             .map(str::to_string);
+        if session.panel.as_deref() == Some(crate::session::NO_PANEL) {
+            return None;
+        }
         if let Some(id) = session.panel.clone()
             && let Some(panel) = registry::get(cx).panels.get(&id).cloned()
         {

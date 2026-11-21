@@ -17,7 +17,7 @@ use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::registry::{self, MessageCtx};
+use crate::registry::{self, MemberCtx, MessageCtx};
 use crate::theme::{self, Theme};
 use crate::timeline::rows::MessageRow;
 use crate::ui;
@@ -34,6 +34,28 @@ pub struct MessageView {
 pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut App) -> AnyElement {
     let m = &view.row;
     let name_color = m.sender_color.map(theme::hex).unwrap_or(theme.text);
+    // A click on the name or picture opens the person (`Registry::open_person`).
+    let open_person = registry::get(cx).open_person.clone().map(|open| {
+        let ctx = MemberCtx {
+            session: view.ctx.session.clone(),
+            member: m.sender_id.clone(),
+            conversation: Some(view.ctx.conversation.clone()),
+        };
+        move |_: &ClickEvent, window: &mut Window, cx: &mut App| open(&ctx, window, cx)
+    });
+    let person = |el: Div, id: String, label: String| -> AnyElement {
+        match open_person.clone() {
+            Some(open) => el
+                .id(ElementId::Name(id.into()))
+                .test_support()
+                .role(Role::Link)
+                .aria_label(SharedString::from(label))
+                .cursor_pointer()
+                .on_click(open)
+                .into_any_element(),
+            None => el.into_any_element(),
+        }
+    };
     let mut column = div().flex_1().min_w_0().flex().flex_col().gap_0p5();
     if m.header && !m.action {
         column = column.child(
@@ -41,12 +63,15 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                 .flex()
                 .items_baseline()
                 .gap_2()
-                .child(
+                .child(person(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(name_color)
+                        .hover(|d| d.underline())
                         .child(m.sender.clone()),
-                )
+                    format!("sender-{}", m.id),
+                    m.sender.clone(),
+                ))
                 .child(
                     div()
                         .text_xs()
@@ -91,7 +116,11 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
         .children(links::render(m, theme));
 
     let gutter = if m.header && !m.action {
-        ui::avatar::avatar(&m.sender, m.sender_color.map(theme::hex), px(40.), theme)
+        person(
+            ui::avatar::avatar(&m.sender, m.sender_color.map(theme::hex), px(40.), theme),
+            format!("sender-avatar-{}", m.id),
+            m.sender.clone(),
+        )
     } else {
         div()
             .w(px(40.))
@@ -104,6 +133,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
             } else {
                 String::new()
             })
+            .into_any_element()
     };
 
     let on_hover = view.on_hover.clone();

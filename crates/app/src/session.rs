@@ -21,6 +21,10 @@ use tokio::runtime::Runtime;
 
 use crate::route::{History, Route};
 
+/// The panel ID that closes the right-hand panel, the member list beside a
+/// channel included (P1's "hide member list").
+pub const NO_PANEL: &str = "none";
+
 pub enum Phase {
     /// No server chosen yet.
     ChooseServer,

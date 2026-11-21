@@ -776,14 +776,37 @@ impl TimelineView {
         };
         let theme = theme::get(cx).clone();
         match row {
-            Row::Start => div()
-                .px_4()
-                .pt_8()
-                .pb_4()
-                .text_color(theme.muted)
-                .text_sm()
-                .child(t!("timeline-start"))
-                .into_any_element(),
+            Row::Start => {
+                let slots = registry::get(cx).timeline_start.to_vec();
+                let extra: Vec<AnyElement> = match &self.conversation {
+                    Some(id) => {
+                        let ctx = ConversationCtx {
+                            session: self.session.clone(),
+                            conversation: id.clone(),
+                        };
+                        slots
+                            .iter()
+                            .filter_map(|slot| (slot.render)(&ctx, window, cx))
+                            .collect()
+                    }
+                    None => Vec::new(),
+                };
+                div()
+                    .px_4()
+                    .pt_8()
+                    .pb_4()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .children(extra)
+                    .child(
+                        div()
+                            .text_color(theme.muted)
+                            .text_sm()
+                            .child(t!("timeline-start")),
+                    )
+                    .into_any_element()
+            }
             Row::Loading => div()
                 .px_4()
                 .py_3()

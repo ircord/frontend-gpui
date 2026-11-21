@@ -101,3 +101,4 @@ sidebar-key-name-escape = Esc
 sidebar-key-name-space = Space
 sidebar-key-name-enter = Enter
 sidebar-key-name-tab = Tab
+sidebar-self-menu = Your status and settings

@@ -85,6 +85,8 @@ pub struct MessageRow {
     /// Show the sender and time above this message.
     pub header: bool,
     pub sender: String,
+    /// The sender's member ID, for the profile and ignore filters.
+    pub sender_id: String,
     pub sender_color: Option<u32>,
     pub time: String,
     pub action: bool,
@@ -547,6 +549,7 @@ fn message_row(
         version,
         header,
         sender: w.display_name(&m.sender_id, network),
+        sender_id: m.sender_id.clone(),
         sender_color,
         time,
         action: m.kind == MessageKind::Action,

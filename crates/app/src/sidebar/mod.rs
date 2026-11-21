@@ -20,7 +20,8 @@ pub mod layout;
 pub mod menus;
 
 use gpui_kit::TestSupportExt;
-use gpui_kit::component::menu::ContextMenuExt;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::{Conversation, ConversationKind, NetworkStatus};
@@ -715,6 +716,22 @@ impl Render for SidebarView {
             .into_iter()
             .filter_map(|slot| (slot.render)(&slot_ctx, window, cx))
             .collect();
+        let self_ctx = slot_ctx.clone();
+        // Your status, from a registered slot (P1), else your account.
+        let self_line = registry::get(cx)
+            .self_line
+            .to_vec()
+            .iter()
+            .find_map(|slot| (slot.render)(&self_ctx, window, cx))
+            .unwrap_or_else(|| {
+                let account = client.read().user.account.clone();
+                div()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .truncate()
+                    .child(account)
+                    .into_any_element()
+            });
         let w = client.read();
         let rail = self.rail(&w, selected_network.as_deref(), &theme);
         let network = selected_network.as_deref().and_then(|id| w.network(id));
@@ -893,6 +910,37 @@ impl Render for SidebarView {
             .map(|n| n.nick.clone())
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| w.user.nick.clone());
+        let name = div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme.text)
+                    .truncate()
+                    .child(me.clone()),
+            )
+            .child(self_line);
+        // Your own menu (`Registry::self_menu`), from your name.
+        let name = if registry::get(cx).self_menu.is_empty() {
+            name.into_any_element()
+        } else {
+            Button::new("self-menu")
+                .ghost()
+                .tooltip(t!("sidebar-self-menu"))
+                .flex_1()
+                .min_w_0()
+                .justify_start()
+                .child(name)
+                .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _, cx| {
+                    let items = registry::get(cx).self_menu.to_vec();
+                    let items = ui::context_menu::visible(&items, &self_ctx, cx);
+                    ui::context_menu::fill(menu, items, self_ctx.clone())
+                })
+                .into_any_element()
+        };
         let session = self.session.clone();
         let footer = div()
             .h(px(52.))
@@ -901,28 +949,9 @@ impl Render for SidebarView {
             .flex()
             .items_center()
             .justify_between()
+            .gap_1()
             .bg(theme.footer)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme.text)
-                            .truncate()
-                            .child(me),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted)
-                            .truncate()
-                            .child(w.user.account.clone()),
-                    ),
-            )
+            .child(name)
             .child(
                 div()
                     .id("sign-out")

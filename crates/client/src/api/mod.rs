@@ -31,7 +31,7 @@ mod messages;
 pub mod networks;
 mod notifications;
 mod parties;
-mod people;
+pub mod people;
 mod saved;
 mod search;
 pub mod uploads;

@@ -682,6 +682,16 @@ pub struct Registry {
     pub conversation_menu: List<MenuItem<ConversationCtx>>,
     pub member_menu: List<MenuItem<MemberCtx>>,
     pub network_menu: List<MenuItem<NetworkCtx>>,
+    /// Your own menu, opened from your name at the foot of the sidebar.
+    pub self_menu: List<MenuItem<SidebarCtx>>,
+    /// Under your name at the foot of the sidebar (your status): the first
+    /// slot that draws replaces the account name.
+    pub self_line: List<Slot<SidebarCtx>>,
+    /// Drawn at the start of a conversation's history, under "the start of
+    /// the conversation" (an empty direct conversation shows the person).
+    pub timeline_start: List<Slot<ConversationCtx>>,
+    /// Opens a person when their name or picture in the timeline is clicked.
+    pub open_person: Option<Handler<MemberCtx>>,
     pub composer: ComposerSlots,
     /// Buttons at the right of the conversation header.
     pub header_buttons: List<Slot<HeaderCtx>>,
