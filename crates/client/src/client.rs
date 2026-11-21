@@ -215,14 +215,20 @@ impl Handle {
                     if unauthorized(&result) {
                         let _ = handle.updates.unbounded_send(Update::SignedOut);
                     }
+                    let read = result.is_ok();
                     handle.change(|w| {
                         (spec.state)(w).read_done(result.map_err(|e| e.to_string()));
                         spec.changes()
                     });
                     // A failed read waits for the next event or edit instead of
-                    // retrying at once; only an edit made meanwhile goes on.
-                    let waiting = (spec.state)(&mut handle.store.write().unwrap()).needs_save();
-                    if !waiting {
+                    // retrying at once; an edit made meanwhile goes on, and so
+                    // does a read after an event that arrived during this one.
+                    let next = {
+                        let mut store = handle.store.write().unwrap();
+                        let state = (spec.state)(&mut store);
+                        state.needs_save() || (read && state.needs_read())
+                    };
+                    if !next {
                         return;
                     }
                 }

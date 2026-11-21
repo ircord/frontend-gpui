@@ -1,5 +1,7 @@
 //! Tests for package S1: Settings → Appearance, against the canned server.
 
+use std::sync::{Arc, Mutex};
+
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, ClipboardItem, TestAppContext};
 use ircord_app::theme;
@@ -10,32 +12,38 @@ use serde_json::{Value, json};
 use crate::fixture::{Fixture, bootstrap, open_with, wait};
 
 /// The account's appearance (`settings`) and theme library (`themes`); a
-/// save answers what was sent.
+/// save answers what was sent, and a read after it answers the saved copy,
+/// as the backend does.
 fn serve(server: &CannedServer, settings: Value, themes: Value) {
-    server.route(
-        "GET",
-        "/api/v1/app/appearance",
-        200,
-        json!({"settings": settings, "updatedAt": "r1"}),
-    );
-    server.route_fn("PUT", "/api/v1/app/appearance", |request| {
+    let appearance = Arc::new(Mutex::new(json!({"settings": settings, "updatedAt": "r1"})));
+    let stored = appearance.clone();
+    server.route_fn("GET", "/api/v1/app/appearance", move |_| {
+        Reply::json(200, stored.lock().unwrap().clone())
+    });
+    server.route_fn("PUT", "/api/v1/app/appearance", move |request| {
         let mut body = request.json();
         body["updatedAt"] = json!("r2");
+        *appearance.lock().unwrap() = body.clone();
         Reply::json(200, body)
     });
-    let library = json!({"format": 1, "customCss": true, "themes": themes, "updatedAt": "l1"});
-    server.route("GET", "/api/v1/app/themes", 200, library.clone());
-    let base = library.clone();
+    let library = Arc::new(Mutex::new(
+        json!({"format": 1, "customCss": true, "themes": themes, "updatedAt": "l1"}),
+    ));
+    let stored = library.clone();
+    server.route_fn("GET", "/api/v1/app/themes", move |_| {
+        Reply::json(200, stored.lock().unwrap().clone())
+    });
+    let stored = library.clone();
     server.route_fn("PATCH", "/api/v1/app/themes", move |request| {
-        let mut library = base.clone();
+        let mut library = stored.lock().unwrap();
         library["customCss"] = request.json()["customCss"].clone();
-        Reply::json(200, library)
+        Reply::json(200, library.clone())
     });
     server.route_fn("PUT", "/api/v1/app/themes/*", move |request| {
-        let mut library = library.clone();
+        let mut library = library.lock().unwrap();
         let theme = request.json()["theme"].clone();
         library["themes"].as_array_mut().unwrap().push(theme);
-        Reply::json(200, library)
+        Reply::json(200, library.clone())
     });
 }
 

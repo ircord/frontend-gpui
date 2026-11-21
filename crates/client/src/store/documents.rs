@@ -6,7 +6,10 @@
 //!   a save runs are coalesced into the next one, latest wins.
 //! - A `*.updated` event means another device changed the document: read it
 //!   again, but not while a save runs; a save that overlapped such an event is
-//!   followed by a read, because its answer may be older than the event.
+//!   followed by a read, because its answer may be older than the event. An
+//!   event during a read is followed by another read, for the same reason.
+//! - A save waits for a running read: an answer that left the server before
+//!   the save would otherwise replace it.
 //! - A failed save falls back to the server's copy and reads it again.
 //!
 //! [`Revisioned`] is the pure state and [`Documents`] holds the five in the
@@ -107,9 +110,9 @@ impl<T: Clone> Revisioned<T> {
         !self.reading && !self.in_flight && (self.server.is_none() || self.stale)
     }
 
-    /// Whether an edit is waiting to be sent and no save is running.
+    /// Whether an edit is waiting to be sent and no save or read is running.
     pub fn needs_save(&self) -> bool {
-        !self.in_flight && self.pending.is_some()
+        !self.in_flight && !self.reading && self.pending.is_some()
     }
 
     /// Start a read if one is needed. True when the caller should read.
@@ -143,9 +146,9 @@ impl<T: Clone> Revisioned<T> {
         self.save = SaveState::Saving;
     }
 
-    /// Take the edit to send, if one waits and no save is running.
+    /// Take the edit to send, if one waits and no save or read is running.
     pub fn begin_save(&mut self) -> Option<T> {
-        if self.in_flight {
+        if self.in_flight || self.reading {
             return None;
         }
         let value = self.pending.take()?;
@@ -248,6 +251,39 @@ mod tests {
         assert!(d.begin_read(), "the answer may be older than the event");
         d.read_done(Ok(7));
         assert_eq!(d.value(), Some(&7));
+    }
+
+    #[test]
+    fn a_save_waits_for_a_running_read() {
+        let mut d = Revisioned::default();
+        d.begin_read();
+        d.read_done(Ok(1));
+        d.remote();
+        assert!(d.begin_read());
+        d.edit(2);
+        assert!(!d.needs_save(), "not while the read runs");
+        assert_eq!(d.begin_save(), None);
+        // The read left the server before the edit: it must not replace it.
+        d.read_done(Ok(1));
+        assert_eq!(d.value(), Some(&2));
+        assert!(d.needs_save());
+        assert_eq!(d.begin_save(), Some(2));
+        d.save_done(Ok(2));
+        assert_eq!(d.value(), Some(&2));
+        assert!(!d.needs_read());
+    }
+
+    #[test]
+    fn a_remote_change_during_a_read_reads_again() {
+        let mut d = Revisioned::default();
+        assert!(d.begin_read());
+        d.remote();
+        d.read_done(Ok(1));
+        assert!(d.needs_read(), "the answer may be older than the event");
+        assert!(d.begin_read());
+        d.read_done(Ok(7));
+        assert_eq!(d.value(), Some(&7));
+        assert!(!d.needs_read());
     }
 
     #[test]
