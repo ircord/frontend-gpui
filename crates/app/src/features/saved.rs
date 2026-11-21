@@ -9,7 +9,7 @@
 
 use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Escape, Input, InputEvent, InputState, MoveDown, MoveUp};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::{MessageKind, SavedItem, SavedItemStatus};
@@ -18,14 +18,18 @@ use ircord_client::store::saved;
 use ircord_client::store::{Connection, Workspace};
 
 use crate::features::inbox::{
-    author, day_and_time, day_heading, link_button, loading, more, network_name, place,
+    day_and_time, day_heading, link_button, loading, more, network_name, place, result_line,
+    sender, server,
 };
+use crate::features::shortcuts::MarkRead;
+use crate::message::layout::Look;
 use crate::registry::{self, MenuItem, MessageCtx, Pane, SidebarCtx, Slot};
 use crate::route::{PaneKind, Route};
 use crate::session::{Session, SessionEvent};
 use crate::theme::{self, Theme};
 use crate::ui;
 use crate::ui::icon::IconName;
+use crate::ui::page::Hint;
 
 pub fn init(cx: &mut App) {
     registry::register(cx, |r| {
@@ -170,6 +174,10 @@ fn view(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> Entity<
 pub struct SavedView {
     session: Entity<Session>,
     filter: Entity<InputState>,
+    /// The row the arrow keys moved to.
+    selected: usize,
+    /// Put the caret in the filter on the next draw (the page was shown).
+    take_focus: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -177,34 +185,99 @@ impl SavedView {
     fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder(t!("inbox-saved-filter")));
         let subscriptions = vec![
-            cx.subscribe(&filter, |this, _, event: &InputEvent, cx| {
-                if let InputEvent::Change = event {
-                    this.reload(cx);
-                }
-            }),
-            cx.subscribe(&session, |this, _, event: &SessionEvent, cx| match event {
-                SessionEvent::Changed(changes)
-                    if changes.touches(saved::TOPIC) || changes.sidebar =>
-                {
-                    this.ensure_loaded(cx);
-                    cx.notify();
-                }
-                SessionEvent::Connection | SessionEvent::Route => {
-                    this.ensure_loaded(cx);
-                    cx.notify();
-                }
-                _ => {}
-            }),
+            cx.subscribe_in(
+                &filter,
+                window,
+                |this: &mut Self, _, event: &InputEvent, window, cx| match event {
+                    InputEvent::Change => {
+                        this.selected = 0;
+                        this.reload(cx);
+                    }
+                    InputEvent::PressEnter { .. } => this.open_selected(window, cx),
+                    _ => {}
+                },
+            ),
+            cx.subscribe(
+                &session,
+                |this, session, event: &SessionEvent, cx| match event {
+                    SessionEvent::Changed(changes)
+                        if changes.touches(saved::TOPIC) || changes.sidebar =>
+                    {
+                        this.ensure_loaded(cx);
+                        cx.notify();
+                    }
+                    SessionEvent::Connection | SessionEvent::Route => {
+                        if matches!(event, SessionEvent::Route)
+                            && session.read(cx).route() == Some(Route::Saved)
+                        {
+                            this.take_focus = true;
+                        }
+                        this.ensure_loaded(cx);
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            ),
         ];
         let mut this = Self {
             session,
             filter,
+            selected: 0,
+            take_focus: true,
             _subscriptions: subscriptions,
         };
         this.ensure_loaded(cx);
         this
     }
 
+    /// The shown items: (message, conversation, unavailable).
+    fn shown(&self, cx: &App) -> Vec<(String, String, bool)> {
+        let Some(client) = self.session.read(cx).client() else {
+            return Vec::new();
+        };
+        let w = client.read();
+        w.saved
+            .list
+            .items
+            .iter()
+            .map(|i| {
+                (
+                    i.message_id.clone(),
+                    i.conversation_id.clone(),
+                    i.status == SavedItemStatus::Unavailable,
+                )
+            })
+            .collect()
+    }
+
+    fn step(&mut self, down: bool, cx: &mut Context<Self>) -> bool {
+        let count = self.shown(cx).len();
+        if count == 0 {
+            return false;
+        }
+        let at = self.selected.min(count - 1);
+        self.selected = if down {
+            (at + 1) % count
+        } else {
+            (at + count - 1) % count
+        };
+        cx.notify();
+        true
+    }
+
+    fn open_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let items = self.shown(cx);
+        let Some((message, conversation, gone)) = items
+            .get(self.selected.min(items.len().saturating_sub(1)))
+            .cloned()
+        else {
+            return;
+        };
+        if gone {
+            return ui::toast::info(window, cx, t!("inbox-saved-closed"));
+        }
+        crate::timeline::reveal(&self.session, &conversation, &message, window, cx);
+    }
     fn query(&self, cx: &App) -> String {
         self.filter.read(cx).value().trim().to_string()
     }
@@ -255,17 +328,31 @@ impl SavedView {
         }
     }
 
-    fn row(&self, w: &Workspace, item: &SavedItem, pending: bool, theme: &Theme) -> AnyElement {
+    #[allow(clippy::too_many_arguments)]
+    fn row(
+        &self,
+        w: &Workspace,
+        item: &SavedItem,
+        pending: bool,
+        selected: bool,
+        server: Option<&url::Url>,
+        look: &Look,
+        theme: &Theme,
+    ) -> AnyElement {
         let id = item.message_id.clone();
         let gone = item.status == SavedItemStatus::Unavailable;
         let available = item.status == SavedItemStatus::Available;
         let message = item.message.as_ref();
         let place = place(w, &item.conversation_id, gone);
         let network = network_name(w, &item.network_id);
-        let author = message
-            .filter(|_| !gone)
-            .map(|m| author(w, &m.sender_id, &item.network_id))
-            .unwrap_or_default();
+        let who = sender(
+            w,
+            message.filter(|_| !gone).map(|m| m.sender_id.as_str()),
+            &item.network_id,
+            server,
+            look.colored_names,
+            theme,
+        );
         let text: SharedString = match (item.status, message) {
             (SavedItemStatus::Available, Some(m)) => format::parse(&m.text).text.into(),
             (SavedItemStatus::Deleted, _) => t!("inbox-saved-deleted").into(),
@@ -274,11 +361,14 @@ impl SavedView {
         let action = message.is_some_and(|m| m.kind == MessageKind::Action);
         let label = t!(
             "inbox-saved-item",
-            author = author.clone(),
+            author = who.name.clone(),
             place = place.clone(),
             text = text.clone()
         );
-        let (_, time) = day_and_time(message.map(|m| m.created_at.as_str()).unwrap_or(""));
+        let (_, time) = day_and_time(
+            message.map(|m| m.created_at.as_str()).unwrap_or(""),
+            look.clock_12h,
+        );
 
         let (session, conversation, target) = (
             self.session.clone(),
@@ -308,15 +398,25 @@ impl SavedView {
                 }
             },
         );
+        let location = vec![
+            div()
+                .truncate()
+                .child(format!("{place} · {network}"))
+                .into_any_element(),
+        ];
+        let excerpt = div()
+            .text_color(if available { theme.body } else { theme.muted })
+            .when(!available || action, |d| d.italic())
+            .child(text);
 
         div()
             .id(ElementId::Name(format!("saved-row-{id}").into()))
             .flex()
             .items_start()
-            .gap_2()
-            .px_2()
+            .gap_1()
             .rounded_md()
-            .hover(|d| d.bg(theme.row_hover))
+            .when(selected, |d| d.bg(theme.selected))
+            .when(!selected, |d| d.hover(|d| d.bg(theme.row_hover)))
             .child(
                 div()
                     .id(ElementId::Name(format!("saved-item-{id}").into()))
@@ -324,56 +424,33 @@ impl SavedView {
                     .role(Role::Button)
                     .reachable(theme)
                     .aria_label(SharedString::from(label))
+                    .aria_selected(selected)
                     .flex_1()
                     .min_w_0()
-                    .py_1p5()
-                    .flex()
-                    .flex_col()
-                    .gap_0p5()
                     .cursor_pointer()
                     .on_click(open)
-                    .child(
-                        div()
-                            .flex()
-                            .gap_1p5()
-                            .text_xs()
-                            .text_color(theme.muted)
-                            .child(div().truncate().child(format!("{place} · {network}")))
-                            .child(div().flex_1())
-                            .child(div().text_color(theme.faint).child(time)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_1()
-                            .text_sm()
-                            .min_w_0()
-                            .when(!author.is_empty(), |d| {
-                                d.child(
-                                    div()
-                                        .flex_none()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(theme.text)
-                                        .child(author.clone()),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_color(if available { theme.text } else { theme.muted })
-                                    .when(!available || action, |d| d.italic())
-                                    .child(text),
-                            ),
-                    ),
+                    .child(result_line(
+                        &format!("saved-{id}"),
+                        &who,
+                        location,
+                        time,
+                        excerpt.into_any_element(),
+                        theme,
+                    )),
             )
-            .child(div().pt_1().child(remove))
+            .child(div().mt_2().mr_2().child(remove))
             .into_any_element()
     }
 }
 
 impl Render for SavedView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
+        if std::mem::take(&mut self.take_focus) {
+            self.filter.focus_handle(cx).focus(window, cx);
+        }
+        let look = crate::message::layout::settings(cx);
+        let server = server(&self.session, cx);
         let Some(client) = self.session.read(cx).client().cloned() else {
             return div().into_any_element();
         };
@@ -382,10 +459,12 @@ impl Render for SavedView {
         let state = &w.saved;
         let l = &state.list;
         let count = l.items.len();
-        let meta: SharedString = if l.next.is_some() {
-            t!("inbox-saved-saved-count", count = format!("{count}+")).into()
+        let meta: Option<SharedString> = if count == 0 {
+            None
+        } else if l.next.is_some() {
+            Some(t!("inbox-saved-saved-count", count = format!("{count}+")).into())
         } else {
-            t!("inbox-saved-saved-count", count = count).into()
+            Some(t!("inbox-saved-saved-count", count = count).into())
         };
 
         let body: AnyElement = if !l.loaded && l.error.is_some() {
@@ -416,8 +495,9 @@ impl Render for SavedView {
             loading("saved-loading", t!("inbox-saved-saved-loading"), &theme)
         } else if l.items.is_empty() {
             if l.query.is_empty() {
-                ui::empty::empty(
+                ui::empty::with_icon(
                     "saved-empty",
+                    Some(IconName::BookOpen),
                     t!("inbox-saved-empty-title"),
                     Some(t!("inbox-saved-empty").into()),
                     &theme,
@@ -433,10 +513,19 @@ impl Render for SavedView {
                 .into_any_element()
             }
         } else {
+            let selected = self.selected.min(l.items.len().saturating_sub(1));
             let mut groups: Vec<(String, Vec<AnyElement>)> = Vec::new();
-            for item in &l.items {
-                let (day, _) = day_and_time(&item.saved_at);
-                let row = self.row(&w, item, state.pending.contains(&item.message_id), &theme);
+            for (i, item) in l.items.iter().enumerate() {
+                let (day, _) = day_and_time(&item.saved_at, look.clock_12h);
+                let row = self.row(
+                    &w,
+                    item,
+                    state.pending.contains(&item.message_id),
+                    i == selected,
+                    server.as_ref(),
+                    &look,
+                    &theme,
+                );
                 match groups.last_mut() {
                     Some((last, rows)) if *last == day => rows.push(row),
                     _ => groups.push((day, vec![row])),
@@ -474,34 +563,62 @@ impl Render for SavedView {
 
         let page_body = div()
             .px_4()
-            .py_3()
+            .pb_4()
             .flex()
             .flex_col()
             .gap_3()
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(theme.muted)
-                    .child(t!("inbox-saved-saved-description")),
-            )
             .child(
                 Input::new(&self.filter)
                     .id("saved-filter")
                     .aria_label(t!("inbox-saved-filter")),
             )
             .child(body);
-        ui::page::Page::new("saved-page", t!("inbox-saved-saved"), page_body)
-            .action(
-                div()
-                    .id("saved-meta")
-                    .test_support()
-                    .role(Role::Status)
-                    .aria_label(meta.clone())
-                    .text_sm()
-                    .text_color(theme.muted)
-                    .child(meta),
-            )
-            .render(&theme)
+        let session = self.session.clone();
+        let mut page = ui::page::Page::new("saved-page", t!("inbox-saved-saved"), page_body)
+            .description(t!("inbox-saved-saved-description"))
+            .close(t!("inbox-saved-return-label"), move |_, _, cx| {
+                ui::page::leave(&session, cx)
+            })
+            .hints(vec![
+                Hint::new(
+                    &[t!("inbox-saved-key-up"), t!("inbox-saved-key-down")],
+                    t!("inbox-saved-key-choose"),
+                ),
+                Hint::new(&[t!("inbox-saved-key-enter")], t!("inbox-saved-key-open")),
+                Hint::new(
+                    &[t!("inbox-saved-key-escape")],
+                    t!("inbox-saved-key-return"),
+                ),
+            ]);
+        if let Some(meta) = meta {
+            page = page.meta("saved-meta", meta);
+        }
+        div()
+            .id("saved-keys")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .capture_action(cx.listener(|this, _: &MoveDown, _, cx| {
+                if this.step(true, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &MoveUp, _, cx| {
+                if this.step(false, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &Escape, _, cx| {
+                ui::page::leave(&this.session, cx);
+                cx.stop_propagation();
+            }))
+            // Escape outside the filter is bound to Mark read.
+            .capture_action(cx.listener(|this, _: &MarkRead, _, cx| {
+                ui::page::leave(&this.session, cx);
+                cx.stop_propagation();
+            }))
+            .child(page.render(&theme))
             .into_any_element()
     }
 }

@@ -31,6 +31,7 @@ use ircord_client::search_filter::{
 };
 use ircord_client::store::Workspace;
 
+use crate::features::inbox;
 use crate::registry::{self, HeaderCtx, KeyDefault, Pane, Panel, PanelCtx, Slot};
 use crate::route::{PaneKind, Route};
 use crate::session::{Session, SessionEvent};
@@ -38,6 +39,7 @@ use crate::sidebar::layout;
 use crate::theme::{self, Theme};
 use crate::ui;
 use crate::ui::icon::IconName;
+use crate::ui::page::Hint;
 
 gpui_kit::actions!(ircord_search, [OpenSearch, SearchConversation]);
 
@@ -582,11 +584,15 @@ fn offers(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Vec<Offer> 
     offers
 }
 
-/// A message result's time, in local time.
-fn result_time(created_at: &str) -> String {
-    chrono::DateTime::parse_from_rfc3339(created_at)
-        .map(|t| t.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_default()
+/// A message result's time as the web labels it: the day ("Today", a
+/// date) on the search page, the day and the time beside a conversation.
+fn result_time(created_at: &str, with_time: bool, clock_12h: bool) -> String {
+    let (day, time) = inbox::day_and_time(created_at, clock_12h);
+    if with_time && !time.is_empty() {
+        format!("{day} {time}")
+    } else {
+        day
+    }
 }
 
 fn coverage_text(coverage: Coverage) -> &'static str {
@@ -828,7 +834,8 @@ fn chips_row(
     Some(row)
 }
 
-/// One message result.
+/// One message result, as the web's `MessageResult.vue`: the sender's
+/// picture, their coloured name, where and when, then the text.
 #[allow(clippy::too_many_arguments)]
 fn result_row(
     id: String,
@@ -836,19 +843,24 @@ fn result_row(
     result: &c::SearchResult,
     show_place: bool,
     selected: bool,
+    server: Option<&url::Url>,
+    colored_names: bool,
+    clock_12h: bool,
     theme: &Theme,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     let network = &result.conversation.network_id;
     let sender = &result.message.sender_id;
-    let member = (w.is_self(sender, network) || w.member(sender, network).is_some())
-        .then(|| w.display_name(sender, network));
+    let known = w.is_self(sender, network) || w.member(sender, network).is_some();
+    let member = known.then(|| w.display_name(sender, network));
     let author = sf::result_author(result, member).unwrap_or_else(|| t!("search-someone").into());
     let place = w
         .conversation(&result.conversation.id)
         .map(conversation_label)
         .unwrap_or_else(|| conversation_label(&result.conversation));
-    let time = result_time(&result.message.created_at);
+    // The page names the place; the panel beside a conversation does not,
+    // and shows the time instead.
+    let time = result_time(&result.message.created_at, !show_place, clock_12h);
     let text = format::strip(&result.message.text);
     let jumpable = sf::is_jumpable(result);
     let mut label = t!(
@@ -861,60 +873,51 @@ fn result_row(
     if !jumpable {
         label = format!("{label}. {}", t!("search-result-not-jumpable"));
     }
+    let mut who = inbox::sender(
+        w,
+        known.then_some(sender.as_str()),
+        network,
+        server,
+        colored_names,
+        theme,
+    );
+    who.name = author;
+    let mut location = Vec::new();
+    if show_place {
+        location.push(div().truncate().child(place).into_any_element());
+    }
+    if !jumpable {
+        location.push(
+            div()
+                .px_1p5()
+                .rounded_sm()
+                .bg(theme.input)
+                .text_color(theme.muted)
+                .child(t!("search-result-remote-badge"))
+                .into_any_element(),
+        );
+    }
     div()
-        .id(ElementId::Name(id.into()))
+        .id(ElementId::Name(id.clone().into()))
         .role(Role::ListBoxOption)
         .aria_label(SharedString::from(label))
         .aria_selected(selected)
         .mx_2()
-        .px_2()
-        .py_1p5()
         .rounded_md()
-        .flex()
-        .flex_col()
-        .gap_0p5()
         .when(jumpable, |d| d.cursor_pointer())
         .when(selected, |d| d.bg(theme.selected))
         .when(!selected, |d| {
             let hover = theme.row_hover;
             d.hover(move |d| d.bg(hover))
         })
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_x_2()
-                .text_sm()
-                .child(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.text)
-                        .child(author),
-                )
-                .when(show_place, |d| {
-                    d.child(div().text_color(theme.muted).child(place))
-                })
-                .child(div().text_xs().text_color(theme.faint).child(time))
-                .when(!jumpable, |d| {
-                    d.child(
-                        div()
-                            .px_1p5()
-                            .rounded_sm()
-                            .bg(theme.input)
-                            .text_xs()
-                            .text_color(theme.muted)
-                            .child(t!("search-result-remote-badge")),
-                    )
-                }),
-        )
-        .child(
-            div()
-                .text_sm()
-                .text_color(theme.text)
-                .line_clamp(3)
-                .child(text),
-        )
+        .child(inbox::result_line(
+            &id,
+            &who,
+            location,
+            time,
+            div().text_color(theme.body).child(text).into_any_element(),
+            theme,
+        ))
         .on_click(on_click)
 }
 
@@ -1014,6 +1017,8 @@ fn messages_part(
     let Some(client) = session.read(cx).client().cloned() else {
         return part;
     };
+    let look = crate::message::layout::settings(cx);
+    let server = inbox::server(session, cx);
     let w = client.read();
     for (i, result) in m.results.iter().enumerate() {
         let session = session.clone();
@@ -1026,6 +1031,9 @@ fn messages_part(
                 result,
                 show_place,
                 selected == Some(offset + i),
+                server.as_ref(),
+                look.colored_names,
+                look.clock_12h,
                 theme,
                 move |_, window, cx| {
                     model.update(cx, |_, cx| cx.emit(Opened));
@@ -1911,18 +1919,12 @@ impl Render for SearchPage {
         }
         let toolbar = div()
             .px_4()
-            .py_3()
+            .pb_3()
             .flex()
             .flex_col()
             .gap_2()
             .border_b_1()
-            .border_color(theme.rail)
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(theme.muted)
-                    .child(t!("search-description")),
-            )
+            .border_color(theme.border)
             .child(
                 div()
                     .flex()
@@ -1963,14 +1965,6 @@ impl Render for SearchPage {
             .role(Role::ListBox)
             .aria_label(t!("search-results"))
             .child(self.render_list(&theme, cx));
-        let footer = div()
-            .px_4()
-            .py_1()
-            .border_t_1()
-            .border_color(theme.rail)
-            .text_xs()
-            .text_color(theme.faint)
-            .child(t!("search-keyboard"));
         let body = div()
             .id("search-page-root")
             .flex()
@@ -1995,14 +1989,31 @@ impl Render for SearchPage {
                 }
             }))
             .capture_action(cx.listener(|this, _: &Escape, window, cx| {
-                this.session.update(cx, |s, cx| s.go_back(cx));
+                ui::page::leave(&this.session, cx);
                 window.refresh();
                 cx.stop_propagation();
             }))
             .child(toolbar)
-            .child(list)
-            .child(footer);
-        ui::page::Page::new("search-page", t!("search-title"), body).render(&theme)
+            .child(list);
+        let session = self.session.clone();
+        ui::page::Page::new("search-page", t!("search-title"), body)
+            .description(t!("search-description"))
+            .close(t!("search-return"), move |_, _, cx| {
+                ui::page::leave(&session, cx)
+            })
+            .hints(vec![
+                Hint::new(
+                    &[t!("search-key-up"), t!("search-key-down")],
+                    t!("search-key-choose"),
+                ),
+                Hint::new(&[t!("search-key-enter")], t!("search-key-open")),
+                Hint::new(
+                    &[t!("search-key-backspace")],
+                    t!("search-key-remove-filter"),
+                ),
+                Hint::new(&[t!("search-key-escape")], t!("search-key-return")),
+            ])
+            .render(&theme)
     }
 }
 

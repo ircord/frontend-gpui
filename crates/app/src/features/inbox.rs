@@ -15,10 +15,14 @@ use gpui_kit::TestSupportExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::{
-    ConversationKind, InboxItem, InboxItemKind, InboxItemReasonsItem, InboxItemStatus,
+    ConversationKind, InboxItem, InboxItemKind, InboxItemReasonsItem, InboxItemStatus, Member,
 };
 use ircord_client::store::inbox::{self, Filter, List};
-use ircord_client::store::{Connection, Workspace, parse_time};
+use ircord_client::store::{Connection, Workspace, parse_time, people};
+
+use crate::features::shortcuts::MarkRead;
+use crate::message::layout::Look;
+use crate::ui::page::Hint;
 
 use crate::registry::{self, Pane, SidebarCtx, Slot};
 use crate::route::{PaneKind, Route};
@@ -85,6 +89,14 @@ fn reason_color(reason: Option<&InboxItemReasonsItem>, theme: &Theme) -> Hsla {
         Some(InboxItemReasonsItem::Reply) => theme.accent,
         Some(InboxItemReasonsItem::Direct) => theme.online,
         _ => theme.mention,
+    }
+}
+
+fn reason_icon(reason: InboxItemReasonsItem) -> IconName {
+    match reason {
+        InboxItemReasonsItem::Reply => IconName::Undo,
+        InboxItemReasonsItem::Direct => IconName::User,
+        _ => IconName::Asterisk,
     }
 }
 
@@ -182,28 +194,44 @@ fn view(session: &Entity<Session>, cx: &mut App) -> Entity<InboxView> {
 pub struct InboxView {
     session: Entity<Session>,
     filter: Filter,
+    /// The row the arrow keys moved to.
+    selected: usize,
+    focus: FocusHandle,
+    /// Take the keyboard on the next draw (the page was just shown).
+    take_focus: bool,
     _subscription: Subscription,
 }
 
 impl InboxView {
     fn new(session: Entity<Session>, cx: &mut Context<Self>) -> Self {
         let subscription =
-            cx.subscribe(&session, |this, _, event: &SessionEvent, cx| match event {
-                SessionEvent::Changed(changes)
-                    if changes.touches(inbox::TOPIC) || changes.sidebar =>
-                {
-                    this.ensure_loaded(cx);
-                    cx.notify();
-                }
-                SessionEvent::Connection | SessionEvent::Route => {
-                    this.ensure_loaded(cx);
-                    cx.notify();
-                }
-                _ => {}
-            });
+            cx.subscribe(
+                &session,
+                |this, session, event: &SessionEvent, cx| match event {
+                    SessionEvent::Changed(changes)
+                        if changes.touches(inbox::TOPIC) || changes.sidebar =>
+                    {
+                        this.ensure_loaded(cx);
+                        cx.notify();
+                    }
+                    SessionEvent::Connection | SessionEvent::Route => {
+                        if matches!(event, SessionEvent::Route)
+                            && session.read(cx).route() == Some(Route::Inbox)
+                        {
+                            this.take_focus = true;
+                        }
+                        this.ensure_loaded(cx);
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            );
         let mut this = Self {
             session,
             filter: Filter::All,
+            selected: 0,
+            focus: cx.focus_handle(),
+            take_focus: true,
             _subscription: subscription,
         };
         this.ensure_loaded(cx);
@@ -216,6 +244,7 @@ impl InboxView {
 
     pub fn set_filter(&mut self, filter: Filter, cx: &mut Context<Self>) {
         self.filter = filter;
+        self.selected = 0;
         self.ensure_loaded(cx);
         cx.notify();
     }
@@ -249,21 +278,108 @@ impl InboxView {
         }
     }
 
-    fn row(&self, w: &Workspace, item: &InboxItem, pending: bool, theme: &Theme) -> AnyElement {
+    /// The shown items: (message, conversation, dismissed, unavailable).
+    fn shown(&self, cx: &App) -> Vec<(String, String, bool, bool)> {
+        let Some(client) = self.session.read(cx).client() else {
+            return Vec::new();
+        };
+        let w = client.read();
+        w.inbox
+            .list(self.filter)
+            .filter(|l| l.loaded)
+            .map(|l| {
+                l.items
+                    .iter()
+                    .map(|i| {
+                        (
+                            i.message_id.clone(),
+                            i.conversation_id.clone(),
+                            i.dismissed,
+                            i.status == InboxItemStatus::Unavailable,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The keys the hint bar names: up and down choose, left and right
+    /// change the view, Enter opens, E dismisses or restores, Escape leaves.
+    fn on_key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let k = &e.keystroke;
+        if k.modifiers.modified() {
+            return;
+        }
+        let items = self.shown(cx);
+        let count = items.len();
+        let current = items
+            .get(self.selected.min(count.saturating_sub(1)))
+            .cloned();
+        match k.key.as_str() {
+            "down" | "up" if count > 0 => {
+                let step = if k.key == "down" { 1 } else { count - 1 };
+                self.selected = (self.selected.min(count - 1) + step) % count;
+                cx.notify();
+            }
+            "left" | "right" => {
+                let views = Filter::ALL;
+                let at = views.iter().position(|f| *f == self.filter).unwrap_or(0);
+                let n = views.len();
+                let next = if k.key == "right" {
+                    (at + 1) % n
+                } else {
+                    (at + n - 1) % n
+                };
+                self.set_filter(views[next], cx);
+            }
+            // Enter on a focused button already clicks it.
+            "enter" if self.focus.is_focused(window) => {
+                let Some((message, conversation, _, gone)) = current else {
+                    return;
+                };
+                if gone {
+                    ui::toast::info(window, cx, t!("inbox-saved-closed"));
+                } else {
+                    crate::timeline::reveal(&self.session, &conversation, &message, window, cx);
+                }
+            }
+            "e" => {
+                let Some((message, _, dismissed, _)) = current else {
+                    return;
+                };
+                set_dismissed(&self.session, &message, !dismissed, window, cx);
+            }
+            "escape" => ui::page::leave(&self.session, cx),
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn row(
+        &self,
+        w: &Workspace,
+        item: &InboxItem,
+        pending: bool,
+        selected: bool,
+        server: Option<&url::Url>,
+        look: &Look,
+        theme: &Theme,
+    ) -> AnyElement {
         let id = item.message_id.clone();
         let available = item.status == InboxItemStatus::Available;
         let unread = item.unread && !item.dismissed;
-        let place = place(
-            w,
-            &item.conversation_id,
-            item.status == InboxItemStatus::Unavailable,
-        );
+        let gone = item.status == InboxItemStatus::Unavailable;
+        let place = place(w, &item.conversation_id, gone);
         let network = network_name(w, &item.network_id);
-        let author = item
-            .sender_id
-            .as_deref()
-            .map(|s| author(w, s, &item.network_id))
-            .unwrap_or_default();
+        let who = sender(
+            w,
+            item.sender_id.as_deref().filter(|_| !gone),
+            &item.network_id,
+            server,
+            look.colored_names,
+            theme,
+        );
         let text: SharedString = match item.status {
             InboxItemStatus::Available => item.excerpt.clone().unwrap_or_default().into(),
             InboxItemStatus::Deleted => t!("inbox-saved-deleted").into(),
@@ -271,17 +387,11 @@ impl InboxView {
         };
         let label = t!(
             "inbox-saved-item",
-            author = author.clone(),
+            author = who.name.clone(),
             place = place.clone(),
             text = text.clone()
         );
-        let (_, time) = day_and_time(&item.created_at);
-        let reasons: Vec<&'static str> = item
-            .reasons
-            .iter()
-            .copied()
-            .filter_map(reason_label)
-            .collect();
+        let (_, time) = day_and_time(&item.created_at, look.clock_12h);
         let edge = reason_color(item.reasons.first(), theme);
 
         let (session, conversation, message) = (
@@ -289,7 +399,6 @@ impl InboxView {
             item.conversation_id.clone(),
             item.message_id.clone(),
         );
-        let gone = item.status == InboxItemStatus::Unavailable;
         let open = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
             if gone {
                 return ui::toast::info(window, cx, t!("inbox-saved-closed"));
@@ -322,18 +431,78 @@ impl InboxView {
             },
         );
 
+        let mut location = Vec::new();
+        if unread {
+            location.push(
+                div()
+                    .id(ElementId::Name(format!("inbox-unread-{id}").into()))
+                    .test_support()
+                    .role(Role::Image)
+                    .aria_label(t!("inbox-saved-unread"))
+                    .size(px(7.))
+                    .rounded_full()
+                    .bg(theme.text)
+                    .into_any_element(),
+            );
+        }
+        location.push(
+            div()
+                .truncate()
+                .when(unread, |d| d.text_color(theme.text))
+                .child(format!("{place} · {network}"))
+                .into_any_element(),
+        );
+        for (i, reason) in item.reasons.iter().enumerate() {
+            let Some(r) = reason_label(*reason) else {
+                continue;
+            };
+            location.push(
+                div()
+                    .id(ElementId::Name(format!("inbox-reason-{id}-{i}").into()))
+                    .test_support()
+                    .role(Role::Status)
+                    .aria_label(r)
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .px_1p5()
+                    .rounded_sm()
+                    .bg(theme.hover)
+                    .text_size(px(11.))
+                    .text_color(theme.muted)
+                    .child(
+                        gpui_kit::component::Icon::new(reason_icon(*reason))
+                            .size(px(11.))
+                            .text_color(theme.muted),
+                    )
+                    .child(r)
+                    .into_any_element(),
+            );
+        }
+        let excerpt = div()
+            .text_color(if available { theme.body } else { theme.muted })
+            .when(
+                !available || item.kind == Some(InboxItemKind::Action),
+                |d| d.italic(),
+            )
+            .child(text);
+
         div()
             .id(ElementId::Name(format!("inbox-row-{id}").into()))
+            .relative()
             .flex()
             .items_start()
-            .gap_2()
+            .gap_1()
             .rounded_md()
-            .hover(|d| d.bg(theme.row_hover))
+            .when(selected, |d| d.bg(theme.selected))
+            .when(!selected, |d| d.hover(|d| d.bg(theme.row_hover)))
             .child(
                 div()
+                    .absolute()
+                    .left_0()
+                    .top_3()
+                    .bottom_3()
                     .w(px(3.))
-                    .mt_2()
-                    .h(px(32.))
                     .rounded_full()
                     .bg(edge)
                     .when(!unread, |d| d.opacity(0.35)),
@@ -345,77 +514,21 @@ impl InboxView {
                     .role(Role::Button)
                     .reachable(theme)
                     .aria_label(SharedString::from(label))
+                    .aria_selected(selected)
                     .flex_1()
                     .min_w_0()
-                    .py_1p5()
-                    .flex()
-                    .flex_col()
-                    .gap_0p5()
                     .cursor_pointer()
                     .on_click(open)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            .text_xs()
-                            .text_color(if unread { theme.text } else { theme.muted })
-                            .when(unread, |d| {
-                                d.child(
-                                    div()
-                                        .id(ElementId::Name(format!("inbox-unread-{id}").into()))
-                                        .test_support()
-                                        .role(Role::Image)
-                                        .aria_label(t!("inbox-saved-unread"))
-                                        .size(px(7.))
-                                        .rounded_full()
-                                        .bg(theme.text),
-                                )
-                            })
-                            .child(div().truncate().child(format!("{place} · {network}")))
-                            .children(reasons.into_iter().enumerate().map(|(i, r)| {
-                                div()
-                                    .id(ElementId::Name(format!("inbox-reason-{id}-{i}").into()))
-                                    .test_support()
-                                    .role(Role::Status)
-                                    .aria_label(r)
-                                    .px_1p5()
-                                    .rounded_sm()
-                                    .bg(theme.hover)
-                                    .text_color(theme.muted)
-                                    .child(r)
-                            }))
-                            .child(div().flex_1())
-                            .child(div().text_color(theme.faint).child(time)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_1()
-                            .text_sm()
-                            .min_w_0()
-                            .when(!author.is_empty() && !gone, |d| {
-                                d.child(
-                                    div()
-                                        .flex_none()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(theme.text)
-                                        .child(author.clone()),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_color(if available { theme.text } else { theme.muted })
-                                    .when(
-                                        !available || item.kind == Some(InboxItemKind::Action),
-                                        |d| d.italic(),
-                                    )
-                                    .child(text),
-                            ),
-                    ),
+                    .child(result_line(
+                        &format!("inbox-{id}"),
+                        &who,
+                        location,
+                        time,
+                        excerpt.into_any_element(),
+                        theme,
+                    )),
             )
-            .child(div().pt_1().child(toggle))
+            .child(div().mt_2().mr_2().child(toggle))
             .into_any_element()
     }
 }
@@ -454,8 +567,13 @@ pub fn set_dismissed(
 }
 
 impl Render for InboxView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
+        if std::mem::take(&mut self.take_focus) {
+            self.focus.focus(window, cx);
+        }
+        let look = crate::message::layout::settings(cx);
+        let server = server(&self.session, cx);
         let Some(client) = self.session.read(cx).client().cloned() else {
             return div().into_any_element();
         };
@@ -474,7 +592,12 @@ impl Render for InboxView {
             .role(Role::TabList)
             .aria_label(t!("inbox-saved-views"))
             .flex()
+            .flex_none()
+            .self_start()
             .gap_1()
+            .p_1()
+            .rounded_lg()
+            .bg(theme.sidebar)
             .children(Filter::ALL.into_iter().map(|filter| {
                 let label = view_label(filter);
                 let selected = self.filter == filter;
@@ -487,14 +610,14 @@ impl Render for InboxView {
                     .reachable(&theme)
                     .aria_label(label)
                     .aria_selected(selected)
-                    .px_2()
+                    .px_3()
                     .py_1()
                     .rounded_md()
                     .text_sm()
                     .cursor_pointer()
                     .flex()
                     .gap_1()
-                    .text_color(if selected { theme.text } else { theme.muted })
+                    .text_color(if selected { theme.accent } else { theme.muted })
                     .when(selected, |d| d.bg(theme.selected))
                     .when(!selected, |d| d.hover(|d| d.bg(theme.hover)))
                     .child(label)
@@ -537,13 +660,23 @@ impl Render for InboxView {
                 } else {
                     empty_text(self.filter)
                 };
-                ui::empty::empty("inbox-empty", text, None, &theme).into_any_element()
+                ui::empty::with_icon("inbox-empty", Some(IconName::Inbox), text, None, &theme)
+                    .into_any_element()
             }
             Some(l) if l.loaded => {
+                let selected = self.selected.min(l.items.len().saturating_sub(1));
                 let mut groups: Vec<(String, Vec<AnyElement>)> = Vec::new();
-                for item in &l.items {
-                    let (day, _) = day_and_time(&item.created_at);
-                    let row = self.row(&w, item, state.pending.contains(&item.message_id), &theme);
+                for (i, item) in l.items.iter().enumerate() {
+                    let (day, _) = day_and_time(&item.created_at, look.clock_12h);
+                    let row = self.row(
+                        &w,
+                        item,
+                        state.pending.contains(&item.message_id),
+                        i == selected,
+                        server.as_ref(),
+                        &look,
+                        &theme,
+                    );
                     match groups.last_mut() {
                         Some((last, rows)) if *last == day => rows.push(row),
                         _ => groups.push((day, vec![row])),
@@ -586,30 +719,50 @@ impl Render for InboxView {
 
         let page_body = div()
             .px_4()
-            .py_3()
+            .pb_4()
             .flex()
             .flex_col()
             .gap_3()
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(theme.muted)
-                    .child(t!("inbox-saved-inbox-description")),
-            )
             .child(tabs)
             .child(body);
-        ui::page::Page::new("inbox-page", t!("inbox-saved-inbox"), page_body)
-            .action(
-                div()
-                    .id("inbox-meta")
-                    .test_support()
-                    .role(Role::Status)
-                    .aria_label(meta.clone())
-                    .text_sm()
-                    .text_color(theme.muted)
-                    .child(meta),
-            )
-            .render(&theme)
+        let session = self.session.clone();
+        let page = ui::page::Page::new("inbox-page", t!("inbox-saved-inbox"), page_body)
+            .description(t!("inbox-saved-inbox-description"))
+            .meta("inbox-meta", meta)
+            .close(t!("inbox-saved-return-label"), move |_, _, cx| {
+                ui::page::leave(&session, cx)
+            })
+            .hints(vec![
+                Hint::new(
+                    &[t!("inbox-saved-key-up"), t!("inbox-saved-key-down")],
+                    t!("inbox-saved-key-choose"),
+                ),
+                Hint::new(
+                    &[t!("inbox-saved-key-left"), t!("inbox-saved-key-right")],
+                    t!("inbox-saved-key-views"),
+                ),
+                Hint::new(&[t!("inbox-saved-key-enter")], t!("inbox-saved-key-open")),
+                Hint::new(&[t!("inbox-saved-key-e")], t!("inbox-saved-key-dismiss")),
+                Hint::new(
+                    &[t!("inbox-saved-key-escape")],
+                    t!("inbox-saved-key-return"),
+                ),
+            ])
+            .render(&theme);
+        div()
+            .id("inbox-keys")
+            .track_focus(&self.focus)
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .on_key_down(cx.listener(Self::on_key))
+            // Escape is bound to Mark read, which means nothing here.
+            .capture_action(cx.listener(|this, _: &MarkRead, _, cx| {
+                ui::page::leave(&this.session, cx);
+                cx.stop_propagation();
+            }))
+            .child(page)
             .into_any_element()
     }
 }
@@ -650,32 +803,173 @@ pub(crate) fn author(w: &Workspace, sender: &str, network: &str) -> String {
     }
 }
 
-/// The local day heading and time of an RFC 3339 time.
-pub(crate) fn day_and_time(at: &str) -> (String, String) {
+/// The local day label ("Today", "Yesterday", a date) and time of an
+/// RFC 3339 time, as the web's `useTimeFormat`.
+pub(crate) fn day_and_time(at: &str, clock_12h: bool) -> (String, String) {
     use chrono::TimeZone;
     match chrono::Local.timestamp_millis_opt(parse_time(at)).single() {
-        Some(local) if !at.is_empty() => (
-            local.format("%A, %-d %B %Y").to_string(),
-            local.format("%H:%M").to_string(),
-        ),
+        Some(local) if !at.is_empty() => {
+            let today = chrono::Local::now().date_naive();
+            (
+                day_label(local.date_naive(), today),
+                local
+                    .format(if clock_12h { "%-I:%M %p" } else { "%H:%M" })
+                    .to_string(),
+            )
+        }
         _ => (String::new(), String::new()),
     }
 }
 
+fn day_label(day: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
+    use chrono::Datelike;
+    if day == today {
+        t!("inbox-saved-today").into()
+    } else if today.pred_opt() == Some(day) {
+        t!("inbox-saved-yesterday").into()
+    } else if day.year() == today.year() {
+        day.format("%A, %B %-d").to_string()
+    } else {
+        day.format("%A, %B %-d, %Y").to_string()
+    }
+}
+
+/// A day's label over its rows, in small capitals as on the web.
 pub(crate) fn day_heading(day: String, theme: &Theme) -> impl IntoElement + use<> {
     div()
         .id(ElementId::Name(format!("day-{day}").into()))
         .test_support()
         .role(Role::Heading)
         .aria_label(SharedString::from(day.clone()))
-        .h(px(28.))
+        .h(px(32.))
         .px_3()
         .flex()
         .items_center()
         .text_xs()
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme.muted)
-        .child(day)
+        .child(day.to_uppercase())
+}
+
+/// Who sent a listed message: their member for the picture, the name the
+/// list shows and its colour.
+pub(crate) struct Sender {
+    pub member: Option<Member>,
+    pub name: String,
+    pub color: Option<Hsla>,
+    /// The server pictures may load from.
+    pub server: Option<url::Url>,
+}
+
+/// The sender `id` on `network`, or nobody.
+pub(crate) fn sender(
+    w: &Workspace,
+    id: Option<&str>,
+    network: &str,
+    server: Option<&url::Url>,
+    colored_names: bool,
+    theme: &Theme,
+) -> Sender {
+    let name = id.map(|s| author(w, s, network)).unwrap_or_default();
+    let member = id.and_then(|s| people::person(w, s, network)).cloned();
+    let color = member
+        .as_ref()
+        .and_then(|m| ui::avatar::name_color(m, colored_names, theme))
+        .map(theme::hex);
+    Sender {
+        member,
+        name,
+        color,
+        server: server.cloned(),
+    }
+}
+
+/// The server signed in to, where pictures may load from.
+pub(crate) fn server(session: &Entity<Session>, cx: &App) -> Option<url::Url> {
+    session.read(cx).server().map(|s| s.url().clone())
+}
+
+/// One message in a list (inbox, saved, search), as the web's
+/// `MessageResult.vue`: the sender's picture in a 40 px gutter, then their
+/// coloured name, `location` and the time on one line and up to three lines
+/// of `text` under it. `key` names the picture's test ID.
+pub(crate) fn result_line(
+    key: &str,
+    who: &Sender,
+    location: Vec<AnyElement>,
+    time: String,
+    text: AnyElement,
+    theme: &Theme,
+) -> Div {
+    let size = px(40.);
+    let picture = match &who.member {
+        Some(m) => ui::avatar::person(
+            ui::avatar::Person {
+                member: m,
+                name: &who.name,
+                server: who.server.as_ref(),
+                presence: false,
+                key,
+            },
+            size,
+            theme,
+        ),
+        None => ui::avatar::avatar(
+            if who.name.is_empty() { "?" } else { &who.name },
+            None,
+            size,
+            theme,
+        ),
+    };
+    div()
+        .w_full()
+        .px_3()
+        .py_2p5()
+        .flex()
+        .items_start()
+        .gap(px(14.))
+        .child(div().mt_0p5().child(picture))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_x_2()
+                        .gap_y_0p5()
+                        .min_w_0()
+                        .text_xs()
+                        .text_color(theme.muted)
+                        .when(!who.name.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .id(ElementId::Name(format!("author-{key}").into()))
+                                    .test_support()
+                                    .truncate()
+                                    .text_size(px(15.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(who.color.unwrap_or(theme.text))
+                                    .child(who.name.clone()),
+                            )
+                        })
+                        .children(location)
+                        .child(
+                            div()
+                                .ml_auto()
+                                .pl_2()
+                                .flex_none()
+                                .text_color(theme.faint)
+                                .child(time),
+                        ),
+                )
+                .child(div().text_sm().line_clamp(3).child(text)),
+        )
 }
 
 pub(crate) fn loading(id: &'static str, label: &'static str, theme: &Theme) -> AnyElement {

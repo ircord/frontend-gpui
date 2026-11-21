@@ -34,6 +34,8 @@ inbox-saved-dismiss-failed = Couldn’t dismiss the item: { $error }
 inbox-saved-restore-failed = Couldn’t restore the item: { $error }
 inbox-saved-inbox-offline = You’re offline. Changing the inbox needs a connection.
 inbox-saved-load-older = Load older items
+inbox-saved-key-views = views
+inbox-saved-key-dismiss = dismiss
 
 # Shared by both pages
 inbox-saved-item = { $author } in { $place }: { $text }
@@ -45,6 +47,19 @@ inbox-saved-unavailable = Unavailable — you left this conversation or it was r
 inbox-saved-closed = That conversation isn’t open any more. Rejoin it to see this message.
 inbox-saved-loading-more = Loading…
 inbox-saved-more-failed = Couldn’t load more: { $error }
+inbox-saved-today = Today
+inbox-saved-yesterday = Yesterday
+inbox-saved-return-label = Return to conversation
+inbox-saved-key-up = ↑
+inbox-saved-key-down = ↓
+inbox-saved-key-left = ←
+inbox-saved-key-right = →
+inbox-saved-key-enter = ↵
+inbox-saved-key-e = E
+inbox-saved-key-escape = Esc
+inbox-saved-key-choose = to choose
+inbox-saved-key-open = to open
+inbox-saved-key-return = to return
 
 # The saved messages page and Save for later
 inbox-saved-saved = Saved messages

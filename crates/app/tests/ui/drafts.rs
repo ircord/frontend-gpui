@@ -141,6 +141,8 @@ fn the_page_lists_a_draft_and_opens_it(cx: &mut TestAppContext) {
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find("drafts-page").visible());
+        assert_eq!(window.find("drafts-meta").label(), Some("1 unsent draft"));
+        assert!(window.find("drafts-page-close").visible());
         assert!(window.find_by_label("#general on Home").visible());
         window.click("draft-open-c-general", cx);
     })

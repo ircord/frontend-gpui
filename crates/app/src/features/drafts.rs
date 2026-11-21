@@ -540,7 +540,6 @@ impl Render for DraftsView {
         body = body.child(
             div()
                 .px_4()
-                .pt_3()
                 .pb_2()
                 .text_xs()
                 .text_color(theme.muted)
@@ -569,8 +568,9 @@ impl Render for DraftsView {
             } else {
                 t!("drafts-loading")
             };
-            body = body.child(ui::empty::empty(
+            body = body.child(ui::empty::with_icon(
                 "drafts-empty",
+                loaded.then_some(IconName::FileText),
                 title,
                 loaded.then(|| t!("drafts-empty").into()),
                 &theme,
@@ -591,12 +591,21 @@ impl Render for DraftsView {
             body = body.child(list);
         }
         let total = count(&self.session, cx);
-        let title = if total > 0 {
-            t!("drafts-title-count", count = total)
-        } else {
-            t!("drafts-title").to_string()
-        };
-        ui::page::Page::new("drafts-page", title, body).render(&theme)
+        let session = self.session.clone();
+        let mut page = ui::page::Page::new("drafts-page", t!("drafts-title"), body)
+            .description(t!("drafts-description"))
+            .close(t!("drafts-return"), move |_, _, cx| {
+                ui::page::leave(&session, cx)
+            });
+        if total > 0 {
+            let meta = if total == 1 {
+                t!("drafts-meta-one").to_string()
+            } else {
+                t!("drafts-meta", count = total)
+            };
+            page = page.meta("drafts-meta", meta);
+        }
+        page.render(&theme)
     }
 }
 

@@ -381,3 +381,31 @@ fn escape_closes_the_conversation_search(cx: &mut TestAppContext) {
         assert!(window.try_find("conversation-search").is_none());
     });
 }
+
+#[gpui_kit::test]
+fn results_carry_the_senders_picture_and_the_page_closes(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |server| {
+        let mut s = crate::fixture::snapshot();
+        for m in &mut s.members {
+            if m.id == "m-bob" {
+                m.avatar_url = Some("/files/bob/avatar.png".into());
+            }
+        }
+        server.snapshot(&s);
+        serve_search(server);
+    });
+    bootstrap(&f, cx);
+    open_page(&f, cx, None);
+    assert_eq!(
+        label(&f, cx, "search-page-title").as_deref(),
+        Some("Search")
+    );
+    frame(&f, cx, |window, cx| window.input("hello", cx));
+    shows(&f, cx, "search-result-0");
+    shows(&f, cx, "avatar-picture-search-result-0");
+    shows(&f, cx, "author-search-result-0");
+    click(&f, cx, "search-page-close");
+    wait(cx, "back in #general", |cx| {
+        f.session.read(cx).route() == Some(Route::Conversation("c-general".into()))
+    });
+}

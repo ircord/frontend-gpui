@@ -390,3 +390,111 @@ fn a_new_inbox_item_reads_the_badge_again(cx: &mut TestAppContext) {
         Some("Inbox, 1 unread")
     );
 }
+
+/// The fixture's workspace with a picture for bob on this server.
+fn with_bobs_picture(server: &CannedServer) {
+    let mut s = crate::fixture::snapshot();
+    for m in &mut s.members {
+        if m.id == "m-bob" {
+            m.avatar_url = Some("/files/bob/avatar.png".into());
+        }
+    }
+    server.snapshot(&s);
+}
+
+fn press(f: &Fixture, cx: &mut TestAppContext, key: &str) {
+    cx.update_window(f.window, |_, window, cx| window.press(key, cx))
+        .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn inbox_rows_carry_the_senders_picture_and_the_keys_the_bar_names(cx: &mut TestAppContext) {
+    let f = open(cx, |server| {
+        with_bobs_picture(server);
+        server.route("GET", "/api/v1/inbox/summary", 200, json!({"unread": 2}));
+        server.route(
+            "GET",
+            "/api/v1/inbox",
+            200,
+            json!({"items": [
+                inbox_item("i1", "2026-11-21T10:00:00Z", false, &["mention"]),
+                inbox_item("i2", "2026-11-21T09:00:00Z", false, &["reply"]),
+            ], "unread": 2}),
+        );
+        server.route_fn("PUT", "/api/v1/inbox/i2/dismissed", |_| Reply::empty());
+    });
+    click(&f, cx, "open-inbox");
+    wait(cx, "the inbox listed", |cx| {
+        let session = f.session.read(cx);
+        let w = session.client().unwrap().read();
+        w.inbox
+            .list(Filter::All)
+            .is_some_and(|l| l.loaded && l.items.len() == 2)
+    });
+    // The large-title header, the chip, the close button and the key bar.
+    assert_eq!(label(&f, cx, "inbox-page-title").as_deref(), Some("Inbox"));
+    assert_eq!(label(&f, cx, "inbox-meta").as_deref(), Some("2 unread"));
+    assert_eq!(
+        label(&f, cx, "inbox-page-close").as_deref(),
+        Some("Return to conversation")
+    );
+    let hints = label(&f, cx, "inbox-page-hints").unwrap();
+    assert!(
+        hints.contains("↑ ↓ to choose") && hints.contains("E dismiss"),
+        "{hints}"
+    );
+    // Bob's picture from this server, beside his name.
+    assert!(shows(&f, cx, "avatar-picture-inbox-i1"));
+    assert!(shows(&f, cx, "author-inbox-i1"));
+
+    // Down chooses the second row; E dismisses it.
+    press(&f, cx, "down");
+    press(&f, cx, "e");
+    f.server.wait_for("PUT", "/api/v1/inbox/i2/dismissed", WAIT);
+
+    // Escape goes back to the conversation that was open.
+    press(&f, cx, "escape");
+    wait(cx, "back in #general", |cx| {
+        f.session.read(cx).route() == Some(Route::Conversation("c-general".into()))
+    });
+
+    // So does the close button.
+    click(&f, cx, "open-inbox");
+    wait(cx, "the inbox again", |cx| {
+        f.session.read(cx).route() == Some(Route::Inbox)
+    });
+    click(&f, cx, "inbox-page-close");
+    wait(cx, "back in #general", |cx| {
+        f.session.read(cx).route() == Some(Route::Conversation("c-general".into()))
+    });
+}
+
+#[gpui_kit::test]
+fn saved_rows_carry_a_picture_and_enter_opens_the_chosen_one(cx: &mut TestAppContext) {
+    let f = open(cx, |server| {
+        with_bobs_picture(server);
+        server.route(
+            "GET",
+            "/api/v1/saved-messages",
+            200,
+            json!({"items": [saved_item("2026-11-21T11:00:00Z")]}),
+        );
+    });
+    click(&f, cx, "open-saved");
+    wait(cx, "the saved list", |cx| {
+        let session = f.session.read(cx);
+        let w = session.client().unwrap().read();
+        session.route() == Some(Route::Saved)
+            && w.saved.list.loaded
+            && w.saved.list.items.len() == 1
+    });
+    assert!(shows(&f, cx, "avatar-picture-saved-1"));
+    assert_eq!(label(&f, cx, "saved-meta").as_deref(), Some("1 saved"));
+    assert!(shows(&f, cx, "saved-page-close"));
+    // The filter has the caret; Enter opens the chosen message.
+    press(&f, cx, "enter");
+    wait(cx, "the message in #general", |cx| {
+        f.session.read(cx).route() == Some(Route::Conversation("c-general".into()))
+    });
+}

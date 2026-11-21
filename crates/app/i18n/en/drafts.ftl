@@ -1,6 +1,9 @@
 # Text for package D1. IDs start with `drafts-`.
 drafts-title = Drafts
-drafts-title-count = Drafts ({ $count })
+drafts-description = Continue messages you started in IRCord.
+drafts-meta-one = 1 unsent draft
+drafts-meta = { $count } unsent drafts
+drafts-return = Return to conversation
 drafts-key = Open drafts
 drafts-sidebar = Drafts, { $count } unsent
 drafts-scope = Drafts are kept on this device only.
