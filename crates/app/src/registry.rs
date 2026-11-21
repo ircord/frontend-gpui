@@ -132,6 +132,14 @@ pub struct NetworkCtx {
     pub network: String,
 }
 
+/// The sidebar, for slots under the conversation list.
+#[derive(Clone)]
+pub struct SidebarCtx {
+    pub session: Entity<Session>,
+    /// The network whose conversations are listed, if any.
+    pub network: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct ComposerCtx {
     pub session: Entity<Session>,
@@ -677,6 +685,9 @@ pub struct Registry {
     pub composer: ComposerSlots,
     /// Buttons at the right of the conversation header.
     pub header_buttons: List<Slot<HeaderCtx>>,
+    /// Under the conversation list, above the account footer (the
+    /// connection indicator).
+    pub sidebar_footer: List<Slot<SidebarCtx>>,
     pub settings_sections: List<SettingsSection>,
     pub inline_renderers: List<InlineRenderer>,
     pub row_filters: List<RowFilter>,

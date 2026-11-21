@@ -10,7 +10,7 @@ use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
 use gpui_kit::{App, MouseButton, TestAppContext, div};
 use ircord_app::registry::{
     self, MenuItem, MessageCtx, Pane, Panel, RowFilter, SendFilter, SendOutcome, SettingsSection,
-    Slot,
+    SidebarCtx, Slot,
 };
 use ircord_app::route::{PaneKind, Route};
 use ircord_app::timeline::rows::Row;
@@ -92,6 +92,16 @@ fn sample_feature(cx: &mut App, seen: Rc<Seen>) {
                     .into_any_element(),
             )
         }));
+        r.sidebar_footer
+            .add(Slot::new("sample", |ctx: &SidebarCtx, _, _| {
+                Some(
+                    div()
+                        .id("sample-sidebar-slot")
+                        .test_support()
+                        .child(ctx.network.clone().unwrap_or_default())
+                        .into_any_element(),
+                )
+            }));
         r.row_filters.add(RowFilter {
             id: "sample".into(),
             order: 0,
@@ -126,6 +136,7 @@ fn a_sample_feature_shows_in_the_window(cx: &mut TestAppContext) {
         assert!(window.find("sample-composer-button").visible());
         assert!(window.find("sample-composer-bar").visible());
         assert!(window.find("sample-header-button").visible());
+        assert!(window.find("sample-sidebar-slot").visible());
         // The row filter hid message 2 and kept message 1.
         assert!(window.find("message-1").visible());
         assert!(window.try_find("message-2").is_none());

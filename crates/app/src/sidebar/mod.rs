@@ -29,7 +29,7 @@ use ircord_client::store::sidebar_order::{
 };
 use ircord_client::store::{Workspace, topic};
 
-use crate::registry::{self, ConversationCtx, NetworkCtx};
+use crate::registry::{self, ConversationCtx, NetworkCtx, SidebarCtx};
 use crate::session::{Session, SessionEvent};
 use crate::theme::{self, Theme};
 use crate::ui;
@@ -704,6 +704,17 @@ impl Render for SidebarView {
             session.history.can_go_back(),
             session.history.can_go_forward(),
         );
+        // Slots under the list draw first: they may read the workspace too.
+        let slot_ctx = SidebarCtx {
+            session: self.session.clone(),
+            network: selected_network.clone(),
+        };
+        let slots: Vec<AnyElement> = registry::get(cx)
+            .sidebar_footer
+            .to_vec()
+            .into_iter()
+            .filter_map(|slot| (slot.render)(&slot_ctx, window, cx))
+            .collect();
         let w = client.read();
         let rail = self.rail(&w, selected_network.as_deref(), &theme);
         let network = selected_network.as_deref().and_then(|id| w.network(id));
@@ -953,6 +964,7 @@ impl Render for SidebarView {
                     .child(header)
                     .child(tools)
                     .child(list)
+                    .children(slots)
                     .child(footer),
             )
             .child(handle(
