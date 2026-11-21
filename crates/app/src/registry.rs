@@ -161,6 +161,18 @@ pub struct PanelCtx {
 #[derive(Clone)]
 pub struct SettingsCtx {
     pub session: Entity<Session>,
+    /// The row a settings search landed on, if it is in this section. Draw
+    /// rows with `settings::row`, which highlights this one and scrolls to it.
+    pub target: Option<RowTarget>,
+}
+
+/// A row to land on: its ID ([`SettingsRow::id`]), and what the row calls
+/// with its bounds once it is laid out, so the page can scroll it into view.
+#[derive(Clone)]
+pub struct RowTarget {
+    pub id: SharedString,
+    #[allow(clippy::type_complexity)]
+    pub reached: Rc<dyn Fn(Bounds<Pixels>, &mut Window, &mut App)>,
 }
 
 // ---- Entries ----
@@ -374,14 +386,85 @@ pub struct ComposerSlots {
     pub on_submit: List<SubmitHook>,
 }
 
+/// The headings the settings sections are listed under.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SettingsGroup {
+    /// Profile, account, networks.
+    User,
+    /// Appearance, messages, notifications, this device, privacy, shortcuts.
+    #[default]
+    App,
+    /// Emotes, about: the IRCord server.
+    Server,
+}
+
+/// One control in a settings section, as settings search lists it. Its `id`
+/// is also the element the section draws for it (`settings::row`), so a
+/// search result can open the section and land on the row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettingsRow {
+    pub id: SharedString,
+    /// Makes sense without the section around it ("Notification sound").
+    pub label: SharedString,
+    /// A short summary for the search result.
+    pub description: Option<SharedString>,
+    /// Other words people use for it.
+    pub keywords: Vec<SharedString>,
+}
+
+impl SettingsRow {
+    pub fn new(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            description: None,
+            keywords: Vec::new(),
+        }
+    }
+
+    pub fn description(mut self, description: impl Into<SharedString>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// Words separated by commas: `"sign out, logout, session"`, so one
+    /// catalog string holds them all.
+    pub fn keywords(mut self, words: impl AsRef<str>) -> Self {
+        self.keywords = words
+            .as_ref()
+            .split(',')
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+            .map(|w| SharedString::from(w.to_string()))
+            .collect();
+        self
+    }
+
+    /// Whether settings search for `query` finds this row: every word of the
+    /// query is in its label, description or keywords.
+    pub fn matches(&self, query: &str) -> bool {
+        let haystack = std::iter::once(&self.label)
+            .chain(self.description.as_ref())
+            .chain(&self.keywords)
+            .map(|t| t.to_lowercase())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        !words.is_empty() && words.iter().all(|w| haystack.contains(w.as_str()))
+    }
+}
+
 /// A section of the settings page.
 #[derive(Clone)]
 pub struct SettingsSection {
     pub id: SharedString,
     pub title: SharedString,
+    pub group: SettingsGroup,
     pub order: i32,
     /// Extra words settings search matches, beyond the title.
     pub keywords: Vec<SharedString>,
+    /// Its controls, for settings search to list and land on.
+    pub rows: Vec<SettingsRow>,
     #[allow(clippy::type_complexity)]
     pub render: Rc<dyn Fn(&SettingsCtx, &mut Window, &mut App) -> AnyElement>,
 }
@@ -395,19 +478,32 @@ impl SettingsSection {
         Self {
             id: id.into(),
             title: title.into(),
+            group: SettingsGroup::default(),
             order: 0,
             keywords: Vec::new(),
+            rows: Vec::new(),
             render: Rc::new(render),
         }
     }
 
+    /// The order within its group.
     pub fn order(mut self, order: i32) -> Self {
         self.order = order;
         self
     }
 
+    pub fn group(mut self, group: SettingsGroup) -> Self {
+        self.group = group;
+        self
+    }
+
     pub fn keywords(mut self, words: impl IntoIterator<Item = impl Into<SharedString>>) -> Self {
         self.keywords = words.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn row(mut self, row: SettingsRow) -> Self {
+        self.rows.push(row);
         self
     }
 
@@ -670,5 +766,18 @@ mod tests {
         assert!(s.matches("appear"));
         assert!(s.matches("COLOUR"));
         assert!(!s.matches("password"));
+    }
+
+    #[test]
+    fn settings_rows_match_every_word() {
+        let row = super::SettingsRow::new("log-out", "Log out")
+            .description("On this device")
+            .keywords("sign out, logout , session,");
+        assert_eq!(row.keywords.len(), 3);
+        assert!(row.matches("sign"));
+        assert!(row.matches("out device"));
+        assert!(row.matches("SESSION"));
+        assert!(!row.matches("out password"));
+        assert!(!row.matches("  "), "an empty query lists no rows");
     }
 }

@@ -121,6 +121,7 @@ impl Render for SettingsView {
         }
         let ctx = SettingsCtx {
             session: self.session.clone(),
+            target: None,
         };
         let content = match sections.iter().find(|s| Some(&s.id) == open.as_ref()) {
             Some(section) => div()
