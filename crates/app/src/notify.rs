@@ -27,7 +27,7 @@ pub fn show(session: &mut Session, alert: Alert, cx: &mut Context<Session>) {
     let body = if alert.preview || !alert.body.is_empty() {
         alert.body.clone()
     } else {
-        "New message".to_string()
+        t!("core-new-message").to_string()
     };
     cx.show_system_notification(SystemNotification {
         tag: alert.alert_id.into(),
@@ -40,7 +40,7 @@ pub fn show(session: &mut Session, alert: Alert, cx: &mut Context<Session>) {
 /// Give the process its identity (the Windows AppUserModelID). Without it the
 /// platform shows no notifications at all. Call before opening windows.
 pub fn identify(cx: &App) {
-    cx.set_app_identity(ircord_client::config::APP_ID, "IRCord");
+    cx.set_app_identity(ircord_client::config::APP_ID, t!("core-app-name"));
 }
 
 /// Route notification clicks to the conversation and bring the window up.

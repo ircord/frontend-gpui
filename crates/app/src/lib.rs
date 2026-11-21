@@ -1,15 +1,33 @@
 //! The IRCord desktop app: GPUI views over `ircord-client`.
+//!
+//! How the crate is laid out for many hands at once:
+//!
+//! - Text goes through [`t!`] and the catalogs in `i18n/en/` ([`i18n`]).
+//! - Colours come from the runtime [`theme`].
+//! - Dialogs, menus, toasts and other controls come from [`ui`].
+//! - A feature lives in its own module under [`features`] and adds itself
+//!   to the views through [`registry`]; the main pane shows a [`route`].
 
+#[macro_use]
+pub mod i18n;
+
+pub mod composer;
+pub mod features;
 pub mod images;
+pub mod loading;
 pub mod members;
+pub mod message;
 pub mod notify;
-pub mod rows;
+pub mod registry;
+pub mod route;
 pub mod session;
+pub mod settings;
 pub mod sidebar;
 pub mod signin;
 pub mod theme;
 pub mod timeline;
 pub mod tray;
+pub mod ui;
 pub mod workspace;
 
 use std::sync::Arc;
@@ -19,11 +37,24 @@ use gpui_kit::*;
 use ircord_client::config::ConfigDir;
 use ircord_client::credentials::{CredentialStore, SystemStore};
 
+use loading::LoadingView;
 use session::{Phase, Session, SessionEvent};
 use signin::SignInView;
 use workspace::WorkspaceView;
 
-/// The window's root: the sign-in screens or the workspace.
+/// Set up everything the views draw from: the theme, the registry and the
+/// features that fill it, and the default keys. Call once, after
+/// `gpui_kit::init`.
+pub fn init(cx: &mut App) {
+    theme::init(cx);
+    cx.default_global::<registry::Registry>();
+    settings::init(cx);
+    features::init(cx);
+    registry::bind_keys(cx, &|_| None);
+}
+
+/// The window's root: the sign-in screens, the loading screen or the
+/// workspace.
 pub struct MainView {
     session: Entity<Session>,
     screen: Screen,
@@ -32,7 +63,33 @@ pub struct MainView {
 
 pub enum Screen {
     SignIn(Entity<SignInView>),
+    Loading(Entity<LoadingView>),
     Workspace(Entity<WorkspaceView>),
+}
+
+#[derive(PartialEq)]
+enum Kind {
+    SignIn,
+    Loading,
+    Workspace,
+}
+
+impl Screen {
+    fn kind(&self) -> Kind {
+        match self {
+            Screen::SignIn(_) => Kind::SignIn,
+            Screen::Loading(_) => Kind::Loading,
+            Screen::Workspace(_) => Kind::Workspace,
+        }
+    }
+}
+
+fn kind_for(session: &Session) -> Kind {
+    match session.phase {
+        Phase::SignedIn { .. } if loading::bootstrapped(session) => Kind::Workspace,
+        Phase::SignedIn { .. } => Kind::Loading,
+        _ => Kind::SignIn,
+    }
 }
 
 impl MainView {
@@ -43,10 +100,13 @@ impl MainView {
                 &session,
                 window,
                 |this, session, event: &SessionEvent, window, cx| {
-                    if let SessionEvent::Phase = event {
-                        let signed_in = matches!(session.read(cx).phase, Phase::SignedIn { .. });
-                        let showing_workspace = matches!(this.screen, Screen::Workspace(_));
-                        if signed_in != showing_workspace {
+                    let check = match event {
+                        SessionEvent::Phase => true,
+                        SessionEvent::Changed(changes) => changes.reset,
+                        _ => false,
+                    };
+                    if check {
+                        if kind_for(session.read(cx)) != this.screen.kind() {
                             this.screen = Self::screen_for(session, window, cx);
                         }
                         cx.notify();
@@ -70,10 +130,14 @@ impl MainView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Screen {
-        if matches!(session.read(cx).phase, Phase::SignedIn { .. }) {
-            Screen::Workspace(cx.new(|cx| WorkspaceView::new(session.clone(), window, cx)))
-        } else {
-            Screen::SignIn(cx.new(|cx| SignInView::new(session.clone(), window, cx)))
+        match kind_for(session.read(cx)) {
+            Kind::Workspace => {
+                Screen::Workspace(cx.new(|cx| WorkspaceView::new(session.clone(), window, cx)))
+            }
+            Kind::Loading => Screen::Loading(cx.new(|cx| LoadingView::new(session.clone(), cx))),
+            Kind::SignIn => {
+                Screen::SignIn(cx.new(|cx| SignInView::new(session.clone(), window, cx)))
+            }
         }
     }
 
@@ -83,15 +147,17 @@ impl MainView {
 }
 
 impl Render for MainView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::get(cx);
         let content = match &self.screen {
             Screen::SignIn(view) => view.clone().into_any_element(),
+            Screen::Loading(view) => view.clone().into_any_element(),
             Screen::Workspace(view) => view.clone().into_any_element(),
         };
         div()
             .size_full()
-            .bg(theme::c(theme::MAIN))
-            .text_color(theme::c(theme::TEXT))
+            .bg(theme.main)
+            .text_color(theme.text)
             .font_family(".SystemUIFont")
             .child(content)
     }
@@ -121,7 +187,7 @@ pub fn window_options(session: &Session, cx: &App) -> WindowOptions {
             cx,
         ))),
         titlebar: Some(TitlebarOptions {
-            title: Some("IRCord".into()),
+            title: Some(t!("core-app-name").into()),
             ..Default::default()
         }),
         window_min_size: Some(size(px(640.), px(480.))),
@@ -190,10 +256,12 @@ pub fn run() {
         QuitMode::Default
     };
     gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
         .with_quit_mode(quit_mode)
         .run(move |cx| {
             notify::identify(cx);
             gpui_kit::init(cx);
+            init(cx);
             cx.set_http_client(Arc::new(images::ImageClient::new(runtime.clone())));
             let session = cx.new(|cx| Session::new(runtime, config, credentials, cx));
             notify::install(session.clone(), cx);

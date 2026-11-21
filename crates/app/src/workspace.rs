@@ -1,27 +1,42 @@
-//! The signed-in layout: rail and sidebar, the conversation header with the
-//! connection banner, the timeline and composer, and the member list.
+//! The signed-in layout: rail and sidebar, the connection banner, the main
+//! pane, and the right-hand panel.
+//!
+//! The main pane shows the session's route: a conversation (header,
+//! timeline, composer) is drawn here; any other route by the pane a feature
+//! registered for it. The right-hand panel is the registered panel the
+//! session names, or the member list beside a channel.
 
 use gpui_kit::TestSupportExt;
-use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::{ConversationKind, NetworkStatus};
 use ircord_client::store::Connection;
 
+use crate::composer::ComposerView;
 use crate::members::MembersView;
+use crate::registry::{self, HeaderCtx, PaneCtx, PanelCtx};
+use crate::route::Route;
 use crate::session::{Session, SessionEvent};
 use crate::sidebar::SidebarView;
-use crate::theme::{self, c};
+use crate::theme::{self, Theme};
 use crate::timeline::TimelineView;
+use crate::ui;
 
 pub struct WorkspaceView {
     session: Entity<Session>,
     pub sidebar: Entity<SidebarView>,
     pub timeline: Entity<TimelineView>,
     pub members: Entity<MembersView>,
-    pub composer: Entity<TextareaState>,
+    pub composer: Entity<ComposerView>,
     notice: Option<String>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// What the banner says, and whether it is an error.
+enum Banner {
+    Warning(String),
+    Info(String),
+    Danger(String),
 }
 
 impl WorkspaceView {
@@ -29,50 +44,25 @@ impl WorkspaceView {
         let sidebar = cx.new(|cx| SidebarView::new(session.clone(), cx));
         let timeline = cx.new(|cx| TimelineView::new(session.clone(), cx));
         let members = cx.new(|cx| MembersView::new(session.clone(), cx));
-        let composer = cx.new(|cx| {
-            let mut state = TextareaState::new(window, cx)
-                .auto_grow(1, 10)
-                .placeholder("Message");
-            state.set_submit_on_enter(true, cx);
-            state
-        });
-        let subscriptions = vec![
-            cx.subscribe_in(
-                &composer,
-                window,
-                |this, state, event: &InputEvent, window, cx| match event {
-                    InputEvent::PressEnter { shift: false, .. } => {
-                        let text = state.read(cx).value().to_string();
-                        if !text.trim().is_empty() {
-                            this.session.update(cx, |s, _| s.send(&text));
-                            state.update(cx, |s, cx| s.set_value("", window, cx));
-                        }
+        let composer = cx.new(|cx| ComposerView::new(session.clone(), window, cx));
+        let subscriptions =
+            vec![
+                cx.subscribe(&session, |this, _, event: &SessionEvent, cx| match event {
+                    SessionEvent::Notice(text) => {
+                        this.notice = Some(text.clone());
+                        cx.notify();
                     }
-                    InputEvent::Change => {
-                        let has_text = !state.read(cx).value().is_empty();
-                        let session = this.session.read(cx);
-                        if let (Some(client), Some(id)) = (session.client(), &session.conversation)
-                        {
-                            client.typing(id, has_text);
-                        }
+                    SessionEvent::Selection => {
+                        this.notice = None;
+                        cx.notify();
                     }
+                    SessionEvent::Connection | SessionEvent::Phase | SessionEvent::Route => {
+                        cx.notify()
+                    }
+                    SessionEvent::Changed(changes) if changes.sidebar => cx.notify(),
                     _ => {}
-                },
-            ),
-            cx.subscribe(&session, |this, _, event: &SessionEvent, cx| match event {
-                SessionEvent::Notice(text) => {
-                    this.notice = Some(text.clone());
-                    cx.notify();
-                }
-                SessionEvent::Selection => {
-                    this.notice = None;
-                    cx.notify();
-                }
-                SessionEvent::Connection | SessionEvent::Phase => cx.notify(),
-                SessionEvent::Changed(changes) if changes.sidebar => cx.notify(),
-                _ => {}
-            }),
-        ];
+                }),
+            ];
         Self {
             session,
             sidebar,
@@ -84,117 +74,194 @@ impl WorkspaceView {
         }
     }
 
-    fn banner(&self, cx: &App) -> Option<(String, u32)> {
+    fn banner(&self, cx: &App) -> Option<Banner> {
         let session = self.session.read(cx);
         let client = session.client()?;
         let w = client.read();
         match &w.connection {
-            Some(Connection::Connecting) => return Some(("Connecting…".into(), theme::WARNING)),
+            Some(Connection::Connecting) => {
+                return Some(Banner::Warning(t!("core-connecting").into()));
+            }
             Some(Connection::Replaying) => {
-                return Some(("Catching up on messages…".into(), theme::ACCENT));
+                return Some(Banner::Info(t!("core-catching-up").into()));
             }
             Some(Connection::Offline { reason, retry_ms }) => {
-                return Some((
-                    format!(
-                        "Disconnected: {reason}. Trying again in {} s.",
-                        retry_ms.div_ceil(1000)
-                    ),
-                    theme::DANGER,
-                ));
+                return Some(Banner::Danger(t!(
+                    "core-offline",
+                    reason = reason,
+                    seconds = retry_ms.div_ceil(1000)
+                )));
             }
             _ => {}
         }
         let network = session.network.as_deref().and_then(|id| w.network(id))?;
         match network.status {
             NetworkStatus::Connected => None,
-            NetworkStatus::Connecting => {
-                Some((format!("Connecting to {}…", network.name), theme::WARNING))
-            }
-            _ => Some((
-                match &network.status_detail {
-                    Some(detail) if !detail.is_empty() => {
-                        format!("{} is disconnected: {detail}", network.name)
-                    }
-                    _ => format!("{} is disconnected.", network.name),
-                },
-                theme::DANGER,
-            )),
+            NetworkStatus::Connecting => Some(Banner::Warning(t!(
+                "core-network-connecting",
+                network = network.name
+            ))),
+            _ => Some(Banner::Danger(match &network.status_detail {
+                Some(detail) if !detail.is_empty() => t!(
+                    "core-network-down-detail",
+                    network = network.name,
+                    detail = detail
+                ),
+                _ => t!("core-network-down", network = network.name),
+            })),
         }
     }
-}
 
-impl Render for WorkspaceView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// A conversation's header.
+    fn conversation_header(
+        &self,
+        id: &str,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let session = self.session.read(cx);
-        let client = session.client().cloned();
-        let (title, topic, kind, can_send) = match (&client, &session.conversation) {
-            (Some(client), Some(id)) => {
+        let (title, topic, kind) = session
+            .client()
+            .and_then(|client| {
                 let w = client.read();
-                match w.conversation(id) {
-                    Some(conv) => (
+                w.conversation(id).map(|conv| {
+                    (
                         conv.name.clone(),
                         ircord_client::format::parse(&conv.topic).text,
                         conv.kind,
-                        conv.joined,
-                    ),
-                    None => (
-                        String::new(),
-                        String::new(),
-                        ConversationKind::Channel,
-                        false,
-                    ),
-                }
-            }
-            _ => (
-                String::new(),
-                String::new(),
-                ConversationKind::Channel,
-                false,
-            ),
-        };
+                    )
+                })
+            })
+            .unwrap_or((String::new(), String::new(), ConversationKind::Channel));
         let prefix = if kind == ConversationKind::Channel {
             "#"
         } else {
             "@"
         };
-        let header = div()
+        let ctx = HeaderCtx {
+            session: self.session.clone(),
+            route: Route::Conversation(id.to_string()),
+        };
+        let buttons: Vec<AnyElement> = registry::get(cx)
+            .header_buttons
+            .to_vec()
+            .iter()
+            .filter_map(|slot| (slot.render)(&ctx, window, cx))
+            .collect();
+        div()
+            .id("conversation-header")
             .h(px(48.))
+            .flex_none()
             .px_4()
             .flex()
             .items_center()
             .gap_3()
             .border_b_1()
-            .border_color(c(theme::RAIL))
+            .border_color(theme.rail)
             .child(
                 div()
                     .flex()
                     .gap_1()
                     .font_weight(FontWeight::BOLD)
-                    .text_color(c(theme::TEXT))
-                    .child(div().text_color(c(theme::FAINT)).child(prefix))
-                    .child(title.clone()),
+                    .text_color(theme.text)
+                    .child(div().text_color(theme.faint).child(prefix))
+                    .child(title),
             )
             .when(!topic.is_empty(), |d| {
-                d.child(div().h(px(24.)).w(px(1.)).bg(c(theme::SELECTED)))
+                d.child(div().h(px(24.)).w(px(1.)).bg(theme.selected))
                     .child(
                         div()
                             .flex_1()
                             .truncate()
                             .text_sm()
-                            .text_color(c(theme::MUTED))
+                            .text_color(theme.muted)
                             .child(topic),
                     )
-            });
+            })
+            .when(!buttons.is_empty(), |d| {
+                d.child(div().flex_1())
+                    .child(div().flex().gap_1().children(buttons))
+            })
+    }
 
+    /// The registered pane for a route, or a placeholder when none is.
+    fn route_pane(
+        &self,
+        route: &Route,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let pane = route
+            .pane()
+            .and_then(|kind| registry::get(cx).pane(&kind).cloned());
+        match pane {
+            Some(pane) => {
+                let ctx = PaneCtx {
+                    session: self.session.clone(),
+                    route: route.clone(),
+                };
+                (pane.render)(&ctx, window, cx)
+            }
+            None => ui::empty::empty("pane-missing", t!("core-pane-missing"), None, theme)
+                .into_any_element(),
+        }
+    }
+
+    /// The right-hand panel: the one the session names, else the member
+    /// list beside a channel.
+    fn panel(
+        &self,
+        route: &Option<Route>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let session = self.session.read(cx);
+        let conversation = route
+            .as_ref()
+            .and_then(|r| r.conversation())
+            .map(str::to_string);
+        if let Some(id) = session.panel.clone()
+            && let Some(panel) = registry::get(cx).panels.get(&id).cloned()
+        {
+            let ctx = PanelCtx {
+                session: self.session.clone(),
+                conversation,
+            };
+            return Some((panel.render)(&ctx, window, cx));
+        }
+        let is_channel = conversation.as_ref().is_some_and(|id| {
+            session
+                .client()
+                .and_then(|c| c.read().conversation(id).map(|c| c.kind))
+                .is_none_or(|kind| kind == ConversationKind::Channel)
+        });
+        is_channel.then(|| self.members.clone().into_any_element())
+    }
+}
+
+impl Render for WorkspaceView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::get(cx).clone();
+        let route = self.session.read(cx).route();
         let mut main = div()
+            .id("main-pane")
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
             .flex_col()
-            .bg(c(theme::MAIN))
-            .child(header);
-        if let Some((text, color)) = self.banner(cx) {
+            .bg(theme.main);
+        if let Some(Route::Conversation(id)) = &route {
+            main = main.child(self.conversation_header(id, &theme, window, cx));
+        }
+        if let Some(banner) = self.banner(cx) {
+            let (text, color) = match banner {
+                Banner::Warning(text) => (text, theme.warning),
+                Banner::Info(text) => (text, theme.accent),
+                Banner::Danger(text) => (text, theme.danger),
+            };
             main = main.child(
                 div()
                     .id("connection-banner")
@@ -204,8 +271,8 @@ impl Render for WorkspaceView {
                     .px_4()
                     .py_1()
                     .text_sm()
-                    .text_color(c(0xffffff))
-                    .bg(c(color))
+                    .text_color(theme.on_accent)
+                    .bg(color)
                     .child(text),
             );
         }
@@ -216,45 +283,27 @@ impl Render for WorkspaceView {
                     .px_4()
                     .py_1()
                     .text_sm()
-                    .text_color(c(theme::WARNING))
-                    .bg(c(theme::SIDEBAR))
+                    .text_color(theme.warning)
+                    .bg(theme.sidebar)
                     .child(notice.clone()),
             );
         }
-        main = main.child(self.timeline.clone());
-        let composer = if can_send {
-            div()
-                .px_4()
-                .pb_4()
-                .child(
-                    div().rounded_lg().bg(c(theme::INPUT)).px_2().py_1().child(
-                        Textarea::new(&self.composer)
-                            .appearance(false)
-                            .aria_label(SharedString::from(format!("Message {prefix}{title}"))),
-                    ),
-                )
-                .into_any_element()
-        } else {
-            div()
-                .px_4()
-                .pb_4()
-                .text_sm()
-                .text_color(c(theme::MUTED))
-                .child("You are not in this conversation.")
-                .into_any_element()
+        main = match &route {
+            Some(Route::Conversation(_)) => main
+                .child(self.timeline.clone())
+                .child(self.composer.clone()),
+            Some(route) => main.child(self.route_pane(route, &theme, window, cx)),
+            None => main,
         };
-        main = main.child(div().id("composer").test_support().child(composer));
-        let _ = window;
+        let panel = self.panel(&route, window, cx);
         div()
             .id("workspace")
             .size_full()
             .flex()
             .flex_row()
-            .text_color(c(theme::TEXT))
+            .text_color(theme.text)
             .child(self.sidebar.clone())
             .child(main)
-            .when(kind == ConversationKind::Channel, |d| {
-                d.child(self.members.clone())
-            })
+            .children(panel)
     }
 }

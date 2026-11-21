@@ -1,13 +1,17 @@
 //! The network rail and the conversation list. Redraws only when the
-//! sidebar's data, the selection or the connection changes.
+//! sidebar's data, the selection or the connection changes. Right-clicking
+//! a network or a conversation opens its registered menu.
 
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::{ConversationKind, NetworkStatus};
 
+use crate::registry::{self, ConversationCtx, NetworkCtx};
 use crate::session::{Session, SessionEvent};
-use crate::theme::{self, c};
+use crate::theme::{self, Theme};
+use crate::ui;
 
 pub struct SidebarView {
     session: Entity<Session>,
@@ -28,9 +32,9 @@ impl SidebarView {
     }
 }
 
-fn badge(count: i64, mention: bool) -> Div {
+fn badge(count: i64, mention: bool, theme: &Theme) -> Div {
     let text = if count > 99 {
-        "99+".to_string()
+        t!("sidebar-badge-many").to_string()
     } else {
         count.to_string()
     };
@@ -44,17 +48,18 @@ fn badge(count: i64, mention: bool) -> Div {
         .justify_center()
         .text_xs()
         .font_weight(FontWeight::BOLD)
-        .bg(c(if mention {
-            theme::MENTION_BG
+        .bg(if mention {
+            theme.mention
         } else {
-            theme::SELECTED
-        }))
-        .text_color(c(0xffffff))
+            theme.selected
+        })
+        .text_color(theme.on_accent)
         .child(text)
 }
 
 impl Render for SidebarView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::get(cx).clone();
         let session = self.session.read(cx);
         let Some(client) = session.client().cloned() else {
             return div().into_any_element();
@@ -73,7 +78,7 @@ impl Render for SidebarView {
             .items_center()
             .gap_2()
             .py_3()
-            .bg(c(theme::RAIL))
+            .bg(theme.rail)
             .overflow_y_scroll();
         for network in &w.networks {
             let (unread, mentions) = w.network_counts(&network.id);
@@ -95,13 +100,17 @@ impl Render for SidebarView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(c(if active { theme::ACCENT } else { theme::MAIN }))
-                .text_color(c(theme::TEXT))
+                .bg(if active { theme.accent } else { theme.main })
+                .text_color(theme.text)
                 .font_weight(FontWeight::BOLD)
                 .cursor_pointer()
                 .relative()
                 .child(initials)
                 .on_click(move |_, _, cx| session.update(cx, |s, cx| s.select_network(&id, cx)));
+            let ctx = NetworkCtx {
+                session: self.session.clone(),
+                network: network.id.clone(),
+            };
             if network.status != NetworkStatus::Connected {
                 circle = circle.opacity(0.5);
             }
@@ -111,7 +120,7 @@ impl Render for SidebarView {
                         .absolute()
                         .bottom(px(-4.))
                         .right(px(-4.))
-                        .child(badge(mentions, true)),
+                        .child(badge(mentions, true, &theme)),
                 );
             } else if unread > 0 && !active {
                 circle = circle.child(
@@ -120,10 +129,14 @@ impl Render for SidebarView {
                         .left(px(-12.))
                         .size(px(8.))
                         .rounded_full()
-                        .bg(c(theme::TEXT)),
+                        .bg(theme.text),
                 );
             }
-            rail = rail.child(circle);
+            rail = rail.child(circle.context_menu(move |menu, _, cx| {
+                let items = registry::get(cx).network_menu.to_vec();
+                let items = ui::context_menu::visible(&items, &ctx, cx);
+                ui::context_menu::fill(menu, items, ctx.clone())
+            }));
         }
 
         // The conversation list for the selected network.
@@ -141,11 +154,11 @@ impl Render for SidebarView {
             let mut section: Option<&str> = None;
             for conversation in w.sidebar(&network.id) {
                 let heading = if conversation.favorite {
-                    "Favourites"
+                    t!("sidebar-favourites")
                 } else if conversation.kind == ConversationKind::Channel {
-                    "Channels"
+                    t!("sidebar-channels")
                 } else {
-                    "Direct messages"
+                    t!("sidebar-direct-messages")
                 };
                 if section != Some(heading) {
                     section = Some(heading);
@@ -156,7 +169,7 @@ impl Render for SidebarView {
                             .px_2()
                             .text_xs()
                             .font_weight(FontWeight::BOLD)
-                            .text_color(c(theme::MUTED))
+                            .text_color(theme.muted)
                             .child(heading.to_uppercase()),
                     );
                 }
@@ -183,24 +196,32 @@ impl Render for SidebarView {
                     .items_center()
                     .gap_1p5()
                     .cursor_pointer()
-                    .text_color(c(if active || unread {
-                        theme::TEXT
+                    .text_color(if active || unread {
+                        theme.text
                     } else {
-                        theme::MUTED
-                    }))
-                    .when(active, |d| d.bg(c(theme::SELECTED)))
-                    .when(!active, |d| d.hover(|d| d.bg(c(theme::HOVER))))
+                        theme.muted
+                    })
+                    .when(active, |d| d.bg(theme.selected))
+                    .when(!active, |d| d.hover(|d| d.bg(theme.hover)))
                     .when(unread, |d| d.font_weight(FontWeight::SEMIBOLD))
                     .when(!conversation.joined, |d| d.opacity(0.6))
-                    .child(div().text_color(c(theme::FAINT)).child(prefix))
+                    .child(div().text_color(theme.faint).child(prefix))
                     .child(div().flex_1().truncate().child(conversation.name.clone()))
                     .on_click(move |_, _, cx| {
                         session.update(cx, |s, cx| s.select_conversation(&id, cx))
                     });
                 if conversation.mention_count > 0 {
-                    row = row.child(badge(conversation.mention_count, true));
+                    row = row.child(badge(conversation.mention_count, true, &theme));
                 }
-                list = list.child(row);
+                let ctx = ConversationCtx {
+                    session: self.session.clone(),
+                    conversation: conversation.id.clone(),
+                };
+                list = list.child(row.context_menu(move |menu, _, cx| {
+                    let items = registry::get(cx).conversation_menu.to_vec();
+                    let items = ui::context_menu::visible(&items, &ctx, cx);
+                    ui::context_menu::fill(menu, items, ctx.clone())
+                }));
             }
         }
 
@@ -210,9 +231,9 @@ impl Render for SidebarView {
             .flex()
             .items_center()
             .border_b_1()
-            .border_color(c(theme::RAIL))
+            .border_color(theme.rail)
             .font_weight(FontWeight::BOLD)
-            .text_color(c(theme::TEXT))
+            .text_color(theme.text)
             .child(network.map(|n| n.name.clone()).unwrap_or_default());
 
         let me = network
@@ -226,7 +247,7 @@ impl Render for SidebarView {
             .flex()
             .items_center()
             .justify_between()
-            .bg(c(0x232428))
+            .bg(theme.footer)
             .child(
                 div()
                     .flex()
@@ -235,13 +256,13 @@ impl Render for SidebarView {
                         div()
                             .text_sm()
                             .font_weight(FontWeight::BOLD)
-                            .text_color(c(theme::TEXT))
+                            .text_color(theme.text)
                             .child(me),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(c(theme::MUTED))
+                            .text_color(theme.muted)
                             .child(w.user.account.clone()),
                     ),
             )
@@ -250,15 +271,15 @@ impl Render for SidebarView {
                     .id("sign-out")
                     .test_support()
                     .role(Role::Button)
-                    .aria_label("Sign out")
+                    .aria_label(t!("sidebar-sign-out"))
                     .text_xs()
                     .px_2()
                     .py_1()
                     .rounded_md()
                     .cursor_pointer()
-                    .text_color(c(theme::MUTED))
-                    .hover(|d| d.bg(c(theme::HOVER)).text_color(c(theme::TEXT)))
-                    .child("Sign out")
+                    .text_color(theme.muted)
+                    .hover(|d| d.bg(theme.hover).text_color(theme.text))
+                    .child(t!("sidebar-sign-out"))
                     .on_click(move |_, _, cx| session.update(cx, |s, cx| s.sign_out(cx))),
             );
 
@@ -273,7 +294,7 @@ impl Render for SidebarView {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .bg(c(theme::SIDEBAR))
+                    .bg(theme.sidebar)
                     .child(header)
                     .child(list)
                     .child(footer),

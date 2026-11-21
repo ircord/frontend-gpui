@@ -1,6 +1,6 @@
-//! The app-wide model: which screen is showing, the signed-in client and the
-//! selection. Windows come and go (the tray keeps the app running on
-//! Windows); the session outlives them.
+//! The app-wide model: which screen is showing, the signed-in client, the
+//! route the main pane shows and the right-hand panel. Windows come and go
+//! (the tray keeps the app running on Windows); the session outlives them.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -18,6 +18,8 @@ use ircord_client::events::Update;
 use ircord_client::store::Changes;
 use ircord_client::{Client, ServerAddress};
 use tokio::runtime::Runtime;
+
+use crate::route::{History, Route};
 
 pub enum Phase {
     /// No server chosen yet.
@@ -37,6 +39,8 @@ pub enum SessionEvent {
     Phase,
     /// The selected network or conversation changed.
     Selection,
+    /// The main pane's route or the right-hand panel changed.
+    Route,
     /// The workspace changed.
     Changed(Rc<Changes>),
     /// The connection state changed.
@@ -51,7 +55,13 @@ pub struct Session {
     pub credentials: Arc<dyn CredentialStore>,
     pub phase: Phase,
     pub network: Option<String>,
+    /// The conversation last opened. It stays set while another route (a
+    /// search, the inbox) shows, so going back returns to it.
     pub conversation: Option<String>,
+    pub history: History,
+    /// The right-hand panel's ID, if one other than the default (the member
+    /// list beside a channel) is open.
+    pub panel: Option<SharedString>,
     /// Alert IDs of shown notifications → the conversation each opens.
     pub alerts: HashMap<String, String>,
     pub window_active: bool,
@@ -93,6 +103,8 @@ impl Session {
             phase: Phase::ChooseServer,
             network: None,
             conversation: state.last_conversation.clone(),
+            history: History::default(),
+            panel: None,
             alerts: HashMap::new(),
             window_active: true,
             state,
@@ -111,7 +123,7 @@ impl Session {
             Ok(Some(server)) => server,
             Ok(None) => return,
             Err(e) => {
-                self.error = Some(format!("Could not read the saved server: {e}"));
+                self.error = Some(t!("core-saved-server-unreadable", error = e));
                 return;
             }
         };
@@ -140,6 +152,10 @@ impl Session {
     }
 
     fn set_phase(&mut self, phase: Phase, cx: &mut Context<Self>) {
+        if !matches!(phase, Phase::SignedIn { .. }) {
+            self.history = History::default();
+            self.panel = None;
+        }
         self.phase = phase;
         self.busy = false;
         cx.emit(SessionEvent::Phase);
@@ -200,7 +216,7 @@ impl Session {
             return;
         };
         if username.trim().is_empty() || password.is_empty() {
-            self.error = Some("Enter your username and password.".into());
+            self.error = Some(t!("core-sign-in-missing").into());
             cx.notify();
             return;
         }
@@ -284,7 +300,7 @@ impl Session {
                     if let Err(e) = self.credentials.clear(&server) {
                         log::warn!("forget session: {e}");
                     }
-                    self.error = Some("Your session ended. Sign in again.".into());
+                    self.error = Some(t!("core-session-ended").into());
                     self._updates = None;
                     self.set_phase(Phase::SignIn { server }, cx);
                 }
@@ -324,6 +340,18 @@ impl Session {
         if let Some(id) = &self.conversation {
             client.open(id);
         }
+        let w = client.read();
+        self.history.retain(|route| match route {
+            Route::Conversation(id) => w.conversation(id).is_some(),
+            Route::ServerWindow(id) => w.network(id).is_some(),
+            _ => true,
+        });
+        drop(w);
+        if self.history.current().is_none()
+            && let Some(id) = &self.conversation
+        {
+            self.history.replace(Route::Conversation(id.clone()));
+        }
         if changed {
             self.save_state();
             cx.emit(SessionEvent::Selection);
@@ -356,6 +384,7 @@ impl Session {
         };
         self.network = Some(network);
         self.conversation = Some(id.to_string());
+        self.history.push(Route::Conversation(id.to_string()));
         client.open(id);
         if self.window_active {
             client.mark_read(id);
@@ -364,6 +393,69 @@ impl Session {
         self.report_activity();
         cx.emit(SessionEvent::Selection);
         cx.notify();
+    }
+
+    /// What the main pane shows.
+    pub fn route(&self) -> Option<Route> {
+        self.history
+            .current()
+            .cloned()
+            .or_else(|| self.conversation.clone().map(Route::Conversation))
+    }
+
+    /// Show `route` in the main pane.
+    pub fn navigate(&mut self, route: Route, cx: &mut Context<Self>) {
+        if let Route::Conversation(id) = &route {
+            self.select_conversation(id, cx);
+            return;
+        }
+        if self.history.push(route) {
+            cx.emit(SessionEvent::Route);
+            cx.notify();
+        }
+    }
+
+    pub fn go_back(&mut self, cx: &mut Context<Self>) {
+        if let Some(route) = self.history.back().cloned() {
+            self.show(route, cx);
+        }
+    }
+
+    pub fn go_forward(&mut self, cx: &mut Context<Self>) {
+        if let Some(route) = self.history.forward().cloned() {
+            self.show(route, cx);
+        }
+    }
+
+    /// Show a route the history already moved to.
+    fn show(&mut self, route: Route, cx: &mut Context<Self>) {
+        if let Route::Conversation(id) = &route
+            && let Some(client) = self.client().cloned()
+        {
+            let network = client.read().conversation(id).map(|c| c.network_id.clone());
+            if let Some(network) = network {
+                self.network = Some(network);
+                self.conversation = Some(id.clone());
+                client.open(id);
+                if self.window_active {
+                    client.mark_read(id);
+                }
+                self.save_state();
+                self.report_activity();
+                cx.emit(SessionEvent::Selection);
+            }
+        }
+        cx.emit(SessionEvent::Route);
+        cx.notify();
+    }
+
+    /// Open the right-hand panel `id`, or close it with `None`.
+    pub fn set_panel(&mut self, id: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.panel != id {
+            self.panel = id;
+            cx.emit(SessionEvent::Route);
+            cx.notify();
+        }
     }
 
     pub fn set_window_active(&mut self, active: bool) {

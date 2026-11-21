@@ -225,9 +225,9 @@ fn message_row(
             url: url.clone(),
             title: host(url),
             detail: if video {
-                "Video · opens in your browser".into()
+                t!("timeline-link-video").into()
             } else {
-                "Opens in your browser".into()
+                t!("timeline-link-opens").into()
             },
             video,
         });
@@ -288,25 +288,32 @@ fn event_text(w: &Workspace, m: &Message, network: &str) -> String {
         if detail.is_empty() {
             s
         } else {
-            format!("{s} ({detail})")
+            t!("timeline-event-with-reason", event = s, reason = detail)
         }
     };
     match e.r#type {
-        MembershipEventType::Join => format!("{actor} joined"),
-        MembershipEventType::Part => with(format!("{actor} left")),
-        MembershipEventType::Quit => with(format!("{actor} quit")),
-        MembershipEventType::Nick => format!(
-            "{actor} is now known as {}",
-            if target.is_empty() {
+        MembershipEventType::Join => t!("timeline-event-join", actor = actor),
+        MembershipEventType::Part => with(t!("timeline-event-part", actor = actor)),
+        MembershipEventType::Quit => with(t!("timeline-event-quit", actor = actor)),
+        MembershipEventType::Nick => t!(
+            "timeline-event-nick",
+            actor = actor,
+            nick = if target.is_empty() {
                 detail.clone()
             } else {
                 target
             }
         ),
-        MembershipEventType::Kick => with(format!("{actor} removed {target}")),
-        MembershipEventType::Mode => format!("{actor} set mode {detail}").trim_end().to_string(),
-        MembershipEventType::Topic => format!("{actor} changed the topic to: {detail}"),
-        MembershipEventType::Invite => format!("{actor} invited {target}"),
+        MembershipEventType::Kick => {
+            with(t!("timeline-event-kick", actor = actor, target = target))
+        }
+        MembershipEventType::Mode => t!("timeline-event-mode", actor = actor, modes = detail)
+            .trim_end()
+            .to_string(),
+        MembershipEventType::Topic => t!("timeline-event-topic", actor = actor, topic = detail),
+        MembershipEventType::Invite => {
+            t!("timeline-event-invite", actor = actor, target = target)
+        }
         _ => {
             let text = ircord_client::format::parse(&m.text).text;
             if text.is_empty() { with(actor) } else { text }
@@ -365,17 +372,17 @@ fn host(url: &str) -> String {
 
 fn describe_file(content_type: &str, size: Option<i64>) -> String {
     let kind = if content_type.starts_with("video/") {
-        "Video"
+        t!("timeline-file-video")
     } else if content_type.starts_with("audio/") {
-        "Audio"
+        t!("timeline-file-audio")
     } else {
-        "File"
+        t!("timeline-file-other")
     };
     match size {
         Some(bytes) if bytes > 0 => {
-            format!("{kind} · {} · opens in your browser", human_size(bytes))
+            t!("timeline-file-sized", kind = kind, size = human_size(bytes))
         }
-        _ => format!("{kind} · opens in your browser"),
+        _ => t!("timeline-file", kind = kind),
     }
 }
 
@@ -412,7 +419,7 @@ pub fn splice(old: &[String], new: &[String]) -> Option<(Range<usize>, usize)> {
 
 pub fn pending_label(p: &PendingSend) -> &str {
     match &p.state {
-        SendState::Sending => "Sending…",
+        SendState::Sending => t!("timeline-sending"),
         SendState::Failed(reason) => reason,
     }
 }

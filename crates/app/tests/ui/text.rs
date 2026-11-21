@@ -1,0 +1,1 @@
+//! Tests for package T1 message_actions:A1 timeline:R1 sidebar:N1 commands:C1 uploads:U1 settings:S0 networks:NW1 server_window:SV1 people:P1 search:FD1 inbox_saved:FD2 channels:CH1 link_previews:L1 emoji:E1 drafts:D1 channel_settings:CH2 parties:PT1 appearance:S1 settings_messages:S2 notifications:S3 profile:S4 admin:AD1 desktop:DK1 links_view:FD3 emotes:S5 audit:Q1.

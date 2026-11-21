@@ -1,0 +1,2 @@
+# Every package adds its line under "## Unreleased"; keep both sides.
+CHANGELOG.md merge=union

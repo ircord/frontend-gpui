@@ -1,13 +1,17 @@
 //! The member list with presence, grouped online, away, offline and ranked
-//! by channel privilege within each group.
+//! by channel privilege within each group. Right-clicking a member opens
+//! the registered member menu.
 
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::{Member, MemberStatus};
 
+use crate::registry::{self, MemberCtx};
 use crate::session::{Session, SessionEvent};
-use crate::theme::{self, c};
+use crate::theme;
+use crate::ui;
 
 pub struct MembersView {
     session: Entity<Session>,
@@ -42,6 +46,7 @@ fn prefixes(isupport: &std::collections::BTreeMap<String, String>) -> String {
 
 impl Render for MembersView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::get(cx).clone();
         let session = self.session.read(cx);
         let (Some(client), Some(id)) = (session.client().cloned(), session.conversation.clone())
         else {
@@ -91,7 +96,7 @@ impl Render for MembersView {
             .test_support()
             .w(px(240.))
             .h_full()
-            .bg(c(theme::SIDEBAR))
+            .bg(theme.sidebar)
             .flex()
             .flex_col()
             .px_2()
@@ -103,56 +108,74 @@ impl Render for MembersView {
             let g = status_rank(m.status);
             if group != Some(g) {
                 group = Some(g);
-                let label = ["Online", "Away", "Offline"][g as usize];
+                let label = match g {
+                    0 => t!("people-online"),
+                    1 => t!("people-away"),
+                    _ => t!("people-offline"),
+                };
                 panel = panel.child(
                     div()
                         .pt_2()
                         .px_2()
                         .text_xs()
                         .font_weight(FontWeight::BOLD)
-                        .text_color(c(theme::MUTED))
+                        .text_color(theme.muted)
                         .child(label.to_uppercase()),
                 );
             }
             let dot = match m.status {
-                MemberStatus::Online => theme::ONLINE,
-                MemberStatus::Away => theme::AWAY,
-                _ => theme::OFFLINE,
+                MemberStatus::Online => theme.online,
+                MemberStatus::Away => theme.away,
+                _ => theme.offline,
             };
             let name = if m.display_name.is_empty() {
                 m.nick.clone()
             } else {
                 m.display_name.clone()
             };
+            let ctx = MemberCtx {
+                session: self.session.clone(),
+                member: m.id.clone(),
+                conversation: Some(id.clone()),
+            };
             panel = panel.child(
                 div()
+                    .id(ElementId::Name(format!("member-{}", m.id).into()))
+                    .test_support()
+                    .role(Role::ListItem)
+                    .aria_label(SharedString::from(name.clone()))
                     .px_2()
                     .py_1()
                     .rounded_md()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .hover(|d| d.bg(c(theme::HOVER)))
+                    .hover(|d| d.bg(theme.hover))
                     .when(m.status == MemberStatus::Offline, |d| d.opacity(0.5))
-                    .child(div().size(px(10.)).rounded_full().bg(c(dot)))
-                    .child(div().text_color(c(theme::FAINT)).text_sm().child(prefix))
+                    .child(div().size(px(10.)).rounded_full().bg(dot))
+                    .child(div().text_color(theme.faint).text_sm().child(prefix))
                     .child(
                         div()
                             .flex_1()
                             .truncate()
                             .text_sm()
-                            .text_color(c(theme::TEXT))
+                            .text_color(theme.text)
                             .child(name),
                     )
                     .when(!m.status_text.clone().unwrap_or_default().is_empty(), |d| {
                         d.child(
                             div()
                                 .text_xs()
-                                .text_color(c(theme::MUTED))
+                                .text_color(theme.muted)
                                 .truncate()
                                 .max_w(px(80.))
                                 .child(m.status_text.clone().unwrap_or_default()),
                         )
+                    })
+                    .context_menu(move |menu, _, cx| {
+                        let items = registry::get(cx).member_menu.to_vec();
+                        let items = ui::context_menu::visible(&items, &ctx, cx);
+                        ui::context_menu::fill(menu, items, ctx.clone())
                     }),
             );
         }

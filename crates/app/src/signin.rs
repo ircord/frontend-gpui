@@ -8,7 +8,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::session::{Phase, Session};
-use crate::theme::{self, c};
+use crate::theme;
+use crate::ui::field::field;
 
 pub struct SignInView {
     session: Entity<Session>,
@@ -20,12 +21,14 @@ pub struct SignInView {
 
 impl SignInView {
     pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let address =
-            cx.new(|cx| InputState::new(window, cx).placeholder("https://chat.example.com"));
-        let username = cx.new(|cx| InputState::new(window, cx).placeholder("Username"));
+        let address = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("core-signin-address-placeholder"))
+        });
+        let username =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("core-signin-username")));
         let password = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Password")
+                .placeholder(t!("core-signin-password"))
                 .masked(true)
         });
         let enter = |field: &Entity<InputState>, window: &mut Window, cx: &mut Context<Self>| {
@@ -77,6 +80,7 @@ impl SignInView {
 
 impl Render for SignInView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::get(cx).clone();
         let (busy, error, choosing, server) = {
             let session = self.session.read(cx);
             (
@@ -88,14 +92,14 @@ impl Render for SignInView {
         };
 
         let title = if choosing {
-            "Connect to IRCord"
+            t!("core-signin-connect-title")
         } else {
-            "Welcome back"
+            t!("core-signin-welcome")
         };
         let subtitle = if choosing {
-            "Enter the address of your IRCord server.".to_string()
+            t!("core-signin-connect-hint").to_string()
         } else {
-            format!("Sign in to {server}")
+            t!("core-signin-sign-in-to", server = server)
         };
 
         let mut form = div()
@@ -103,7 +107,7 @@ impl Render for SignInView {
             .w(px(400.))
             .p_8()
             .rounded_lg()
-            .bg(c(theme::SIDEBAR))
+            .bg(theme.sidebar)
             .flex()
             .flex_col()
             .gap_3()
@@ -111,31 +115,34 @@ impl Render for SignInView {
                 div()
                     .text_2xl()
                     .font_weight(FontWeight::BOLD)
-                    .text_color(c(theme::TEXT))
+                    .text_color(theme.text)
                     .child(title),
             )
-            .child(div().text_sm().text_color(c(theme::MUTED)).child(subtitle));
+            .child(div().text_sm().text_color(theme.muted).child(subtitle));
 
         if choosing {
             form = form.child(field(
-                "Server address",
+                t!("core-signin-address"),
                 Input::new(&self.address)
                     .id("address")
-                    .aria_label("Server address"),
+                    .aria_label(t!("core-signin-address")),
+                &theme,
             ));
         } else {
             form = form
                 .child(field(
-                    "Username",
+                    t!("core-signin-username"),
                     Input::new(&self.username)
                         .id("username")
-                        .aria_label("Username"),
+                        .aria_label(t!("core-signin-username")),
+                    &theme,
                 ))
                 .child(field(
-                    "Password",
+                    t!("core-signin-password"),
                     Input::new(&self.password)
                         .id("password")
-                        .aria_label("Password"),
+                        .aria_label(t!("core-signin-password")),
+                    &theme,
                 ));
         }
         if let Some(error) = error {
@@ -146,18 +153,22 @@ impl Render for SignInView {
                     .role(Role::Alert)
                     .aria_label(SharedString::from(error.clone()))
                     .text_sm()
-                    .text_color(c(theme::DANGER))
+                    .text_color(theme.danger)
                     .child(error),
             );
         }
         let primary = Button::new("submit")
             .primary()
             .label(if choosing {
-                if busy { "Checking…" } else { "Continue" }
+                if busy {
+                    t!("core-signin-checking")
+                } else {
+                    t!("core-signin-continue")
+                }
             } else if busy {
-                "Signing in…"
+                t!("core-signin-signing-in")
             } else {
-                "Sign in"
+                t!("core-signin-submit")
             })
             .disabled(busy)
             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)));
@@ -173,9 +184,12 @@ impl Render for SignInView {
                     .child(
                         div()
                             .id("sign-up")
-                            .text_color(c(theme::LINK))
+                            .test_support()
+                            .role(Role::Link)
+                            .aria_label(t!("core-signin-create-account"))
+                            .text_color(theme.link)
                             .cursor_pointer()
-                            .child("Create an account")
+                            .child(t!("core-signin-create-account"))
                             .on_click(move |_, _, cx| {
                                 if let Some(server) = session.read(cx).server().map(|s| s.origin())
                                 {
@@ -186,9 +200,12 @@ impl Render for SignInView {
                     .child(
                         div()
                             .id("change-server")
-                            .text_color(c(theme::LINK))
+                            .test_support()
+                            .role(Role::Link)
+                            .aria_label(t!("core-signin-change-server"))
+                            .text_color(theme.link)
                             .cursor_pointer()
-                            .child("Change server")
+                            .child(t!("core-signin-change-server"))
                             .on_click(move |_, _, cx| {
                                 session2.update(cx, |s, cx| s.change_server(cx))
                             }),
@@ -200,22 +217,7 @@ impl Render for SignInView {
             .flex()
             .items_center()
             .justify_center()
-            .bg(c(theme::RAIL))
+            .bg(theme.rail)
             .child(form)
     }
-}
-
-fn field(label: &'static str, input: impl IntoElement) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::BOLD)
-                .text_color(c(theme::MUTED))
-                .child(label.to_uppercase()),
-        )
-        .child(input)
 }

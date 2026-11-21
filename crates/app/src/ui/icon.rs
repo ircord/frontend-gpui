@@ -1,0 +1,40 @@
+//! Icons from gpui-kit's set, sized and coloured for this app.
+
+pub use gpui_kit::component::IconName;
+use gpui_kit::component::{Icon, Sizable};
+use gpui_kit::prelude::*;
+use gpui_kit::*;
+
+/// A small icon in `color`.
+pub fn icon(name: IconName, color: Hsla) -> Icon {
+    Icon::new(name).small().text_color(color)
+}
+
+/// An icon button: an icon with an ID, the button role and `label` as its
+/// accessible name and tooltip.
+pub fn button(
+    id: impl Into<ElementId>,
+    name: IconName,
+    label: impl Into<SharedString>,
+    theme: &crate::theme::Theme,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    use gpui_kit::TestSupportExt;
+    let label: SharedString = label.into();
+    div()
+        .id(id)
+        .test_support()
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .tooltip(super::tooltip::text(label))
+        .p_1()
+        .rounded_md()
+        .cursor_pointer()
+        .text_color(theme.muted)
+        .hover({
+            let (hover, text) = (theme.hover, theme.text);
+            move |d| d.bg(hover).text_color(text)
+        })
+        .child(icon(name, theme.muted))
+        .on_click(on_click)
+}
