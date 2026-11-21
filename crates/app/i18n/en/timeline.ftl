@@ -20,8 +20,3 @@ timeline-event-with-reason = { $event } ({ $reason })
 
 timeline-link-opens = Opens in your browser
 timeline-link-video = Video · opens in your browser
-timeline-file-video = Video
-timeline-file-audio = Audio
-timeline-file-other = File
-timeline-file = { $kind } · opens in your browser
-timeline-file-sized = { $kind } · { $size } · opens in your browser

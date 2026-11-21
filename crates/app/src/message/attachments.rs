@@ -4,10 +4,17 @@
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+use crate::registry::MessageCtx;
 use crate::theme::Theme;
 use crate::timeline::rows::{Image, MessageRow};
 
-pub fn render(m: &MessageRow, theme: &Theme) -> Vec<AnyElement> {
+pub fn render(
+    m: &MessageRow,
+    _ctx: &MessageCtx,
+    theme: &Theme,
+    _window: &mut Window,
+    _cx: &mut App,
+) -> Vec<AnyElement> {
     m.images
         .iter()
         .enumerate()

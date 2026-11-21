@@ -7,7 +7,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use chrono::{DateTime, Local, TimeZone};
-use ircord_client::contract::{MembershipEventType, Message, MessageKind};
+use ircord_client::contract::{Attachment, MembershipEventType, Message, MessageKind};
 use ircord_client::format::{self, Formatted};
 use ircord_client::store::{PendingSend, SendState, Workspace};
 
@@ -59,8 +59,13 @@ pub struct MessageRow {
     pub deleted: bool,
     pub reply: Option<(String, String)>,
     pub reactions: Vec<(String, usize)>,
+    /// Uploaded files, in the order they were sent (`message/attachments.rs`
+    /// draws them as one gallery and file cards). Their URLs are left out of
+    /// `body`, as the web client does.
+    pub attachments: Vec<Attachment>,
+    /// GIFs and linked pictures, drawn inline.
     pub images: Vec<Image>,
-    /// Other attachments and links: each a row that opens the browser.
+    /// Links in the text: each a row that opens the browser.
     pub links: Vec<LinkCard>,
 }
 
@@ -164,37 +169,16 @@ fn message_row(
     let sender_color = member
         .and_then(|m| m.name_color.as_deref().or(Some(m.color.as_str())))
         .and_then(parse_hex);
-    let body = format::parse(&m.text);
-    let mut images = Vec::new();
-    let mut links = Vec::new();
-    let attachments = m
+    let attachments: Vec<Attachment> = m
         .attachments
         .clone()
         .unwrap_or_default()
         .into_iter()
-        .chain(m.attachment.clone());
-    for a in attachments {
-        let content_type = a.content_type.clone().unwrap_or_default();
-        if content_type.starts_with("image/") || looks_like_image(&a.url) {
-            images.push(Image {
-                url: a.url.clone(),
-                width: a.width.max(0) as u32,
-                height: a.height.max(0) as u32,
-                alt: if a.alt.is_empty() {
-                    a.name.clone()
-                } else {
-                    a.alt.clone()
-                },
-            });
-        } else {
-            links.push(LinkCard {
-                url: a.url.clone(),
-                title: a.name.clone(),
-                detail: describe_file(&content_type, a.size),
-                video: content_type.starts_with("video/"),
-            });
-        }
-    }
+        .chain(m.attachment.clone())
+        .collect();
+    let body = format::parse(&without_urls(&m.text, &attachments));
+    let mut images = Vec::new();
+    let mut links: Vec<LinkCard> = Vec::new();
     if let Some(gif) = &m.gif {
         images.push(Image {
             url: gif.url.clone(),
@@ -204,7 +188,10 @@ fn message_row(
         });
     }
     for (_, url) in &body.links {
-        if images.iter().any(|i| &i.url == url) || links.iter().any(|l| &l.url == url) {
+        if images.iter().any(|i| &i.url == url)
+            || links.iter().any(|l| &l.url == url)
+            || attachments.iter().any(|a| &a.url == url)
+        {
             continue;
         }
         if looks_like_image(url) {
@@ -268,9 +255,24 @@ fn message_row(
             .filter(|r| !r.member_ids.is_empty())
             .map(|r| (r.emoji.clone(), r.member_ids.len()))
             .collect(),
+        attachments,
         images,
         links,
     }
+}
+
+/// The text without the uploaded files' URLs, which the attachments show.
+fn without_urls(text: &str, attachments: &[Attachment]) -> String {
+    if attachments.is_empty() {
+        return text.to_string();
+    }
+    let mut out = text.to_string();
+    for a in attachments {
+        if !a.url.is_empty() {
+            out = out.replace(&a.url, "");
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn event_text(w: &Workspace, m: &Message, network: &str) -> String {
@@ -368,35 +370,6 @@ fn host(url: &str) -> String {
                 .map(|h| h.trim_start_matches("www.").to_string())
         })
         .unwrap_or_else(|| url.to_string())
-}
-
-fn describe_file(content_type: &str, size: Option<i64>) -> String {
-    let kind = if content_type.starts_with("video/") {
-        t!("timeline-file-video")
-    } else if content_type.starts_with("audio/") {
-        t!("timeline-file-audio")
-    } else {
-        t!("timeline-file-other")
-    };
-    match size {
-        Some(bytes) if bytes > 0 => {
-            t!("timeline-file-sized", kind = kind, size = human_size(bytes))
-        }
-        _ => t!("timeline-file", kind = kind),
-    }
-}
-
-fn human_size(bytes: i64) -> String {
-    let b = bytes as f64;
-    if b >= 1e9 {
-        format!("{:.1} GB", b / 1e9)
-    } else if b >= 1e6 {
-        format!("{:.1} MB", b / 1e6)
-    } else if b >= 1e3 {
-        format!("{:.0} kB", b / 1e3)
-    } else {
-        format!("{bytes} B")
-    }
 }
 
 /// The smallest splice turning `old` into `new`: the range of old rows to
@@ -525,13 +498,13 @@ mod tests {
     }
 
     #[test]
-    fn images_inline_and_files_as_links() {
+    fn uploads_as_attachments_and_links_inline() {
         let mut w = workspace();
         let mut m = msg(
             "1",
             "2026-11-20T12:00:00Z",
             "m-bob",
-            "look https://x.y/cat.png",
+            "look https://x.y/cat.png https://x.y/files/doc.pdf",
         );
         m.attachments = Some(vec![Attachment {
             url: "https://x.y/files/doc.pdf".into(),
@@ -547,8 +520,12 @@ mod tests {
             panic!()
         };
         assert_eq!(m.images.len(), 1);
-        assert_eq!(m.links.len(), 1);
-        assert_eq!(m.links[0].detail, "File · 2.5 MB · opens in your browser");
+        assert!(m.links.is_empty());
+        assert_eq!(m.attachments.len(), 1);
+        assert_eq!(
+            m.body.text, "look https://x.y/cat.png",
+            "the upload's URL is left out"
+        );
         assert_eq!(m.sender_color, Some(0xff0000));
     }
 

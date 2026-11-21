@@ -316,6 +316,31 @@ pub struct SendFilter {
     pub filter: Rc<dyn Fn(&ComposerCtx, String, &mut Window, &mut App) -> SendOutcome>,
 }
 
+/// Runs after every submit (Enter, or a send button), once the text went
+/// through the send filters. `sent` is the text that was sent, empty when
+/// there was none; the upload tray sends its files here. Not run when a
+/// filter handled the text (a command) or kept it.
+#[derive(Clone)]
+pub struct SubmitHook {
+    pub id: SharedString,
+    pub order: i32,
+    #[allow(clippy::type_complexity)]
+    pub run: Rc<dyn Fn(&ComposerCtx, &str, &mut Window, &mut App)>,
+}
+
+impl SubmitHook {
+    pub fn new(
+        id: impl Into<SharedString>,
+        run: impl Fn(&ComposerCtx, &str, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            order: 0,
+            run: Rc::new(run),
+        }
+    }
+}
+
 /// The composer's slots.
 #[derive(Default)]
 pub struct ComposerSlots {
@@ -325,6 +350,7 @@ pub struct ComposerSlots {
     pub buttons: List<Slot<ComposerCtx>>,
     pub suggestions: List<SuggestionProvider>,
     pub send_filters: List<SendFilter>,
+    pub on_submit: List<SubmitHook>,
 }
 
 /// A section of the settings page.
@@ -512,6 +538,7 @@ entry!(
     Slot<C>,
     SuggestionProvider,
     SendFilter,
+    SubmitHook,
     SettingsSection,
     InlineRenderer,
     RowFilter,

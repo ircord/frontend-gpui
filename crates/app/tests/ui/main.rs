@@ -8,3 +8,4 @@ mod registries;
 mod shell;
 
 mod text;
+mod uploads;

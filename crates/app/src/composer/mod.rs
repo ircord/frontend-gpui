@@ -76,14 +76,16 @@ impl ComposerView {
         })
     }
 
-    /// Run the send filters, then send what is left.
+    /// Run the send filters, send what is left, then the submit hooks (which
+    /// also run when the box is empty: the upload tray sends its files).
     pub fn submit(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        if text.trim().is_empty() {
-            return;
-        }
         let Some(ctx) = self.ctx(cx) else {
             return;
         };
+        if text.trim().is_empty() {
+            self.after_submit(&ctx, "", window, cx);
+            return;
+        }
         let filters = registry::get(cx).composer.send_filters.to_vec();
         let mut text = text;
         for filter in filters {
@@ -96,10 +98,35 @@ impl ComposerView {
                 SendOutcome::Keep => return,
             }
         }
-        if !text.trim().is_empty() {
+        let sent = if text.trim().is_empty() {
+            String::new()
+        } else {
             self.session.update(cx, |s, _| s.send(&text));
-        }
+            text
+        };
         self.set_text("", window, cx);
+        self.after_submit(&ctx, &sent, window, cx);
+    }
+
+    /// Run the submit hooks once this update is over, so they may change the
+    /// composer.
+    fn after_submit(
+        &mut self,
+        ctx: &ComposerCtx,
+        sent: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let hooks = registry::get(cx).composer.on_submit.to_vec();
+        if hooks.is_empty() {
+            return;
+        }
+        let (ctx, sent) = (ctx.clone(), sent.to_string());
+        window.defer(cx, move |window, cx| {
+            for hook in hooks {
+                (hook.run)(&ctx, &sent, window, cx);
+            }
+        });
     }
 
     pub fn text(&self, cx: &App) -> String {

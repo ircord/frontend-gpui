@@ -17,6 +17,8 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 env_logger = "0.11"
 futures = "0.3"
 gpui-kit = "=0.10.0"
+# Frame types only, to hold an animated picture on its first frame.
+image = { version = "0.25", default-features = false }
 log = "0.4"
 tokio = { version = "1", features = ["rt"] }
 

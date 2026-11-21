@@ -64,10 +64,13 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
         )));
     }
     let inline = registry::get(cx).inline_renderers.to_vec();
+    // A message of uploads only has no text left to draw.
+    if !(m.body.text.trim().is_empty() && !m.attachments.is_empty()) {
+        column = column.child(body::render(m, theme, &inline));
+    }
     column = column
-        .child(body::render(m, theme, &inline))
         .children(reactions::render(m, theme))
-        .children(attachments::render(m, theme))
+        .children(attachments::render(m, &view.ctx, theme, window, cx))
         .children(links::render(m, theme));
 
     let gutter = if m.header && !m.action {
