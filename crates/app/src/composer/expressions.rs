@@ -623,7 +623,7 @@ impl PickerView {
             let glyph = match pictures::picture_url(item, animate, origin.as_ref()) {
                 Some(url) => div()
                     .size(px(26.))
-                    .child(pictures::picture(url, label.clone()))
+                    .child(pictures::picture(url, theme.faint))
                     .into_any_element(),
                 None => div()
                     .text_2xl()
@@ -1010,10 +1010,7 @@ impl PickerView {
             let glyph = match pictures::picture_url(&item, true, origin.as_ref()) {
                 Some(url) => div()
                     .size(px(26.))
-                    .child(pictures::picture(
-                        url,
-                        format!(":{}:", item.shortcode).into(),
-                    ))
+                    .child(pictures::picture(url, theme.faint))
                     .into_any_element(),
                 None => div().text_2xl().child(text).into_any_element(),
             };

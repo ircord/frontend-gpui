@@ -49,12 +49,28 @@ pub fn picture_url(
     resolve(item.picture(animate)?, origin)
 }
 
-/// A picture that fills its box, with `label` (`:name:`) as its fallback.
-pub fn picture(url: SharedString, label: SharedString) -> AnyElement {
+/// A picture that fills its box. One that does not load is a small outlined
+/// square in `faint`: the box is too small for the `:name:` text, which its
+/// owner keeps as the label and tooltip.
+pub fn picture(url: SharedString, faint: Hsla) -> AnyElement {
     img(SharedUri::from(url.to_string()))
         .size_full()
         .object_fit(ObjectFit::Contain)
-        .with_fallback(move || div().text_xs().child(label.clone()).into_any_element())
+        .with_fallback(move || {
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .size(rems(0.8))
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(faint),
+                )
+                .into_any_element()
+        })
         .into_any_element()
 }
 
@@ -63,23 +79,21 @@ pub fn renderer() -> InlineRenderer {
     InlineRenderer {
         id: "emoji".into(),
         order: 0,
-        spans: Rc::new(|m, _theme, cx| {
+        spans: Rc::new(|m, theme, cx| {
             let Some(pictures) = cx.try_global::<Pictures>().map(|p| p.0.clone()) else {
                 return Vec::new();
             };
             if pictures.is_empty() || !m.body.text.contains(':') {
                 return Vec::new();
             }
+            let faint = theme.faint;
             emoji::shortcodes_in(&m.body.text)
                 .into_iter()
                 .filter_map(|(range, name)| {
                     let url = pictures.get(name)?.clone();
-                    let label: SharedString = format!(":{name}:").into();
                     Some(InlineSpan {
                         range,
-                        inline: Inline::Element(Rc::new(move |_, _| {
-                            picture(url.clone(), label.clone())
-                        })),
+                        inline: Inline::Element(Rc::new(move |_, _| picture(url.clone(), faint))),
                     })
                 })
                 .collect()

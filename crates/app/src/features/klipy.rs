@@ -654,7 +654,7 @@ fn emoji_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option
     let expanded = is_open_on(ctx, Tab::Emoji, cx);
     Some(text_button(
         "composer-emoji",
-        "🙂",
+        "☺",
         t!("emoji-open-emoji").into(),
         expanded,
         ctx,
