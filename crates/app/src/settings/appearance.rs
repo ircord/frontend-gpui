@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::Disableable;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
@@ -20,7 +21,10 @@ use ircord_client::contract::{
     Appearance, AppearanceAccent, AppearanceCorners, AppearanceDensity, AppearanceFont,
     AppearanceMode, AppearanceMotion, Theme as UserTheme,
 };
-use ircord_client::store::appearance::{self as look, FAMILIES, ImportError, Look, Mode, Seed};
+use ircord_client::store::appearance::{
+    self as look, Compiled, FAMILIES, ImportError, Look, Mode, Seed,
+};
+use ircord_client::store::theme_css::CssVariables;
 
 use crate::registry::{self, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection};
 use crate::session::Session;
@@ -245,22 +249,32 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
             ctx,
             "appearance-accent",
             t!("appearance-accent"),
-            accents(&current, &editor, &theme, cx),
+            under(
+                accents(&current, &editor, &theme, cx),
+                &["accent"],
+                &compiled,
+                &theme,
+            ),
             &theme,
         ))
         .child(block(
             ctx,
             "appearance-font",
             t!("appearance-font"),
-            fonts(&current, &theme),
+            under(fonts(&current, &theme), &["font-ui"], &compiled, &theme),
             &theme,
         ))
-        .child(row(
-            ctx,
-            "appearance-scale",
-            t!("appearance-scale"),
-            Some(t!("appearance-scale-help").into()),
-            scale(current.scale, &theme),
+        .child(under(
+            row(
+                ctx,
+                "appearance-scale",
+                t!("appearance-scale"),
+                Some(t!("appearance-scale-help").into()),
+                scale(current.scale, &theme),
+                &theme,
+            ),
+            &["interface-scale"],
+            &compiled,
             &theme,
         ))
         .child(row(
@@ -288,34 +302,39 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
             ),
             &theme,
         ))
-        .child(row(
-            ctx,
-            "appearance-corners",
-            t!("appearance-corners"),
-            Some(t!("appearance-corners-help").into()),
-            choices(
+        .child(under(
+            row(
+                ctx,
                 "appearance-corners",
-                &[
-                    (
-                        AppearanceCorners::Rounded,
-                        "rounded",
-                        t!("appearance-corners-rounded"),
-                    ),
-                    (
-                        AppearanceCorners::Soft,
-                        "soft",
-                        t!("appearance-corners-soft"),
-                    ),
-                    (
-                        AppearanceCorners::Square,
-                        "square",
-                        t!("appearance-corners-square"),
-                    ),
-                ],
-                current.corners,
-                |a, c| a.corners = Some(c),
+                t!("appearance-corners"),
+                Some(t!("appearance-corners-help").into()),
+                choices(
+                    "appearance-corners",
+                    &[
+                        (
+                            AppearanceCorners::Rounded,
+                            "rounded",
+                            t!("appearance-corners-rounded"),
+                        ),
+                        (
+                            AppearanceCorners::Soft,
+                            "soft",
+                            t!("appearance-corners-soft"),
+                        ),
+                        (
+                            AppearanceCorners::Square,
+                            "square",
+                            t!("appearance-corners-square"),
+                        ),
+                    ],
+                    current.corners,
+                    |a, c| a.corners = Some(c),
+                    &theme,
+                ),
                 &theme,
             ),
+            &["radius", "radius-large"],
+            &compiled,
             &theme,
         ))
         .child(row(
@@ -361,6 +380,77 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
                 .on_click(|_, window, cx| confirm_reset(window, cx)),
             &theme,
         ))
+}
+
+/// A row or block with a caption under it when the theme's CSS sets one of
+/// `names` (the variables the row shows).
+fn under(
+    content: impl IntoElement,
+    names: &[&'static str],
+    compiled: &Compiled,
+    theme: &Theme,
+) -> Div {
+    let applied = compiled
+        .css
+        .as_ref()
+        .map(CssVariables::applied)
+        .unwrap_or_default();
+    div().flex().flex_col().gap_2().child(content).when(
+        applied.iter().any(|a| names.contains(a)),
+        |d| {
+            d.child(
+                div()
+                    .text_sm()
+                    .text_color(theme.muted)
+                    .child(t!("appearance-set-by-css")),
+            )
+        },
+    )
+}
+
+/// What the theme in use's CSS set and what this app left out, under the
+/// theme's row.
+fn css_report(name: &str, css: &CssVariables, theme: &Theme) -> Div {
+    let mut report = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .text_sm()
+        .text_color(theme.muted);
+    let applied = css.applied().len();
+    if applied > 0 {
+        let text: SharedString = t!(
+            "appearance-themes-css-applied",
+            name = name,
+            count = applied
+        )
+        .into();
+        report = report.child(
+            div()
+                .id("appearance-themes-css-applied")
+                .test_support()
+                .role(Role::Status)
+                .aria_label(text.clone())
+                .child(text),
+        );
+    }
+    if css.skipped_rules > 0 || !css.unread.is_empty() {
+        let text: SharedString = t!(
+            "appearance-themes-css-skipped",
+            rules = css.skipped_rules,
+            values = css.unread.len()
+        )
+        .into();
+        report = report.child(
+            div()
+                .id("appearance-themes-css-skipped")
+                .test_support()
+                .role(Role::Status)
+                .aria_label(text.clone())
+                .child(text),
+        );
+    }
+    report
 }
 
 /// A plain button drawn with the theme's tokens.
@@ -898,6 +988,7 @@ fn themes_block(
 ) -> impl IntoElement + use<> {
     let signed_in = editor.read(cx).session.read(cx).client().is_some();
     let library = appearance::library(cx);
+    let compiled = appearance::compiled(cx);
     let e = editor.read(cx);
     let notice = e.notice.clone();
     let editing = e.editing.clone();
@@ -947,6 +1038,38 @@ fn themes_block(
                 .child(t!("appearance-themes-loading")),
         );
     };
+    let server = appearance::server_allows_css(cx);
+    body = body.child(
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.text)
+                            .child(t!("appearance-themes-css-switch")),
+                    )
+                    .child(div().text_sm().text_color(theme.muted).child(if server {
+                        t!("appearance-themes-css-switch-help")
+                    } else {
+                        t!("appearance-themes-css-server-off")
+                    })),
+            )
+            .child(
+                Switch::new("appearance-themes-css-switch")
+                    .checked(library.custom_css)
+                    .disabled(!server)
+                    .accessibility_label(t!("appearance-themes-css-switch"))
+                    .on_click(|on: &bool, _, cx| appearance::set_custom_css(cx, *on)),
+            ),
+    );
     if library.themes.is_empty() {
         body = body.child(
             div()
@@ -957,6 +1080,14 @@ fn themes_block(
     }
     for user_theme in &library.themes {
         body = body.child(theme_row(user_theme, current, mode, editor, theme));
+        if let Some(css) = compiled
+            .css
+            .as_ref()
+            .filter(|_| compiled.theme == user_theme.id)
+        {
+            let name = user_theme.name.clone().unwrap_or_default();
+            body = body.child(css_report(&name, css, theme));
+        }
     }
     if let Some((user_theme, editing_mode)) = editing {
         body = body.child(seed_editor(
@@ -1440,11 +1571,7 @@ fn import(editor: &Entity<Editor>, text: &str, cx: &mut App) {
     match look::import_theme(text, made_with(), &now()) {
         Ok(user_theme) => {
             let name = user_theme.name.clone().unwrap_or_default();
-            let note = if look::has_css(&user_theme) {
-                t!("appearance-themes-css-kept", name = name)
-            } else {
-                t!("appearance-themes-imported", name = name)
-            };
+            let note = t!("appearance-themes-imported", name = name);
             save(editor, user_theme, None, false, Some(note), cx);
             let input = editor.read(cx).import.clone();
             if let Some(window) = cx.windows().first() {

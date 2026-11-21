@@ -21,6 +21,7 @@ use ircord_contract::{
 };
 use serde::{Deserialize, Serialize};
 
+use super::theme_css::{self, CssVariables};
 use super::{Changes, Workspace};
 
 /// The topic this sub-state reports in [`Changes`].
@@ -258,6 +259,12 @@ pub struct Tokens {
 }
 
 impl Tokens {
+    /// The current colour of the token `name`, for a theme CSS's `var()`.
+    fn token(self, name: &str) -> Option<u32> {
+        let mut copy = self;
+        copy.slot(name).copied()
+    }
+
     /// The token the web client calls `name`, for a scheme's exact overrides.
     fn slot(&mut self, name: &str) -> Option<&mut u32> {
         Some(match name {
@@ -847,18 +854,37 @@ pub struct Compiled {
     pub reduced_motion: bool,
     /// The personal theme drawn, when one is in use and this client can draw it.
     pub theme: Option<String>,
+    /// What the theme's CSS set on the root, when it was applied
+    /// ([`compile_with_css`]); `None` when not applied.
+    pub css: Option<CssVariables>,
 }
 
 /// Compile `look` for `mode` (`compileAppearance`). `themes` is the account's
-/// library; a theme in use replaces the scheme's seeds.
+/// library; a theme in use replaces the scheme's seeds. Its CSS is not
+/// applied; see [`compile_with_css`].
 pub fn compile(look: &Look, mode: Mode, themes: &[Theme], system_reduced: bool) -> Compiled {
+    compile_with_css(look, mode, themes, system_reduced, false)
+}
+
+/// [`compile`], and when `css_allowed` (the account's switch is on and the
+/// server allows CSS) the theme in use's CSS sets the variables it names on
+/// top: colours through the tokens, corners and interface scale over the
+/// look's. Fonts and message sizes are left to the app, which knows what
+/// the system has (`theme_css` in this crate).
+pub fn compile_with_css(
+    look: &Look,
+    mode: Mode,
+    themes: &[Theme],
+    system_reduced: bool,
+    css_allowed: bool,
+) -> Compiled {
     let theme = look
         .theme
         .as_deref()
         .and_then(|id| themes.iter().find(|t| t.id.as_deref() == Some(id)))
         .filter(|t| theme_supported(t));
     let accent = look.accent_source();
-    let (scheme, tokens) = match theme {
+    let (scheme, mut tokens) = match theme {
         Some(theme) => {
             let base = theme_base(theme, mode);
             let tokens = match theme_seeds(theme, mode) {
@@ -872,18 +898,41 @@ pub fn compile(look: &Look, mode: Mode, themes: &[Theme], system_reduced: bool) 
             (scheme.id, scheme_tokens(scheme, accent))
         }
     };
-    let (radius, radius_large) = look.radii();
+    let (mut radius, mut radius_large) = look.radii();
+    let mut scale = look.scale as f32 / 100.;
+    let mut css = None;
+    if let Some(theme) = theme.filter(|t| css_allowed && has_css(t)) {
+        let vars = theme_css::theme_variables(theme.css.as_deref().unwrap_or_default(), &|name| {
+            tokens.token(name)
+        });
+        for (name, rgb) in &vars.colors {
+            if let Some(slot) = tokens.slot(name) {
+                *slot = *rgb;
+            }
+        }
+        if let Some(px) = vars.radius {
+            radius = px;
+        }
+        if let Some(px) = vars.radius_large {
+            radius_large = px;
+        }
+        if let Some(factor) = vars.interface_scale {
+            scale = factor;
+        }
+        css = Some(vars);
+    }
     Compiled {
         mode,
         scheme,
         tokens,
         font: font_family(look.font),
-        scale: look.scale as f32 / 100.,
+        scale,
         radius,
         radius_large,
         compact: look.density == AppearanceDensity::Compact,
         reduced_motion: look.reduced_motion(system_reduced),
         theme: theme.and_then(|t| t.id.clone()),
+        css,
     }
 }
 
@@ -894,7 +943,7 @@ pub const THEME_FORMAT: i64 = 1;
 /// How many themes the library holds.
 pub const MAX_THEMES: usize = 20;
 pub const MAX_THEME_NAME: usize = 60;
-/// Custom CSS, kept but never applied: GPUI has no CSS.
+/// Custom CSS: only the root variables it sets are applied ([`compile_with_css`]).
 pub const MAX_THEME_CSS: usize = 64 * 1024;
 /// A file or pasted text offered for import.
 pub const MAX_IMPORT: usize = 256 * 1024;
@@ -1209,7 +1258,7 @@ pub fn import_theme(raw: &str, made_with: &str, now: &str) -> Result<Theme, Impo
     })
 }
 
-/// Whether a theme carries custom CSS, which this client keeps but cannot apply.
+/// Whether a theme carries custom CSS (applied as far as [`compile_with_css`] reads it).
 pub fn has_css(theme: &Theme) -> bool {
     theme.css.as_deref().is_some_and(|c| !c.trim().is_empty())
 }
@@ -1416,6 +1465,35 @@ mod tests {
         let newer = compile(&look, Mode::Dark, std::slice::from_ref(&theme), false);
         assert_eq!(newer.theme, None);
         assert_eq!(newer.scheme, DEFAULT_DARK);
+    }
+
+    #[test]
+    fn a_theme_css_sets_the_variables_it_names_only_when_allowed() {
+        let mut look = Look::default();
+        let mut theme = new_theme(&look, "Css", "test", "now");
+        theme.css = Some(
+            ":root { --accent: #ff0000; --radius: 4px; --interface-scale: 1.25 } .x { color: red }"
+                .into(),
+        );
+        look.theme = theme.id.clone();
+        let themes = std::slice::from_ref(&theme);
+
+        let applied = compile_with_css(&look, Mode::Dark, themes, false, true);
+        assert_eq!(applied.tokens.accent, 0xff0000);
+        assert_eq!(applied.radius, 4.0);
+        assert_eq!(applied.scale, 1.25);
+        let css = applied.css.as_ref().expect("the CSS is applied");
+        assert_eq!(css.skipped_rules, 1);
+        assert!(css.applied().contains(&"accent"));
+
+        // Switched off, or not allowed by the server: the look as without CSS.
+        let plain = compile(&look, Mode::Dark, themes, false);
+        assert_eq!(
+            compile_with_css(&look, Mode::Dark, themes, false, false),
+            plain
+        );
+        assert_eq!(plain.css, None);
+        assert_ne!(plain.tokens.accent, 0xff0000);
     }
 
     #[test]

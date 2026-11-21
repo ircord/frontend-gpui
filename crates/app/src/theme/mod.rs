@@ -62,6 +62,13 @@ pub struct Theme {
     pub font: SharedString,
     /// The monospace family for code.
     pub mono_font: SharedString,
+    /// The message text's family, when the theme's CSS sets `--font-message`
+    /// to a family the system has (`theme::appearance::apply`).
+    pub message_font: Option<SharedString>,
+    /// The message text size in pixels, when the theme's CSS sets `--message-size`.
+    pub message_size: Option<f32>,
+    /// The space between speakers in pixels, when the theme's CSS sets `--group-gap`.
+    pub group_gap: Option<f32>,
     /// Vertical padding of a sidebar row (the sidebar density).
     pub row_padding: Rems,
     /// Corner radius of rows, controls and cards.
@@ -111,6 +118,9 @@ impl Theme {
             dark: c.mode == Mode::Dark,
             font: c.font.unwrap_or(".SystemUIFont").into(),
             mono_font: look::MONO_FAMILY.into(),
+            message_font: None,
+            message_size: None,
+            group_gap: None,
             row_padding: if c.compact { rems(0.0625) } else { rems(0.25) },
             radius: px(c.radius),
             radius_large: px(c.radius_large),

@@ -269,23 +269,100 @@ pub fn set_library(themes: Themes, cx: &mut App) {
     }
 }
 
+/// Whether the server lets personal themes use their CSS (an absent
+/// capability allows it, as the backends before it did).
+pub fn server_allows_css(cx: &App) -> bool {
+    client(cx).is_none_or(|c| {
+        let w = c.read();
+        w.capabilities
+            .themes
+            .as_ref()
+            .is_none_or(|themes| themes.custom_css)
+    })
+}
+
+/// Whether a personal theme's CSS is applied: the account's switch is on and
+/// the server allows CSS.
+fn css_allowed(cx: &App) -> bool {
+    library(cx).is_some_and(|l| l.custom_css) && server_allows_css(cx)
+}
+
+/// Switch the account's use of its themes' custom CSS.
+pub fn set_custom_css(cx: &mut App, on: bool) {
+    let (Some(client), Some(mut library)) = (client(cx), library(cx)) else {
+        return;
+    };
+    if library.custom_css == on {
+        return;
+    }
+    library.custom_css = on;
+    client.edit_document(&THEMES, library);
+    crate::settings::saved(cx);
+    apply(cx);
+}
+
 /// Recompile and, when anything changed, apply to every window.
 pub fn apply(cx: &mut App) {
     let look = look(cx);
     let mode = look.resolve_mode(system_mode(cx));
-    let compiled = look::compile(&look, mode, &themes(cx), false);
+    let compiled = look::compile_with_css(&look, mode, &themes(cx), false, css_allowed(cx));
     let state = cx.global_mut::<State>();
     if state.compiled.as_ref() == Some(&compiled) {
         return;
     }
     state.compiled = Some(compiled.clone());
-    let theme = super::Theme::from_compiled(&compiled);
+    let mut theme = super::Theme::from_compiled(&compiled);
+    apply_css_fonts(&mut theme, &compiled, cx);
     apply_kit(&theme, cx);
     cx.set_reduce_motion(theme.reduced_motion);
     super::set(theme, cx);
     for window in cx.windows() {
         let _ = window.update(cx, |_, window, cx| set_rem_size(window, cx));
     }
+}
+
+/// Generic family names end a theme's font list: the system's own font stays.
+const GENERIC_FAMILIES: [&str; 5] = [
+    "sans-serif",
+    "system-ui",
+    "ui-sans-serif",
+    "serif",
+    "monospace",
+];
+
+/// The first family in `listed` the system has, by its own spelling. A
+/// generic name ends the list without a match.
+fn first_installed(listed: &[String], installed: &[String]) -> Option<SharedString> {
+    for family in listed {
+        if GENERIC_FAMILIES
+            .iter()
+            .any(|g| g.eq_ignore_ascii_case(family))
+        {
+            return None;
+        }
+        if let Some(name) = installed.iter().find(|n| n.eq_ignore_ascii_case(family)) {
+            return Some(name.clone().into());
+        }
+    }
+    None
+}
+
+/// The fonts and sizes a theme's CSS sets (`--font-ui`, `--font-mono`,
+/// `--font-message`, `--message-size`, `--group-gap`) over the compiled look.
+fn apply_css_fonts(theme: &mut super::Theme, compiled: &Compiled, cx: &App) {
+    let Some(css) = &compiled.css else {
+        return;
+    };
+    let installed = cx.text_system().all_font_names();
+    if let Some(font) = first_installed(&css.font_ui, &installed) {
+        theme.font = font;
+    }
+    if let Some(font) = first_installed(&css.font_mono, &installed) {
+        theme.mono_font = font;
+    }
+    theme.message_font = first_installed(&css.font_message, &installed);
+    theme.message_size = css.message_size;
+    theme.group_gap = css.group_gap;
 }
 
 fn set_rem_size(window: &mut Window, cx: &App) {

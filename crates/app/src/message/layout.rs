@@ -136,7 +136,15 @@ pub fn family(font: AppearanceMessageFont) -> Option<&'static str> {
 /// The message settings shown: the account's with appearance sync on, this
 /// device's with it off (`theme::appearance::current`).
 pub fn settings(cx: &App) -> Look {
-    let look = Look::of(&crate::theme::appearance::current(cx));
+    let mut look = Look::of(&crate::theme::appearance::current(cx));
+    // A personal theme's CSS may set the size and the gap between speakers.
+    let theme = theme::get(cx);
+    if let Some(size) = theme.message_size {
+        look.size = (size.round() as i64).clamp(SIZE.0, SIZE.1);
+    }
+    if let Some(gap) = theme.group_gap {
+        look.spacing = (gap.round() as i64).clamp(SPACING.0, SPACING.1);
+    }
     CLOCK_12H.with(|c| c.set(look.clock_12h));
     look
 }
@@ -250,9 +258,12 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
     };
     let text = |d: Div| -> Div {
         let d = d.text_size(px(look.size as f32));
-        match look.family() {
+        match theme.message_font.clone() {
             Some(family) => d.font_family(family),
-            None => d,
+            None => match look.family() {
+                Some(family) => d.font_family(family),
+                None => d,
+            },
         }
     };
 

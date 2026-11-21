@@ -25,6 +25,12 @@ fn serve(server: &CannedServer, settings: Value, themes: Value) {
     });
     let library = json!({"format": 1, "customCss": true, "themes": themes, "updatedAt": "l1"});
     server.route("GET", "/api/v1/app/themes", 200, library.clone());
+    let base = library.clone();
+    server.route_fn("PATCH", "/api/v1/app/themes", move |request| {
+        let mut library = base.clone();
+        library["customCss"] = request.json()["customCss"].clone();
+        Reply::json(200, library)
+    });
     server.route_fn("PUT", "/api/v1/app/themes/*", move |request| {
         let mut library = library.clone();
         let theme = request.json()["theme"].clone();
@@ -239,7 +245,7 @@ fn a_personal_theme_is_used_and_another_imported(cx: &mut TestAppContext) {
     wait(cx, "the imported theme listed", |cx| {
         ircord_app::theme::appearance::themes(cx).len() == 2
     });
-    // Still the Sea theme in use; the import says its CSS is not applied.
+    // Still the Sea theme in use; the import is added and not applied.
     assert_eq!(colour(cx).main, theme::hex(0x102030));
     let notice = cx
         .update_window(f.window, |_, window, cx| {
@@ -250,7 +256,47 @@ fn a_personal_theme_is_used_and_another_imported(cx: &mut TestAppContext) {
                 .map(str::to_string)
         })
         .unwrap();
-    assert!(notice.unwrap().contains("cannot apply CSS"));
+    assert!(notice.unwrap().contains("It is not applied"));
+}
+
+#[gpui_kit::test]
+fn a_theme_css_sets_the_root_variables_until_the_switch_is_off(cx: &mut TestAppContext) {
+    let red = json!({
+        "format": 1, "id": "t-red", "name": "Red", "updatedAt": "s1",
+        "base": {"dark": "ircord-dark", "light": "ircord-light"},
+        "colors": {},
+        "css": ":root { --accent: #ff0000 } .x { color: red }"
+    });
+    let f = signed_in(cx, json!({"mode": "dark"}), json!([red]));
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-theme-use-t-red");
+    wait(cx, "the theme's accent from its CSS", |cx| {
+        theme::get(cx).accent == theme::hex(0xff0000)
+    });
+    // The rule that restyles an element is counted, not applied.
+    let report = cx
+        .update_window(f.window, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .find("appearance-themes-css-skipped")
+                .label()
+                .map(str::to_string)
+        })
+        .unwrap();
+    assert!(report.unwrap().contains("not used"));
+
+    // Switched off: the account is saved with CSS off and the accent is the scheme's.
+    // The switch itself is not reported visible to the harness, so the setter it calls runs here.
+    cx.update(|cx| ircord_app::theme::appearance::set_custom_css(cx, false));
+    let saved = f.server.wait_for(
+        "PATCH",
+        "/api/v1/app/themes",
+        std::time::Duration::from_secs(5),
+    );
+    assert_eq!(saved.json()["customCss"], false);
+    wait(cx, "the scheme's accent without the CSS", |cx| {
+        theme::get(cx).accent != theme::hex(0xff0000)
+    });
 }
 
 #[gpui_kit::test]
