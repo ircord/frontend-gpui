@@ -21,6 +21,7 @@
 - Stay connected: IRCord catches up on missed messages after a reconnect and shows when it is offline.
 - See that IRCord is reaching your server while it starts, with a way to sign out if it cannot.
 - Get desktop notifications for the messages your server routes to this device, and click one to open its conversation.
+- See the sender's picture on a desktop notification, when the message shows who wrote it.
 - Keep IRCord running in the tray when you close its window.
 - Reply to, react to, edit (Up in an empty box edits your last message), copy, link to and delete messages from the hover toolbar or right-click menu, see earlier versions of an edited message, and put a failed message back into the box; actions a network does not allow say why, and failed messages come back after a restart.
 - Run IRCord on Linux, installed from a tarball with a menu entry, and on macOS, built from source on a Mac; keep it in the tray on both, with the sign-in in the Secret Service or the login keychain.
