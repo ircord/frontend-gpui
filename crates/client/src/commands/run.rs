@@ -9,6 +9,7 @@ use super::ignore::{self, Identity};
 use crate::api::{ApiError, Method, segment};
 use crate::client::{Client, random_id};
 use crate::features::Context;
+use crate::format::markdown::markdown_to_irc;
 use crate::irc::{channel_rights_for, channel_target, valid_raw_line};
 use crate::store::{Changes, Connection, Workspace};
 
@@ -257,7 +258,7 @@ pub fn plan(w: &Workspace, conversation: &str, input: &str) -> Result<Plan, Prob
             raw(format!("NICK {rest}"), None)
         }
         "topic" if rest.is_empty() => raw(format!("TOPIC {channel}"), Some(View::ServerWindow)),
-        "topic" => raw(format!("TOPIC {channel} :{rest}"), None),
+        "topic" => raw(format!("TOPIC {channel} :{}", markdown_to_irc(rest)), None),
         "away" if rest.is_empty() => raw("AWAY :Away".into(), None),
         "away" => raw(format!("AWAY :{rest}"), None),
         "afk" | "brb" => raw(format!("AWAY :{}", brief_away_text(spec.name, rest)), None),

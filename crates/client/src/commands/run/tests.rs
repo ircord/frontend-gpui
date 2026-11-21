@@ -161,6 +161,11 @@ fn every_command_and_alias_makes_its_request() {
         ),
         ("c-a", "/topic", raw("TOPIC #alpha")),
         ("c-a", "/topic Fresh news", raw("TOPIC #alpha :Fresh news")),
+        (
+            "c-a",
+            "/topic **Big** news",
+            raw("TOPIC #alpha :\x02Big\x02 news"),
+        ),
         ("c-a", "/away", raw("AWAY :Away")),
         ("c-a", "/away lunch", raw("AWAY :lunch")),
         ("c-a", "/afk", raw("AWAY :AFK")),
