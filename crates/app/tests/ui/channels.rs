@@ -417,7 +417,7 @@ fn a_channel_is_created_from_a_template_after_the_name_check(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
-fn a_partly_set_up_channel_lists_what_went_wrong_without_the_key(cx: &mut TestAppContext) {
+fn a_partly_set_up_channel_lists_what_went_wrong(cx: &mut TestAppContext) {
     let f = open(cx, |server| {
         creatable(server);
         server.route(
@@ -425,12 +425,11 @@ fn a_partly_set_up_channel_lists_what_went_wrong_without_the_key(cx: &mut TestAp
             "/api/v1/networks/n1/channels",
             200,
             json!({"conversation": conversation("c-team", "team"), "registered": false,
-                   "configured": false, "warnings": ["Could not set key hunter2"]}),
+                   "configured": false, "warnings": ["Could not register #team"]}),
         );
     });
     open_create(&f, cx);
     type_into(&f, cx, "create-channel-name", "team");
-    type_into(&f, cx, "create-channel-key", "hunter2");
     let deadline = std::time::Instant::now() + WAIT;
     while label(&f, cx, "create-channel-name-note")
         .unwrap_or_default()
@@ -446,17 +445,18 @@ fn a_partly_set_up_channel_lists_what_went_wrong_without_the_key(cx: &mut TestAp
     let sent = f
         .server
         .wait_for("POST", "/api/v1/networks/n1/channels", WAIT);
-    assert_eq!(sent.json()["modeParams"], json!({"k": "hunter2"}));
+    assert_eq!(sent.json()["name"], "#team");
     wait_showing(&f, cx, "create-channel-partial", true);
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find("create-channel-warnings").visible());
-        assert!(window.try_find_by_label("Could not set key ••••").is_some());
         assert!(
             window
-                .try_find_by_label("Could not set key hunter2")
-                .is_none()
+                .try_find_by_label("Could not register #team")
+                .is_some()
         );
+        // The form gave way to the answer: only Open channel is left.
+        assert!(window.try_find("create-channel-submit").is_none());
     })
     .unwrap();
     click(&f, cx, "create-channel-open");

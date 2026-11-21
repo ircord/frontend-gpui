@@ -872,7 +872,8 @@ fn notice(ctx: &SidebarCtx, window: &mut Window, cx: &mut App) -> Option<AnyElem
             client: Some(Rc::downgrade(&client)),
             ..Default::default()
         };
-        client.watch_document(&PREFERENCES);
+        // The sidebar's watch, shared, so the preferences are read once.
+        layout::watch_documents(Some(client.clone()), cx);
     }
     let seen = {
         let w = client.read();
