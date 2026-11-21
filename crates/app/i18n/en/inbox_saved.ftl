@@ -1,1 +1,66 @@
 # Text for package FD2. IDs start with `inbox-saved-`.
+
+# The inbox page
+inbox-saved-inbox = Inbox
+inbox-saved-inbox-unread = Inbox, { $count } unread
+inbox-saved-inbox-description = Your mentions, replies, and direct messages across every network.
+inbox-saved-unread-count = { $count } unread
+inbox-saved-caught-up = All caught up
+inbox-saved-views = Inbox view
+inbox-saved-view-all = All
+inbox-saved-view-unread = Unread
+inbox-saved-view-mentions = Mentions
+inbox-saved-view-replies = Replies
+inbox-saved-view-direct = Direct
+inbox-saved-view-dismissed = Dismissed
+inbox-saved-list = Inbox: { $view }
+inbox-saved-inbox-loading = Loading your inbox
+inbox-saved-inbox-failed = Couldn’t load your inbox: { $error }
+inbox-saved-try-again = Try again
+inbox-saved-empty-all = You’re all caught up. Mentions, replies to your messages and direct messages land here, even when no device was open.
+inbox-saved-empty-unread = Nothing unread. Items stay in All until you dismiss them.
+inbox-saved-empty-mentions = No mentions. Messages with @ and your nick, or a highlight word, show up here.
+inbox-saved-empty-replies = No replies. Replies to your messages show up here on networks that support them.
+inbox-saved-empty-direct = No direct messages.
+inbox-saved-empty-dismissed = Nothing dismissed. Dismissed items can be restored from here.
+inbox-saved-nothing-on-page = Nothing left on this page. Older items may follow.
+inbox-saved-reason-mention = Mention
+inbox-saved-reason-reply = Reply
+inbox-saved-reason-direct = Direct message
+inbox-saved-unread = Unread
+inbox-saved-dismiss = Dismiss from inbox
+inbox-saved-restore = Restore to inbox
+inbox-saved-dismiss-failed = Couldn’t dismiss the item: { $error }
+inbox-saved-restore-failed = Couldn’t restore the item: { $error }
+inbox-saved-inbox-offline = You’re offline. Changing the inbox needs a connection.
+inbox-saved-load-older = Load older items
+
+# Shared by both pages
+inbox-saved-item = { $author } in { $place }: { $text }
+inbox-saved-someone = Someone
+inbox-saved-unavailable-conversation = Unavailable conversation
+inbox-saved-network-removed = Removed network
+inbox-saved-deleted = Message deleted
+inbox-saved-unavailable = Unavailable — you left this conversation or it was removed.
+inbox-saved-closed = That conversation isn’t open any more. Rejoin it to see this message.
+inbox-saved-loading-more = Loading…
+inbox-saved-more-failed = Couldn’t load more: { $error }
+
+# The saved messages page and Save for later
+inbox-saved-saved = Saved messages
+inbox-saved-saved-description = Messages you want to come back to. Only you can see this collection.
+inbox-saved-saved-count = { $count } saved
+inbox-saved-filter = Filter saved messages
+inbox-saved-saved-loading = Loading saved messages
+inbox-saved-saved-failed = Couldn’t load your saved messages: { $error }
+inbox-saved-no-match = No saved messages match “{ $query }”.
+inbox-saved-empty-title = Nothing saved yet
+inbox-saved-empty = Choose Save for later on a message to keep it here. Only you can see your saved messages.
+inbox-saved-load-older-saved = Load older saved messages
+inbox-saved-save-later = Save for later
+inbox-saved-remove = Remove from saved
+inbox-saved-saved-toast = Saved for later.
+inbox-saved-removed-toast = Removed from saved messages.
+inbox-saved-save-failed = Couldn’t save the message: { $error }
+inbox-saved-remove-failed = Couldn’t remove the saved message: { $error }
+inbox-saved-save-offline = You’re offline. Saving a message needs a connection.
