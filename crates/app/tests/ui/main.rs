@@ -7,6 +7,7 @@ mod fixture;
 mod registries;
 mod shell;
 
+mod admin;
 mod appearance;
 mod channel_settings;
 mod channels;

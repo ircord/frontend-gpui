@@ -18,7 +18,7 @@ use serde::de::DeserializeOwned;
 
 use crate::address::ServerAddress;
 
-mod admin;
+pub mod admin;
 mod app_data;
 pub mod auth;
 pub mod channels;

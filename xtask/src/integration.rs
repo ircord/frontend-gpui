@@ -13,6 +13,10 @@
 //! `127.0.0.1:8080` that the backend trusts (`IRCORD_TRUSTED_PROXIES`) and
 //! that names each connection as its own client. The backend itself listens
 //! on `127.0.0.1:8081` behind it.
+//!
+//! The backend gets a random operator token (`IRCORD_ADMIN_TOKEN`), handed to
+//! the live cases as `IRCORD_IT_ADMIN_TOKEN`, so a case can make its own
+//! account a server owner through `/api/v1/admin/owners`.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -74,6 +78,8 @@ impl Drop for Cleanup {
 pub struct Backend {
     pub server: String,
     pub ergo: String,
+    /// The operator token the backend accepts on `/api/v1/admin/*`.
+    pub admin_token: String,
     proxy: String,
     _cleanup: Cleanup,
 }
@@ -105,6 +111,8 @@ impl Backend {
         let ergo = format!("ircord-gpui-it-ergo-{id}");
         let server = format!("ircord-gpui-it-backend-{id}");
         let mut cleanup = Cleanup(Vec::new());
+        let admin_token = random_token()?;
+        let admin_env = format!("IRCORD_ADMIN_TOKEN={admin_token}");
 
         docker(&["network", "create", &net])?;
         cleanup
@@ -142,6 +150,8 @@ impl Backend {
             "IRCORD_YTDLP_BINARY=disabled",
             "-e",
             "IRCORD_TRUSTED_PROXIES=127.0.0.1/32",
+            "-e",
+            &admin_env,
             BACKEND_IMAGE,
         ])?;
         cleanup
@@ -169,6 +179,7 @@ impl Backend {
         Ok(Self {
             server,
             ergo,
+            admin_token,
             proxy,
             _cleanup: cleanup,
         })
@@ -205,6 +216,8 @@ pub fn run(root: &Path) -> Result<()> {
         "IRCORD_IT_SERVER=http://127.0.0.1:8080".into(),
         "-e".into(),
         format!("IRCORD_IT_IRC={}:6667", backend.ergo),
+        "-e".into(),
+        format!("IRCORD_IT_ADMIN_TOKEN={}", backend.admin_token),
     ]);
     let result = crate::container::run_with(
         root,
@@ -227,6 +240,16 @@ pub fn run(root: &Path) -> Result<()> {
     result.context("the live integration test failed")?;
     println!("integration passed");
     Ok(())
+}
+
+/// 32 random bytes as 64 hex digits, the form the backend's admin token takes.
+fn random_token() -> Result<String> {
+    use std::io::Read;
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .context("read /dev/urandom for the admin token")?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn docker(args: &[&str]) -> Result<()> {

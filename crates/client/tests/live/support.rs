@@ -139,3 +139,27 @@ pub async fn irc_user(
     assert!(joined, "the IRC user could not join {channel}");
     (lines, write)
 }
+
+/// Make `username` a server owner with the operator token `cargo xtask
+/// integration` gives the backend, or `None` when no token was given.
+#[allow(dead_code)] // Used by the AD1 case in `admin.rs`.
+pub async fn make_owner(address: &ServerAddress, username: &str) -> Option<()> {
+    let token = std::env::var("IRCORD_IT_ADMIN_TOKEN").ok()?;
+    let response = reqwest::Client::new()
+        .put(address.join(&format!(
+            "/api/v1/admin/owners/{}",
+            ircord_client::api::segment(username)
+        )))
+        .header("Origin", address.origin())
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    assert!(
+        status.is_success(),
+        "make {username} an owner: {status} {}",
+        response.text().await.unwrap_or_default()
+    );
+    Some(())
+}
