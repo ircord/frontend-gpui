@@ -827,6 +827,7 @@ fn fact_tiles(
         .test_support()
         .role(Role::List)
         .aria_label(label)
+        .flex_none()
         .flex()
         .flex_wrap()
         .gap_px()
@@ -942,7 +943,7 @@ impl Render for ProfileCard {
             .flex()
             .flex_col()
             .gap_3()
-            .max_h(px(560.))
+            .max_h(px(500.))
             .overflow_y_scroll();
 
         // Who they are.
@@ -1011,6 +1012,7 @@ impl Render for ProfileCard {
                     .object_fit(ObjectFit::Cover)
             }));
         let face = div()
+            .self_start()
             .mt(px(-56.))
             .ml_3()
             .p_1()
@@ -1066,6 +1068,7 @@ impl Render for ProfileCard {
         }
         card = card.child(
             div()
+                .flex_none()
                 .flex()
                 .flex_col()
                 .gap_2()
@@ -1427,7 +1430,14 @@ impl Render for ProfileCard {
                     }),
             );
         }
-        card.child(actions).into_any_element()
+        // The actions stay in view below the part that scrolls.
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(card)
+            .child(actions)
+            .into_any_element()
     }
 }
 
