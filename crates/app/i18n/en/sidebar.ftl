@@ -1,10 +1,10 @@
-# The network rail, the conversation list, the quick switcher and the
-# keyboard shortcuts (package N1).
+# The top bar, the conversation list, the quick switcher and the keyboard
+# shortcuts (packages N1 and V3).
 
 sidebar-favourites = Favourites
 sidebar-channels = Channels
 sidebar-direct-messages = Direct messages
-sidebar-sign-out = Sign out
+sidebar-sign-out = Log out
 sidebar-badge-many = 99+
 sidebar-networks = Networks
 sidebar-conversations = Conversations
@@ -24,8 +24,20 @@ sidebar-show-list = Show conversations
 sidebar-hide-list = Hide conversations
 sidebar-back = Back
 sidebar-forward = Forward
-sidebar-find = Find a conversation
+sidebar-find = Search
 sidebar-unread-only = Show only unread conversations
+sidebar-unread-only-chip = Unread only
+sidebar-mark-all-read = Mark all read
+sidebar-pages = Pages
+sidebar-server = Server
+sidebar-network-menu = { $network } menu
+sidebar-top-bar = Networks and your account
+sidebar-add-network = Add a network
+sidebar-settings = Settings
+sidebar-edit-profile = Edit profile
+sidebar-preferences = Preferences
+sidebar-notifications = Notifications
+sidebar-account = Account settings
 sidebar-mark-network-read = Mark { $count } as read
 sidebar-resize-list = Resize the conversation list
 sidebar-resize-panel = Resize the side panel

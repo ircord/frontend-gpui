@@ -1,26 +1,33 @@
-//! The signed-in layout: rail and sidebar, the connection banner and the
-//! registered banners, the main pane, and the right-hand panel.
+//! The signed-in layout, as the web client's: the top bar with the network
+//! tabs across the window, the sidebar under it, and beside it a card
+//! holding the main pane (header, connection banner, registered banners,
+//! the route) and the right-hand panel.
 //!
 //! The main pane shows the session's route: a conversation (header,
 //! timeline, composer) is drawn here; any other route by the pane a feature
 //! registered for it. The right-hand panel is the registered panel the
 //! session names, or the member list beside a channel.
 
+use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::Sizable;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use ircord_client::contract::{ConversationKind, NetworkStatus};
-use ircord_client::store::{Connection, parties};
+use ircord_client::contract::{ConversationKind, MemberStatus, NetworkStatus};
+use ircord_client::store::{Connection, parties, people};
 
 use crate::composer::ComposerView;
 use crate::members::MembersView;
-use crate::registry::{self, BannerCtx, HeaderCtx, PaneCtx, PanelCtx};
+use crate::registry::{self, BannerCtx, ConversationCtx, HeaderCtx, PaneCtx, PanelCtx};
 use crate::route::Route;
 use crate::session::{Session, SessionEvent};
 use crate::sidebar::SidebarView;
 use crate::theme::{self, Theme};
 use crate::timeline::TimelineView;
 use crate::ui;
+use crate::ui::icon::IconName;
 
 pub struct WorkspaceView {
     session: Entity<Session>,
@@ -30,6 +37,19 @@ pub struct WorkspaceView {
     pub composer: Entity<ComposerView>,
     notice: Option<String>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// What a conversation's header shows.
+#[derive(Default)]
+struct Header {
+    title: String,
+    topic: String,
+    kind: ConversationKind,
+    party: bool,
+    favorite: bool,
+    online: usize,
+    /// The other person's presence, in a direct conversation.
+    partner: Option<MemberStatus>,
 }
 
 /// What the banner says, and whether it is an error.
@@ -116,7 +136,10 @@ impl WorkspaceView {
         }
     }
 
-    /// A conversation's header.
+    /// A conversation's header: the favourite star, its name and full
+    /// topic (a person's picture and name in a direct conversation); at the
+    /// right the registered buttons, the member list toggle with the count
+    /// online, and the conversation menu.
     fn conversation_header(
         &self,
         id: &str,
@@ -125,25 +148,34 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let session = self.session.read(cx);
-        let (title, topic, kind, party) = session
-            .client()
-            .and_then(|client| {
-                let w = client.read();
-                w.conversation(id).map(|conv| {
-                    (
-                        parties::title(&w, conv),
-                        ircord_client::format::parse(&conv.topic).text,
-                        conv.kind,
-                        conv.party.is_some(),
-                    )
-                })
+        let members_hidden = crate::members::hidden(session);
+        let found = session.client().and_then(|client| {
+            let w = client.read();
+            w.conversation(id).map(|conv| {
+                let partner = (conv.kind != ConversationKind::Channel && conv.party.is_none())
+                    .then(|| people::direct_partner(&w, &conv.id).map(|m| m.status))
+                    .flatten();
+                Header {
+                    title: parties::title(&w, conv),
+                    topic: ircord_client::format::parse(&conv.topic).text,
+                    kind: conv.kind,
+                    party: conv.party.is_some(),
+                    favorite: conv.favorite,
+                    online: people::online_count(&w, id),
+                    partner,
+                }
             })
-            .unwrap_or((
-                String::new(),
-                String::new(),
-                ConversationKind::Channel,
-                false,
-            ));
+        });
+        let Header {
+            title,
+            topic,
+            kind,
+            party,
+            favorite,
+            online,
+            partner,
+        } = found.unwrap_or_default();
+        let channel = kind == ConversationKind::Channel && !party;
         let prefix = if party {
             ""
         } else if kind == ConversationKind::Channel {
@@ -162,48 +194,173 @@ impl WorkspaceView {
             .filter_map(|slot| (slot.render)(&ctx, window, cx))
             .collect();
         let heading = format!("{prefix}{title}");
+        let star = {
+            let (session, conversation) = (self.session.clone(), id.to_string());
+            let label: SharedString = if favorite {
+                t!("core-header-unfavourite", name = heading).into()
+            } else {
+                t!("core-header-favourite", name = heading).into()
+            };
+            div()
+                .id("header-favourite")
+                .test_support()
+                .role(Role::Button)
+                .reachable(theme)
+                .aria_label(label.clone())
+                .aria_toggled(if favorite {
+                    Toggled::True
+                } else {
+                    Toggled::False
+                })
+                .tooltip(ui::tooltip::text(label))
+                .p_1()
+                .rounded_md()
+                .cursor_pointer()
+                .hover(|d| d.bg(theme.hover))
+                .child(ui::icon::icon(
+                    if favorite {
+                        IconName::StarFill
+                    } else {
+                        IconName::Star
+                    },
+                    if favorite { theme.warning } else { theme.muted },
+                ))
+                .on_click(move |_, _, cx| {
+                    crate::sidebar::menus::set_favourite(&session, &conversation, !favorite, cx)
+                })
+        };
+        let title_row = div()
+            .id("conversation-title")
+            .test_support()
+            .role(Role::Heading)
+            .aria_level(1)
+            .aria_label(SharedString::from(heading.clone()))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap_1()
+            .text_lg()
+            .font_weight(FontWeight::BOLD)
+            .text_color(theme.text);
+        let title_row = match partner {
+            Some(status) => title_row
+                .child(
+                    div()
+                        .relative()
+                        .mr_1()
+                        .child(ui::avatar::avatar(&title, None, px(26.), theme).text_sm())
+                        .child(
+                            div()
+                                .id("conversation-presence")
+                                .test_support()
+                                .absolute()
+                                .bottom(px(-2.))
+                                .right(px(-2.))
+                                .size(px(10.))
+                                .rounded_full()
+                                .border_2()
+                                .border_color(theme.main)
+                                .bg(match status {
+                                    MemberStatus::Online => theme.online,
+                                    MemberStatus::Away => theme.away,
+                                    _ => theme.offline,
+                                }),
+                        ),
+                )
+                .child(title),
+            None => title_row
+                .child(div().text_color(theme.faint).child(prefix))
+                .child(title),
+        };
+        let members = channel.then(|| {
+            let session = self.session.clone();
+            let label = if members_hidden {
+                t!("core-header-members-show", online = online)
+            } else {
+                t!("core-header-members-hide", online = online)
+            };
+            div()
+                .id("members-toggle")
+                .test_support()
+                .role(Role::Button)
+                .reachable(theme)
+                .aria_label(SharedString::from(label.clone()))
+                .aria_toggled(if members_hidden {
+                    Toggled::False
+                } else {
+                    Toggled::True
+                })
+                .tooltip(ui::tooltip::text(label))
+                .h(px(28.))
+                .px_2()
+                .rounded_full()
+                .flex()
+                .items_center()
+                .gap_1()
+                .cursor_pointer()
+                .text_sm()
+                .when(!members_hidden, |d| d.bg(theme.selected))
+                .hover(|d| d.bg(theme.hover))
+                .child(ui::icon::icon(IconName::User, theme.muted))
+                .child(div().size(px(6.)).rounded_full().bg(theme.online))
+                .child(div().text_color(theme.text).child(online.to_string()))
+                .on_click(move |_, _, cx| crate::members::set_hidden(&session, !members_hidden, cx))
+        });
+        let menu_ctx = ConversationCtx {
+            session: self.session.clone(),
+            conversation: id.to_string(),
+        };
+        let more = Button::new("conversation-menu")
+            .ghost()
+            .small()
+            .icon(IconName::Ellipsis)
+            .accessibility_label(t!("core-header-more"))
+            .tooltip(t!("core-header-more"))
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
+                let client = menu_ctx.session.read(cx).client().cloned();
+                crate::sidebar::layout::watch_notification_settings(client, cx);
+                let items = registry::get(cx).conversation_menu.to_vec();
+                let items = ui::context_menu::visible(&items, &menu_ctx, cx);
+                ui::context_menu::fill(menu, items, menu_ctx.clone())
+            });
         div()
             .id("conversation-header")
             .test_support()
             .role(Role::Banner)
-            .aria_label(SharedString::from(heading.clone()))
-            .h(px(48.))
+            .aria_label(SharedString::from(heading))
+            .h(px(52.))
             .flex_none()
-            .px_4()
+            .pl_3()
+            .pr_3()
             .flex()
             .items_center()
-            .gap_3()
+            .gap_2()
             .border_b_1()
-            .border_color(theme.rail)
+            .border_color(theme.border)
+            .when(!party, |d| d.child(star))
+            .child(title_row)
             .child(
                 div()
-                    .id("conversation-title")
-                    .test_support()
-                    .role(Role::Heading)
-                    .aria_level(1)
-                    .aria_label(SharedString::from(heading))
-                    .flex()
-                    .gap_1()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(theme.text)
-                    .child(div().text_color(theme.faint).child(prefix))
-                    .child(title),
+                    .id("conversation-topic")
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .text_color(theme.muted)
+                    .when(!topic.is_empty(), |d| {
+                        d.tooltip(ui::tooltip::text(topic.clone())).child(topic)
+                    }),
             )
-            .when(!topic.is_empty(), |d| {
-                d.child(div().h(px(24.)).w(px(1.)).bg(theme.selected))
-                    .child(
-                        div()
-                            .flex_1()
-                            .truncate()
-                            .text_sm()
-                            .text_color(theme.muted)
-                            .child(topic),
-                    )
-            })
-            .when(!buttons.is_empty(), |d| {
-                d.child(div().flex_1())
-                    .child(div().flex().gap_1().children(buttons))
-            })
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .children(buttons)
+                    .children(members)
+                    .child(more),
+            )
     }
 
     /// The registered pane for a route, or a placeholder when none is.
@@ -336,14 +493,38 @@ impl Render for WorkspaceView {
         let panel = self
             .panel(&route, window, cx)
             .map(|panel| crate::sidebar::side_panel(panel, window, cx));
+        let card = div()
+            .id("workspace-card")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .flex_row()
+            .overflow_hidden()
+            .rounded(theme.radius_large)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.main)
+            .child(main)
+            .children(panel);
         div()
             .id("workspace")
             .size_full()
             .flex()
-            .flex_row()
+            .flex_col()
+            .bg(theme.sidebar)
             .text_color(theme.text)
-            .child(self.sidebar.clone())
-            .child(main)
-            .children(panel)
+            .child(crate::sidebar::topbar::bar(&self.session, window, cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_row()
+                    .pb_2()
+                    .pr_2()
+                    .child(self.sidebar.clone())
+                    .child(card),
+            )
     }
 }

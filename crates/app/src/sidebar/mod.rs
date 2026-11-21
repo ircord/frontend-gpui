@@ -1,8 +1,10 @@
-//! The network rail and the conversation list (package N1).
+//! The sidebar and the top bar (packages N1 and V3).
 //!
-//! - The rail shows each network's own icon, or a pattern drawn from its
-//!   name, with a dot only when something needs a look: a ring while it is
-//!   not connected, a large dot for mentions, a small one for unread.
+//! - The top bar ([`topbar`]) has a tab per network with its own icon, or
+//!   a pattern drawn from its name, and your own button.
+//! - The sidebar opens with Search, then the pages features register
+//!   (`Registry::sidebar_footer`: Inbox, Saved, Drafts, Links), the
+//!   network's server window, and the unread filter.
 //! - The list has Favourites, Channels and Direct messages, each collapsible
 //!   per network on this device. Favourites and channels can be dragged into
 //!   your own order (or moved from the menu), which follows the account;
@@ -10,7 +12,8 @@
 //! - The list folds to an icon rail and back, and is as wide as you drag it;
 //!   so is the right-hand panel ([`side_panel`]).
 //! - Right-clicking a network or a conversation opens its registered menu;
-//!   N1's own entries are in [`menus`].
+//!   N1's own entries are in [`menus`]. Slots marked `at_bottom` (the
+//!   connection indicator) sit under the list.
 //!
 //! Redraws when the sidebar's data, the documents it reads, the selection,
 //! the connection or the layout change.
@@ -18,14 +21,17 @@
 pub mod glyph;
 pub mod layout;
 pub mod menus;
+pub mod topbar;
 
 use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::{Conversation, ConversationKind, NetworkStatus};
+use ircord_client::store::inbox;
 use ircord_client::store::sidebar_order::{
     self as order, Activity, Filter, PANEL_WIDTH, Place, SIDEBAR_WIDTH, Section,
 };
@@ -37,8 +43,6 @@ use crate::theme::{self, Theme};
 use crate::ui;
 use crate::ui::icon::IconName;
 
-/// The rail's width.
-const RAIL: f32 = 72.;
 /// The folded list's width.
 const FOLDED: f32 = 56.;
 
@@ -47,6 +51,7 @@ const FOLDED: f32 = 56.;
 pub fn init(cx: &mut App) {
     layout::init(cx);
     menus::register(cx);
+    topbar::init(cx);
 }
 
 /// A conversation being dragged to a new place in its section.
@@ -151,7 +156,10 @@ impl SidebarView {
     pub fn new(session: Entity<Session>, cx: &mut Context<Self>) -> Self {
         let subscription = cx.subscribe(&session, |_, _, event: &SessionEvent, cx| match event {
             SessionEvent::Changed(changes)
-                if changes.sidebar || changes.reset || changes.touches(topic::DOCUMENTS) =>
+                if changes.sidebar
+                    || changes.reset
+                    || changes.touches(topic::DOCUMENTS)
+                    || changes.touches(inbox::TOPIC) =>
             {
                 cx.notify()
             }
@@ -193,6 +201,57 @@ fn badge(count: i64, theme: &Theme) -> Div {
         .child(text)
 }
 
+/// A page in the block at the top of the sidebar (Inbox, Saved, Server):
+/// its icon, its name, and a count at the right when there is one.
+/// `accessible` is the name a screen reader says (with the count).
+#[allow(clippy::too_many_arguments)]
+pub fn page_row(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    label: impl Into<SharedString>,
+    accessible: impl Into<SharedString>,
+    count: Option<String>,
+    active: bool,
+    theme: &Theme,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let hover = theme.hover;
+    div()
+        .id(id.into())
+        .test_support()
+        .role(Role::Button)
+        .reachable(theme)
+        .aria_label(accessible.into())
+        .aria_selected(active)
+        .mx_2()
+        .px_2()
+        .py_1()
+        .rounded_md()
+        .flex()
+        .items_center()
+        .gap_2()
+        .text_sm()
+        .cursor_pointer()
+        .text_color(if active { theme.text } else { theme.muted })
+        .when(active, |d| d.bg(theme.selected))
+        .hover(move |d| d.bg(hover))
+        .child(ui::icon::icon(icon, theme.muted))
+        .child(div().flex_1().truncate().child(label.into()))
+        .when_some(count, |d, count| {
+            d.child(
+                div()
+                    .px_1p5()
+                    .rounded_full()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.accent)
+                    .child(count),
+            )
+        })
+        .on_click(on_click)
+        .into_any_element()
+}
+
 /// What a screen reader says for a network tab: its name, then a problem
 /// with the connection, then mentions or unread.
 fn network_label(name: &str, status: NetworkStatus, activity: Activity) -> String {
@@ -232,115 +291,6 @@ fn number_label(n: usize) -> String {
 }
 
 impl SidebarView {
-    fn rail(&self, w: &Workspace, selected: Option<&str>, theme: &Theme) -> AnyElement {
-        let mut rail = div()
-            .id("network-rail")
-            .test_support()
-            .role(Role::Navigation)
-            .aria_label(t!("sidebar-networks"))
-            .w(px(RAIL))
-            .h_full()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap_2()
-            .py_3()
-            .bg(theme.rail)
-            .overflow_y_scroll();
-        for network in &w.networks {
-            let activity = order::network_activity(w, &network.id);
-            let active = selected == Some(network.id.as_str());
-            let id = network.id.clone();
-            let session = self.session.clone();
-            let label = network_label(&network.name, network.status, activity);
-            let dot = if network.status != NetworkStatus::Connected {
-                Some(
-                    div()
-                        .id(ElementId::Name(
-                            format!("network-{}-offline", network.id).into(),
-                        ))
-                        .test_support()
-                        .size(px(12.))
-                        .rounded_full()
-                        .border_2()
-                        .border_color(theme.warning)
-                        .bg(theme.rail),
-                )
-            } else {
-                match activity {
-                    Activity::Mention => Some(
-                        div()
-                            .id(ElementId::Name(
-                                format!("network-{}-mention", network.id).into(),
-                            ))
-                            .test_support()
-                            .size(px(14.))
-                            .rounded_full()
-                            .border_2()
-                            .border_color(theme.rail)
-                            .bg(theme.danger),
-                    ),
-                    Activity::Unread if !active => Some(
-                        div()
-                            .id(ElementId::Name(
-                                format!("network-{}-unread", network.id).into(),
-                            ))
-                            .test_support()
-                            .size(px(12.))
-                            .rounded_full()
-                            .border_2()
-                            .border_color(theme.rail)
-                            .bg(theme.text),
-                    ),
-                    _ => None,
-                }
-            };
-            let tooltip = match network.status_detail.as_deref() {
-                Some(detail) if !detail.is_empty() => {
-                    t!(
-                        "sidebar-network-tooltip",
-                        network = network.name,
-                        status = detail
-                    )
-                }
-                _ => label.clone(),
-            };
-            let tile = glyph::network_icon(w, network, px(34.));
-            let ctx = NetworkCtx {
-                session: self.session.clone(),
-                network: network.id.clone(),
-            };
-            let tab = div()
-                .id(ElementId::Name(format!("network-{}", network.id).into()))
-                .test_support()
-                .role(Role::Tab)
-                .reachable(theme)
-                .aria_label(SharedString::from(label))
-                .aria_selected(active)
-                .tooltip(ui::tooltip::text(tooltip))
-                .size(px(48.))
-                .flex_none()
-                .rounded(px(14.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(active, |d| d.bg(theme.selected))
-                .when(!active, |d| d.hover(|d| d.bg(theme.hover)))
-                .cursor_pointer()
-                .relative()
-                .child(tile)
-                .children(dot.map(|d| div().absolute().bottom(px(4.)).right(px(4.)).child(d)))
-                .on_click(move |_, _, cx| session.update(cx, |s, cx| s.select_network(&id, cx)));
-            rail = rail.child(tab.context_menu(move |menu, _, cx| {
-                let items = registry::get(cx).network_menu.to_vec();
-                let items = ui::context_menu::visible(&items, &ctx, cx);
-                ui::context_menu::fill(menu, items, ctx.clone())
-            }));
-        }
-        rail.into_any_element()
-    }
-
     fn conversation_row(
         &self,
         w: &Workspace,
@@ -375,11 +325,34 @@ impl SidebarView {
             } else {
                 theme.muted
             })
-            .when(active, |d| d.bg(theme.selected))
-            .when(!active, |d| d.hover(|d| d.bg(theme.hover)))
+            .border_1()
+            .when(active, |d| d.bg(theme.selected).border_color(theme.border))
+            .when(!active, |d| {
+                d.border_color(gpui_kit::transparent_black())
+                    .hover(|d| d.bg(theme.hover))
+            })
             .when(unread && !muted, |d| d.font_weight(FontWeight::SEMIBOLD))
             .when(!c.joined || muted, |d| d.opacity(0.6))
-            .child(div().text_color(theme.faint).child(prefix(c)))
+            .child(
+                // The prefix, with the channel's Ctrl+number raised beside it.
+                div()
+                    .relative()
+                    .w(px(14.))
+                    .flex_none()
+                    .text_color(theme.faint)
+                    .child(prefix(c))
+                    .when_some(number, |d, n| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top(px(-5.))
+                                .left(px(9.))
+                                .text_size(px(9.))
+                                .font_weight(FontWeight::NORMAL)
+                                .child(n.to_string()),
+                        )
+                    }),
+            )
             .child(div().flex_1().truncate().child(name.clone()))
             .on_click(move |_, _, cx| session.update(cx, |s, cx| s.select_conversation(&id, cx)));
         if let Some(n) = number {
@@ -387,14 +360,17 @@ impl SidebarView {
         }
         if c.mention_count > 0 {
             row = row.child(badge(c.mention_count, theme));
-        } else if let Some(n) = number {
+        } else if unread && !muted && !active {
             row = row.child(
                 div()
-                    .text_xs()
-                    .text_color(theme.faint)
-                    .invisible()
-                    .group_hover("conversation-row", |s| s.visible())
-                    .child(number_label(n)),
+                    .id(ElementId::Name(
+                        format!("conversation-{}-unread", c.id).into(),
+                    ))
+                    .test_support()
+                    .size(px(6.))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(theme.text),
             );
         }
         if section.sortable() {
@@ -498,7 +474,7 @@ impl SidebarView {
                 },
                 theme.faint,
             ))
-            .child(div().truncate().child(label.to_uppercase()))
+            .child(div().truncate().child(label))
             .on_click(move |_, _, cx| {
                 layout::update(cx, |l| {
                     l.collapsed = order::toggle_collapsed(&l.collapsed, &key)
@@ -511,8 +487,8 @@ impl SidebarView {
             .flex()
             .items_center()
             .gap_1()
-            .text_xs()
-            .font_weight(FontWeight::BOLD)
+            .text_sm()
+            .font_weight(FontWeight::MEDIUM)
             .text_color(theme.muted)
             .child(toggle);
         if view.custom {
@@ -710,39 +686,23 @@ impl Render for SidebarView {
         };
         let selected_network = session.network.clone();
         let selected = session.conversation.clone();
-        let (can_back, can_forward) = (
-            session.history.can_go_back(),
-            session.history.can_go_forward(),
-        );
-        // Slots under the list draw first: they may read the workspace too.
+        let route = session.route();
+        // Slots draw first: they may read the workspace too.
         let slot_ctx = SidebarCtx {
             session: self.session.clone(),
             network: selected_network.clone(),
         };
-        let slots: Vec<AnyElement> = registry::get(cx)
-            .sidebar_footer
-            .to_vec()
-            .into_iter()
-            .filter_map(|slot| (slot.render)(&slot_ctx, window, cx))
-            .collect();
-        let self_ctx = slot_ctx.clone();
-        // Your status, from a registered slot (P1), else your account.
-        let self_line = registry::get(cx)
-            .self_line
-            .to_vec()
-            .iter()
-            .find_map(|slot| (slot.render)(&self_ctx, window, cx))
-            .unwrap_or_else(|| {
-                let account = client.read().user.account.clone();
-                div()
-                    .text_xs()
-                    .text_color(theme.muted)
-                    .truncate()
-                    .child(account)
-                    .into_any_element()
-            });
+        let (mut pages, mut bottom) = (Vec::new(), Vec::new());
+        for slot in registry::get(cx).sidebar_footer.to_vec() {
+            if let Some(element) = (slot.render)(&slot_ctx, window, cx) {
+                if slot.bottom {
+                    bottom.push(element);
+                } else {
+                    pages.push(element);
+                }
+            }
+        }
         let w = client.read();
-        let rail = self.rail(&w, selected_network.as_deref(), &theme);
         let network = selected_network.as_deref().and_then(|id| w.network(id));
 
         if !layout.show_list {
@@ -755,96 +715,15 @@ impl Render for SidebarView {
                 .h_full()
                 .flex()
                 .flex_row()
-                .child(rail)
                 .child(folded)
                 .into_any_element();
         }
 
-        let session_entity = self.session.clone();
-        let nav = |id: &'static str, icon, label: &'static str, enabled: bool, back: bool| {
-            let session = session_entity.clone();
-            div()
-                .when(!enabled, |d| d.opacity(0.4))
-                .child(ui::icon::button(
-                    id,
-                    icon,
-                    label,
-                    &theme,
-                    move |_, _, cx| {
-                        session.update(cx, |s, cx| {
-                            if back {
-                                s.go_back(cx)
-                            } else {
-                                s.go_forward(cx)
-                            }
-                        })
-                    },
-                ))
-        };
-        let mut header = div()
-            .h(px(48.))
-            .flex_none()
-            .pl_3()
-            .pr_1()
-            .flex()
-            .items_center()
-            .gap_0p5()
-            .border_b_1()
-            .border_color(theme.rail);
-        if let Some(n) = network {
-            let ctx = NetworkCtx {
-                session: self.session.clone(),
-                network: n.id.clone(),
-            };
-            header = header.child(
-                div()
-                    .id("network-header")
-                    .test_support()
-                    .role(Role::Heading)
-                    .aria_label(SharedString::from(n.name.clone()))
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(theme.text)
-                    .child(n.name.clone())
-                    .context_menu(move |menu, _, cx| {
-                        let items = registry::get(cx).network_menu.to_vec();
-                        let items = ui::context_menu::visible(&items, &ctx, cx);
-                        ui::context_menu::fill(menu, items, ctx.clone())
-                    }),
-            );
-        } else {
-            header = header.child(div().flex_1());
-        }
-        header = header
-            .child(nav(
-                "nav-back",
-                IconName::ArrowLeft,
-                t!("sidebar-back"),
-                can_back,
-                true,
-            ))
-            .child(nav(
-                "nav-forward",
-                IconName::ArrowRight,
-                t!("sidebar-forward"),
-                can_forward,
-                false,
-            ))
-            .child(ui::icon::button(
-                "sidebar-hide",
-                IconName::PanelLeftClose,
-                t!("sidebar-hide-list"),
-                &theme,
-                |_, _, cx| layout::update(cx, |l| l.show_list = false),
-            ));
-
-        // Find a conversation, the unread filter and mark all read.
-        let unread_here = network.map_or(0, |n| order::unread_in(&w, Some(&n.id)).len());
-        let mut tools = div()
+        // Search (the quick switcher) and folding the list.
+        let search = div()
             .px_2()
-            .pt_2()
+            .pt_1()
+            .pb_1()
             .flex()
             .items_center()
             .gap_1()
@@ -858,19 +737,75 @@ impl Render for SidebarView {
                     .flex_1()
                     .px_2()
                     .py_1()
-                    .rounded_md()
+                    .rounded_full()
                     .flex()
                     .items_center()
-                    .gap_1p5()
+                    .gap_2()
                     .cursor_pointer()
+                    .border_1()
+                    .border_color(theme.border)
                     .bg(theme.main)
                     .text_sm()
-                    .text_color(theme.faint)
+                    .text_color(theme.muted)
                     .hover(|d| d.bg(theme.hover))
-                    .child(ui::icon::icon(IconName::Search, theme.faint))
+                    .child(ui::icon::icon(IconName::Search, theme.muted))
                     .child(t!("sidebar-find"))
                     .on_click(|_, window, cx| crate::features::switcher::open(window, cx)),
             )
+            .child(ui::icon::button(
+                "sidebar-hide",
+                IconName::PanelLeftClose,
+                t!("sidebar-hide-list"),
+                &theme,
+                |_, _, cx| layout::update(cx, |l| l.show_list = false),
+            ));
+
+        // The network's server window, with the network menu beside it.
+        let server = network.map(|n| {
+            let active = route == Some(crate::route::Route::ServerWindow(n.id.clone()));
+            let (session, id) = (self.session.clone(), n.id.clone());
+            let ctx = NetworkCtx {
+                session: self.session.clone(),
+                network: n.id.clone(),
+            };
+            div()
+                .relative()
+                .child(page_row(
+                    "sidebar-server",
+                    IconName::SquareTerminal,
+                    t!("sidebar-server"),
+                    t!("sidebar-server"),
+                    None,
+                    active,
+                    &theme,
+                    move |_, _, cx| crate::features::server_window::open(&session, &id, cx),
+                ))
+                .child(
+                    div().absolute().right(px(12.)).top(px(2.)).child(
+                        Button::new("sidebar-network-menu")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Ellipsis)
+                            .accessibility_label(t!("sidebar-network-menu", network = n.name))
+                            .tooltip(t!("sidebar-network-menu", network = n.name))
+                            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
+                                let items = registry::get(cx).network_menu.to_vec();
+                                let items = ui::context_menu::visible(&items, &ctx, cx);
+                                ui::context_menu::fill(menu, items, ctx.clone())
+                            }),
+                    ),
+                )
+        });
+
+        // Unread only, and mark the network read.
+        let unread_here = network.map_or(0, |n| order::unread_in(&w, Some(&n.id)).len());
+        let mut filters = div()
+            .px_2()
+            .pt_2()
+            .flex()
+            .flex_col()
+            .items_start()
+            .gap_1()
             .child(
                 div()
                     .id("sidebar-unread-only")
@@ -883,104 +818,58 @@ impl Render for SidebarView {
                     } else {
                         Toggled::False
                     })
-                    .tooltip(ui::tooltip::text(t!("sidebar-unread-only")))
-                    .p_1()
-                    .rounded_md()
+                    .px_2()
+                    .py_0p5()
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
                     .cursor_pointer()
+                    .border_1()
+                    .border_color(if layout.unread_only {
+                        theme.accent
+                    } else {
+                        theme.border
+                    })
+                    .text_color(if layout.unread_only {
+                        theme.text
+                    } else {
+                        theme.muted
+                    })
                     .when(layout.unread_only, |d| d.bg(theme.selected))
                     .hover(|d| d.bg(theme.hover))
-                    .child(ui::icon::icon(
-                        IconName::Inbox,
-                        if layout.unread_only {
-                            theme.text
-                        } else {
-                            theme.muted
-                        },
-                    ))
+                    .child(ui::icon::icon(IconName::Bell, theme.muted))
+                    .child(t!("sidebar-unread-only-chip"))
                     .on_click(|_, _, cx| layout::update(cx, |l| l.unread_only = !l.unread_only)),
             );
         if let Some(n) = network.filter(|_| unread_here > 0) {
             let (session, id) = (self.session.clone(), n.id.clone());
-            tools = tools.child(ui::icon::button(
-                "sidebar-mark-network-read",
-                IconName::Check,
-                t!("sidebar-mark-network-read", count = unread_here),
-                &theme,
-                move |_, _, cx| {
-                    menus::mark_network_read(&session, &id, cx);
-                },
-            ));
+            filters = filters.child(
+                div()
+                    .id("sidebar-mark-network-read")
+                    .test_support()
+                    .role(Role::Button)
+                    .reachable(&theme)
+                    .aria_label(t!("sidebar-mark-network-read", count = unread_here))
+                    .px_2()
+                    .rounded_md()
+                    .text_xs()
+                    .cursor_pointer()
+                    .text_color(theme.text)
+                    .hover(|d| d.bg(theme.hover))
+                    .child(t!("sidebar-mark-all-read"))
+                    .on_click(move |_, _, cx| {
+                        menus::mark_network_read(&session, &id, cx);
+                    }),
+            );
         }
 
         let list = match network {
             Some(n) => self.list(&w, &n.id, selected.as_deref(), &layout, &theme),
             None => div().id("conversation-list").flex_1().into_any_element(),
         };
-
-        let me = network
-            .map(|n| n.nick.clone())
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| w.user.nick.clone());
-        let name = div()
-            .flex()
-            .flex_col()
-            .min_w_0()
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(theme.text)
-                    .truncate()
-                    .child(me.clone()),
-            )
-            .child(self_line);
-        // Your own menu (`Registry::self_menu`), from your name.
-        let name = if registry::get(cx).self_menu.is_empty() {
-            name.into_any_element()
-        } else {
-            Button::new("self-menu")
-                .ghost()
-                .accessibility_label(t!("sidebar-self-menu"))
-                .tooltip(t!("sidebar-self-menu"))
-                .flex_1()
-                .min_w_0()
-                .justify_start()
-                .child(name)
-                .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _, cx| {
-                    let items = registry::get(cx).self_menu.to_vec();
-                    let items = ui::context_menu::visible(&items, &self_ctx, cx);
-                    ui::context_menu::fill(menu, items, self_ctx.clone())
-                })
-                .into_any_element()
-        };
-        let session = self.session.clone();
-        let footer = div()
-            .h(px(52.))
-            .flex_none()
-            .px_3()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_1()
-            .bg(theme.footer)
-            .child(name)
-            .child(
-                div()
-                    .id("sign-out")
-                    .test_support()
-                    .role(Role::Button)
-                    .reachable(&theme)
-                    .aria_label(t!("sidebar-sign-out"))
-                    .text_xs()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .text_color(theme.muted)
-                    .hover(|d| d.bg(theme.hover).text_color(theme.text))
-                    .child(t!("sidebar-sign-out"))
-                    .on_click(move |_, _, cx| session.update(cx, |s, cx| s.sign_out(cx))),
-            );
+        drop(w);
 
         div()
             .id("sidebar")
@@ -989,12 +878,11 @@ impl Render for SidebarView {
             .flex()
             .flex_row()
             .on_drag_move::<ResizeList>(|e, _, cx| {
-                let width = f32::from(e.event.position.x - e.bounds.left()) - RAIL;
+                let width = f32::from(e.event.position.x - e.bounds.left());
                 layout::update(cx, |l| {
                     l.sidebar_width = order::clamp_width(width, SIDEBAR_WIDTH)
                 });
             })
-            .child(rail)
             .child(
                 div()
                     .w(px(layout.sidebar_width))
@@ -1003,11 +891,21 @@ impl Render for SidebarView {
                     .flex()
                     .flex_col()
                     .bg(theme.sidebar)
-                    .child(header)
-                    .child(tools)
+                    .child(search)
+                    .child(
+                        div()
+                            .id("sidebar-pages")
+                            .role(Role::Group)
+                            .aria_label(t!("sidebar-pages"))
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .children(pages)
+                            .children(server),
+                    )
+                    .child(filters)
                     .child(list)
-                    .children(slots)
-                    .child(footer),
+                    .children(bottom),
             )
             .child(handle(
                 "resize-sidebar",

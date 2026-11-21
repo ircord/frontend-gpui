@@ -93,7 +93,7 @@ pub fn init(cx: &mut App) {
             )
             .icon(IconName::CircleUser)
             .when(|ctx, _| ctx.network.is_some())
-            .order(20),
+            .order(5),
         );
         r.self_line.add(Slot::new("status-line", self_line));
     });

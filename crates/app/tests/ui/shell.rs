@@ -1,9 +1,13 @@
 //! The first version's screens: sign-in, the workspace, sending,
-//! notifications and signing out.
+//! notifications and signing out; and the shell's layout (V3): the top bar,
+//! your menu, the sidebar's pages and the conversation header.
 
-use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext, SystemNotificationResponse, TestAppContext};
+use std::time::Duration;
+
+use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
+use gpui_kit::{AppContext, MouseButton, SystemNotificationResponse, TestAppContext, Window};
 use ircord_app::Screen;
+use ircord_app::route::Route;
 use ircord_app::session::Phase;
 use ircord_client::contract::*;
 
@@ -139,14 +143,196 @@ fn a_live_message_appears_and_a_notification_opens_its_conversation(cx: &mut Tes
 fn signing_out_returns_to_the_sign_in_screen(cx: &mut TestAppContext) {
     let f = open(cx, true);
     bootstrap(&f, cx);
-    cx.update_window(f.window, |_, window, cx| {
-        window.render_frame(cx);
-        window.click("sign-out", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
+    click(&f, cx, "self-menu");
+    click_label(&f, cx, "Log out");
     cx.update(|cx| {
         assert!(matches!(f.session.read(cx).phase, Phase::SignIn { .. }));
         assert!(matches!(f.view.read(cx).screen(), Screen::SignIn(_)));
+    });
+}
+
+const WAIT: Duration = Duration::from_secs(5);
+
+fn draw(
+    f: &crate::fixture::Fixture,
+    cx: &mut TestAppContext,
+    check: impl FnOnce(&mut Window, &mut gpui_kit::App),
+) {
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        check(window, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+fn click(f: &crate::fixture::Fixture, cx: &mut TestAppContext, id: &'static str) {
+    draw(f, cx, |window, cx| window.click(id, cx));
+}
+
+fn click_label(f: &crate::fixture::Fixture, cx: &mut TestAppContext, label: &str) {
+    draw(f, cx, |window, cx| {
+        let at = window.find_by_label(label).bounds().center();
+        window.pointer_down(at, MouseButton::Left, cx);
+        window.pointer_up(at, MouseButton::Left, cx);
+    });
+}
+
+fn route(f: &crate::fixture::Fixture, cx: &mut TestAppContext) -> Option<Route> {
+    cx.update(|cx| f.session.read(cx).route())
+}
+
+#[gpui_kit::test]
+fn the_top_bar_holds_the_networks_settings_and_your_menu(cx: &mut TestAppContext) {
+    let f = open(cx, true);
+    bootstrap(&f, cx);
+    draw(&f, cx, |window, _| {
+        let bar = window.find("top-bar").bounds();
+        let tab = window.find("network-n1");
+        assert_eq!(tab.selected(), Some(true));
+        assert_eq!(tab.label(), Some("Home, mentions"));
+        // The tabs, Settings and your button sit in the bar, above the
+        // sidebar, and the old rail is gone.
+        for id in ["network-n1", "add-network", "open-settings", "self-menu"] {
+            let b = window.find(id).bounds();
+            assert!(bar.contains(&b.center()), "{id} is in the top bar");
+        }
+        assert!(window.find("sidebar-find").bounds().top() >= bar.bottom());
+        assert!(window.try_find("network-rail").is_none());
+        assert_eq!(window.find("self-status").label(), Some("Online"));
+    });
+
+    click(&f, cx, "open-settings");
+    assert_eq!(route(&f, cx), Some(Route::Settings));
+    click(&f, cx, "nav-back");
+    assert_eq!(route(&f, cx), Some(Route::Conversation("c-general".into())));
+
+    click(&f, cx, "self-menu");
+    draw(&f, cx, |window, _| {
+        for label in [
+            "Set a status…",
+            "Edit profile",
+            "Preferences",
+            "Notifications",
+            "Account settings",
+            "Log out",
+        ] {
+            assert!(window.find_by_label(label).visible(), "{label}");
+        }
+    });
+    click_label(&f, cx, "Preferences");
+    assert_eq!(route(&f, cx), Some(Route::Settings));
+
+    click(&f, cx, "add-network");
+    draw(&f, cx, |window, _| {
+        assert!(window.find("network-form").visible())
+    });
+}
+
+#[gpui_kit::test]
+fn the_sidebar_opens_with_search_and_its_pages(cx: &mut TestAppContext) {
+    let f = open(cx, true);
+    bootstrap(&f, cx);
+    draw(&f, cx, |window, _| {
+        let order = [
+            "sidebar-find",
+            "open-inbox",
+            "open-saved",
+            "sidebar-links",
+            "sidebar-server",
+            "sidebar-unread-only",
+            "conversation-list",
+            "connection-indicator",
+        ];
+        let tops: Vec<f32> = order
+            .iter()
+            .map(|id| f32::from(window.find(*id).bounds().top()))
+            .collect();
+        for (pair, ids) in tops.windows(2).zip(order.windows(2)) {
+            assert!(pair[0] < pair[1], "{} above {}", ids[0], ids[1]);
+        }
+        // Nothing of the old footer: signing out is in your menu.
+        assert!(window.try_find("sign-out").is_none());
+        // Inbox and Saved left the conversation header.
+        let header = window.find("conversation-header").bounds();
+        assert!(!header.contains(&window.find("open-inbox").bounds().center()));
+    });
+    for (id, expected) in [
+        ("open-inbox", Route::Inbox),
+        ("open-saved", Route::Saved),
+        ("sidebar-links", Route::Links(None)),
+        ("sidebar-server", Route::ServerWindow("n1".into())),
+    ] {
+        click(&f, cx, id);
+        assert_eq!(route(&f, cx), Some(expected.clone()));
+        draw(&f, cx, |window, _| {
+            assert_eq!(
+                window.find(id).selected(),
+                Some(true),
+                "{id} shows it is open"
+            );
+        });
+    }
+    click(&f, cx, "sidebar-network-menu");
+    draw(&f, cx, |window, _| {
+        assert!(window.find_by_label("Mark all as read").visible());
+    });
+    draw(&f, cx, |window, cx| window.press("escape", cx));
+    click(&f, cx, "sidebar-find");
+    draw(&f, cx, |window, _| {
+        assert!(window.find("switcher").visible());
+    });
+}
+
+#[gpui_kit::test]
+fn the_conversation_header_has_the_star_the_members_and_the_menu(cx: &mut TestAppContext) {
+    let f = open(cx, true);
+    bootstrap(&f, cx);
+    draw(&f, cx, |window, _| {
+        assert_eq!(window.find("conversation-title").label(), Some("#general"));
+        assert_eq!(
+            window.find("header-favourite").label(),
+            Some("Add #general to favourites")
+        );
+        let members = window.find("members-toggle");
+        assert!(
+            members
+                .label()
+                .is_some_and(|l| l.starts_with("Hide members, "))
+        );
+        assert!(window.find("member-list").visible());
+        // Settings moved to the top bar.
+        assert!(
+            !window
+                .find("conversation-header")
+                .bounds()
+                .contains(&window.find("open-settings").bounds().center())
+        );
+    });
+    click(&f, cx, "members-toggle");
+    draw(&f, cx, |window, _| {
+        assert!(window.try_find("member-list").is_none());
+        assert!(
+            window
+                .find("members-toggle")
+                .label()
+                .is_some_and(|l| l.starts_with("Show members, "))
+        );
+    });
+    click(&f, cx, "members-toggle");
+    draw(&f, cx, |window, _| {
+        assert!(window.find("member-list").visible())
+    });
+
+    click(&f, cx, "header-favourite");
+    let body = f
+        .server
+        .wait_for("PATCH", "/api/v1/conversations/c-general", WAIT)
+        .json();
+    assert_eq!(body, serde_json::json!({"favorite": true}));
+
+    click(&f, cx, "conversation-menu");
+    draw(&f, cx, |window, _| {
+        assert!(window.find_by_label("Copy channel name").visible());
     });
 }

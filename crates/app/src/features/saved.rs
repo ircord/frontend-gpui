@@ -4,7 +4,7 @@
 //! message on the Saved messages page, which only you can see: newest saved
 //! first under day headings, with a filter on the text. Opening an item
 //! jumps to it in its conversation; an edited or deleted source changes the
-//! saved copy with it. The button in the conversation header opens it.
+//! saved copy with it. Its row at the top of the sidebar opens it.
 //! Follows the web client's `SavedPage.vue` and `queries/saved.ts`.
 
 use crate::ui::focus::Reachable;
@@ -20,7 +20,7 @@ use ircord_client::store::{Connection, Workspace};
 use crate::features::inbox::{
     author, day_and_time, day_heading, link_button, loading, more, network_name, place,
 };
-use crate::registry::{self, HeaderCtx, MenuItem, MessageCtx, Pane, Slot};
+use crate::registry::{self, MenuItem, MessageCtx, Pane, SidebarCtx, Slot};
 use crate::route::{PaneKind, Route};
 use crate::session::{Session, SessionEvent};
 use crate::theme::{self, Theme};
@@ -32,24 +32,25 @@ pub fn init(cx: &mut App) {
         r.panes.add(Pane::new(PaneKind::Saved, |ctx, window, cx| {
             view(&ctx.session, window, cx).into_any_element()
         }));
-        r.header_buttons.add(
-            Slot::new("saved", |ctx: &HeaderCtx, _, cx| {
+        r.sidebar_footer.add(
+            Slot::new("saved", |ctx: &SidebarCtx, _, cx| {
                 let session = ctx.session.clone();
                 if let Some(client) = session.read(cx).client() {
                     saved::keep(client);
                 }
-                Some(
-                    ui::icon::button(
-                        "open-saved",
-                        IconName::BookOpen,
-                        t!("inbox-saved-saved"),
-                        theme::get(cx),
-                        move |_, _, cx| open(&session, cx),
-                    )
-                    .into_any_element(),
-                )
+                let active = session.read(cx).route() == Some(Route::Saved);
+                Some(crate::sidebar::page_row(
+                    "open-saved",
+                    IconName::BookOpen,
+                    t!("inbox-saved-saved"),
+                    t!("inbox-saved-saved"),
+                    None,
+                    active,
+                    theme::get(cx),
+                    move |_, _, cx| open(&session, cx),
+                ))
             })
-            .order(81),
+            .order(-30),
         );
         r.message_menu.add(
             MenuItem::new(

@@ -290,6 +290,9 @@ impl<C: 'static> MenuItem<C> {
 pub struct Slot<C> {
     pub id: SharedString,
     pub order: i32,
+    /// In the sidebar: drawn at its foot rather than in the block of pages
+    /// at its top (the connection indicator).
+    pub bottom: bool,
     pub render: Render<C>,
 }
 
@@ -298,6 +301,7 @@ impl<C> Clone for Slot<C> {
         Self {
             id: self.id.clone(),
             order: self.order,
+            bottom: self.bottom,
             render: self.render.clone(),
         }
     }
@@ -312,12 +316,19 @@ impl<C: 'static> Slot<C> {
         Self {
             id: id.into(),
             order: 0,
+            bottom: false,
             render: Rc::new(render),
         }
     }
 
     pub fn order(mut self, order: i32) -> Self {
         self.order = order;
+        self
+    }
+
+    /// Draw a sidebar slot at the sidebar's foot.
+    pub fn at_bottom(mut self) -> Self {
+        self.bottom = true;
         self
     }
 }
@@ -736,10 +747,10 @@ pub struct Registry {
     pub conversation_menu: List<MenuItem<ConversationCtx>>,
     pub member_menu: List<MenuItem<MemberCtx>>,
     pub network_menu: List<MenuItem<NetworkCtx>>,
-    /// Your own menu, opened from your name at the foot of the sidebar.
+    /// Your own menu, opened from your button at the right of the top bar.
     pub self_menu: List<MenuItem<SidebarCtx>>,
-    /// Under your name at the foot of the sidebar (your status): the first
-    /// slot that draws replaces the account name.
+    /// Under your name in that button (your status): the first slot that
+    /// draws replaces the account name.
     pub self_line: List<Slot<SidebarCtx>>,
     /// Drawn at the start of a conversation's history, under "the start of
     /// the conversation" (an empty direct conversation shows the person).
@@ -747,13 +758,16 @@ pub struct Registry {
     /// Opens a person when their name or picture in the timeline is clicked.
     pub open_person: Option<Handler<MemberCtx>>,
     pub composer: ComposerSlots,
-    /// Buttons at the right of the conversation header.
+    /// Buttons at the right of the conversation header, before the member
+    /// list toggle and the conversation menu.
     pub header_buttons: List<Slot<HeaderCtx>>,
     /// Across the top of the main pane, under the conversation header and
     /// the connection banner, on every route (invitations).
     pub banners: List<Slot<BannerCtx>>,
-    /// Under the conversation list, above the account footer (the
-    /// connection indicator).
+    /// The sidebar's pages and notices, in the block above the conversation
+    /// list (Inbox, Saved, Drafts, Links); a slot marked
+    /// [`Slot::at_bottom`] goes under the list instead (the connection
+    /// indicator).
     pub sidebar_footer: List<Slot<SidebarCtx>>,
     pub settings_sections: List<SettingsSection>,
     pub inline_renderers: List<InlineRenderer>,

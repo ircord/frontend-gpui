@@ -43,6 +43,11 @@ core-network-connecting = Connecting to { $network }…
 core-network-down = { $network } is disconnected.
 core-network-down-detail = { $network } is disconnected: { $detail }
 core-pane-missing = This page is not available yet.
+core-header-favourite = Add { $name } to favourites
+core-header-unfavourite = Remove { $name } from favourites
+core-header-members-show = Show members, { $online } online
+core-header-members-hide = Hide members, { $online } online
+core-header-more = Conversation menu
 
 # Message frame
 core-message-reply-line = ↪ { $nick }: { $text }

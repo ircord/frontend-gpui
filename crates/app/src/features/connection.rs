@@ -1,6 +1,6 @@
 //! Connection details and latency (package SV1).
 //!
-//! - The indicator under the conversation list: the app's and the IRC
+//! - The pill under the conversation list: the app's and the IRC
 //!   network's state, and the device's ping to IRCord. Clicking it opens
 //!   the network's server window.
 //! - [`details`]: the server window's Connection tab, with the state, both
@@ -57,10 +57,12 @@ pub fn init(cx: &mut App) {
     })
     .detach();
     registry::register(cx, |r| {
-        r.sidebar_footer
-            .add(Slot::new("connection", |ctx: &SidebarCtx, _, cx| {
+        r.sidebar_footer.add(
+            Slot::new("connection", |ctx: &SidebarCtx, _, cx| {
                 Some(indicator(&ctx.session, cx).into_any_element())
-            }));
+            })
+            .at_bottom(),
+        );
     });
 }
 
@@ -198,10 +200,13 @@ impl Render for IndicatorView {
             .aria_label(SharedString::from(accessible.clone()))
             .tooltip(crate::ui::tooltip::text(accessible))
             .mx_2()
-            .mb_2()
+            .mt_1()
             .px_2()
             .py_1()
-            .rounded_md()
+            .rounded_full()
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.main)
             .flex()
             .items_center()
             .gap_2()
