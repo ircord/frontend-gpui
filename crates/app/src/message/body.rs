@@ -498,9 +498,10 @@ impl Body<'_> {
         if !replace.is_empty() {
             (shown, highlights, pieces) = substitute(&f.text, highlights, pieces, &replace, theme);
         }
-        // An action's sender, and the edited mark, sit on the first and last lines.
+        // An action's sender, and the edited mark, sit on the first and last
+        // lines. The sender reads as on the web: "sage is now…", upright.
         if first && self.m.action {
-            let prefix = format!("* {} ", self.m.sender);
+            let prefix = format!("{} ", self.m.sender);
             let len = prefix.len();
             shown.insert_str(0, &prefix);
             highlights = shift(highlights, len);
@@ -510,6 +511,7 @@ impl Body<'_> {
                     0..len - 1,
                     HighlightStyle {
                         font_weight: Some(FontWeight::SEMIBOLD),
+                        font_style: Some(FontStyle::Normal),
                         color: self.m.sender_color.map(theme::hex),
                         ..Default::default()
                     },
