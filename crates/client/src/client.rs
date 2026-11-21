@@ -145,7 +145,8 @@ impl Client {
         self.shared.store.read().unwrap()
     }
 
-    fn change(&self, f: impl FnOnce(&mut Workspace) -> Changes) {
+    /// Change the workspace locally and tell the app what changed.
+    pub fn change(&self, f: impl FnOnce(&mut Workspace) -> Changes) {
         let changes = f(&mut self.shared.store.write().unwrap());
         if !changes.is_empty() {
             let _ = self.updates.unbounded_send(Update::Changed(changes));
@@ -181,11 +182,14 @@ impl Client {
                     let _ = updates.unbounded_send(Update::SignedOut);
                 }
                 Err(e) => {
-                    let mut changes = store.write().unwrap().load_newest(&id, c::MessagePage {
-                        sync_error: Some(e.to_string()),
-                        next_cursor: None,
-                        ..Default::default()
-                    });
+                    let mut changes = store.write().unwrap().load_newest(
+                        &id,
+                        c::MessagePage {
+                            sync_error: Some(e.to_string()),
+                            next_cursor: None,
+                            ..Default::default()
+                        },
+                    );
                     changes.notices.push(e.to_string());
                     let _ = updates.unbounded_send(Update::Changed(changes));
                 }
@@ -204,7 +208,10 @@ impl Client {
         let id = conversation.to_string();
         self.runtime.spawn(async move {
             let result = api.messages(&id, Some(&cursor), PAGE_SIZE).await;
-            let mut changes = store.write().unwrap().load_older(&id, result.as_ref().ok().cloned());
+            let mut changes = store
+                .write()
+                .unwrap()
+                .load_older(&id, result.as_ref().ok().cloned());
             if let Err(e) = result {
                 changes.notices.push(e.to_string());
             }
@@ -220,7 +227,11 @@ impl Client {
         }
         let (action, text) = match text.strip_prefix("/me ") {
             Some(rest) => (true, rest.to_string()),
-            None => (false, text.strip_prefix("//").map_or(text.to_string(), |t| format!("/{t}"))),
+            None => (
+                false,
+                text.strip_prefix("//")
+                    .map_or(text.to_string(), |t| format!("/{t}")),
+            ),
         };
         let pending = PendingSend {
             client_id: random_id(),
@@ -274,9 +285,10 @@ impl Client {
 
     /// Mark a conversation read if it has anything unread.
     pub fn mark_read(&self, conversation: &str) {
-        let unread = self.read().conversation(conversation).is_some_and(|c| {
-            c.unread_count > 0 || c.mention_count > 0 || c.unread_from.is_some()
-        });
+        let unread = self
+            .read()
+            .conversation(conversation)
+            .is_some_and(|c| c.unread_count > 0 || c.mention_count > 0 || c.unread_from.is_some());
         if !unread {
             return;
         }

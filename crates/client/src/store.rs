@@ -61,7 +61,10 @@ pub enum Connection {
     Replaying,
     Live,
     /// Disconnected; the client tries again after `retry_ms`.
-    Offline { reason: String, retry_ms: u64 },
+    Offline {
+        reason: String,
+        retry_ms: u64,
+    },
 }
 
 /// What an operation touched, so the app redraws only those views.
@@ -137,7 +140,12 @@ fn entry(message: Message) -> Entry {
 
 fn order(a: &Entry, b: &Entry) -> std::cmp::Ordering {
     a.at.cmp(&b.at)
-        .then(a.message.position.unwrap_or(0).cmp(&b.message.position.unwrap_or(0)))
+        .then(
+            a.message
+                .position
+                .unwrap_or(0)
+                .cmp(&b.message.position.unwrap_or(0)),
+        )
         .then(a.message.id.cmp(&b.message.id))
 }
 
@@ -145,7 +153,11 @@ impl Timeline {
     /// Insert or replace one message, keeping the order.
     fn put(&mut self, message: Message) {
         let new = entry(message);
-        if let Some(i) = self.entries.iter().position(|e| e.message.id == new.message.id) {
+        if let Some(i) = self
+            .entries
+            .iter()
+            .position(|e| e.message.id == new.message.id)
+        {
             self.entries.remove(i);
         }
         let at = self
@@ -173,7 +185,9 @@ impl Timeline {
             .collect();
         for message in items {
             // A live copy that arrived first is newer than the page's copy.
-            by_id.entry(message.id.clone()).or_insert_with(|| entry(message));
+            by_id
+                .entry(message.id.clone())
+                .or_insert_with(|| entry(message));
         }
         let mut entries: Vec<Entry> = by_id.into_values().collect();
         entries.sort_by(order);
@@ -291,7 +305,9 @@ impl Workspace {
         self.conversations
             .iter()
             .filter(|c| c.network_id == network_id)
-            .fold((0, 0), |(u, m), c| (u + c.unread_count, m + c.mention_count))
+            .fold((0, 0), |(u, m), c| {
+                (u + c.unread_count, m + c.mention_count)
+            })
     }
 
     pub fn typing_in(&self, conversation: &str, now_ms: i64) -> Vec<String> {
@@ -469,7 +485,9 @@ impl Workspace {
                     h.reason
                         .clone()
                         .or_else(|| h.message.clone())
-                        .unwrap_or_else(|| "Some history for this conversation is unavailable.".into()),
+                        .unwrap_or_else(|| {
+                            "Some history for this conversation is unavailable.".into()
+                        }),
                 ],
                 ..Default::default()
             },
@@ -574,7 +592,10 @@ impl Workspace {
             S::Failed | S::Discarded => self
                 .fail_send(
                     &response.client_id,
-                    response.error.as_deref().unwrap_or("The message was not sent."),
+                    response
+                        .error
+                        .as_deref()
+                        .unwrap_or("The message was not sent."),
                 )
                 .unwrap_or_default(),
             _ => {
@@ -670,7 +691,6 @@ pub(crate) mod tests_support {
         }))
         .unwrap()
     }
-
 }
 
 #[cfg(test)]
@@ -714,7 +734,10 @@ mod tests {
         assert_eq!(w.cursor, 11);
         assert_eq!(w.timelines["c-a"].entries.len(), 1);
         // A replay of the same event is ignored.
-        w.apply(&created(11, message("1", "2026-11-21T10:00:00Z", "changed")), 0);
+        w.apply(
+            &created(11, message("1", "2026-11-21T10:00:00Z", "changed")),
+            0,
+        );
         assert_eq!(w.timelines["c-a"].entries[0].message.text, "hi");
         // A gap asks for a resync and leaves the cursor alone.
         let c = w.apply(&created(13, message("2", "2026-11-21T10:01:00Z", "x")), 0);
@@ -738,8 +761,14 @@ mod tests {
     fn messages_stay_ordered_and_edits_replace() {
         let mut w = Workspace::from_snapshot(snapshot(0));
         w.begin_load("c-a");
-        w.apply(&created(1, message("b", "2026-11-21T10:05:00Z", "second")), 0);
-        w.apply(&created(2, message("a", "2026-11-21T10:00:00Z", "first")), 0);
+        w.apply(
+            &created(1, message("b", "2026-11-21T10:05:00Z", "second")),
+            0,
+        );
+        w.apply(
+            &created(2, message("a", "2026-11-21T10:00:00Z", "first")),
+            0,
+        );
         let mut edited = message("b", "2026-11-21T10:05:00Z", "second, edited");
         edited.edited_at = Some("2026-11-21T10:06:00Z".into());
         w.apply(
@@ -761,7 +790,10 @@ mod tests {
     fn live_events_during_a_load_survive_the_page() {
         let mut w = Workspace::from_snapshot(snapshot(0));
         w.begin_load("c-a");
-        w.apply(&created(1, message("live", "2026-11-21T10:05:00Z", "live")), 0);
+        w.apply(
+            &created(1, message("live", "2026-11-21T10:05:00Z", "live")),
+            0,
+        );
         let page = MessagePage {
             items: vec![message("old", "2026-11-21T09:00:00Z", "old")],
             next_cursor: Some("cursor-1".into()),
@@ -861,7 +893,10 @@ mod tests {
         assert_eq!(w.typing_in("c-a", 2000), ["bob"]);
         assert!(w.typing_in("c-a", 1000 + TYPING_TTL_MS).is_empty());
         w.apply(&e, 1000);
-        w.apply(&created(1, message("1", "2026-11-21T10:00:00Z", "done")), 1500);
+        w.apply(
+            &created(1, message("1", "2026-11-21T10:00:00Z", "done")),
+            1500,
+        );
         assert!(w.typing_in("c-a", 2000).is_empty());
     }
 
@@ -887,6 +922,9 @@ mod tests {
         }
         let t = &w.timelines["c-a"];
         assert_eq!(t.entries.len(), TIMELINE_LIMIT);
-        assert_eq!(t.older.as_deref(), Some(format!("message:{}", t.entries[0].message.id).as_str()));
+        assert_eq!(
+            t.older.as_deref(),
+            Some(format!("message:{}", t.entries[0].message.id).as_str())
+        );
     }
 }

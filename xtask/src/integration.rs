@@ -41,7 +41,13 @@ pub fn run(root: &Path) -> Result<()> {
         );
     }
     println!("building the backend image from {}", backend.display());
-    docker(&["build", "-q", "-t", BACKEND_IMAGE, &backend.display().to_string()])?;
+    docker(&[
+        "build",
+        "-q",
+        "-t",
+        BACKEND_IMAGE,
+        &backend.display().to_string(),
+    ])?;
 
     let id = std::process::id();
     let net = format!("ircord-gpui-it-{id}");
@@ -50,7 +56,9 @@ pub fn run(root: &Path) -> Result<()> {
     let mut cleanup = Cleanup(Vec::new());
 
     docker(&["network", "create", &net])?;
-    cleanup.0.push(vec!["network".into(), "rm".into(), net.clone()]);
+    cleanup
+        .0
+        .push(vec!["network".into(), "rm".into(), net.clone()]);
     docker(&["run", "-d", "--name", &ergo, "--network", &net, ERGO_IMAGE])?;
     cleanup.0.push(vec!["rm".into(), "-f".into(), ergo.clone()]);
     docker(&[
@@ -72,7 +80,9 @@ pub fn run(root: &Path) -> Result<()> {
         "IRCORD_YTDLP_BINARY=disabled",
         BACKEND_IMAGE,
     ])?;
-    cleanup.0.push(vec!["rm".into(), "-f".into(), server.clone()]);
+    cleanup
+        .0
+        .push(vec!["rm".into(), "-f".into(), server.clone()]);
 
     let result = crate::container::run_with(
         root,
@@ -97,9 +107,13 @@ pub fn run(root: &Path) -> Result<()> {
     );
     if result.is_err() {
         eprintln!("--- backend log ---");
-        let _ = Command::new("docker").args(["logs", "--tail", "60", &server]).status();
+        let _ = Command::new("docker")
+            .args(["logs", "--tail", "60", &server])
+            .status();
         eprintln!("--- ergo log ---");
-        let _ = Command::new("docker").args(["logs", "--tail", "30", &ergo]).status();
+        let _ = Command::new("docker")
+            .args(["logs", "--tail", "30", &ergo])
+            .status();
     }
     drop(cleanup);
     result.context("the live integration test failed")?;

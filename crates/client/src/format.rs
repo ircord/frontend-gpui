@@ -198,12 +198,9 @@ pub fn find_links(text: &str) -> Vec<(Range<usize>, String)> {
                 .chars()
                 .next_back()
                 .is_some_and(|c| c.is_whitespace() || "([{<\"'".contains(c));
-        let scheme = ["https://", "http://", "www."]
-            .into_iter()
-            .find(|p| {
-                rest.len() > p.len()
-                    && rest.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes())
-            });
+        let scheme = ["https://", "http://", "www."].into_iter().find(|p| {
+            rest.len() > p.len() && rest.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes())
+        });
         let Some(scheme) = scheme.filter(|_| at_word_start) else {
             i += rest.chars().next().map_or(1, char::len_utf8);
             continue;
@@ -214,7 +211,9 @@ pub fn find_links(text: &str) -> Vec<(Range<usize>, String)> {
         // Leave sentence punctuation and unbalanced closing brackets outside the link.
         loop {
             let candidate = &text[i..end];
-            let Some(last) = candidate.chars().next_back() else { break };
+            let Some(last) = candidate.chars().next_back() else {
+                break;
+            };
             let unbalanced = |open: char, close: char| {
                 last == close && candidate.matches(open).count() < candidate.matches(close).count()
             };
@@ -290,7 +289,8 @@ mod tests {
 
     #[test]
     fn finds_links_without_trailing_punctuation() {
-        let links = find_links("see https://example.com/a(b). and (www.ircord.com) or http://x.y/z?q=1,");
+        let links =
+            find_links("see https://example.com/a(b). and (www.ircord.com) or http://x.y/z?q=1,");
         let urls: Vec<&str> = links.iter().map(|(_, u)| u.as_str()).collect();
         assert_eq!(
             urls,

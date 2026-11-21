@@ -111,7 +111,10 @@ impl Api {
         Ok(response)
     }
 
-    async fn json<T: DeserializeOwned>(&self, request: reqwest::RequestBuilder) -> Result<T, ApiError> {
+    async fn json<T: DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<T, ApiError> {
         let response = self.send(request).await?;
         let bytes = response.bytes().await.map_err(ApiError::network)?;
         serde_json::from_slice(&bytes).map_err(|e| ApiError::Decode(e.to_string()))
@@ -122,8 +125,9 @@ impl Api {
     pub async fn verify_server(&self) -> Result<(), ApiError> {
         let failed = || ApiError::Http {
             status: 0,
-            detail: "Could not find an IRCord server at this address. Check the address and try again."
-                .into(),
+            detail:
+                "Could not find an IRCord server at this address. Check the address and try again."
+                    .into(),
         };
         let response = self
             .http
@@ -171,7 +175,9 @@ impl Api {
     }
 
     pub async fn logout(&self) -> Result<(), ApiError> {
-        let result = self.send(self.request(Method::POST, "/api/v1/auth/logout")).await;
+        let result = self
+            .send(self.request(Method::POST, "/api/v1/auth/logout"))
+            .await;
         self.set_cookie(None);
         match result {
             Ok(_) | Err(ApiError::Unauthorized) => Ok(()),
@@ -180,7 +186,8 @@ impl Api {
     }
 
     pub async fn bootstrap(&self) -> Result<c::Snapshot, ApiError> {
-        self.json(self.request(Method::GET, "/api/v1/bootstrap")).await
+        self.json(self.request(Method::GET, "/api/v1/bootstrap"))
+            .await
     }
 
     /// The newest page, or the page before `before` (a `nextCursor`).
@@ -206,7 +213,8 @@ impl Api {
         body: &c::MessageInputBody,
     ) -> Result<c::CommandResponse, ApiError> {
         let path = format!("/api/v1/conversations/{}/messages", encode(conversation));
-        self.json(self.request(Method::POST, &path).json(body)).await
+        self.json(self.request(Method::POST, &path).json(body))
+            .await
     }
 
     pub async fn retry_send(&self, client_id: &str) -> Result<c::CommandResponse, ApiError> {
@@ -214,7 +222,8 @@ impl Api {
         let body = c::RetrySendInputBody {
             accept_duplicate: false,
         };
-        self.json(self.request(Method::POST, &path).json(&body)).await
+        self.json(self.request(Method::POST, &path).json(&body))
+            .await
     }
 
     pub async fn mark_read(&self, conversation: &str) -> Result<(), ApiError> {
@@ -233,6 +242,36 @@ impl Api {
             .await
             .map(drop)
     }
+}
+
+/// Fetch a public file (an image to show inline), at most `max` bytes.
+/// Returns the status, the content type and the body.
+pub async fn fetch(url: &str, max: usize) -> Result<(u16, Option<String>, Vec<u8>), String> {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent(user_agent())
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .build()
+            .expect("the HTTP client configuration is valid")
+    });
+    let mut response = client.get(url).send().await.map_err(|e| e.to_string())?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        if body.len() + chunk.len() > max {
+            return Err(format!("{url} is larger than {max} bytes"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((status, content_type, body))
 }
 
 /// `ircord_session=abc; Path=/; HttpOnly` → `ircord_session=abc`.

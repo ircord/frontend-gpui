@@ -13,6 +13,7 @@ use serde_json::Value;
 
 /// One frame from `GET /api/v1/events`.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)] // decoded once, then moved
 pub enum ServerEvent {
     Ready(SessionReady),
     Synced(SessionSynced),
@@ -22,13 +23,20 @@ pub enum ServerEvent {
     Alert(Alert),
     Routing(RoutingSnapshot),
     /// A durable event with its replay sequence number.
-    Durable { seq: i64, event: Durable },
+    Durable {
+        seq: i64,
+        event: Durable,
+    },
     /// A frame this client does not understand: no `seq`, or a payload that no longer decodes.
-    Unknown { kind: String, seq: Option<i64> },
+    Unknown {
+        kind: String,
+        seq: Option<i64>,
+    },
 }
 
 /// The durable events this client acts on. Everything else is `Other`.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Durable {
     MessageCreated(Message),
     MessageUpdated(Message),
@@ -96,7 +104,9 @@ impl ServerEvent {
             "notification.alert" => data(e.data).map(ServerEvent::Alert),
             "notification.routing" => data(e.data).map(ServerEvent::Routing),
             kind => match e.seq {
-                Some(seq) => Self::durable(kind, e.data).map(|event| ServerEvent::Durable { seq, event }),
+                Some(seq) => {
+                    Self::durable(kind, e.data).map(|event| ServerEvent::Durable { seq, event })
+                }
                 None => None,
             },
         };
@@ -173,8 +183,8 @@ mod tests {
 
     #[test]
     fn unknown_event_types_keep_their_sequence() {
-        let e = ServerEvent::decode(r#"{"v":1,"seq":12,"type":"brand.new","data":{"x":1}}"#)
-            .unwrap();
+        let e =
+            ServerEvent::decode(r#"{"v":1,"seq":12,"type":"brand.new","data":{"x":1}}"#).unwrap();
         assert_eq!(
             e,
             ServerEvent::Durable {

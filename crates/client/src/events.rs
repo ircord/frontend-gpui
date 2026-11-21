@@ -120,7 +120,15 @@ pub async fn run<T: Transport>(
     let mut need_bootstrap = true;
     let mut attempts: u32 = 0;
     loop {
-        let end = session(&transport, &shared, &mut outgoing, &timing, &mut need_bootstrap, &mut attempts).await;
+        let end = session(
+            &transport,
+            &shared,
+            &mut outgoing,
+            &timing,
+            &mut need_bootstrap,
+            &mut attempts,
+        )
+        .await;
         match end {
             End::Stopped => return,
             End::SignedOut => {
@@ -283,7 +291,12 @@ mod tests {
     impl Conn for FakeConn {
         async fn recv(&mut self) -> Option<Result<String, String>> {
             // Hold everything after session.ready until the client resumes.
-            if self.resumed || self.frames.front().is_some_and(|f| f.contains("session.ready")) {
+            if self.resumed
+                || self
+                    .frames
+                    .front()
+                    .is_some_and(|f| f.contains("session.ready"))
+            {
                 self.frames.pop_front().map(Ok)
             } else {
                 Some(Err("frame before resume".into()))
@@ -348,10 +361,12 @@ mod tests {
     async fn resumes_from_the_bootstrap_cursor_then_replays_and_goes_live() {
         let fake = Fake::default();
         fake.snapshots.lock().unwrap().push_back(Ok(snapshot(5)));
-        fake.sockets
-            .lock()
-            .unwrap()
-            .push_back(vec![ready(), message(6, "a"), synced(6), message(7, "b")]);
+        fake.sockets.lock().unwrap().push_back(vec![
+            ready(),
+            message(6, "a"),
+            synced(6),
+            message(7, "b"),
+        ]);
         let (shared, updates) = drive(fake.clone()).await;
         let resume: serde_json::Value =
             serde_json::from_str(&fake.sent.lock().unwrap()[0]).unwrap();
@@ -375,13 +390,19 @@ mod tests {
         let sent = fake.sent.lock().unwrap();
         let after: Vec<i64> = sent
             .iter()
-            .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap()["after"].as_i64().unwrap())
+            .map(|s| {
+                serde_json::from_str::<serde_json::Value>(s).unwrap()["after"]
+                    .as_i64()
+                    .unwrap()
+            })
             .collect();
         assert_eq!(after, [1, 2]);
         assert_eq!(shared.store.read().unwrap().cursor, 3);
-        assert!(updates
-            .iter()
-            .any(|u| matches!(u, Update::Connection(Connection::Offline { .. }))));
+        assert!(
+            updates
+                .iter()
+                .any(|u| matches!(u, Update::Connection(Connection::Offline { .. })))
+        );
     }
 
     #[tokio::test]
@@ -398,7 +419,8 @@ mod tests {
             // The server says the cursor is too old.
             s.push_back(vec![
                 ready(),
-                r#"{"v":1,"type":"session.resync","reason":"cursor is outside retained events"}"#.into(),
+                r#"{"v":1,"type":"session.resync","reason":"cursor is outside retained events"}"#
+                    .into(),
             ]);
             // Then a sequence gap the client notices itself.
             s.push_back(vec![ready(), synced(40), message(42, "gap")]);
@@ -408,7 +430,11 @@ mod tests {
         let sent = fake.sent.lock().unwrap();
         let after: Vec<i64> = sent
             .iter()
-            .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap()["after"].as_i64().unwrap())
+            .map(|s| {
+                serde_json::from_str::<serde_json::Value>(s).unwrap()["after"]
+                    .as_i64()
+                    .unwrap()
+            })
             .collect();
         assert_eq!(after, [1, 40, 90]);
         assert_eq!(shared.store.read().unwrap().cursor, 90);

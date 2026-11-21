@@ -11,9 +11,18 @@ path = "src/main.rs"
 
 [dependencies]
 ircord-client.workspace = true
-ircord-contract.workspace = true
 anyhow.workspace = true
+url.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+env_logger = "0.11"
+futures = "0.3"
 gpui-kit = "=0.10.0"
+log = "0.4"
+tokio = { version = "1", features = ["rt"] }
+
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.26"
 
 [dev-dependencies]
 gpui-kit = { version = "=0.10.0", features = ["test-support"] }
+serde_json.workspace = true

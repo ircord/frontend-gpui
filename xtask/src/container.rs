@@ -71,7 +71,10 @@ pub fn base_args(root: &Path) -> Result<Vec<String>> {
         "-v".into(),
         format!("{}:/work", root.display()),
         "-v".into(),
-        format!("{}:/cargo-home/registry", cargo_home.join("registry").display()),
+        format!(
+            "{}:/cargo-home/registry",
+            cargo_home.join("registry").display()
+        ),
         "-v".into(),
         format!("{}:/cargo-home/git", cargo_home.join("git").display()),
         "-v".into(),

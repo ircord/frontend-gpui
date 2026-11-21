@@ -78,7 +78,9 @@ async fn open(api: &Api) -> Result<WebSocketStream<Box<dyn Io>>, ApiError> {
     let url = api.server().events_url();
     let host = url.host_str().unwrap_or_default().to_string();
     let port = url.port_or_known_default().unwrap_or(443);
-    let tcp = TcpStream::connect((host.as_str(), port)).await.map_err(net)?;
+    let tcp = TcpStream::connect((host.as_str(), port))
+        .await
+        .map_err(net)?;
     tcp.set_nodelay(true).ok();
     let io: Box<dyn Io> = if url.scheme() == "wss" {
         let name = rustls::pki_types::ServerName::try_from(host.clone())
@@ -96,7 +98,8 @@ async fn open(api: &Api) -> Result<WebSocketStream<Box<dyn Io>>, ApiError> {
         .into_client_request()
         .map_err(|e| ApiError::Network(e.to_string()))?;
     let headers = request.headers_mut();
-    let value = |s: &str| http::HeaderValue::from_str(s).map_err(|e| ApiError::Network(e.to_string()));
+    let value =
+        |s: &str| http::HeaderValue::from_str(s).map_err(|e| ApiError::Network(e.to_string()));
     headers.insert(header::ORIGIN, value(&api.server().origin())?);
     headers.insert(header::USER_AGENT, value(&user_agent())?);
     if let Some(cookie) = api.cookie() {

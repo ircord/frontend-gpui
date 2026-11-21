@@ -71,7 +71,8 @@ pub fn run(root: &Path, check: bool) -> Result<()> {
         let expected = generate(&serde_json::from_slice(&spec)?)?;
         let expected = rustfmt(&expected)?;
         if std::fs::read_to_string(&generated_path).ok().as_deref() != Some(expected.as_str()) {
-            stale.push("crates/contract/src/generated.rs is not what openapi.json generates".into());
+            stale
+                .push("crates/contract/src/generated.rs is not what openapi.json generates".into());
         }
         if !stale.is_empty() {
             for line in &stale {
@@ -219,7 +220,10 @@ impl Generator<'_> {
             "#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]\n#[serde(default)]\n",
         );
         let _ = writeln!(item, "pub struct {name} {{");
-        let props = schema["properties"].as_object().cloned().unwrap_or_default();
+        let props = schema["properties"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
         for (key, prop) in &props {
             if key.starts_with('$') {
                 continue;
@@ -388,7 +392,11 @@ fn doc(out: &mut String, schema: &Value) {
 
 fn rust_name(schema: &str) -> String {
     let name = pascal(schema);
-    if name.is_empty() { "Unnamed".into() } else { name }
+    if name.is_empty() {
+        "Unnamed".into()
+    } else {
+        name
+    }
 }
 
 /// `memberIds` → `MemberIds`, `session.ready` → `SessionReady`.

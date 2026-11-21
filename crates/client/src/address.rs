@@ -51,8 +51,13 @@ impl ServerAddress {
     /// The event socket URL: `wss://host/api/v1/events?sync=1`.
     pub fn events_url(&self) -> Url {
         let mut url = self.join("/api/v1/events?sync=1");
-        let scheme = if self.0.scheme() == "https" { "wss" } else { "ws" };
-        url.set_scheme(scheme).expect("ws and wss are valid schemes");
+        let scheme = if self.0.scheme() == "https" {
+            "wss"
+        } else {
+            "ws"
+        };
+        url.set_scheme(scheme)
+            .expect("ws and wss are valid schemes");
         url
     }
 }
