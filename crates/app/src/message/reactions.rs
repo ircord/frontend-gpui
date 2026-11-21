@@ -39,7 +39,7 @@ pub fn render(
                 .id(ElementId::Name(format!("reaction-{}-{emoji}", m.id).into()))
                 .test_support()
                 .role(Role::Button)
-                .reachable(&theme)
+                .reachable(theme)
                 .aria_label(t!(
                     "message-actions-reaction-label",
                     emoji = emoji,

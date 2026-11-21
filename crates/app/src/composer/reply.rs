@@ -127,7 +127,7 @@ fn link_button(
         .id(ElementId::Name(id.into()))
         .test_support()
         .role(Role::Button)
-        .reachable(&theme)
+        .reachable(theme)
         .aria_label(label)
         .flex_none()
         .text_color(theme.link)

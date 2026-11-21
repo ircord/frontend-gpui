@@ -314,7 +314,7 @@ fn cover(
                 .id(ElementId::Name(format!("media-reveal-{message}").into()))
                 .test_support()
                 .role(Role::Button)
-                .reachable(&theme)
+                .reachable(theme)
                 .aria_label(t!("uploads-show-media"))
                 .mt_1()
                 .px_3()

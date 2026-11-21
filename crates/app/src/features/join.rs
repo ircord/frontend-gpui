@@ -645,7 +645,7 @@ impl JoinView {
             .id(row_id("join-channel", &name))
             .test_support()
             .role(Role::Button)
-            .reachable(&theme)
+            .reachable(theme)
             .aria_label(name.clone())
             .flex()
             .items_center()

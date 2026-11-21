@@ -353,7 +353,7 @@ fn stepper(
             .id(ElementId::Name(format!("{id}-{suffix}").into()))
             .test_support()
             .role(Role::Button)
-            .reachable(&theme)
+            .reachable(theme)
             .aria_label(SharedString::from(format!("{label} {text}")))
             .w(px(28.))
             .h(px(28.))

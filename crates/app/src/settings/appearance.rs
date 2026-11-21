@@ -538,7 +538,7 @@ fn schemes(
                 ))
                 .test_support()
                 .role(Role::RadioButton)
-                .reachable(&theme)
+                .reachable(theme)
                 .aria_label(SharedString::from(t!(
                     "appearance-scheme-pick",
                     name = family.name
@@ -706,7 +706,7 @@ fn accents(
                 ))
                 .test_support()
                 .role(Role::RadioButton)
-                .reachable(&theme)
+                .reachable(theme)
                 .aria_label(accent_name(accent))
                 .aria_selected(selected)
                 .size(px(24.))

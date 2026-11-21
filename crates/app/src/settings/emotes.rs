@@ -1302,7 +1302,7 @@ impl EmotesView {
             .id(ElementId::Name(id.into()))
             .test_support()
             .role(Role::Button)
-            .reachable(&theme)
+            .reachable(theme)
             .aria_label(SharedString::from(label.clone()))
             .aria_selected(selected)
             .w(px(104.))

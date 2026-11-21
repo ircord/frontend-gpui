@@ -441,7 +441,7 @@ fn pill(
         .id(ElementId::Name(id.into()))
         .test_support()
         .role(Role::RadioButton)
-        .reachable(&theme)
+        .reachable(theme)
         .aria_label(aria)
         .aria_selected(on)
         .px_2p5()

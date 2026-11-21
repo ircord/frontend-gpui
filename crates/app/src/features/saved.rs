@@ -321,7 +321,7 @@ impl SavedView {
                     .id(ElementId::Name(format!("saved-item-{id}").into()))
                     .test_support()
                     .role(Role::Button)
-                    .reachable(&theme)
+                    .reachable(theme)
                     .aria_label(SharedString::from(label))
                     .flex_1()
                     .min_w_0()

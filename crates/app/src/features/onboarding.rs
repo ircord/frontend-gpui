@@ -954,7 +954,7 @@ impl Onboarding {
                     .id(ElementId::Name(id.into()))
                     .test_support()
                     .role(Role::CheckBox)
-                    .reachable(&theme)
+                    .reachable(theme)
                     .aria_label(SharedString::from(channel.channel.clone()))
                     .aria_toggled(if on { Toggled::True } else { Toggled::False })
                     .flex()

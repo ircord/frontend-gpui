@@ -306,7 +306,7 @@ fn tab_reaches_every_control_in_the_dialogs(cx: &mut TestAppContext) {
         ("find a conversation", click("sidebar-find")),
         (
             "keyboard shortcuts",
-            Box::new(|window, cx| ircord_app::features::shortcuts::open_help(window, cx)),
+            Box::new(ircord_app::features::shortcuts::open_help),
         ),
         ("add a network", {
             let session = session.clone();

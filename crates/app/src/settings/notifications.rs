@@ -474,7 +474,7 @@ fn choice<T: Copy + PartialEq + 'static>(
                 .id(ElementId::Name(format!("{id}-{key}").into()))
                 .test_support()
                 .role(Role::RadioButton)
-                .reachable(&theme)
+                .reachable(theme)
                 .aria_label(text.clone())
                 .aria_selected(selected)
                 .px_2()

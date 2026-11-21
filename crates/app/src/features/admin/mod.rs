@@ -241,7 +241,7 @@ fn sidebar_row(session: &Entity<Session>, cx: &App) -> AnyElement {
         .id("sidebar-administration")
         .test_support()
         .role(Role::Button)
-        .reachable(&theme)
+        .reachable(theme)
         .aria_label(t!("admin-title"))
         .aria_selected(active)
         .mx_2()
@@ -658,7 +658,7 @@ fn button(
         .id(id.into())
         .test_support()
         .role(Role::Button)
-        .reachable(&theme)
+        .reachable(theme)
         .aria_label(
             aria.map(SharedString::from)
                 .unwrap_or_else(|| label.clone()),

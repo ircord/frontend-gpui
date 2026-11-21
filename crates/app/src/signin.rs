@@ -599,7 +599,7 @@ impl Render for SignInView {
                     .id(id)
                     .test_support()
                     .role(Role::Link)
-                    .reachable(&theme)
+                    .reachable(theme)
                     .aria_label(text.clone())
                     .text_color(theme.link)
                     .cursor_pointer()

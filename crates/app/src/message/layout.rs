@@ -188,7 +188,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                 .id(ElementId::Name(id.into()))
                 .test_support()
                 .role(Role::Link)
-                .reachable(&theme)
+                .reachable(theme)
                 .aria_label(SharedString::from(label))
                 .cursor_pointer()
                 .on_click(open)
@@ -221,7 +221,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                 let ctx = view.ctx.clone();
                 reply
                     .role(Role::Link)
-                    .reachable(&theme)
+                    .reachable(theme)
                     .aria_label(line)
                     .cursor_pointer()
                     .hover(move |d| d.text_color(hover_text))
