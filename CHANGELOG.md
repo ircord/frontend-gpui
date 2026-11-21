@@ -12,3 +12,5 @@
 - Stay connected: IRCord catches up on missed messages after a reconnect and shows when it is offline.
 - Get desktop notifications for the messages your server routes to this device, and click one to open its conversation.
 - Keep IRCord running in the tray when you close its window.
+- Run IRCord on Linux, installed from a tarball with a menu entry, and on macOS, built from source on a Mac; keep it in the tray on both, with the sign-in in the Secret Service or the login keychain.
+- See the IRCord icon and version on the Windows `.exe` and its window.

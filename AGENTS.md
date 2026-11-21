@@ -10,7 +10,12 @@ client; it never speaks IRC itself. Layout and commands are in
 - This machine has no C toolchain or GPUI system libraries. Every compile,
   clippy and test run goes through the build container:
   `cargo xtask shell -- cargo test -p ircord-client`. Only `cargo fmt` and
-  `cargo xtask contract` run on the host.
+  `cargo xtask contract` run on the host. macOS cannot be built here at all;
+  `cargo xtask build macos` is for a person on a Mac.
+- To look at the app without a screen, `cargo xtask capture` runs the Linux
+  build against a disposable backend and leaves screenshots in
+  `target/capture/`. Your own Xvfb must run with `-extension COMPOSITE`, or
+  every capture is black (see `xtask/src/capture.rs`).
 - `crates/client` must not depend on GPUI: everything except drawing is
   tested there, without a window.
 - `crates/contract/src/generated.rs` is generated; change `xtask/src/contract.rs`
@@ -36,13 +41,14 @@ delivered by passing this ladder in order and then landing on `main` locally.
 2. `cargo xtask contract --check`: the committed contract matches the backend
    checkout it names (`IRCORD_BACKEND`, default `../ircord-backend`).
 3. `cargo test --workspace`: contract, client and headless UI tests.
-4. `cargo xtask build windows`: the cross-built `dist/ircord.exe` exists.
-   `cargo xtask build linux` once Linux packaging lands.
+4. `cargo xtask build windows` and `cargo xtask build linux`: `dist/ircord.exe`
+   and the Linux tarball exist.
 5. For changes to the client's networking, `cargo xtask integration`: the
    client against a real backend and IRC server in disposable containers.
-6. For a change a user can see: run it against a disposable local backend and
-   say in the change note what was checked by eye and on which platform. A
-   change nobody has run on Windows says so.
+6. For a change a user can see: run it against a disposable local backend
+   (`cargo xtask capture` on Linux) and say in the change note what was
+   checked by eye and on which platform. A change nobody has run on Windows
+   says so.
 7. One line under `## Unreleased` in `CHANGELOG.md` for user-visible changes,
    in the style the other IRCord repositories use.
 8. Land on `main` locally. Nothing is pushed and no pull request is opened

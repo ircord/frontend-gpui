@@ -3,11 +3,14 @@
 //! GPUI needs a C toolchain and Linux system libraries, and the Windows build
 //! needs clang, lld and the Microsoft libraries `cargo-xwin` fetches. All of it
 //! runs inside the image built from `tools/build.Dockerfile`, so the only
-//! things a host needs are Rust, git and Docker.
+//! things a host needs are Rust, git and Docker. The macOS build is the
+//! exception: it runs on a Mac, without Docker (see `macos.rs`).
 
+mod capture;
 mod container;
 mod contract;
 mod integration;
+mod macos;
 
 use anyhow::{Result, bail};
 use std::path::PathBuf;
@@ -17,9 +20,11 @@ usage: cargo xtask <command>
 
   contract [--check]   refresh (or check) crates/contract from the backend checkout
   build windows        cross-build dist/ircord.exe in the build container
-  build linux          build dist/ircord for Linux in the build container
-  ladder               run the whole local ladder (fmt, clippy, contract, tests, windows build)
+  build linux          build dist/ircord and dist/ircord-linux-x86_64.tar.gz in the build container
+  build macos          build dist/IRCord.app (run on a Mac; needs Xcode, no Docker)
+  ladder               run the whole local ladder (fmt, clippy, contract, tests, both builds)
   integration          run the client against a real backend in disposable containers
+  capture              screenshot the Linux app against a disposable backend (target/capture/)
   shell -- <cmd...>    run a command in the build container (e.g. cargo test -p ircord-client)
 ";
 
@@ -32,8 +37,10 @@ fn main() -> Result<()> {
         ["contract", "--check"] => contract::run(&root, true),
         ["build", "windows"] => container::build_windows(&root),
         ["build", "linux"] => container::build_linux(&root),
+        ["build", "macos"] => macos::build(&root),
         ["ladder"] => ladder(&root),
         ["integration"] => integration::run(&root),
+        ["capture"] => capture::run(&root),
         ["shell", "--", rest @ ..] if !rest.is_empty() => container::run(&root, rest),
         _ => {
             eprint!("{USAGE}");
@@ -64,6 +71,8 @@ fn ladder(root: &std::path::Path) -> Result<()> {
     container::run(root, &["cargo", "test", "--workspace"])?;
     step("cargo xtask build windows");
     container::build_windows(root)?;
+    step("cargo xtask build linux");
+    container::build_linux(root)?;
     println!("\nladder passed");
     Ok(())
 }

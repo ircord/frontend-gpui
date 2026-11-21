@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=IRCord
+GenericName=Chat client
+Comment=Chat on IRC networks through your IRCord server
+Exec=ircord
+Icon=com.ircord.gpui
+Terminal=false
+Categories=Network;Chat;InstantMessaging;IRCClient;
+Keywords=irc;chat;
+StartupWMClass=com.ircord.gpui

@@ -1,0 +1,137 @@
+//! `cargo xtask capture`: run the Linux binary against a disposable backend
+//! on a virtual display and save screenshots, so a change can be looked at
+//! (and checked) without a screen.
+//!
+//! In the build container it starts a session bus with GNOME Keyring, signs
+//! up an account (with an IRC network and a channel) over HTTP, signs in
+//! through the app's own form, captures the workspace, checks the sign-in is
+//! in the keyring, then restarts the app to show it signs in from there.
+//! Screenshots and the app's logs land in `target/capture/`; look at them.
+//!
+//! Xvfb runs without its COMPOSITE extension. With it, GPUI picks a 32-bit
+//! ARGB visual for its transparent-capable window and, with no compositor
+//! running, the software Vulkan driver presents it black. That was the
+//! "black screenshot" of the first plan. A real desktop has a compositor.
+
+use anyhow::{Context, Result};
+use std::path::Path;
+
+use crate::integration::Backend;
+
+const SCRIPT: &str = r##"
+set -eu
+OUT=/work/target/capture
+rm -rf "$OUT"; mkdir -p "$OUT"
+export XDG_RUNTIME_DIR=/tmp/xdg XDG_CONFIG_HOME=/tmp/config XDG_DATA_HOME=/tmp/data
+mkdir -p -m 700 "$XDG_RUNTIME_DIR"
+SERVER=http://127.0.0.1:8080
+USER_NAME="capture$(date +%s)"
+PASSWORD="capture-$(od -An -N8 -tx8 /dev/urandom | tr -d ' ')"
+
+i=0
+until curl -fsS -o /dev/null -H "Origin: $SERVER" "$SERVER/api/v1/auth/session"; do
+  i=$((i + 1)); [ "$i" -lt 120 ] || { echo "the backend never answered"; exit 1; }
+  sleep 0.5
+done
+COOKIE=$(curl -fsS -D - -o /dev/null -H "Origin: $SERVER" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$USER_NAME\",\"password\":\"$PASSWORD\"}" "$SERVER/api/v1/auth/signup" \
+  | sed -n 's/^[Ss]et-[Cc]ookie: \(ircord_session=[^;]*\).*/\1/p')
+[ -n "$COOKIE" ] || { echo "signup set no session"; exit 1; }
+curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"Test\",\"host\":\"$IRC_HOST\",\"port\":6667,\"tls\":false,\"nick\":\"$USER_NAME\",\"autoJoin\":[\"#capture\"]}" \
+  "$SERVER/api/v1/networks"
+
+# An unlocked login keyring, as a desktop session has after signing in.
+printf capture | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+gnome-keyring-daemon --start --components=secrets >/dev/null
+printf probe | secret-tool store --label=probe capture probe
+secret-tool lookup capture probe >/dev/null || { echo "the keyring does not work"; exit 1; }
+secret-tool clear capture probe
+
+Xvfb :99 -screen 0 1280x800x24 -extension COMPOSITE >/tmp/xvfb.log 2>&1 &
+export DISPLAY=:99
+i=0; until xdpyinfo >/dev/null 2>&1; do i=$((i + 1)); [ "$i" -lt 50 ] || exit 1; sleep 0.1; done
+
+start_app() {
+  IRCORD_SERVER=$SERVER RUST_LOG=${RUST_LOG:-info} dist/ircord >>"$OUT/stderr.log" 2>&1 &
+  APP=$!
+  i=0; until xdotool search --name '^IRCord$' >/dev/null 2>&1; do
+    i=$((i + 1)); [ "$i" -lt 100 ] || { echo "no window"; exit 1; }; sleep 0.2
+  done
+  WIN=$(xdotool search --name '^IRCord$' | head -1)
+  sleep 3
+}
+shot() { import -window root "$OUT/$1.png"; echo "captured target/capture/$1.png"; }
+# The app logs to its settings folder, a fresh file each start.
+stop_app() {
+  kill "$APP"; wait "$APP" 2>/dev/null || true
+  cp "$XDG_CONFIG_HOME/com.ircord.gpui/ircord.log" "$OUT/ircord-$1.log"
+}
+
+start_app
+shot 1-sign-in
+# No window manager runs, so give the window the keyboard focus directly.
+# The window is 1200x800 at the screen's centre; the form is centred in it.
+xdotool windowfocus --sync "$WIN"
+xdotool mousemove --window "$WIN" 600 380 click 1
+sleep 0.5
+xdotool type --delay 30 "$USER_NAME"
+xdotool mousemove --window "$WIN" 600 447 click 1
+sleep 0.5
+xdotool type --delay 30 "$PASSWORD"
+shot 2-typed
+xdotool key Return
+sleep 10
+shot 3-workspace
+# The sign-in is in the keyring (attributes only; the secret is not shown).
+secret-tool search --all service com.ircord.gpui 2>&1 | grep -v '^secret' >"$OUT/keyring.txt" || true
+grep -q 'attribute.service = com.ircord.gpui' "$OUT/keyring.txt" \
+  || { echo "the sign-in was not saved in the keyring"; exit 1; }
+echo "the sign-in is in GNOME Keyring (target/capture/keyring.txt)"
+
+# A fresh start signs in from the keyring alone.
+stop_app 1
+start_app
+sleep 7
+shot 4-restarted
+stop_app 2
+"##;
+
+pub fn run(root: &Path) -> Result<()> {
+    crate::container::build_linux(root)?;
+    // The session bus refuses to start for a user ID with no name, and the
+    // container runs as the host's user, which the image does not know.
+    let passwd = root.join("target/capture-passwd");
+    let (uid, gid) = (id("-u")?, id("-g")?);
+    std::fs::write(
+        &passwd,
+        format!("root:x:0:0::/root:/bin/sh\nircord:x:{uid}:{gid}::/tmp:/bin/sh\n"),
+    )?;
+    let backend = Backend::start(root)?;
+    let mut extra = backend.network_args();
+    extra.extend([
+        "-v".into(),
+        format!("{}:/etc/passwd:ro", passwd.display()),
+        "-e".into(),
+        format!("IRC_HOST={}", backend.ergo),
+        "--shm-size".into(),
+        "256m".into(),
+    ]);
+    let result = crate::container::run_with(
+        root,
+        &extra,
+        &["dbus-run-session", "--", "sh", "-c", SCRIPT, "capture"],
+    );
+    if result.is_err() {
+        backend.print_logs();
+    }
+    drop(backend);
+    result.context("the capture run failed")?;
+    println!("screenshots and the app's logs are in target/capture/");
+    Ok(())
+}
+
+fn id(flag: &str) -> Result<String> {
+    let out = std::process::Command::new("id").arg(flag).output()?;
+    Ok(String::from_utf8(out.stdout)?.trim().to_string())
+}

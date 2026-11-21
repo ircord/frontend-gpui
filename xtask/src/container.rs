@@ -102,7 +102,13 @@ pub fn run_with(root: &Path, extra: &[String], cmd: &[&str]) -> Result<()> {
     args.extend(cmd.iter().map(|s| s.to_string()));
     let status = Command::new("docker").args(&args).status()?;
     if !status.success() {
-        bail!("`{}` failed in the build container", cmd.join(" "));
+        // Show the command up to an inline script, not the script itself.
+        let end = cmd
+            .iter()
+            .position(|a| *a == "-c")
+            .map_or(cmd.len(), |i| i + 1);
+        let shown = cmd[..end].join(" ");
+        bail!("`{shown}` failed in the build container");
     }
     Ok(())
 }
@@ -140,10 +146,49 @@ pub fn build_linux(root: &Path) -> Result<()> {
             "ircord",
         ],
     )?;
-    copy_to_dist(root, &root.join("target/release/ircord"), "ircord")
+    copy_to_dist(root, &root.join("target/release/ircord"), "ircord")?;
+    package_linux(root)
 }
 
-fn copy_to_dist(root: &Path, built: &Path, name: &str) -> Result<()> {
+/// `dist/ircord-linux-x86_64.tar.gz`: the binary, a desktop entry, the icon
+/// and `install.sh`, which installs them for the current user.
+fn package_linux(root: &Path) -> Result<()> {
+    let stage = root.join("target/package/ircord");
+    if stage.exists() {
+        std::fs::remove_dir_all(&stage)?;
+    }
+    std::fs::create_dir_all(&stage)?;
+    let linux = root.join("packaging/linux");
+    for (from, to) in [
+        (root.join("dist/ircord"), "ircord"),
+        (
+            linux.join("com.ircord.gpui.desktop"),
+            "com.ircord.gpui.desktop",
+        ),
+        (linux.join("ircord.svg"), "ircord.svg"),
+        (linux.join("ircord.png"), "ircord.png"),
+        (linux.join("install.sh"), "install.sh"),
+    ] {
+        std::fs::copy(&from, stage.join(to)).with_context(|| format!("copy {}", from.display()))?;
+    }
+    let tarball = root.join("dist/ircord-linux-x86_64.tar.gz");
+    let status = Command::new("tar")
+        .arg("-czf")
+        .arg(&tarball)
+        .arg("-C")
+        .arg(root.join("target/package"))
+        .args(["--owner=0", "--group=0", "ircord"])
+        .status()
+        .context("run tar")?;
+    if !status.success() {
+        bail!("tar failed");
+    }
+    let size = std::fs::metadata(&tarball)?.len();
+    println!("built {} ({:.1} MB)", tarball.display(), size as f64 / 1e6);
+    Ok(())
+}
+
+pub fn copy_to_dist(root: &Path, built: &Path, name: &str) -> Result<()> {
     let dist = root.join("dist");
     std::fs::create_dir_all(&dist)?;
     let to = dist.join(name);
