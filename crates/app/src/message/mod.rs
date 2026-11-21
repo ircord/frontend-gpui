@@ -69,7 +69,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
         column = column.child(body::render(m, theme, &inline));
     }
     column = column
-        .children(reactions::render(m, theme))
+        .children(reactions::render(m, &view.ctx, theme, window, cx))
         .children(attachments::render(m, &view.ctx, theme, window, cx))
         .children(links::render(m, theme));
 
@@ -95,6 +95,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
         .id(ElementId::Name(format!("message-{}", m.id).into()))
         .test_support()
         .relative()
+        .w_full()
         .px_4()
         .when(m.header, |d| d.pt_2())
         .py_0p5()
@@ -122,7 +123,7 @@ fn toolbar(ctx: &MessageCtx, theme: &Theme, _window: &mut Window, cx: &mut App) 
     let items = registry::get(cx).message_menu.to_vec();
     let items: Vec<_> = ui::context_menu::visible(&items, ctx, cx)
         .into_iter()
-        .filter(|i| i.toolbar)
+        .filter(|i| i.toolbar && i.reason.is_none())
         .collect();
     if items.is_empty() {
         return div().into_any_element();

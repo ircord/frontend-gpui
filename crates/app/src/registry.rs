@@ -33,6 +33,8 @@ use crate::timeline::rows::{MessageRow, Row};
 
 pub type Handler<C> = Rc<dyn Fn(&C, &mut Window, &mut App)>;
 pub type Predicate<C> = Rc<dyn Fn(&C, &App) -> bool>;
+/// Why an entry cannot be used right now, or `None` when it can.
+pub type Unavailable<C> = Rc<dyn Fn(&C, &App) -> Option<SharedString>>;
 pub type ElementFn = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 pub type Render<C> = Rc<dyn Fn(&C, &mut Window, &mut App) -> Option<AnyElement>>;
 
@@ -174,6 +176,10 @@ pub struct MenuItem<C> {
     pub danger: bool,
     pub toolbar: bool,
     pub visible: Predicate<C>,
+    /// Shown but disabled, with the reason under the label, when this says why.
+    pub unavailable: Option<Unavailable<C>>,
+    /// The reason for one context, filled in by `ui::context_menu::visible`.
+    pub reason: Option<SharedString>,
     pub run: Handler<C>,
 }
 
@@ -187,6 +193,8 @@ impl<C> Clone for MenuItem<C> {
             danger: self.danger,
             toolbar: self.toolbar,
             visible: self.visible.clone(),
+            unavailable: self.unavailable.clone(),
+            reason: self.reason.clone(),
             run: self.run.clone(),
         }
     }
@@ -206,6 +214,8 @@ impl<C: 'static> MenuItem<C> {
             danger: false,
             toolbar: false,
             visible: Rc::new(|_, _| true),
+            unavailable: None,
+            reason: None,
             run: Rc::new(run),
         }
     }
@@ -233,6 +243,17 @@ impl<C: 'static> MenuItem<C> {
     /// Show the entry only when `visible` says so.
     pub fn when(mut self, visible: impl Fn(&C, &App) -> bool + 'static) -> Self {
         self.visible = Rc::new(visible);
+        self
+    }
+
+    /// Show the entry disabled, with the reason, whenever `why` gives one
+    /// (an action the network does not allow here). The toolbar leaves such
+    /// entries out.
+    pub fn unavailable_when(
+        mut self,
+        why: impl Fn(&C, &App) -> Option<SharedString> + 'static,
+    ) -> Self {
+        self.unavailable = Some(Rc::new(why));
         self
     }
 }

@@ -7,5 +7,6 @@ mod fixture;
 mod registries;
 mod shell;
 
+mod message_actions;
 mod text;
 mod uploads;

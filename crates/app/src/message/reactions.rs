@@ -1,12 +1,20 @@
-//! The reaction chips under a message.
+//! The reaction chips under a message. They get the message's context, so
+//! a chip can toggle your reaction (package A1).
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+use crate::registry::MessageCtx;
 use crate::theme::Theme;
 use crate::timeline::rows::MessageRow;
 
-pub fn render(m: &MessageRow, theme: &Theme) -> Option<AnyElement> {
+pub fn render(
+    m: &MessageRow,
+    _ctx: &MessageCtx,
+    theme: &Theme,
+    _window: &mut Window,
+    _cx: &mut App,
+) -> Option<AnyElement> {
     if m.reactions.is_empty() {
         return None;
     }
