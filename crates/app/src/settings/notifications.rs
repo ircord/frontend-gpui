@@ -17,6 +17,7 @@
 //! The server routes every alert, so nothing here decides what shows; the
 //! notification sound itself plays in RA1.
 
+use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::Disableable;
 use gpui_kit::component::Sizable;
@@ -473,6 +474,7 @@ fn choice<T: Copy + PartialEq + 'static>(
                 .id(ElementId::Name(format!("{id}-{key}").into()))
                 .test_support()
                 .role(Role::RadioButton)
+                .reachable(&theme)
                 .aria_label(text.clone())
                 .aria_selected(selected)
                 .px_2()

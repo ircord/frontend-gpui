@@ -10,6 +10,7 @@
 //! `useMediaSensitivity.ts` decides on the web. GIFs play always or only
 //! under the pointer, after the appearance setting "Animate media".
 
+use crate::ui::focus::Reachable;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -313,6 +314,7 @@ fn cover(
                 .id(ElementId::Name(format!("media-reveal-{message}").into()))
                 .test_support()
                 .role(Role::Button)
+                .reachable(&theme)
                 .aria_label(t!("uploads-show-media"))
                 .mt_1()
                 .px_3()

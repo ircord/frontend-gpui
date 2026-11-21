@@ -19,12 +19,14 @@ pub fn button(
     theme: &crate::theme::Theme,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    use super::focus::Reachable;
     use gpui_kit::TestSupportExt;
     let label: SharedString = label.into();
     div()
         .id(id)
         .test_support()
         .role(Role::Button)
+        .reachable(theme)
         .aria_label(label.clone())
         .tooltip(super::tooltip::text(label))
         .p_1()

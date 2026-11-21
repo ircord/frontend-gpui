@@ -2,6 +2,7 @@
 //! message" with a cancel button, and each failed send with buttons to put
 //! it back in the box or discard it.
 
+use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -126,6 +127,7 @@ fn link_button(
         .id(ElementId::Name(id.into()))
         .test_support()
         .role(Role::Button)
+        .reachable(&theme)
         .aria_label(label)
         .flex_none()
         .text_color(theme.link)

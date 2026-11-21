@@ -1,6 +1,7 @@
 //! The reaction chips under a message. They get the message's context, so
 //! a chip toggles your reaction (package A1); yours are marked.
 
+use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -38,6 +39,7 @@ pub fn render(
                 .id(ElementId::Name(format!("reaction-{}-{emoji}", m.id).into()))
                 .test_support()
                 .role(Role::Button)
+                .reachable(&theme)
                 .aria_label(t!(
                     "message-actions-reaction-label",
                     emoji = emoji,

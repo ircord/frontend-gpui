@@ -9,6 +9,7 @@
 //! The form's rules live in `ircord_client::api::networks::Form`, tested
 //! there; this file draws it.
 
+use crate::ui::focus::Reachable;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -1054,6 +1055,7 @@ impl Render for NetworkFormView {
                         .id("network-advanced")
                         .test_support()
                         .role(Role::Button)
+                        .reachable(&theme)
                         .aria_label(t!("networks-connection-settings"))
                         .mt_2()
                         .text_color(theme.link)
@@ -1090,6 +1092,7 @@ impl Render for NetworkFormView {
                             .id(ElementId::Name(format!("network-preset-{i}").into()))
                             .test_support()
                             .role(Role::Button)
+                            .reachable(&theme)
                             .aria_label(SharedString::from(preset.name.clone()))
                             .flex()
                             .items_center()
@@ -1247,6 +1250,7 @@ impl Render for NetworkFormView {
                         ))
                         .test_support()
                         .role(Role::RadioButton)
+                        .reachable(&theme)
                         .aria_label(login_label(login))
                         .px_2()
                         .py_1()
@@ -1304,6 +1308,7 @@ impl Render for NetworkFormView {
                             .id("network-forget-password")
                             .test_support()
                             .role(Role::Button)
+                            .reachable(&theme)
                             .aria_label(label)
                             .text_xs()
                             .text_color(theme.link)
@@ -1401,6 +1406,7 @@ impl NetworkFormView {
                                     .id("network-check-retry")
                                     .test_support()
                                     .role(Role::Button)
+                                    .reachable(&theme)
                                     .aria_label(t!("networks-retry-check"))
                                     .text_color(theme.link)
                                     .cursor_pointer()

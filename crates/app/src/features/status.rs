@@ -5,6 +5,7 @@
 //! away or come back, and open your profile. The line under your name
 //! shows your presence and status. `/status` opens the same editor.
 
+use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
@@ -354,6 +355,7 @@ impl Render for StatusEditor {
                     ))
                     .test_support()
                     .role(Role::RadioButton)
+                    .reachable(&theme)
                     .aria_label(SharedString::from(label.clone()))
                     .aria_selected(selected)
                     .px_2()

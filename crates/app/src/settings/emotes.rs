@@ -9,6 +9,7 @@
 //! emotes included for managers); the picker's copy (E1) reloads on the
 //! `emotes.updated` event each change makes the server send.
 
+use crate::ui::focus::Reachable;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -857,6 +858,7 @@ impl EmotesView {
                 )
                 .role(Role::Tab)
                 .test_support()
+                .reachable(theme)
                 .on_click(cx.listener(|this, _, _, cx| this.set_tab(Tab::Server, cx))),
             )
             .child(
@@ -868,6 +870,7 @@ impl EmotesView {
                 )
                 .role(Role::Tab)
                 .test_support()
+                .reachable(theme)
                 .on_click(cx.listener(|this, _, _, cx| this.set_tab(Tab::Discover, cx))),
             )
     }
@@ -932,14 +935,17 @@ impl EmotesView {
                     "emote-source-{}",
                     if value.is_empty() { "all" } else { &value }
                 );
-                group = group.child(option(id, label, selected, theme).test_support().on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        if this.discovery.source != value {
-                            this.discovery.source = value.clone();
-                            this.restart(cx);
-                        }
-                    }),
-                ));
+                group = group.child(
+                    option(id, label, selected, theme)
+                        .test_support()
+                        .reachable(theme)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.discovery.source != value {
+                                this.discovery.source = value.clone();
+                                this.restart(cx);
+                            }
+                        })),
+                );
             }
             row = row.child(group);
         } else if let Some(only) = sources.first() {
@@ -972,6 +978,7 @@ impl EmotesView {
                 group = group.child(
                     option(format!("emote-animation-{value}"), label, selected, theme)
                         .test_support()
+                        .reachable(theme)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if this.discovery.animation != value {
                                 this.discovery.animation = value.clone();
@@ -1295,6 +1302,7 @@ impl EmotesView {
             .id(ElementId::Name(id.into()))
             .test_support()
             .role(Role::Button)
+            .reachable(&theme)
             .aria_label(SharedString::from(label.clone()))
             .aria_selected(selected)
             .w(px(104.))
@@ -1402,6 +1410,7 @@ impl EmotesView {
                             theme,
                         )
                         .test_support()
+                        .reachable(theme)
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_panel(Panel::Upload, window, cx)
                         })),
@@ -1414,6 +1423,7 @@ impl EmotesView {
                             theme,
                         )
                         .test_support()
+                        .reachable(theme)
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_panel(Panel::Import, window, cx)
                         })),

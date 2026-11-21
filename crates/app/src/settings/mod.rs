@@ -26,6 +26,7 @@ pub mod privacy;
 pub mod profile;
 pub mod shortcuts;
 
+use crate::ui::focus::Reachable;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -374,6 +375,7 @@ impl Render for SettingsView {
                     ))
                     .test_support()
                     .role(Role::Tab)
+                    .reachable(&theme)
                     .aria_label(section.title.clone())
                     .aria_selected(active)
                     .px_2()

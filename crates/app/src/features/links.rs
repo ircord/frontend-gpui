@@ -20,6 +20,7 @@
 //! The channel gallery (`gallery.rs`) shares the list, the previews and the
 //! covers below.
 
+use crate::ui::focus::Reachable;
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
@@ -131,6 +132,7 @@ fn sidebar_row(session: &Entity<Session>, cx: &App) -> AnyElement {
         .id("sidebar-links")
         .test_support()
         .role(Role::Button)
+        .reachable(&theme)
         .aria_label(t!("links-view-title"))
         .aria_selected(active)
         .mx_2()
@@ -351,6 +353,7 @@ pub(crate) fn cover_view(
                 .id(ElementId::Name(format!("{id}-show").into()))
                 .test_support()
                 .role(Role::Button)
+                .reachable(&theme)
                 .aria_label(t!("links-view-show"))
                 .px_2()
                 .py_0p5()
@@ -962,6 +965,7 @@ impl LinksView {
                         .id(ElementId::Name(format!("links-post-{j}").into()))
                         .test_support()
                         .role(Role::Button)
+                        .reachable(&theme)
                         .aria_label(SharedString::from(label))
                         .px_2()
                         .py_1p5()
@@ -1125,6 +1129,7 @@ impl LinksView {
                 .id(ElementId::Name(format!("{id}-posts").into()))
                 .test_support()
                 .role(Role::Button)
+                .reachable(&theme)
                 .aria_label(SharedString::from(label.clone()))
                 .flex_none()
                 .flex()
@@ -1151,6 +1156,7 @@ impl LinksView {
                 .id(ElementId::Name(format!("{id}-title").into()))
                 .test_support()
                 .role(Role::Link)
+                .reachable(&theme)
                 .aria_label(SharedString::from(t!("links-view-open", url = url.clone())))
                 .text_sm()
                 .font_weight(FontWeight::SEMIBOLD)
@@ -1194,6 +1200,7 @@ impl LinksView {
                         .id(ElementId::Name(format!("{id}-source").into()))
                         .test_support()
                         .role(Role::Button)
+                        .reachable(&theme)
                         .aria_label(SharedString::from(label))
                         .flex_1()
                         .min_w_0()
@@ -1238,6 +1245,7 @@ impl LinksView {
                     .id(ElementId::Name(format!("{id}-preview").into()))
                     .test_support()
                     .role(Role::Link)
+                    .reachable(&theme)
                     .aria_label(open_label)
                     .w_full()
                     .h(px(PREVIEW_H))
@@ -1387,6 +1395,7 @@ impl Render for LinksView {
                     .id(ElementId::Name(format!("links-start-{key}").into()))
                     .test_support()
                     .role(Role::Button)
+                    .reachable(&theme)
                     .aria_label(label)
                     .px_2p5()
                     .py_0p5()
@@ -1420,6 +1429,7 @@ impl Render for LinksView {
                     .id(ElementId::Name(format!("links-kind-{value}").into()))
                     .test_support()
                     .role(Role::CheckBox)
+                    .reachable(&theme)
                     .aria_label(label)
                     .aria_toggled(if on { Toggled::True } else { Toggled::False })
                     .px_2p5()
@@ -1453,6 +1463,7 @@ impl Render for LinksView {
                     .id(ElementId::Name(format!("links-chip-{i}").into()))
                     .test_support()
                     .role(Role::Button)
+                    .reachable(&theme)
                     .aria_label(SharedString::from(label))
                     .px_2()
                     .py_0p5()

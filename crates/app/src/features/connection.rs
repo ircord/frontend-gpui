@@ -10,6 +10,7 @@
 //! The app pings IRCord every twenty seconds while signed in, and re-reads
 //! the IRC hop's latency while a server window shows it.
 
+use crate::ui::focus::Reachable;
 use std::time::Duration;
 
 use gpui_kit::TestSupportExt;
@@ -193,6 +194,7 @@ impl Render for IndicatorView {
             .id("connection-indicator")
             .test_support()
             .role(Role::Button)
+            .reachable(&theme)
             .aria_label(SharedString::from(accessible.clone()))
             .tooltip(crate::ui::tooltip::text(accessible))
             .mx_2()

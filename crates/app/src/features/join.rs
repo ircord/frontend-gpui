@@ -8,6 +8,7 @@
 //! guide to it. The rules (sections, what is ticked, names) live in
 //! `ircord_client::api::channels`, tested there; this file draws them.
 
+use crate::ui::focus::Reachable;
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
@@ -383,6 +384,7 @@ impl JoinView {
                 .id(id)
                 .test_support()
                 .role(Role::Tab)
+                .reachable(&theme)
                 .aria_label(label)
                 .px_3()
                 .py_1()
@@ -643,6 +645,7 @@ impl JoinView {
             .id(row_id("join-channel", &name))
             .test_support()
             .role(Role::Button)
+            .reachable(&theme)
             .aria_label(name.clone())
             .flex()
             .items_center()

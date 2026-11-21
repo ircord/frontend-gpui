@@ -12,6 +12,7 @@
 //! appearance package (S1), so they follow this device when appearance sync
 //! is off.
 
+use crate::ui::focus::Reachable;
 use chrono::{DateTime, Local};
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::menu::ContextMenuExt;
@@ -187,6 +188,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                 .id(ElementId::Name(id.into()))
                 .test_support()
                 .role(Role::Link)
+                .reachable(&theme)
                 .aria_label(SharedString::from(label))
                 .cursor_pointer()
                 .on_click(open)
@@ -206,7 +208,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
         let quoted = ircord_client::format::parse(quoted).text;
         let line = t!("core-message-reply-line", nick = nick, text = quoted);
         let hover_text = theme.text;
-        let mut reply = div()
+        let reply = div()
             .id(ElementId::Name(format!("reply-{}", m.id).into()))
             .test_support()
             .text_xs()
@@ -214,18 +216,28 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
             .truncate()
             .child(line.clone());
         // Clicking the quote goes to the original (`timeline::reveal`).
-        if let Some(original) = m.reply_id.clone() {
-            let ctx = view.ctx.clone();
-            reply = reply
-                .role(Role::Link)
-                .aria_label(line)
-                .cursor_pointer()
-                .hover(move |d| d.text_color(hover_text))
-                .on_click(move |_, window, cx| {
-                    crate::timeline::reveal(&ctx.session, &ctx.conversation, &original, window, cx)
-                });
+        match m.reply_id.clone() {
+            Some(original) => {
+                let ctx = view.ctx.clone();
+                reply
+                    .role(Role::Link)
+                    .reachable(&theme)
+                    .aria_label(line)
+                    .cursor_pointer()
+                    .hover(move |d| d.text_color(hover_text))
+                    .on_click(move |_, window, cx| {
+                        crate::timeline::reveal(
+                            &ctx.session,
+                            &ctx.conversation,
+                            &original,
+                            window,
+                            cx,
+                        )
+                    })
+                    .into_any_element()
+            }
+            None => reply.into_any_element(),
         }
-        reply
     });
     let inline = registry::get(cx).inline_renderers.to_vec();
     // A message of uploads only has no text left to draw.

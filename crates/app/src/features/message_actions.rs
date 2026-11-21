@@ -11,6 +11,7 @@
 //! Other packages use [`react`] (E1's full emoji picker) and may replace the
 //! `react` menu entry by registering an entry with the same ID.
 
+use crate::ui::focus::Reachable;
 use std::collections::HashMap;
 
 use gpui_kit::prelude::*;
@@ -702,6 +703,7 @@ fn open_quick_reactions(ctx: MessageCtx, window: &mut Window, cx: &mut App) {
                         .id(ElementId::Name(format!("quick-reaction-{i}").into()))
                         .test_support()
                         .role(Role::Button)
+                        .reachable(&theme)
                         .aria_label(t!("message-actions-react-with", emoji = emoji))
                         .tooltip(ui::tooltip::text(t!(
                             "message-actions-react-with",

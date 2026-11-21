@@ -16,6 +16,7 @@
 //! it (`IRCORD_KLIPY_KEY` at build time, or at run time for a test build).
 //! Without a key the GIF tab says so and saved GIFs still work.
 
+use crate::ui::focus::Reachable;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -617,6 +618,7 @@ fn text_button(
         .id(id)
         .test_support()
         .role(Role::Button)
+        .reachable(&theme)
         .aria_label(label.clone())
         .aria_expanded(expanded)
         .tooltip(ui::tooltip::text(label))

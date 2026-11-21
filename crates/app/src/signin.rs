@@ -2,6 +2,7 @@
 //! (package S4: the web client's `LoginScreen.vue`). The username is also
 //! the account's nick, so it is checked with the server while it is typed.
 
+use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -578,6 +579,7 @@ impl Render for SignInView {
                     .id(id)
                     .test_support()
                     .role(Role::Link)
+                    .reachable(&theme)
                     .aria_label(text.clone())
                     .text_color(theme.link)
                     .cursor_pointer()

@@ -7,6 +7,7 @@
 //! saved copy with it. The button in the conversation header opens it.
 //! Follows the web client's `SavedPage.vue` and `queries/saved.ts`.
 
+use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
@@ -320,6 +321,7 @@ impl SavedView {
                     .id(ElementId::Name(format!("saved-item-{id}").into()))
                     .test_support()
                     .role(Role::Button)
+                    .reachable(&theme)
                     .aria_label(SharedString::from(label))
                     .flex_1()
                     .min_w_0()

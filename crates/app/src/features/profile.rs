@@ -8,6 +8,7 @@
 //! server owners mark bots. Ignored people's messages are hidden from the
 //! timeline, and an empty direct conversation starts with the person.
 
+use crate::ui::focus::Reachable;
 use std::rc::{Rc, Weak};
 
 use gpui_kit::TestSupportExt;
@@ -601,6 +602,7 @@ fn invite(
                         .id(ElementId::Name(format!("people-invite-{i}").into()))
                         .test_support()
                         .role(Role::Button)
+                        .reachable(&theme)
                         .aria_label(SharedString::from(label.clone()))
                         .px_2()
                         .py_1()
@@ -1053,6 +1055,7 @@ impl Render for ProfileCard {
                     .id("profile-homepage")
                     .test_support()
                     .role(Role::Link)
+                    .reachable(&theme)
                     .aria_label(SharedString::from(shown.clone()))
                     .text_sm()
                     .text_color(theme.link)
@@ -1105,6 +1108,7 @@ impl Render for ProfileCard {
                         .id(ElementId::Name(format!("profile-channel-{id}").into()))
                         .test_support()
                         .role(Role::Link)
+                        .reachable(&theme)
                         .aria_label(SharedString::from(text.clone()))
                         .px_2()
                         .rounded_md()

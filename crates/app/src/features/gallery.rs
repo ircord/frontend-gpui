@@ -10,6 +10,7 @@
 //! It opens from the conversation header's gallery button, the channel's
 //! menu and a key, and reads the list again each time it opens.
 
+use crate::ui::focus::Reachable;
 use std::rc::Rc;
 
 use gpui_kit::TestSupportExt;
@@ -390,6 +391,7 @@ impl Render for GalleryView {
                             .id(ElementId::Name(id.clone().into()))
                             .test_support()
                             .role(Role::Button)
+                            .reachable(&theme)
                             .aria_label(SharedString::from(label))
                             .size(px(TILE))
                             .rounded_md()
@@ -408,6 +410,7 @@ impl Render for GalleryView {
                             .id(ElementId::Name(format!("{id}-source").into()))
                             .test_support()
                             .role(Role::Button)
+                            .reachable(&theme)
                             .aria_label(SharedString::from(jump_label))
                             .text_xs()
                             .truncate()

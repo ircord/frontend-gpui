@@ -11,6 +11,7 @@
 //! `NoAction` and the new ones bound after them, and
 //! `registry::BoundKeys` tells the help (N1) what is bound now.
 
+use crate::ui::focus::Reachable;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::{Rc, Weak};
 
@@ -684,7 +685,8 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
                                 window.refresh();
                             },
                         )
-                        .test_support(),
+                        .test_support()
+                        .reachable(&theme),
                     );
                 }
             }
@@ -699,7 +701,8 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
                     window.refresh();
                 },
             )
-            .test_support(),
+            .test_support()
+            .reachable(&theme),
         );
         problem_note = Some((for_action, note.into_any_element()));
     }
@@ -780,6 +783,7 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
                                 ))
                                 .test_support()
                                 .role(Role::Button)
+                                .reachable(&theme)
                                 .aria_label(t!(
                                     "settings-messages-shortcuts-remove",
                                     chord = text.as_str(),
@@ -829,7 +833,8 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
                             window.refresh();
                         },
                     )
-                    .test_support(),
+                    .test_support()
+                    .reachable(&theme),
                 );
             } else if keys_now.len() < MAX_KEYS {
                 let (client, a2) = (client.clone(), a.clone());
@@ -840,7 +845,8 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
                         &theme,
                         move |_, window, cx| start(client.clone(), a2.clone(), window, cx),
                     )
-                    .test_support(),
+                    .test_support()
+                    .reachable(&theme),
                 );
             }
             if changed {
@@ -856,7 +862,8 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
                             save(&client, &current);
                         },
                     )
-                    .test_support(),
+                    .test_support()
+                    .reachable(&theme),
                 );
             }
             section = section.child(
@@ -935,7 +942,8 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
                     ui::toast::info(window, cx, t!("settings-messages-shortcuts-defaults-again"));
                 },
             )
-            .test_support(),
+            .test_support()
+            .reachable(&theme),
             &theme,
         ))
         .into_any_element()

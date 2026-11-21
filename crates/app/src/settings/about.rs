@@ -4,6 +4,7 @@
 //! app's notes are its own `CHANGELOG.md`, built in; the server's come from
 //! `/api/v1/changelog`.
 
+use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -194,6 +195,7 @@ fn link(
         ))
         .on_click(move |_, _, cx| cx.open_url(url))
         .test_support()
+        .reachable(theme)
 }
 
 /// Release notes drawn line by line: `###` headings, `-` items, text.

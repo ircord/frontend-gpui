@@ -7,6 +7,7 @@
 //!
 //! It opens when the workspace first shows for such an account.
 
+use crate::ui::focus::Reachable;
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -953,6 +954,7 @@ impl Onboarding {
                     .id(ElementId::Name(id.into()))
                     .test_support()
                     .role(Role::CheckBox)
+                    .reachable(&theme)
                     .aria_label(SharedString::from(channel.channel.clone()))
                     .aria_toggled(if on { Toggled::True } else { Toggled::False })
                     .flex()

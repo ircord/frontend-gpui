@@ -5,6 +5,7 @@
 //! notification settings with the rest of who reaches you. Nothing is
 //! embedded here, so "ask before embeds" has no row.
 
+use crate::ui::focus::Reachable;
 use std::rc::{Rc, Weak};
 
 use gpui_kit::TestSupportExt;
@@ -288,6 +289,7 @@ impl Render for PrivacyView {
                             .id(ElementId::Name(format!("ignored-remove-{i}").into()))
                             .test_support()
                             .role(Role::Button)
+                            .reachable(&theme)
                             .aria_label(SharedString::from(remove))
                             .px_1()
                             .rounded_sm()
@@ -342,6 +344,7 @@ impl Render for PrivacyView {
                             .id("ignore-add")
                             .test_support()
                             .role(Role::Button)
+                            .reachable(&theme)
                             .aria_label(t!("settings-messages-ignore-add"))
                             .px_2()
                             .py_1()

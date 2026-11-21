@@ -9,6 +9,7 @@
 //! tested there; this file draws it. [`mode_text`] names channel modes for
 //! the channel settings (CH2) too.
 
+use crate::ui::focus::Reachable;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::Duration;
@@ -602,6 +603,7 @@ impl Render for CreateView {
                     ))
                     .test_support()
                     .role(Role::RadioButton)
+                    .reachable(&theme)
                     .aria_label(label)
                     .flex_1()
                     .min_w_0()
@@ -692,6 +694,7 @@ impl Render for CreateView {
                     .id("create-channel-advanced")
                     .test_support()
                     .role(Role::Button)
+                    .reachable(&theme)
                     .aria_label(t!("channels-create-advanced"))
                     .aria_expanded(open)
                     .flex()

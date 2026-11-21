@@ -10,6 +10,7 @@
 //! `composer/drafts.rs`. The page opens from a row under the conversation
 //! list (while there are drafts), your own menu and a key.
 
+use crate::ui::focus::Reachable;
 use std::cell::Cell;
 use std::time::Duration;
 
@@ -386,6 +387,7 @@ impl DraftsView {
             .id(ElementId::Name(format!("draft-open-{id}").into()))
             .test_support()
             .role(Role::Button)
+            .reachable(&theme)
             .aria_label(t!("drafts-open", place = place.clone()))
             .when(!available, |d| d.aria_description(t!("drafts-gone")))
             .flex_1()
@@ -610,6 +612,7 @@ fn text_button(
         .id(id)
         .test_support()
         .role(Role::Button)
+        .reachable(&theme)
         .aria_label(label.clone())
         .px_2()
         .rounded_md()
@@ -664,6 +667,7 @@ impl Render for FooterView {
             .id("sidebar-drafts")
             .test_support()
             .role(Role::Button)
+            .reachable(&theme)
             .aria_label(label.clone())
             .aria_selected(active)
             .mx_2()

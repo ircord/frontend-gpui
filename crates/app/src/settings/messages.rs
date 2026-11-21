@@ -9,6 +9,7 @@
 //! preferences. Opening the startup channel happens here too: once per
 //! sign-in, when the preferences first arrive.
 
+use crate::ui::focus::Reachable;
 use std::rc::{Rc, Weak};
 
 use gpui_kit::TestSupportExt;
@@ -352,6 +353,7 @@ fn stepper(
             .id(ElementId::Name(format!("{id}-{suffix}").into()))
             .test_support()
             .role(Role::Button)
+            .reachable(&theme)
             .aria_label(SharedString::from(format!("{label} {text}")))
             .w(px(28.))
             .h(px(28.))
@@ -473,6 +475,7 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
                 .id(ElementId::Name(format!("message-layout-{}", l.id()).into()))
                 .test_support()
                 .role(Role::RadioButton)
+                .reachable(&theme)
                 .aria_label(SharedString::from(name))
                 .aria_toggled(if active {
                     Toggled::True
@@ -522,6 +525,7 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
                 ))
                 .test_support()
                 .role(Role::RadioButton)
+                .reachable(&theme)
                 .aria_label(SharedString::from(font_label(f)))
                 .aria_toggled(if active {
                     Toggled::True
@@ -573,7 +577,8 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
                         })
                     },
                 )
-                .test_support(),
+                .test_support()
+                .reachable(&theme),
             );
         }
         g.test_support()
@@ -610,7 +615,8 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
                         })
                     },
                 )
-                .test_support(),
+                .test_support()
+                .reachable(&theme),
             );
         }
         startup_body = startup_body.child(g.test_support());
@@ -648,7 +654,8 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
                         })
                     },
                 )
-                .test_support(),
+                .test_support()
+                .reachable(&theme),
             );
         }
         startup_body = startup_body.child(g.test_support());
@@ -682,7 +689,8 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
                 &theme,
                 move |_, _, _| edit_preferences(&client, |p| p.events = Some(mode)),
             )
-            .test_support(),
+            .test_support()
+            .reachable(&theme),
         );
     }
 
@@ -795,6 +803,7 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
             .id("messages-reset-button")
             .test_support()
             .role(Role::Button)
+            .reachable(&theme)
             .aria_label(t!("settings-messages-reset"))
             .px_2()
             .py_1()

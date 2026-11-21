@@ -7,6 +7,7 @@
 //! Every change goes through `theme::appearance::edit`, which saves to the
 //! account with sync on and on this device with it off, and redraws at once.
 
+use crate::ui::focus::Reachable;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -356,6 +357,7 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
             t!("appearance-reset"),
             Some(t!("appearance-reset-help").into()),
             button("appearance-reset-button", t!("appearance-reset"), &theme)
+                .reachable(&theme)
                 .on_click(|_, window, cx| confirm_reset(window, cx)),
             &theme,
         ))
@@ -440,6 +442,7 @@ fn choices<T: Copy + PartialEq + 'static>(
         list = list.child(
             option(format!("{prefix}-{key}"), *label, value == selected, theme)
                 .test_support()
+                .reachable(theme)
                 .on_click(move |_, _, cx| {
                     appearance::edit(cx, |a| set(a, value));
                 }),
@@ -535,6 +538,7 @@ fn schemes(
                 ))
                 .test_support()
                 .role(Role::RadioButton)
+                .reachable(&theme)
                 .aria_label(SharedString::from(t!(
                     "appearance-scheme-pick",
                     name = family.name
@@ -627,6 +631,7 @@ fn schemes(
                         theme,
                     )
                     .test_support()
+                    .reachable(theme)
                     .on_click(move |_, _, cx| {
                         appearance::edit(cx, |a| {
                             match mode {
@@ -701,6 +706,7 @@ fn accents(
                 ))
                 .test_support()
                 .role(Role::RadioButton)
+                .reachable(&theme)
                 .aria_label(accent_name(accent))
                 .aria_selected(selected)
                 .size(px(24.))
@@ -765,6 +771,7 @@ fn accents(
                         theme,
                     )
                     .test_support()
+                    .reachable(theme)
                     .on_click(move |_, _, cx| {
                         let text = input.read(cx).value().trim().to_string();
                         let text = if text.starts_with('#') {
@@ -822,6 +829,7 @@ fn fonts(current: &Look, theme: &Theme) -> impl IntoElement + use<> {
             )
             .font_family(family)
             .test_support()
+            .reachable(theme)
             .on_click(move |_, _, cx| {
                 appearance::edit(cx, |a| a.font = Some(font));
             }),
@@ -990,6 +998,7 @@ fn themes_block(
                 d.child(
                     button("appearance-themes-new", t!("appearance-themes-new"), theme)
                         .test_support()
+                        .reachable(theme)
                         .on_click(move |_, _, cx| {
                             let name = name_input.read(cx).value().to_string();
                             let name = if name.trim().is_empty() {
@@ -1024,6 +1033,7 @@ fn themes_block(
                         theme,
                     )
                     .test_support()
+                    .reachable(theme)
                     .on_click(move |_, _, cx| {
                         let pasted = import_input.read(cx).value().to_string();
                         let text = if pasted.trim().is_empty() {
@@ -1049,6 +1059,7 @@ fn themes_block(
                         theme,
                     )
                     .test_support()
+                    .reachable(theme)
                     .on_click(move |_, window, cx| import_file(&file_editor, window, cx)),
                 ),
         )
@@ -1139,6 +1150,7 @@ fn theme_row(
             d.child(
                 button(key("stop"), t!("appearance-themes-stop"), theme)
                     .test_support()
+                    .reachable(theme)
                     .on_click(|_, _, cx| {
                         appearance::edit(cx, |a| a.theme = None);
                     }),
@@ -1314,6 +1326,7 @@ fn seed_editor(
             .child(
                 button("appearance-theme-save", t!("appearance-themes-save"), theme)
                     .test_support()
+                    .reachable(theme)
                     .on_click(move |_, _, cx| {
                         let mut next = edited.clone();
                         for (seed, input) in &inputs {
@@ -1346,6 +1359,7 @@ fn seed_editor(
                     theme,
                 )
                 .test_support()
+                .reachable(theme)
                 .on_click(move |_, _, cx| {
                     cancel_editor.update(cx, |e, _| e.editing = None);
                     cx.refresh_windows();

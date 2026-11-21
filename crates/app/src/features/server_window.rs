@@ -9,6 +9,7 @@
 //! Opened from the network menu, the connection indicator and `/server`
 //! (and after commands whose answer lands here, such as `/whois`).
 
+use crate::ui::focus::Reachable;
 use std::collections::{HashMap, HashSet};
 
 use gpui_kit::TestSupportExt;
@@ -420,7 +421,7 @@ fn text_button<F: Fn(&ClickEvent, &mut Window, &mut App) + 'static>(
     if let Some(selected) = selected {
         button = button.aria_selected(selected);
     }
-    button.test_support()
+    button.test_support().reachable(theme)
 }
 
 impl Render for ServerWindowView {
@@ -575,6 +576,7 @@ impl ServerWindowView {
                                 .id(ElementId::Name(format!("server-{id}").into()))
                                 .test_support()
                                 .role(Role::Button)
+                                .reachable(&theme)
                                 .aria_label(SharedString::from(text.clone()))
                                 .aria_expanded(open)
                                 .px_4()

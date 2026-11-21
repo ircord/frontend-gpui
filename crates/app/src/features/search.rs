@@ -13,6 +13,7 @@
 //! Filters, requests, sources and recent searches are in
 //! `ircord_client::search_filter`; this file draws them.
 
+use crate::ui::focus::Reachable;
 use std::time::Duration;
 
 use chrono::{Local, NaiveDate};
@@ -743,6 +744,7 @@ fn source_switch(
                 .id(id)
                 .test_support()
                 .role(Role::Switch)
+                .reachable(&theme)
                 .aria_label(t!("search-server-history"))
                 .aria_toggled(if on { Toggled::True } else { Toggled::False })
                 .flex()
@@ -801,6 +803,7 @@ fn chips_row(
                 .id(ElementId::Name(format!("{prefix}-chip-{i}").into()))
                 .test_support()
                 .role(Role::Button)
+                .reachable(&theme)
                 .aria_label(SharedString::from(label))
                 .px_2()
                 .py_0p5()
@@ -968,7 +971,8 @@ fn messages_part(
                         theme,
                         move |_, _, cx| model.update(cx, |m, cx| m.retry(cx)),
                     )
-                    .test_support(),
+                    .test_support()
+                    .reachable(theme),
                 ),
         );
     }
@@ -1060,7 +1064,8 @@ fn messages_part(
                     theme,
                     move |_, _, cx| model.update(cx, |m, cx| m.load_more(cx)),
                 )
-                .test_support(),
+                .test_support()
+                .reachable(theme),
             ),
         );
     }
@@ -1129,7 +1134,8 @@ fn offers_row(
                 theme,
                 move |_, window, cx| apply_offer(&input, &model, chip.clone(), window, cx),
             )
-            .test_support(),
+            .test_support()
+            .reachable(theme),
         );
     }
     Some(row.into_any_element())
@@ -1763,6 +1769,7 @@ impl SearchPage {
                     },
                 )
                 .test_support()
+                .reachable(theme)
                 .aria_label(SharedString::from(t!("search-recent", search = shown))),
             );
         }
@@ -1775,6 +1782,7 @@ impl SearchPage {
             }
         })
         .test_support()
+        .reachable(theme)
         .aria_label(t!("search-clear-recent"));
         div()
             .flex()
@@ -1897,6 +1905,7 @@ impl Render for SearchPage {
                     cx.listener(move |this, _, window, cx| this.start(key, window, cx)),
                 )
                 .test_support()
+                .reachable(&theme)
                 .aria_label(label),
             );
         }
@@ -1934,6 +1943,7 @@ impl Render for SearchPage {
                             cx.listener(|this, _, window, cx| this.open_filters(window, cx)),
                         )
                         .test_support()
+                        .reachable(&theme)
                         .aria_label(SharedString::from(filters_label)),
                     ),
             )
@@ -2184,7 +2194,8 @@ impl Render for FiltersDialog {
                                 &theme,
                                 cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
                             )
-                            .test_support(),
+                            .test_support()
+                            .reachable(&theme),
                         );
                     }
                     field(title, Some(help), &theme).child(pills)
@@ -2213,7 +2224,8 @@ impl Render for FiltersDialog {
                         &theme,
                         cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
                     )
-                    .test_support(),
+                    .test_support()
+                    .reachable(&theme),
                 );
             }
             body = body.child(from).child(
@@ -2238,7 +2250,8 @@ impl Render for FiltersDialog {
                             &theme,
                             cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
                         )
-                        .test_support(),
+                        .test_support()
+                        .reachable(&theme),
                     );
                 }
                 body = body.child(
@@ -2269,6 +2282,7 @@ impl Render for FiltersDialog {
                     }),
                 )
                 .test_support()
+                .reachable(&theme)
                 .role(Role::RadioButton),
             );
         }
@@ -2314,6 +2328,7 @@ impl Render for FiltersDialog {
                     }),
                 )
                 .test_support()
+                .reachable(&theme)
                 .role(Role::RadioButton),
             );
         }
@@ -2344,7 +2359,8 @@ impl Render for FiltersDialog {
                         &theme,
                         cx.listener(|this, _, window, cx| this.clear(window, cx)),
                     )
-                    .test_support(),
+                    .test_support()
+                    .reachable(&theme),
                 )
                 .child(
                     text_button(
@@ -2353,7 +2369,8 @@ impl Render for FiltersDialog {
                         &theme,
                         |_, window, cx| ui::dialog::close(window, cx),
                     )
-                    .test_support(),
+                    .test_support()
+                    .reachable(&theme),
                 )
                 .child(
                     text_button(
@@ -2363,6 +2380,7 @@ impl Render for FiltersDialog {
                         cx.listener(|this, _, window, cx| this.apply(window, cx)),
                     )
                     .test_support()
+                    .reachable(&theme)
                     .bg(theme.accent)
                     .text_color(theme.on_accent),
                 ),
@@ -2587,7 +2605,8 @@ impl Render for ConversationSearch {
                         &theme,
                         cx.listener(|this, _, _, cx| this.everywhere(cx)),
                     )
-                    .test_support(),
+                    .test_support()
+                    .reachable(&theme),
                 ),
             );
         }

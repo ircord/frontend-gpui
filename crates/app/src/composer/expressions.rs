@@ -14,6 +14,7 @@
 //! puts it in the composer's `above` slot); for a reaction it shows in a
 //! dialog, emoji only, with your quick reactions first.
 
+use crate::ui::focus::Reachable;
 use std::time::Duration;
 
 use gpui_kit::TestSupportExt;
@@ -432,6 +433,7 @@ impl PickerView {
                 .id(id)
                 .test_support()
                 .role(Role::Tab)
+                .reachable(&theme)
                 .aria_label(label.clone())
                 .aria_selected(on)
                 .px_3()
@@ -489,6 +491,7 @@ impl PickerView {
                     .id("emoji-skin-tone")
                     .test_support()
                     .role(Role::Button)
+                    .reachable(&theme)
                     .aria_label(t!("emoji-skin-tone"))
                     .aria_expanded(self.tones_open)
                     .tooltip(ui::tooltip::text(t!("emoji-skin-tone")))
@@ -524,6 +527,7 @@ impl PickerView {
                     .id(ElementId::Name(format!("emoji-tone-{tone}").into()))
                     .test_support()
                     .role(Role::Button)
+                    .reachable(&theme)
                     .aria_label(label.clone())
                     .aria_selected(tone == current)
                     .tooltip(ui::tooltip::text(label))
@@ -576,6 +580,7 @@ impl PickerView {
                         .id(ElementId::Name(format!("emoji-group-{group}").into()))
                         .test_support()
                         .role(Role::Tab)
+                        .reachable(&theme)
                         .aria_label(label.clone())
                         .aria_selected(on)
                         .tooltip(ui::tooltip::text(label))
@@ -696,6 +701,7 @@ impl PickerView {
             .id(ElementId::Name(format!("gif-{}", gif.id).into()))
             .test_support()
             .role(Role::Button)
+            .reachable(&theme)
             .aria_label(SharedString::from(label.clone()))
             .tooltip(ui::tooltip::text(label))
             .relative()
@@ -715,6 +721,7 @@ impl PickerView {
                     .id(ElementId::Name(format!("gif-save-{}", gif.id).into()))
                     .test_support()
                     .role(Role::Button)
+                    .reachable(&theme)
                     .aria_label(save_label)
                     .aria_selected(saved)
                     .tooltip(ui::tooltip::text(save_label))
@@ -775,6 +782,7 @@ impl PickerView {
                 .id(ElementId::Name(id))
                 .test_support()
                 .role(Role::Button)
+                .reachable(&theme)
                 .aria_label(label.clone())
                 .relative()
                 .w(px((WIDTH - 40.) / 2.))
@@ -879,6 +887,7 @@ impl PickerView {
                         .id("gif-back")
                         .test_support()
                         .role(Role::Button)
+                        .reachable(&theme)
                         .aria_label(t!("emoji-gif-back"))
                         .tooltip(ui::tooltip::text(t!("emoji-gif-back")))
                         .p_1()
@@ -942,6 +951,7 @@ impl PickerView {
                                     .id("gif-more")
                                     .test_support()
                                     .role(Role::Button)
+                                    .reachable(&theme)
                                     .aria_label(t!("emoji-gif-more"))
                                     .py_1()
                                     .rounded_md()
@@ -1020,6 +1030,7 @@ impl PickerView {
                     .id(ElementId::Name(format!("quick-reaction-{i}").into()))
                     .test_support()
                     .role(Role::Button)
+                    .reachable(&theme)
                     .aria_label(label.clone())
                     .tooltip(ui::tooltip::text(label))
                     .size(px(40.))

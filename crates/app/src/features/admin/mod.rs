@@ -24,6 +24,7 @@ mod status;
 mod users;
 mod welcome;
 
+use crate::ui::focus::Reachable;
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -240,6 +241,7 @@ fn sidebar_row(session: &Entity<Session>, cx: &App) -> AnyElement {
         .id("sidebar-administration")
         .test_support()
         .role(Role::Button)
+        .reachable(&theme)
         .aria_label(t!("admin-title"))
         .aria_selected(active)
         .mx_2()
@@ -471,6 +473,7 @@ impl Render for AdminView {
                     ))
                     .test_support()
                     .role(Role::Tab)
+                    .reachable(&theme)
                     .aria_label(section.title())
                     .aria_selected(active)
                     .px_2()
@@ -655,6 +658,7 @@ fn button(
         .id(id.into())
         .test_support()
         .role(Role::Button)
+        .reachable(&theme)
         .aria_label(
             aria.map(SharedString::from)
                 .unwrap_or_else(|| label.clone()),

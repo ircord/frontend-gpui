@@ -1,6 +1,7 @@
 //! What shows between signing in and the first bootstrap: the server being
 //! reached, or why it cannot be, with a way to sign out.
 
+use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -82,6 +83,7 @@ impl Render for LoadingView {
                     .id("loading-sign-out")
                     .test_support()
                     .role(Role::Button)
+                    .reachable(&theme)
                     .aria_label(t!("core-sign-out"))
                     .text_sm()
                     .text_color(theme.link)

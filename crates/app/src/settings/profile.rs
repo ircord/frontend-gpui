@@ -8,6 +8,7 @@
 //! The picture helpers here are shared with the sign-up and the first-run
 //! setup (`features/onboarding.rs`).
 
+use crate::ui::focus::Reachable;
 use std::io::Cursor;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -370,6 +371,7 @@ pub fn default_picker(
                 .id(ElementId::Name(format!("{id}-{}", avatar.id).into()))
                 .test_support()
                 .role(Role::RadioButton)
+                .reachable(&theme)
                 .aria_label(SharedString::from(label))
                 .aria_selected(picked)
                 .p_0p5()
@@ -1190,6 +1192,7 @@ fn choices(
                 .id(ElementId::Name(format!("{id}-{key}").into()))
                 .test_support()
                 .role(Role::RadioButton)
+                .reachable(&theme)
                 .aria_label(text.clone())
                 .aria_selected(selected)
                 .px_2()

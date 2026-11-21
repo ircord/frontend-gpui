@@ -10,6 +10,7 @@
 //!
 //! The row helpers at the bottom are shared with `features::saved`.
 
+use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -358,6 +359,7 @@ impl InboxView {
                     .id(ElementId::Name(format!("inbox-item-{id}").into()))
                     .test_support()
                     .role(Role::Button)
+                    .reachable(&theme)
                     .aria_label(SharedString::from(label))
                     .flex_1()
                     .min_w_0()
@@ -498,6 +500,7 @@ impl Render for InboxView {
                     ))
                     .test_support()
                     .role(Role::Tab)
+                    .reachable(&theme)
                     .aria_label(label)
                     .aria_selected(selected)
                     .px_2()
@@ -716,6 +719,7 @@ pub(crate) fn link_button<F: Fn(&ClickEvent, &mut Window, &mut App) + 'static>(
         .id(id)
         .test_support()
         .role(Role::Button)
+        .reachable(&theme)
         .aria_label(label)
         .px_2()
         .py_1()

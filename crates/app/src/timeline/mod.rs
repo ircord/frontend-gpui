@@ -12,6 +12,7 @@
 pub mod export;
 pub mod rows;
 
+use crate::ui::focus::Reachable;
 use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
 
@@ -961,6 +962,7 @@ impl TimelineView {
                     .id(id)
                     .test_support()
                     .role(Role::Button)
+                    .reachable(&theme)
                     .aria_label(t!("timeline-try-again"))
                     .px_2()
                     .py_0p5()
@@ -1004,6 +1006,7 @@ impl TimelineView {
                         .id(ElementId::Name(format!("fold-{}", f.id).into()))
                         .test_support()
                         .role(Role::Button)
+                        .reachable(&theme)
                         .aria_label(format!("{} · {label}", f.summary))
                         .aria_expanded(f.expanded)
                         .cursor_pointer()
@@ -1075,6 +1078,7 @@ impl TimelineView {
                         .id("jump-present")
                         .test_support()
                         .role(Role::Button)
+                        .reachable(&theme)
                         .aria_label(label)
                         .px_3()
                         .py_1()
@@ -1147,6 +1151,7 @@ impl TimelineView {
                     .id(ElementId::Name(format!("retry-{}", p.client_id).into()))
                     .test_support()
                     .role(Role::Button)
+                    .reachable(&theme)
                     .aria_label(t!("timeline-retry"))
                     .text_color(theme.link)
                     .cursor_pointer()

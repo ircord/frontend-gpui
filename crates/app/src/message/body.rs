@@ -14,6 +14,7 @@
 //! same treatment as a pill: the text keeps a fixed space for the element
 //! ([`ELEMENT_SPACE`]) and the element is placed over where that space landed.
 
+use crate::ui::focus::Reachable;
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
@@ -599,18 +600,24 @@ impl Body<'_> {
             Some(action) => {
                 let session = self.ctx.session.clone();
                 let network = self.env.network.clone();
-                d.role(if matches!(action, Action::Url(_)) {
-                    Role::Link
+                let d = d
+                    .role(if matches!(action, Action::Url(_)) {
+                        Role::Link
+                    } else {
+                        Role::Button
+                    })
+                    .cursor_pointer()
+                    .tooltip(ui::tooltip::text(piece.label.clone()))
+                    .on_click(move |_, window, cx| {
+                        cx.stop_propagation();
+                        run(&action, &session, &network, window, cx);
+                    });
+                // One Tab stop per link: the first line of a wrapped one.
+                if j == 0 {
+                    d.reachable(crate::theme::get(cx)).into_any_element()
                 } else {
-                    Role::Button
-                })
-                .cursor_pointer()
-                .tooltip(ui::tooltip::text(piece.label.clone()))
-                .on_click(move |_, window, cx| {
-                    cx.stop_propagation();
-                    run(&action, &session, &network, window, cx);
-                })
-                .into_any_element()
+                    d.into_any_element()
+                }
             }
         }
     }

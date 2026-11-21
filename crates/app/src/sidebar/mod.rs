@@ -19,6 +19,7 @@ pub mod glyph;
 pub mod layout;
 pub mod menus;
 
+use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu};
@@ -314,6 +315,7 @@ impl SidebarView {
                 .id(ElementId::Name(format!("network-{}", network.id).into()))
                 .test_support()
                 .role(Role::Tab)
+                .reachable(&theme)
                 .aria_label(SharedString::from(label))
                 .aria_selected(active)
                 .tooltip(ui::tooltip::text(tooltip))
@@ -357,6 +359,7 @@ impl SidebarView {
             .id(ElementId::Name(format!("conversation-{}", c.id).into()))
             .test_support()
             .role(Role::Button)
+            .reachable(&theme)
             .aria_label(SharedString::from(name.clone()))
             .aria_selected(active)
             .group("conversation-row")
@@ -474,6 +477,7 @@ impl SidebarView {
             .id(ElementId::Name(format!("section-{}", section.id()).into()))
             .test_support()
             .role(Role::Button)
+            .reachable(&theme)
             .aria_label(SharedString::from(state))
             .aria_expanded(!view.collapsed)
             .flex_1()
@@ -633,6 +637,7 @@ impl SidebarView {
                         .id(ElementId::Name(format!("folded-{}", c.id).into()))
                         .test_support()
                         .role(Role::Button)
+                        .reachable(&theme)
                         .aria_label(SharedString::from(name.clone()))
                         .tooltip(ui::tooltip::text(format!("{}{}", prefix(c), name)))
                         .size(px(38.))
@@ -848,6 +853,7 @@ impl Render for SidebarView {
                     .id("sidebar-find")
                     .test_support()
                     .role(Role::Button)
+                    .reachable(&theme)
                     .aria_label(t!("sidebar-find"))
                     .flex_1()
                     .px_2()
@@ -870,6 +876,7 @@ impl Render for SidebarView {
                     .id("sidebar-unread-only")
                     .test_support()
                     .role(Role::CheckBox)
+                    .reachable(&theme)
                     .aria_label(t!("sidebar-unread-only"))
                     .aria_toggled(if layout.unread_only {
                         Toggled::True
@@ -961,6 +968,7 @@ impl Render for SidebarView {
                     .id("sign-out")
                     .test_support()
                     .role(Role::Button)
+                    .reachable(&theme)
                     .aria_label(t!("sidebar-sign-out"))
                     .text_xs()
                     .px_2()

@@ -3,6 +3,7 @@
 //! managers. Matches that cannot be chosen are shown with the server's
 //! note; Enter or the button takes the first one that can.
 
+use crate::ui::focus::Reachable;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -221,6 +222,7 @@ impl Render for Picker {
                         .id(ElementId::Name(format!("{id}-match-{i}").into()))
                         .test_support()
                         .role(Role::ListBoxOption)
+                        .reachable(&theme)
                         .aria_label(aria)
                         .aria_selected(can && Some(i) == self.first())
                         .px_2()

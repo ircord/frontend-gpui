@@ -11,6 +11,7 @@
 //! Each card keeps one height while it loads, so a preview never moves the
 //! timeline once it is drawn, and every card still opens its link.
 
+use crate::ui::focus::Reachable;
 use std::rc::Rc;
 
 use gpui_kit::TestSupportExt;
@@ -264,6 +265,7 @@ fn page_card(
     frame(key, &link.url, theme)
         .test_support()
         .role(Role::Link)
+        .reachable(&theme)
         .aria_label(SharedString::from(link.url.clone()))
         .h(px(CARD_H))
         .p_3()
@@ -411,6 +413,7 @@ fn media(
                 .id(ElementId::Name(format!("link-{key}-byline").into()))
                 .test_support()
                 .role(Role::Link)
+                .reachable(&theme)
                 .aria_label(SharedString::from(byline.join(" · ")))
                 .flex()
                 .items_center()
@@ -547,6 +550,7 @@ fn open_card(
         .id(ElementId::Name(format!("link-{key}-{kind}").into()))
         .test_support()
         .role(Role::Link)
+        .reachable(&theme)
         .aria_label(SharedString::from(label))
         .max_w(px(CARD_W))
         .w_full()
@@ -649,6 +653,7 @@ fn file_card(key: &str, link: &LinkCard, r: &LinkMediaResponse, theme: &Theme) -
     frame(key, &target, theme)
         .test_support()
         .role(Role::Link)
+        .reachable(&theme)
         .aria_label(SharedString::from(name.clone()))
         .px_3()
         .py_2()
@@ -799,6 +804,7 @@ fn message_card(
         .id(ElementId::Name(format!("link-{key}").into()))
         .test_support()
         .role(Role::Link)
+        .reachable(&theme)
         .aria_label(SharedString::from(label))
         .max_w(px(CARD_W))
         .w_full()

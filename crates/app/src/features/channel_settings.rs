@@ -12,6 +12,7 @@
 //! what you may change follows your rank, and what you may not is shown
 //! read-only with the reason.
 
+use crate::ui::focus::Reachable;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -702,6 +703,7 @@ impl ChannelSettingsView {
                     .id(tab_id(tab))
                     .test_support()
                     .role(Role::Tab)
+                    .reachable(&theme)
                     .aria_label(label.clone())
                     .px_3()
                     .py_1p5()

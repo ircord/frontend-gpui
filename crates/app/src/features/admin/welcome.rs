@@ -7,6 +7,7 @@
 //! The editing rules (unique groups, the limits, requests already listed)
 //! are `GuideDraft` in the client crate.
 
+use crate::ui::focus::Reachable;
 use std::time::Duration;
 
 use gpui_kit::TestSupportExt;
@@ -440,6 +441,7 @@ fn pill(
         .id(ElementId::Name(id.into()))
         .test_support()
         .role(Role::RadioButton)
+        .reachable(&theme)
         .aria_label(aria)
         .aria_selected(on)
         .px_2p5()
