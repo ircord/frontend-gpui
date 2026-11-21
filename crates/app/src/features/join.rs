@@ -846,14 +846,26 @@ fn hint(
 
 /// What the notice needs from the server, per signed-in client.
 #[derive(Default)]
-struct Notice {
-    client: Option<Weak<Client>>,
+struct Notice(Vec<NoticeState>);
+impl Global for Notice {}
+
+/// One client's part of [`Notice`]. Kept apart per client so two windows
+/// signed in at once do not take turns resetting each other's.
+struct NoticeState {
+    client: Weak<Client>,
     /// Whether the account still waits for its onboarding (S4 shows the
     /// guide there instead).
     onboarding: Option<Load<bool>>,
     guides: HashMap<String, Load<c::ChannelGuideView>>,
 }
-impl Global for Notice {}
+
+/// `client`'s part of the notice state, if it has one yet.
+fn notice_state<'a>(cx: &'a mut App, client: &Rc<Client>) -> Option<&'a mut NoticeState> {
+    cx.default_global::<Notice>()
+        .0
+        .iter_mut()
+        .find(|s| s.client.upgrade().is_some_and(|c| Rc::ptr_eq(&c, client)))
+}
 
 /// Members who joined before owners saved a guide see this once. It never
 /// joins anything: opening it shows Featured in the join dialog. Dismissing
@@ -861,17 +873,14 @@ impl Global for Notice {}
 fn notice(ctx: &SidebarCtx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let network = ctx.network.clone()?;
     let client = ctx.session.read(cx).client().cloned()?;
-    let state = cx.default_global::<Notice>();
-    let fresh = !state
-        .client
-        .as_ref()
-        .and_then(Weak::upgrade)
-        .is_some_and(|c| Rc::ptr_eq(&c, &client));
-    if fresh {
-        *state = Notice {
-            client: Some(Rc::downgrade(&client)),
-            ..Default::default()
-        };
+    if notice_state(cx, &client).is_none() {
+        let notice = cx.default_global::<Notice>();
+        notice.0.retain(|s| s.client.strong_count() > 0);
+        notice.0.push(NoticeState {
+            client: Rc::downgrade(&client),
+            onboarding: None,
+            guides: HashMap::new(),
+        });
         // The sidebar's watch, shared, so the preferences are read once.
         layout::watch_documents(Some(client.clone()), cx);
     }
@@ -887,8 +896,10 @@ fn notice(ctx: &SidebarCtx, window: &mut Window, cx: &mut App) -> Option<AnyElem
     if seen {
         return None;
     }
-    if cx.global::<Notice>().onboarding.is_none() {
-        cx.global_mut::<Notice>().onboarding = Some(Load::Loading);
+    let state = notice_state(cx, &client)?;
+    if state.onboarding.is_none() {
+        state.onboarding = Some(Load::Loading);
+        let owner = client.clone();
         let task = client.request(|api| async move { api.account().await });
         window
             .spawn(cx, async move |cx| {
@@ -896,17 +907,19 @@ fn notice(ctx: &SidebarCtx, window: &mut Window, cx: &mut App) -> Option<AnyElem
                 cx.update(|window, cx| {
                     let pending =
                         matches!(&result, Ok(Ok(Some(a))) if a.onboarding_network_id.is_some());
-                    cx.global_mut::<Notice>().onboarding = Some(Load::Ready(pending));
+                    if let Some(state) = notice_state(cx, &owner) {
+                        state.onboarding = Some(Load::Ready(pending));
+                    }
                     window.refresh();
                 })
                 .ok();
             })
             .detach();
     }
-    if !cx.global::<Notice>().guides.contains_key(&network) {
-        cx.global_mut::<Notice>()
-            .guides
-            .insert(network.clone(), Load::Loading);
+    let state = notice_state(cx, &client)?;
+    if !state.guides.contains_key(&network) {
+        state.guides.insert(network.clone(), Load::Loading);
+        let owner = client.clone();
         let id = network.clone();
         let task = client.request(move |api| async move { api.channel_guide(&id).await });
         let key = network.clone();
@@ -919,14 +932,16 @@ fn notice(ctx: &SidebarCtx, window: &mut Window, cx: &mut App) -> Option<AnyElem
                         Ok(Err(e)) => Load::Failed(e.to_string().into()),
                         Err(e) => Load::Failed(e.to_string().into()),
                     };
-                    cx.global_mut::<Notice>().guides.insert(key, loaded);
+                    if let Some(state) = notice_state(cx, &owner) {
+                        state.guides.insert(key, loaded);
+                    }
                     window.refresh();
                 })
                 .ok();
             })
             .detach();
     }
-    let state = cx.global::<Notice>();
+    let state = notice_state(cx, &client)?;
     if !matches!(state.onboarding, Some(Load::Ready(false))) {
         return None;
     }
