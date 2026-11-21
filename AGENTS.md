@@ -34,6 +34,10 @@ client; it never speaks IRC itself. Layout and commands are in
   goes through `t!("id")`, with the text in its own
   `crates/app/i18n/en/<area>.ftl` (IDs start with the file name; the `i18n`
   tests fail on a missing or unused ID). Colours come from `theme::get(cx)`.
+  A person's picture and name colour come from `ui::avatar::person` and
+  `ui::avatar::name_color`: pictures load only from the signed-in server
+  (`people::picture_url`, the web's #278 privacy rule), so never `img()` an
+  `avatar_url` directly.
   A control drawn from a `div` takes `.reachable(&theme)` (`ui/focus.rs`)
   after `.test_support()`, so Tab reaches it; `tests/ui/audit.rs` fails on
   any shown control without a role, a name or keyboard reach.
