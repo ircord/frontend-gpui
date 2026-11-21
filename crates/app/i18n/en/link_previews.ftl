@@ -22,7 +22,7 @@ link-previews-reason-invalid-file = The file could not be read.
 link-previews-reason-fetch-failed = The preview could not be loaded.
 link-previews-reason-busy = The server is busy; the preview will follow.
 link-previews-reason-storage-unavailable = Previews are not available on this server right now.
-link-previews-reason-no-oembed = No preview from this site.
+link-previews-reason-no-oembed = No preview is available for this link.
 link-previews-reason-restricted = This site does not allow previews.
 link-previews-reason-unavailable = No preview available.
 

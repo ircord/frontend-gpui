@@ -228,6 +228,7 @@ pub(crate) fn artwork(id: String, art: &link_media::Artwork, size: ArtSize) -> A
     };
     let chip = div()
         .flex_none()
+        .self_start()
         .max_w_full()
         .flex()
         .items_center()
@@ -260,6 +261,7 @@ pub(crate) fn artwork(id: String, art: &link_media::Artwork, size: ArtSize) -> A
                 .font_weight(FontWeight::BOLD)
                 .text_color(hex(link_media::ARTWORK_TITLE))
                 .line_clamp(if poster { 2 } else { 3 })
+                .text_ellipsis()
                 .child(art.title.clone()),
         )
         .when(poster, |d| {
@@ -269,6 +271,7 @@ pub(crate) fn artwork(id: String, art: &link_media::Artwork, size: ArtSize) -> A
                     .line_height(relative(1.35))
                     .text_color(hex(link_media::ARTWORK_TEXT))
                     .line_clamp(2)
+                    .text_ellipsis()
                     .child(art.description.clone()),
             )
         });
@@ -409,6 +412,7 @@ fn page_card(
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.link)
                 .line_clamp(2)
+                .text_ellipsis()
                 .child(title),
         )
         .when(!description.is_empty(), |d| {
@@ -424,24 +428,30 @@ fn page_card(
                     .line_height(px(19.))
                     .text_color(theme.body)
                     .line_clamp(2)
+                    .text_ellipsis()
                     .child(description),
             )
-        })
-        .child(div().flex_1())
-        .child(div().flex_none().h(px(18.)).child(caption(
-            format!("link-{key}-status"),
-            detail,
-            theme,
-        )));
+        });
     frame(key, &link.url, theme)
         .test_support()
         .role(Role::Link)
         .reachable(theme)
         .aria_label(SharedString::from(link.url.clone()))
+        .relative()
         .h(px(CARD_H))
         .p_3()
         .flex()
         .gap_3()
+        // The status spans the card's foot, under the picture, as on the web.
+        .child(
+            div()
+                .absolute()
+                .left_3()
+                .right_3()
+                .bottom_3()
+                .h(px(18.))
+                .child(caption(format!("link-{key}-status"), detail, theme)),
+        )
         .child(
             div()
                 .size(px(THUMB))
@@ -601,6 +611,7 @@ fn media(
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.text)
                     .line_clamp(2)
+                    .text_ellipsis()
                     .child(text.title.clone()),
             )
         })
@@ -613,6 +624,7 @@ fn media(
                     .text_sm()
                     .text_color(theme.text)
                     .line_clamp(4)
+                    .text_ellipsis()
                     .child(text.caption.clone()),
             )
         })

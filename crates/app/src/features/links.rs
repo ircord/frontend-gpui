@@ -525,6 +525,7 @@ fn open_mark(titled: Option<(String, String)>, play: bool, theme: &Theme) -> Any
                             .font_weight(FontWeight::BOLD)
                             .text_color(hex(0xffffff))
                             .line_clamp(2)
+                            .text_ellipsis()
                             .child(title),
                     ),
             )
@@ -1245,6 +1246,7 @@ impl LinksView {
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text)
                 .line_clamp(2)
+                .text_ellipsis()
                 .when(openable, |d| {
                     d.cursor_pointer()
                         .on_click(move |_, _, cx| cx.open_url(&url))
