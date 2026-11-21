@@ -50,7 +50,7 @@ fn focused(window: &Window) -> Option<Vec<ElementId>> {
 
 /// Check the view on screen: each control it shows has a role and a name
 /// and can hold focus, and Tab reaches each of them. Returns what is wrong.
-fn audit(view: &str, window: &mut Window, cx: &mut gpui_kit::App) -> Vec<String> {
+pub(crate) fn audit(view: &str, window: &mut Window, cx: &mut gpui_kit::App) -> Vec<String> {
     audit_where(view, window, cx, |_| true)
 }
 
