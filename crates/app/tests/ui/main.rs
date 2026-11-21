@@ -10,6 +10,7 @@ mod shell;
 mod commands;
 mod drafts;
 mod inbox_saved;
+mod link_previews;
 mod message_actions;
 mod networks;
 mod people;

@@ -19,6 +19,7 @@ mod channels; // CH1: create and join
 mod commands; // C1: /join, /topic, /nick
 mod emotes; // S5: upload, rename, remove an emoji
 mod inbox_saved; // FD2: save a message and find it
+mod link_previews; // L1: resolve a link in a message
 mod messages; // A1: edit and react
 mod networks; // NW1: add, edit, remove a network
 mod notifications; // S3: change a level

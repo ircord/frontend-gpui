@@ -177,12 +177,8 @@ pub fn render(
     if pictures.is_empty() && files.is_empty() && inline.is_empty() {
         return Vec::new();
     }
-    let covered = context.sensitivity.filter(|_| {
-        !cx.try_global::<Revealed>()
-            .is_some_and(|r| r.0.contains(&m.id))
-    });
     let mut out = Vec::new();
-    if let Some(why) = covered {
+    if let Some(why) = covered(&context, &m.id, cx) {
         let (w, h) = if pictures.len() > 1 {
             (STAGE_W, STAGE_H)
         } else {
@@ -211,6 +207,53 @@ pub fn render(
         out.push(draw.single("image", &inline, i));
     }
     out
+}
+
+/// Why media under `key` is covered, unless the person already showed it.
+fn covered(context: &Context, key: &str, cx: &App) -> Option<Sensitivity> {
+    context.sensitivity.filter(|_| {
+        !cx.try_global::<Revealed>()
+            .is_some_and(|r| r.0.contains(key))
+    })
+}
+
+/// Pictures found behind a link (package L1), drawn as uploads are: covered
+/// in a sensitive channel until shown, one picture sized from what is known
+/// of it, several as one gallery that opens the viewer. `key` names the
+/// elements (`image-{key}-0`, `gallery-{key}`, `attachment-{key}-1`,
+/// `media-cover-{key}`) and what showing covered media remembers.
+pub fn pictures(
+    ctx: &MessageCtx,
+    key: &str,
+    items: &[Media],
+    theme: &Theme,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    if items.is_empty() {
+        return None;
+    }
+    let context = context(ctx, cx)?;
+    if let Some(why) = covered(&context, key, cx) {
+        let (w, h) = if items.len() > 1 {
+            (STAGE_W, STAGE_H)
+        } else {
+            (MAX_W, MAX_H * 0.5)
+        };
+        return Some(cover(ctx, key, why, w, h, theme));
+    }
+    let hovered = cx.try_global::<Hovered>().and_then(|h| h.0.clone());
+    let draw = Draw {
+        ctx,
+        message: key,
+        theme,
+        context: &context,
+        hovered: hovered.as_deref(),
+    };
+    Some(if items.len() == 1 {
+        draw.single("image", items, 0)
+    } else {
+        draw.gallery(items)
+    })
 }
 
 /// The cover over sensitive media, with a button to show it.

@@ -107,9 +107,10 @@ pub struct MessageRow {
     /// draws them as one gallery and file cards). Their URLs are left out of
     /// `body`, as the web client does.
     pub attachments: Vec<Attachment>,
-    /// GIFs and linked pictures, drawn inline.
+    /// GIFs sent from the picker, drawn inline.
     pub images: Vec<Image>,
-    /// Links in the text: each a row that opens the browser.
+    /// Links in the text, linked pictures among them (`message/links.rs`
+    /// previews each through the server's link resolver).
     pub links: Vec<LinkCard>,
 }
 
@@ -127,6 +128,12 @@ pub struct LinkCard {
     pub title: String,
     pub detail: String,
     pub video: bool,
+    /// The link names a picture by its extension.
+    pub picture: bool,
+    /// The picture's size the server measured (`embedGeometry`), or 0: the
+    /// space a preview reserves before it loads.
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -506,19 +513,10 @@ fn message_row(
         {
             continue;
         }
-        if looks_like_image(url) {
-            let geometry = m
-                .embed_geometry
-                .as_ref()
-                .and_then(|g| g.iter().find(|g| &g.url == url));
-            images.push(Image {
-                url: url.clone(),
-                width: geometry.map_or(0, |g| g.width.max(0) as u32),
-                height: geometry.map_or(0, |g| g.height.max(0) as u32),
-                alt: String::new(),
-            });
-            continue;
-        }
+        let geometry = m
+            .embed_geometry
+            .as_ref()
+            .and_then(|g| g.iter().find(|g| &g.url == url));
         let video = is_video(url);
         links.push(LinkCard {
             url: url.clone(),
@@ -529,6 +527,9 @@ fn message_row(
                 t!("timeline-link-opens").into()
             },
             video,
+            picture: looks_like_image(url),
+            width: geometry.map_or(0, |g| g.width.max(0) as u32),
+            height: geometry.map_or(0, |g| g.height.max(0) as u32),
         });
     }
     let version = {
@@ -835,8 +836,12 @@ mod tests {
         let Some(Row::Message(m)) = rows.iter().find(|r| matches!(r, Row::Message(_))) else {
             panic!()
         };
-        assert_eq!(m.images.len(), 1);
-        assert!(m.links.is_empty());
+        assert!(m.images.is_empty());
+        assert_eq!(m.links.len(), 1);
+        assert!(
+            m.links[0].picture,
+            "a linked picture is previewed as a link"
+        );
         assert_eq!(m.attachments.len(), 1);
         assert_eq!(
             m.body.text, "look https://x.y/cat.png",

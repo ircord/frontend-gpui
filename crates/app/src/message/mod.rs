@@ -113,7 +113,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
     column = column
         .children(reactions::render(m, &view.ctx, theme, window, cx))
         .children(attachments::render(m, &view.ctx, theme, window, cx))
-        .children(links::render(m, theme));
+        .children(links::render(m, &view.ctx, theme, window, cx));
 
     let gutter = if m.header && !m.action {
         person(
