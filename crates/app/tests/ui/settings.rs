@@ -86,13 +86,21 @@ fn open_settings(f: &Fixture, cx: &mut TestAppContext) {
     .unwrap();
     assert_eq!(route(f, cx), Some(Route::Settings));
     shows(f, cx, "settings-content");
+    // Profile (S4) is the first section; these tests are about Account.
+    shows(f, cx, "settings-section-account");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("settings-section-account", cx);
+    })
+    .unwrap();
+    shows(f, cx, "account-summary");
 }
 
 #[gpui_kit::test]
 fn the_gear_and_the_key_open_settings_with_sections_under_headings(cx: &mut TestAppContext) {
     let f = signed_in(cx);
     open_settings(&f, cx);
-    // Account comes first: it is the first section under "User settings".
+    // Account is under "User settings", after Profile.
     assert_eq!(
         label(&f, cx, "settings-content").as_deref(),
         Some("Account")
