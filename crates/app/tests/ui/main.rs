@@ -8,6 +8,7 @@ mod registries;
 mod shell;
 
 mod appearance;
+mod channels;
 mod commands;
 mod drafts;
 mod inbox_saved;
