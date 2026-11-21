@@ -13,12 +13,14 @@
 //! - [`client`]: the handle the app holds, with the generic `call`, and
 //!   [`documents`]: the server's revisioned documents.
 //! - [`features`] and [`irc`]: what a network allows, channel ranks.
+//! - [`channel_modes`]: channel modes, list masks and the mask builder.
 //! - [`search_filter`]: message search filters, recent searches and where
 //!   results come from.
 //! - [`testing`] (feature `test-support`): a canned server and fixtures.
 
 pub mod address;
 pub mod api;
+pub mod channel_modes;
 pub mod client;
 pub mod commands;
 pub mod config;

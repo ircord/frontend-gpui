@@ -8,6 +8,7 @@ mod registries;
 mod shell;
 
 mod appearance;
+mod channel_settings;
 mod channels;
 mod commands;
 mod desktop;
