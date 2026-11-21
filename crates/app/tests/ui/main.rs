@@ -14,6 +14,7 @@ mod inbox_saved;
 mod link_previews;
 mod message_actions;
 mod networks;
+mod notifications;
 mod people;
 mod search;
 mod server_window;

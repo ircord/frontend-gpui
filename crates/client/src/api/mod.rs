@@ -29,7 +29,7 @@ mod inbox;
 pub mod links;
 mod messages;
 pub mod networks;
-mod notifications;
+pub mod notifications;
 mod parties;
 pub mod people;
 mod saved;
