@@ -92,7 +92,9 @@ pub fn init(cx: &mut App) {
             KeyDefault::new(
                 "search-conversation",
                 t!("search-key-conversation"),
-                if MAC { "cmd-f" } else { "ctrl-f" },
+                // Ctrl+F alone is the text field's own find, so it never reaches
+                // here while typing.
+                if MAC { "cmd-alt-f" } else { "ctrl-alt-f" },
                 Some("Root"),
                 SearchConversation,
             )
@@ -394,7 +396,11 @@ fn member_name(m: &c::Member) -> String {
 
 /// Everyone to choose from, by name, without yourself.
 fn people(w: &Workspace) -> Vec<&c::Member> {
-    let mut people: Vec<&c::Member> = w.members.values().filter(|m| m.id != w.user.id).collect();
+    let mut people: Vec<&c::Member> = w
+        .members
+        .values()
+        .filter(|m| m.id != w.user.id && !w.networks.iter().any(|n| w.is_self(&m.id, &n.id)))
+        .collect();
     people.sort_by_key(|m| member_name(m).to_lowercase());
     people.dedup_by_key(|m| m.id.clone());
     people
@@ -831,9 +837,9 @@ fn result_row(
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     let network = &result.conversation.network_id;
-    let member = w
-        .member(&result.message.sender_id, network)
-        .map(member_name);
+    let sender = &result.message.sender_id;
+    let member = (w.is_self(sender, network) || w.member(sender, network).is_some())
+        .then(|| w.display_name(sender, network));
     let author = sf::result_author(result, member).unwrap_or_else(|| t!("search-someone").into());
     let place = w
         .conversation(&result.conversation.id)
@@ -873,8 +879,9 @@ fn result_row(
         .child(
             div()
                 .flex()
+                .flex_wrap()
                 .items_center()
-                .gap_2()
+                .gap_x_2()
                 .text_sm()
                 .child(
                     div()
