@@ -153,6 +153,14 @@ pub struct HeaderCtx {
     pub route: Route,
 }
 
+/// The main pane, for banners across its top.
+#[derive(Clone)]
+pub struct BannerCtx {
+    pub session: Entity<Session>,
+    /// What the main pane shows, if anything.
+    pub route: Option<Route>,
+}
+
 #[derive(Clone)]
 pub struct PaneCtx {
     pub session: Entity<Session>,
@@ -695,6 +703,9 @@ pub struct Registry {
     pub composer: ComposerSlots,
     /// Buttons at the right of the conversation header.
     pub header_buttons: List<Slot<HeaderCtx>>,
+    /// Across the top of the main pane, under the conversation header and
+    /// the connection banner, on every route (invitations).
+    pub banners: List<Slot<BannerCtx>>,
     /// Under the conversation list, above the account footer (the
     /// connection indicator).
     pub sidebar_footer: List<Slot<SidebarCtx>>,

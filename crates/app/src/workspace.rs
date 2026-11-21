@@ -1,5 +1,5 @@
-//! The signed-in layout: rail and sidebar, the connection banner, the main
-//! pane, and the right-hand panel.
+//! The signed-in layout: rail and sidebar, the connection banner and the
+//! registered banners, the main pane, and the right-hand panel.
 //!
 //! The main pane shows the session's route: a conversation (header,
 //! timeline, composer) is drawn here; any other route by the pane a feature
@@ -10,11 +10,11 @@ use gpui_kit::TestSupportExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::{ConversationKind, NetworkStatus};
-use ircord_client::store::Connection;
+use ircord_client::store::{Connection, parties};
 
 use crate::composer::ComposerView;
 use crate::members::MembersView;
-use crate::registry::{self, HeaderCtx, PaneCtx, PanelCtx};
+use crate::registry::{self, BannerCtx, HeaderCtx, PaneCtx, PanelCtx};
 use crate::route::Route;
 use crate::session::{Session, SessionEvent};
 use crate::sidebar::SidebarView;
@@ -121,20 +121,28 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let session = self.session.read(cx);
-        let (title, topic, kind) = session
+        let (title, topic, kind, party) = session
             .client()
             .and_then(|client| {
                 let w = client.read();
                 w.conversation(id).map(|conv| {
                     (
-                        conv.name.clone(),
+                        parties::title(&w, conv),
                         ircord_client::format::parse(&conv.topic).text,
                         conv.kind,
+                        conv.party.is_some(),
                     )
                 })
             })
-            .unwrap_or((String::new(), String::new(), ConversationKind::Channel));
-        let prefix = if kind == ConversationKind::Channel {
+            .unwrap_or((
+                String::new(),
+                String::new(),
+                ConversationKind::Channel,
+                false,
+            ));
+        let prefix = if party {
+            ""
+        } else if kind == ConversationKind::Channel {
             "#"
         } else {
             "@"
@@ -279,6 +287,17 @@ impl Render for WorkspaceView {
                     .child(text),
             );
         }
+        let ctx = BannerCtx {
+            session: self.session.clone(),
+            route: route.clone(),
+        };
+        let banners: Vec<AnyElement> = registry::get(cx)
+            .banners
+            .to_vec()
+            .iter()
+            .filter_map(|slot| (slot.render)(&ctx, window, cx))
+            .collect();
+        main = main.children(banners);
         if let Some(notice) = &self.notice {
             main = main.child(
                 div()

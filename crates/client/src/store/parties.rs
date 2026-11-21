@@ -4,8 +4,8 @@
 //! workspace's `parties` field) and react to events in [`apply`]; report what
 //! changed with `Changes::topic(TOPIC)` or `Changes::topic_id(TOPIC, id)`.
 
-use ircord_contract::Snapshot;
 use ircord_contract::event::ServerEvent;
+use ircord_contract::{Conversation, Snapshot};
 
 use super::{Changes, Workspace};
 
@@ -23,4 +23,10 @@ pub(super) fn apply(_w: &mut Workspace, _event: &ServerEvent, _now_ms: i64) -> C
 /// Called when a bootstrap replaces the workspace, before it is replaced.
 pub(super) fn reset(_w: &mut Workspace, _snapshot: &Snapshot) -> Changes {
     Changes::default()
+}
+
+/// What a conversation is called in the sidebar and its header: a group's
+/// name, else the people in it; any other conversation's name.
+pub fn title(_w: &Workspace, c: &Conversation) -> String {
+    c.name.clone()
 }

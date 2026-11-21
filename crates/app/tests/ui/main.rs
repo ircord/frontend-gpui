@@ -17,6 +17,7 @@ mod links_view;
 mod message_actions;
 mod networks;
 mod notifications;
+mod parties;
 mod people;
 mod search;
 mod server_window;

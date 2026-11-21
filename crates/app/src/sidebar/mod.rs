@@ -28,7 +28,7 @@ use ircord_client::contract::{Conversation, ConversationKind, NetworkStatus};
 use ircord_client::store::sidebar_order::{
     self as order, Activity, Filter, PANEL_WIDTH, Place, SIDEBAR_WIDTH, Section,
 };
-use ircord_client::store::{Workspace, topic};
+use ircord_client::store::{Workspace, parties, topic};
 
 use crate::registry::{self, ConversationCtx, NetworkCtx, SidebarCtx};
 use crate::session::{Session, SessionEvent};
@@ -211,7 +211,9 @@ fn network_label(name: &str, status: NetworkStatus, activity: Activity) -> Strin
 }
 
 fn prefix(c: &Conversation) -> &'static str {
-    if c.kind == ConversationKind::Channel {
+    if c.party.is_some() {
+        ""
+    } else if c.kind == ConversationKind::Channel {
         "#"
     } else {
         "@"
@@ -348,13 +350,14 @@ impl SidebarView {
     ) -> AnyElement {
         let unread = c.unread_count > 0 || c.unread_from.is_some();
         let muted = order::muted(w, c);
+        let name = parties::title(w, c);
         let id = c.id.clone();
         let session = self.session.clone();
         let mut row = div()
             .id(ElementId::Name(format!("conversation-{}", c.id).into()))
             .test_support()
             .role(Role::Button)
-            .aria_label(SharedString::from(c.name.clone()))
+            .aria_label(SharedString::from(name.clone()))
             .aria_selected(active)
             .group("conversation-row")
             .px_2()
@@ -374,7 +377,7 @@ impl SidebarView {
             .when(unread && !muted, |d| d.font_weight(FontWeight::SEMIBOLD))
             .when(!c.joined || muted, |d| d.opacity(0.6))
             .child(div().text_color(theme.faint).child(prefix(c)))
-            .child(div().flex_1().truncate().child(c.name.clone()))
+            .child(div().flex_1().truncate().child(name.clone()))
             .on_click(move |_, _, cx| session.update(cx, |s, cx| s.select_conversation(&id, cx)));
         if let Some(n) = number {
             row = row.aria_description(SharedString::from(number_label(n)));
@@ -396,7 +399,7 @@ impl SidebarView {
                 id: c.id.clone(),
                 network: c.network_id.clone(),
                 section,
-                name: SharedString::from(format!("{}{}", prefix(c), c.name)),
+                name: SharedString::from(format!("{}{}", prefix(c), name)),
             };
             let accent = theme.accent;
             let target = c.id.clone();
@@ -622,15 +625,16 @@ impl SidebarView {
                 let active = selected == Some(c.id.as_str());
                 let id = c.id.clone();
                 let session = self.session.clone();
-                let initial: String = c.name.chars().take(2).collect();
+                let name = parties::title(w, c);
+                let initial: String = name.chars().take(2).collect();
                 let unread = c.unread_count > 0 && !order::muted(w, c);
                 column = column.child(
                     div()
                         .id(ElementId::Name(format!("folded-{}", c.id).into()))
                         .test_support()
                         .role(Role::Button)
-                        .aria_label(SharedString::from(c.name.clone()))
-                        .tooltip(ui::tooltip::text(format!("{}{}", prefix(c), c.name)))
+                        .aria_label(SharedString::from(name.clone()))
+                        .tooltip(ui::tooltip::text(format!("{}{}", prefix(c), name)))
                         .size(px(38.))
                         .flex_none()
                         .rounded_md()
