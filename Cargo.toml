@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = ["crates/contract", "crates/client", "crates/app", "xtask"]
+default-members = ["crates/contract", "crates/client", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+ircord-contract = { path = "crates/contract" }
+ircord-client = { path = "crates/client" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+
+# GPUI's Windows backend compiles its shaders with fxc.exe in build.rs, which
+# only runs when the build machine is Windows. The vendored copy compiles the
+# same HLSL at start-up instead, so the .exe can be cross-built on Linux.
+# See vendor/README.md before bumping gpui-kit.
+[patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+
+[profile.release]
+debug = false
+strip = true

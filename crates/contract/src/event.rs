@@ -1,0 +1,230 @@
+//! The event socket's envelope.
+//!
+//! The server sends `{ "v": 1, "type": ..., "seq"?: n, "data"?: ... }`. The
+//! generated union in `openapi.json` is untagged and would reject a type this
+//! client does not know, so the envelope is decoded by hand: the `type` picks
+//! the payload, and an unknown type, or a known type whose payload no longer
+//! decodes, becomes [`ServerEvent::Unknown`] carrying its sequence number so
+//! the cursor still advances.
+
+use crate::generated::*;
+use serde::Deserialize;
+use serde_json::Value;
+
+/// One frame from `GET /api/v1/events`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ServerEvent {
+    Ready(SessionReady),
+    Synced(SessionSynced),
+    Resync(SessionResync),
+    CommandError(CommandError),
+    Typing(TypingData),
+    Alert(Alert),
+    Routing(RoutingSnapshot),
+    /// A durable event with its replay sequence number.
+    Durable { seq: i64, event: Durable },
+    /// A frame this client does not understand: no `seq`, or a payload that no longer decodes.
+    Unknown { kind: String, seq: Option<i64> },
+}
+
+/// The durable events this client acts on. Everything else is `Other`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Durable {
+    MessageCreated(Message),
+    MessageUpdated(Message),
+    ConversationUpdated(Conversation),
+    ConversationCounts(ConversationCounts),
+    ConversationRemoved(Removal),
+    NetworkUpdated(Network),
+    NetworkRemoved(Removal),
+    MemberUpdated(Member),
+    ProfileUpdated(Member),
+    InvitationReceived(Invitation),
+    InvitationRemoved(Removal),
+    HistorySynced(HistoryUpdate),
+    HistoryGap(HistoryUpdate),
+    HistoryFailed(HistoryUpdate),
+    ConnectionUpdated(ConnectionInfo),
+    /// A durable event the client has no use for yet (saved, inbox, themes...).
+    Other(String),
+}
+
+#[derive(Deserialize)]
+struct Envelope {
+    #[serde(rename = "type", default)]
+    kind: String,
+    #[serde(default)]
+    seq: Option<i64>,
+    #[serde(default)]
+    data: Value,
+}
+
+impl ServerEvent {
+    /// Decode one text frame. Only malformed JSON is an error.
+    pub fn decode(text: &str) -> Result<Self, serde_json::Error> {
+        let raw: Value = serde_json::from_str(text)?;
+        let envelope: Envelope = serde_json::from_value(raw.clone())?;
+        Ok(Self::from_envelope(raw, envelope))
+    }
+
+    /// The durable sequence number, if this frame has one.
+    pub fn seq(&self) -> Option<i64> {
+        match self {
+            ServerEvent::Durable { seq, .. } => Some(*seq),
+            ServerEvent::Unknown { seq, .. } => *seq,
+            _ => None,
+        }
+    }
+
+    fn from_envelope(raw: Value, e: Envelope) -> Self {
+        fn whole<T: for<'de> Deserialize<'de>>(raw: Value) -> Option<T> {
+            serde_json::from_value(raw).ok()
+        }
+        fn data<T: for<'de> Deserialize<'de>>(data: Value) -> Option<T> {
+            serde_json::from_value(data).ok()
+        }
+        let unknown = |kind: &str, seq| ServerEvent::Unknown {
+            kind: kind.to_string(),
+            seq,
+        };
+        let decoded = match e.kind.as_str() {
+            "session.ready" => whole(raw).map(ServerEvent::Ready),
+            "session.synced" => whole(raw).map(ServerEvent::Synced),
+            "session.resync" => whole(raw).map(ServerEvent::Resync),
+            "command.error" => whole(raw).map(ServerEvent::CommandError),
+            "typing" => data(e.data).map(ServerEvent::Typing),
+            "notification.alert" => data(e.data).map(ServerEvent::Alert),
+            "notification.routing" => data(e.data).map(ServerEvent::Routing),
+            kind => match e.seq {
+                Some(seq) => Self::durable(kind, e.data).map(|event| ServerEvent::Durable { seq, event }),
+                None => None,
+            },
+        };
+        decoded.unwrap_or_else(|| unknown(&e.kind, e.seq))
+    }
+
+    fn durable(kind: &str, d: Value) -> Option<Durable> {
+        fn de<T: for<'de> Deserialize<'de>>(d: Value) -> Option<T> {
+            serde_json::from_value(d).ok()
+        }
+        Some(match kind {
+            "message.created" => Durable::MessageCreated(de(d)?),
+            "message.updated" => Durable::MessageUpdated(de(d)?),
+            "conversation.updated" => Durable::ConversationUpdated(de(d)?),
+            "conversation.counts" => Durable::ConversationCounts(de(d)?),
+            "conversation.removed" => Durable::ConversationRemoved(de(d)?),
+            "network.updated" => Durable::NetworkUpdated(de(d)?),
+            "network.removed" => Durable::NetworkRemoved(de(d)?),
+            "member.updated" => Durable::MemberUpdated(de(d)?),
+            "profile.updated" => Durable::ProfileUpdated(de(d)?),
+            "invitation.received" => Durable::InvitationReceived(de(d)?),
+            "invitation.removed" => Durable::InvitationRemoved(de(d)?),
+            "history.synced" => Durable::HistorySynced(de(d)?),
+            "history.gap" => Durable::HistoryGap(de(d)?),
+            "history.sync.failed" => Durable::HistoryFailed(de(d)?),
+            "connection.updated" => Durable::ConnectionUpdated(de(d)?),
+            other => Durable::Other(other.to_string()),
+        })
+    }
+}
+
+/// `session.resume`: the first frame the client sends.
+pub fn resume_frame(after: i64, tab: &str, incarnation: &str) -> String {
+    serde_json::to_string(&SessionResume {
+        after,
+        incarnation: Some(incarnation.to_string()),
+        sync: Some(true),
+        tab: Some(tab.to_string()),
+        r#type: "session.resume".to_string(),
+        v: 1,
+    })
+    .expect("resume frame serialises")
+}
+
+/// `typing.set`: the only command the socket accepts.
+pub fn typing_frame(conversation_id: &str, state: TypingCommandState) -> String {
+    serde_json::to_string(&TypingCommand {
+        conversation_id: conversation_id.to_string(),
+        state,
+        r#type: "typing.set".to_string(),
+        v: 1,
+    })
+    .expect("typing frame serialises")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_a_real_session_ready_frame() {
+        let e = ServerEvent::decode(
+            r#"{"v":1,"type":"session.ready","cursor":7,"routing":true,"emoteVersion":3}"#,
+        )
+        .unwrap();
+        match e {
+            ServerEvent::Ready(r) => {
+                assert_eq!(r.cursor, 7);
+                assert_eq!(r.routing, Some(true));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_event_types_keep_their_sequence() {
+        let e = ServerEvent::decode(r#"{"v":1,"seq":12,"type":"brand.new","data":{"x":1}}"#)
+            .unwrap();
+        assert_eq!(
+            e,
+            ServerEvent::Durable {
+                seq: 12,
+                event: Durable::Other("brand.new".into())
+            }
+        );
+        assert_eq!(e.seq(), Some(12));
+        let e = ServerEvent::decode(r#"{"v":1,"type":"brand.new.ephemeral"}"#).unwrap();
+        assert_eq!(e.seq(), None);
+        assert!(matches!(e, ServerEvent::Unknown { .. }));
+    }
+
+    #[test]
+    fn unused_durable_events_still_advance() {
+        let e = ServerEvent::decode(r#"{"v":1,"seq":3,"type":"saved.added","data":{}}"#).unwrap();
+        assert_eq!(
+            e,
+            ServerEvent::Durable {
+                seq: 3,
+                event: Durable::Other("saved.added".into())
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_fields_and_enum_values_are_tolerated() {
+        let e = ServerEvent::decode(
+            r#"{"v":1,"seq":5,"type":"message.created","data":{"id":"m1","conversationId":"c1",
+            "createdAt":"2026-11-21T10:00:00Z","kind":"hologram","senderId":"u1","text":"hi",
+            "reactions":[],"futureField":{"deep":true}}}"#,
+        )
+        .unwrap();
+        let ServerEvent::Durable {
+            event: Durable::MessageCreated(m),
+            ..
+        } = e
+        else {
+            panic!("{e:?}")
+        };
+        assert_eq!(m.kind, MessageKind::Unknown);
+        assert_eq!(m.text, "hi");
+    }
+
+    #[test]
+    fn resume_frame_matches_the_contract() {
+        let v: Value = serde_json::from_str(&resume_frame(9, "tab", "inc")).unwrap();
+        assert_eq!(v["type"], "session.resume");
+        assert_eq!(v["after"], 9);
+        assert_eq!(v["sync"], true);
+        assert_eq!(v["v"], 1);
+    }
+}
