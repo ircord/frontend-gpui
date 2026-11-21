@@ -19,6 +19,392 @@ impl Api {
     pub async fn app_emoji_catalog(&self) -> Result<c::AppEmojiCatalog, ApiError> {
         self.get("/api/v1/app/emoji/catalog").await
     }
+
+    /// `POST /api/v1/emotes`: upload a picture as a new emote, as
+    /// `multipart/form-data`.
+    pub async fn upload_emote(&self, emote: &NewEmote) -> Result<c::Emote, ApiError> {
+        let boundary = format!("ircord-{}", crate::client::random_id());
+        let mut body = Vec::with_capacity(emote.bytes.len() + 1024);
+        let mut text = |name: &str, value: &str| {
+            body.extend_from_slice(
+                format!(
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+                )
+                .as_bytes(),
+            );
+        };
+        text("shortcode", &emote.shortcode);
+        if !emote.aliases.is_empty() {
+            text("aliases", &emote.aliases.join(","));
+        }
+        let mut file = |name: &str, filename: &str, content_type: &str, bytes: &[u8]| {
+            body.extend_from_slice(
+                format!(
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{}\"\r\nContent-Type: {content_type}\r\n\r\n",
+                    quoted_name(filename)
+                )
+                .as_bytes(),
+            );
+            body.extend_from_slice(bytes);
+            body.extend_from_slice(b"\r\n");
+        };
+        file("file", &emote.file_name, &emote.content_type, &emote.bytes);
+        if let Some(still) = &emote.still {
+            file("still", "still.png", "image/png", still);
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        let request = self
+            .request(Method::POST, "/api/v1/emotes")
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(body);
+        self.json(request).await
+    }
+
+    /// `POST /api/v1/emotes/imports`: copy an emote from 7TV, FrankerFaceZ
+    /// or emoji.gg onto the server.
+    pub async fn import_emote(&self, import: &c::EmoteImport) -> Result<c::Emote, ApiError> {
+        self.call(Method::POST, "/api/v1/emotes/imports", import)
+            .await
+    }
+
+    /// `PATCH /api/v1/emotes/{id}`: rename, re-alias, enable or disable.
+    pub async fn update_emote(
+        &self,
+        id: &str,
+        patch: &c::EmotePatch,
+    ) -> Result<c::Emote, ApiError> {
+        self.call(
+            Method::PATCH,
+            &format!("/api/v1/emotes/{}", segment(id)),
+            patch,
+        )
+        .await
+    }
+
+    /// `DELETE /api/v1/emotes/{id}`: remove an emote for everyone.
+    pub async fn delete_emote(&self, id: &str) -> Result<(), ApiError> {
+        self.delete(&format!("/api/v1/emotes/{}", segment(id)))
+            .await
+    }
+
+    /// `GET /api/v1/emotes/discover`: one page of the providers' emoji.
+    pub async fn discover_emotes(&self, query: &Discover) -> Result<c::DiscoveryResult, ApiError> {
+        let mut params: Vec<(&str, String)> = vec![("limit", query.limit.to_string())];
+        for (name, value) in [
+            ("source", &query.source),
+            ("query", &query.query),
+            ("animation", &query.animation),
+            ("cursor", &query.cursor),
+        ] {
+            let value = value.trim();
+            if !value.is_empty() {
+                params.push((name, value.to_string()));
+            }
+        }
+        self.get_query("/api/v1/emotes/discover", &params).await
+    }
+}
+
+/// A picture to upload as an emote.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NewEmote {
+    pub file_name: String,
+    /// One of the catalog's `types`, from [`image_type`].
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+    /// A still PNG of the first frame, for viewers with animation off. The
+    /// server keeps it only for an animated WebP or PNG; it takes a GIF's
+    /// first frame itself.
+    pub still: Option<Vec<u8>>,
+    pub shortcode: String,
+    pub aliases: Vec<String>,
+}
+
+/// A discovery page to ask for. Empty strings are left out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Discover {
+    pub source: String,
+    pub query: String,
+    /// `all`, `static` or `animated`.
+    pub animation: String,
+    pub cursor: String,
+    pub limit: u32,
+}
+
+impl Default for Discover {
+    fn default() -> Self {
+        Self {
+            source: String::new(),
+            query: String::new(),
+            animation: "all".into(),
+            cursor: String::new(),
+            limit: DISCOVER_PAGE,
+        }
+    }
+}
+
+/// Discovery results per page, as the web client asks.
+pub const DISCOVER_PAGE: u32 = 30;
+
+/// The longest shortcode the server takes.
+pub const SHORTCODE_MAX: usize = 32;
+
+/// `Content-Disposition` wants a quoted name without quotes or line breaks.
+fn quoted_name(name: &str) -> String {
+    name.chars()
+        .map(|ch| match ch {
+            '"' | '\r' | '\n' | '\\' => '_',
+            ch => ch,
+        })
+        .collect()
+}
+
+/// The picture's type from its first bytes: PNG, GIF, WebP or JPEG, the
+/// types the server takes.
+pub fn image_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else {
+        None
+    }
+}
+
+/// A shortcode made from a file or emoji name, as the web client suggests
+/// one: lowercase, every run of other characters one `_`, at most 32.
+pub fn suggest_shortcode(name: &str) -> String {
+    let mut out = String::new();
+    let mut gap = false;
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch.to_ascii_lowercase());
+            gap = false;
+        } else if !gap {
+            out.push('_');
+            gap = true;
+        }
+    }
+    out.chars().take(SHORTCODE_MAX).collect()
+}
+
+/// The aliases typed as `a, b, c`: trimmed, empty ones left out.
+pub fn split_aliases(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// An emote link or ID pasted for import: a 7TV emote (its page or its
+/// 26-character ID) or a FrankerFaceZ one (its page, API URL, `ffz:` ID or
+/// bare number), as the web client's `parseProviderEmote`.
+pub fn parse_provider_link(text: &str) -> Option<(c::EmoteImportProvider, String)> {
+    let text = text.trim();
+    let without_scheme = |t: &str| -> Option<String> {
+        let rest = t
+            .strip_prefix("https://")
+            .or_else(|| t.strip_prefix("http://"))?;
+        Some(rest.strip_prefix("www.").unwrap_or(rest).to_string())
+    };
+    let trailing = |t: &str| t.strip_suffix('/').unwrap_or(t).to_string();
+
+    // 7TV.
+    let seven = match without_scheme(text) {
+        Some(rest) => rest
+            .strip_prefix("7tv.app/emotes/")
+            .or_else(|| rest.strip_prefix("7tv.io/v3/emotes/"))
+            .map(trailing),
+        None => Some(trailing(text)),
+    };
+    if let Some(id) = seven
+        && id.len() == 26
+        && id.chars().all(|ch| {
+            let ch = ch.to_ascii_uppercase();
+            ch.is_ascii_digit() || (ch.is_ascii_uppercase() && !matches!(ch, 'I' | 'L' | 'O' | 'U'))
+        })
+    {
+        return Some((c::EmoteImportProvider::V7tv, id.to_ascii_uppercase()));
+    }
+
+    // FrankerFaceZ.
+    let ffz = match without_scheme(text) {
+        Some(rest) => rest
+            .strip_prefix("frankerfacez.com/emoticon/")
+            .or_else(|| {
+                // Only the API host, not `www.api…`.
+                text.strip_prefix("https://")
+                    .or_else(|| text.strip_prefix("http://"))?
+                    .strip_prefix("api.frankerfacez.com/v1/emote/")
+            })
+            .map(trailing),
+        None => Some(trailing(text.strip_prefix("ffz:").unwrap_or(text))),
+    }?;
+    let (digits, rest) = ffz.split_at(
+        ffz.find(|ch: char| !ch.is_ascii_digit())
+            .unwrap_or(ffz.len()),
+    );
+    let slug_ok = rest.is_empty()
+        || rest.strip_prefix('-').is_some_and(|slug| {
+            slug.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+        });
+    if (1..=10).contains(&digits.len()) && slug_ok {
+        return Some((c::EmoteImportProvider::Ffz, digits.to_string()));
+    }
+    None
+}
+
+/// The provider's name as people know it.
+pub fn provider_name(source: c::EmoteSource) -> Option<&'static str> {
+    match source {
+        c::EmoteSource::V7tv => Some("7TV"),
+        c::EmoteSource::Ffz => Some("FrankerFaceZ"),
+        c::EmoteSource::EmojiGg => Some("emoji.gg"),
+        _ => None,
+    }
+}
+
+/// The source of a discovered emoji, for importing it.
+pub fn import_provider(provider: &str) -> c::EmoteImportProvider {
+    match provider {
+        "7tv" => c::EmoteImportProvider::V7tv,
+        "ffz" => c::EmoteImportProvider::Ffz,
+        "emoji.gg" => c::EmoteImportProvider::EmojiGg,
+        _ => c::EmoteImportProvider::Unknown,
+    }
+}
+
+/// Whether `emote` is a server emote that came from this discovered emoji.
+pub fn is_installed(item: &c::DiscoveryItem, catalog: &[c::Emote]) -> bool {
+    item.installed
+        || catalog.iter().any(|e| {
+            e.provider_id.as_deref() == Some(item.provider_id.as_str())
+                && import_provider(&item.provider) != c::EmoteImportProvider::Unknown
+                && serde_json::to_value(e.source).ok()
+                    == Some(serde_json::Value::String(item.provider.clone()))
+        })
+}
+
+/// Whether `emote` matches what was typed in the search: its shortcode,
+/// name, creator, source or an alias contain it, ignoring case.
+pub fn emote_matches(emote: &c::Emote, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    let source = serde_json::to_value(emote.source)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    [
+        Some(emote.shortcode.as_str()),
+        Some(emote.name.as_str()),
+        emote.creator.as_deref(),
+        Some(source.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .chain(emote.aliases.iter().flatten().map(String::as_str))
+    .any(|v| v.to_lowercase().contains(&query))
+}
+
+#[cfg(test)]
+mod emote_tests {
+    use super::*;
+
+    #[test]
+    fn provider_links() {
+        let seven = Some((
+            c::EmoteImportProvider::V7tv,
+            "01GA29CZ2R000C36HNE7Z0DQXD".to_string(),
+        ));
+        assert_eq!(
+            parse_provider_link("https://7tv.app/emotes/01GA29CZ2R000C36HNE7Z0DQXD"),
+            seven
+        );
+        assert_eq!(
+            parse_provider_link(" https://www.7tv.app/emotes/01ga29cz2r000c36hne7z0dqxd/ "),
+            seven
+        );
+        assert_eq!(
+            parse_provider_link("https://7tv.io/v3/emotes/01GA29CZ2R000C36HNE7Z0DQXD"),
+            seven
+        );
+        assert_eq!(parse_provider_link("01GA29CZ2R000C36HNE7Z0DQXD"), seven);
+        let ffz = Some((c::EmoteImportProvider::Ffz, "128054".to_string()));
+        assert_eq!(
+            parse_provider_link("https://www.frankerfacez.com/emoticon/128054-OMEGALUL"),
+            ffz
+        );
+        assert_eq!(
+            parse_provider_link("https://api.frankerfacez.com/v1/emote/128054"),
+            ffz
+        );
+        assert_eq!(parse_provider_link("ffz:128054"), ffz);
+        assert_eq!(parse_provider_link("128054"), ffz);
+        for wrong in [
+            "",
+            "https://example.com/emotes/01GA29CZ2R000C36HNE7Z0DQXD",
+            "01GA29CZ2R000C36HNE7Z0DQXU",
+            "12345678901",
+            "ffz:abc",
+            "https://7tv.app/emotes/short",
+        ] {
+            assert_eq!(parse_provider_link(wrong), None, "{wrong}");
+        }
+    }
+
+    #[test]
+    fn shortcodes_and_aliases() {
+        assert_eq!(suggest_shortcode("Party Parrot.v2"), "party_parrot_v2");
+        assert_eq!(suggest_shortcode("ÄÖ--x"), "_x");
+        assert_eq!(suggest_shortcode(&"a".repeat(40)).len(), 32);
+        assert_eq!(split_aliases(" a, ,b ,c,"), vec!["a", "b", "c"]);
+        assert!(split_aliases("  ").is_empty());
+    }
+
+    #[test]
+    fn picture_types() {
+        assert_eq!(image_type(b"\x89PNG\r\n\x1a\n...."), Some("image/png"));
+        assert_eq!(image_type(b"GIF89a.."), Some("image/gif"));
+        assert_eq!(image_type(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
+        assert_eq!(image_type(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+        assert_eq!(image_type(b"<svg"), None);
+    }
+
+    #[test]
+    fn search_and_installed() {
+        let emote: c::Emote = serde_json::from_value(serde_json::json!({
+            "id": "e1", "name": "PartyParrot", "shortcode": "parrot", "aliases": ["birb"],
+            "retired": [], "enabled": true, "animated": true, "url": "/u", "staticUrl": "/s",
+            "width": 32, "height": 32, "source": "7tv", "providerId": "P1", "creator": "Ann",
+            "canManage": true, "createdAt": "", "updatedAt": ""
+        }))
+        .unwrap();
+        for q in ["", "PARR", "birb", "ann", "7tv", "party"] {
+            assert!(emote_matches(&emote, q), "{q}");
+        }
+        assert!(!emote_matches(&emote, "cat"));
+        let mut item = c::DiscoveryItem {
+            provider: "7tv".into(),
+            provider_id: "P1".into(),
+            ..Default::default()
+        };
+        assert!(is_installed(&item, std::slice::from_ref(&emote)));
+        item.provider = "emoji.gg".into();
+        assert!(!is_installed(&item, std::slice::from_ref(&emote)));
+        item.installed = true;
+        assert!(is_installed(&item, &[]));
+    }
 }
 
 /// GIF search through Klipy, the way the web client does it: requests go

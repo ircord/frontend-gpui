@@ -155,3 +155,114 @@ fn e1_catalogs_library_and_a_gif_message() {
         },
     );
 }
+
+/// An 8×8 red PNG.
+const RED_PNG: [u8; 75] = [
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 8, 0, 0, 0, 8, 8, 6, 0,
+    0, 0, 196, 15, 190, 139, 0, 0, 0, 18, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 31, 31,
+    102, 24, 25, 10, 0, 194, 215, 127, 129, 47, 113, 224, 1, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+    96, 130,
+];
+
+#[test]
+fn s5_upload_rename_and_remove_an_emoji() {
+    use ircord_client::api::emotes::{NewEmote, image_type};
+
+    let Some((server, irc)) = environment() else {
+        return;
+    };
+    let channel = format!("#{}", unique("emotes"));
+    let rt = runtime().unwrap();
+    let address = ServerAddress::parse(&server).unwrap();
+    wait_for_backend(&rt, &address);
+    let cookie = rt.block_on(setup_account(
+        &address,
+        &unique("gpui"),
+        &random_id(),
+        &irc,
+        &channel,
+    ));
+    let api = Api::new(address);
+    api.set_cookie(Some(cookie));
+
+    // Any member may add; what they add is theirs to manage.
+    let catalog = rt.block_on(api.emotes()).expect("the emote catalog");
+    assert!(catalog.can_add, "a member may add emoji");
+    let content_type = image_type(&RED_PNG).unwrap();
+    assert!(
+        catalog.types.iter().flatten().any(|t| t == content_type),
+        "the server takes PNG"
+    );
+
+    // `s5` and eight hex digits: a valid shortcode.
+    let code = unique("s5");
+    let uploaded = rt
+        .block_on(api.upload_emote(&NewEmote {
+            file_name: "red.png".into(),
+            content_type: content_type.into(),
+            bytes: RED_PNG.to_vec(),
+            still: None,
+            shortcode: code.clone(),
+            aliases: vec![format!("{code}_a")],
+        }))
+        .expect("upload an emoji");
+    assert_eq!(uploaded.shortcode, code);
+    assert!(uploaded.can_manage && uploaded.enabled);
+    assert_eq!(
+        uploaded.aliases.as_deref(),
+        Some(&[format!("{code}_a")][..])
+    );
+
+    let listed = |api: &Api| -> Vec<c::Emote> {
+        rt.block_on(api.emotes())
+            .expect("the emote catalog")
+            .items
+            .unwrap_or_default()
+    };
+    assert!(listed(&api).iter().any(|e| e.id == uploaded.id));
+
+    // Renamed: the old name still draws (as the name kept or a former one).
+    let renamed_code = format!("{code}_r");
+    let renamed = rt
+        .block_on(api.update_emote(
+            &uploaded.id,
+            &c::EmotePatch {
+                shortcode: Some(renamed_code.clone()),
+                ..Default::default()
+            },
+        ))
+        .expect("rename the emoji");
+    assert_eq!(renamed.shortcode, renamed_code);
+    assert!(
+        renamed.retired.iter().flatten().any(|r| r == &code) || has_alias(&renamed, &code),
+        "the former name is kept for old messages"
+    );
+
+    // New aliases, then disabled.
+    let edited = rt
+        .block_on(api.update_emote(
+            &uploaded.id,
+            &c::EmotePatch {
+                aliases: Some(vec![format!("{code}_b")]),
+                ..Default::default()
+            },
+        ))
+        .expect("change the aliases");
+    assert!(has_alias(&edited, &format!("{code}_b")));
+    assert!(!has_alias(&edited, &format!("{code}_a")));
+    let disabled = rt
+        .block_on(api.update_emote(
+            &uploaded.id,
+            &c::EmotePatch {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        ))
+        .expect("disable the emoji");
+    assert!(!disabled.enabled);
+
+    // Removed.
+    rt.block_on(api.delete_emote(&uploaded.id))
+        .expect("remove the emoji");
+    assert!(listed(&api).iter().all(|e| e.id != uploaded.id));
+}
