@@ -56,6 +56,7 @@ pub fn commands(ctx: &ComposerCtx, text: &str, cx: &App) -> Vec<Suggestion> {
                 detail: Some(detail.into()),
                 replace: token.range.clone(),
                 insert: format!("/{} ", spec.name),
+                ..Default::default()
             }
         })
         .collect()
@@ -84,6 +85,7 @@ pub fn people(ctx: &ComposerCtx, text: &str, cx: &App) -> Vec<Suggestion> {
                 .then(|| SharedString::from(m.display_name.clone())),
             replace: token.range.clone(),
             insert: format!("@{} ", m.nick),
+            ..Default::default()
         })
         .collect()
 }
@@ -113,6 +115,7 @@ pub fn channels(ctx: &ComposerCtx, text: &str, cx: &App) -> Vec<Suggestion> {
             detail: (!c.topic.is_empty()).then(|| SharedString::from(c.topic.clone())),
             replace: token.range.clone(),
             insert: format!("#{} ", c.name),
+            ..Default::default()
         })
         .collect()
 }

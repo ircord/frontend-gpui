@@ -726,6 +726,7 @@ fn suggest(ctx: &ComposerCtx, text: &str, cx: &App) -> Vec<Suggestion> {
                 detail: Some(e.label.clone().into()),
                 replace: range.clone(),
                 insert,
+                ..Default::default()
             }
         })
         .collect()

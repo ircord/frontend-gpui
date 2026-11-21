@@ -360,7 +360,7 @@ impl<C: 'static> Slot<C> {
 }
 
 /// One suggestion offered while typing.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Suggestion {
     pub id: SharedString,
     pub label: SharedString,
@@ -369,6 +369,23 @@ pub struct Suggestion {
     pub replace: Range<usize>,
     /// …and what to put there.
     pub insert: String,
+    /// The list's heading ("Commands"), read from its first suggestion.
+    pub heading: Option<SharedString>,
+    /// How the row is drawn.
+    pub look: SuggestionLook,
+}
+
+/// How the composer draws one suggestion.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum SuggestionLook {
+    /// The label, then the detail on the same line.
+    #[default]
+    Inline,
+    /// The label in monospace, the detail on its own line below (commands).
+    Stacked,
+    /// A person: their picture, the label (their name), the detail (their
+    /// `@nick`) at the right. `member` is the member's ID.
+    Person { member: String },
 }
 
 /// Offers suggestions for the text being typed (commands, nicks, emoji).

@@ -109,7 +109,7 @@ pub fn init(cx: &mut App) {
             .add(Slot::new("upload-tray", tray).order(10));
         r.composer
             .buttons
-            .add(Slot::new("upload", attach_button).order(10));
+            .add(Slot::new("upload", attach_button).order(40));
         r.composer
             .on_submit
             .add(SubmitHook::new("uploads", |ctx, _sent, window, cx| {
