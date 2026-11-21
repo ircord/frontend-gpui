@@ -9,6 +9,7 @@ mod shell;
 
 mod commands;
 mod message_actions;
+mod networks;
 mod server_window;
 mod settings;
 mod sidebar;

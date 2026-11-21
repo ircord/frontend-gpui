@@ -28,7 +28,7 @@ mod emotes;
 mod inbox;
 mod links;
 mod messages;
-mod networks;
+pub mod networks;
 mod notifications;
 mod parties;
 mod people;
