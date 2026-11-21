@@ -7,6 +7,7 @@ mod fixture;
 mod registries;
 mod shell;
 
+mod appearance;
 mod commands;
 mod drafts;
 mod inbox_saved;

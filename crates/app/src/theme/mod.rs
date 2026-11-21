@@ -5,7 +5,7 @@
 //!
 //! The default is a dark palette close to the web client's default theme.
 
-use gpui_kit::{App, Global, Hsla, Rgba, rgb};
+use gpui_kit::{App, Global, Hsla, Pixels, Rems, Rgba, SharedString, px, rems, rgb};
 
 /// The colour tokens every view draws with.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,6 +38,12 @@ pub struct Theme {
     pub mention: Hsla,
     /// Inline code and monospace runs.
     pub code: Hsla,
+    /// The interface font family.
+    pub font: SharedString,
+    /// Vertical padding of a sidebar row (the sidebar density).
+    pub row_padding: Rems,
+    /// Corner radius of rows, controls and cards.
+    pub radius: Pixels,
 }
 
 impl Theme {
@@ -64,6 +70,9 @@ impl Theme {
             offline: hex(0x80848e),
             mention: hex(0xf23f43),
             code: hex(0x1e1f22),
+            font: ".SystemUIFont".into(),
+            row_padding: rems(0.25),
+            radius: px(6.),
         }
     }
 }

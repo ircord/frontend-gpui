@@ -14,6 +14,7 @@ mod chat;
 
 mod account; // S0: password, devices
 mod admin; // AD1: administration as an owner
+mod appearance; // S1: save, use and remove a personal theme
 mod channel_settings; // CH2: topic, modes, bans
 mod channels; // CH1: create and join
 mod commands; // C1: /join, /topic, /nick

@@ -158,7 +158,7 @@ impl Render for MainView {
             .size_full()
             .bg(theme.main)
             .text_color(theme.text)
-            .font_family(".SystemUIFont")
+            .font_family(theme.font.clone())
             .child(content)
     }
 }
