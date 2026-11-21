@@ -320,9 +320,9 @@ fn a_registered_playable_replaces_the_file_card_of_a_sound(cx: &mut TestAppConte
         server.route_fn("GET", "/api/v1/conversations/*/messages", |_| {
             let mut m = crate::fixture::message("a1", "c-general", "");
             m.attachments = Some(vec![Attachment {
-                url: "https://x.test/files/s/t/song.mp3".into(),
+                url: "https://x.test/files/s/t/song.opus".into(),
                 name: "song.mp3".into(),
-                content_type: Some("audio/mpeg".into()),
+                content_type: Some("audio/ogg".into()),
                 size: Some(3_000_000),
                 ..Default::default()
             }]);
@@ -384,7 +384,7 @@ fn a_registered_playable_replaces_the_file_card_of_a_sound(cx: &mut TestAppConte
         Some((
             "file-a1-0".to_string(),
             PlayableKind::Audio,
-            "https://x.test/files/s/t/song.mp3".to_string()
+            "https://x.test/files/s/t/song.opus".to_string()
         ))
     );
 }
