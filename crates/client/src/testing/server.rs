@@ -76,6 +76,8 @@ pub struct Reply {
     pub status: u16,
     pub body: Value,
     pub headers: Vec<(String, String)>,
+    /// A raw body (a picture, say), sent instead of `body` when set.
+    pub raw: Option<Vec<u8>>,
 }
 
 impl Reply {
@@ -84,6 +86,17 @@ impl Reply {
             status,
             body,
             headers: Vec::new(),
+            raw: None,
+        }
+    }
+
+    /// A raw body with its content type, such as a picture.
+    pub fn bytes(status: u16, content_type: &str, body: Vec<u8>) -> Self {
+        Reply {
+            status,
+            body: Value::Null,
+            headers: vec![("Content-Type".to_string(), content_type.to_string())],
+            raw: Some(body),
         }
     }
 
@@ -336,10 +349,10 @@ async fn serve(mut stream: TcpStream, state: Arc<Mutex<State>>, frames: broadcas
             &format!("no canned route for {} {}", request.method, request.path),
         ),
     };
-    let body = if reply.body.is_null() {
-        Vec::new()
-    } else {
-        serde_json::to_vec(&reply.body).unwrap()
+    let body = match &reply.raw {
+        Some(raw) => raw.clone(),
+        None if reply.body.is_null() => Vec::new(),
+        None => serde_json::to_vec(&reply.body).unwrap(),
     };
     let mut head = format!(
         "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n",
@@ -347,7 +360,7 @@ async fn serve(mut stream: TcpStream, state: Arc<Mutex<State>>, frames: broadcas
         reason(reply.status),
         body.len()
     );
-    if !body.is_empty() {
+    if !body.is_empty() && reply.raw.is_none() {
         let kind = if reply.status >= 400 {
             "application/problem+json"
         } else {
