@@ -12,11 +12,18 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::format::{Color as IrcColor, Formatted};
 
-use crate::registry::{Inline, InlineRenderer};
+use crate::registry::{Inline, InlineRenderer, MessageCtx};
 use crate::theme::{self, Theme};
 use crate::timeline::rows::MessageRow;
 
-pub fn render(m: &MessageRow, theme: &Theme, inline: &[InlineRenderer]) -> AnyElement {
+pub fn render(
+    m: &MessageRow,
+    _ctx: &MessageCtx,
+    theme: &Theme,
+    inline: &[InlineRenderer],
+    _window: &mut Window,
+    _cx: &mut App,
+) -> AnyElement {
     if m.deleted {
         return div()
             .italic()

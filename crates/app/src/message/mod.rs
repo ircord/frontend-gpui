@@ -66,7 +66,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
     let inline = registry::get(cx).inline_renderers.to_vec();
     // A message of uploads only has no text left to draw.
     if !(m.body.text.trim().is_empty() && !m.attachments.is_empty()) {
-        column = column.child(body::render(m, theme, &inline));
+        column = column.child(body::render(m, &view.ctx, theme, &inline, window, cx));
     }
     column = column
         .children(reactions::render(m, &view.ctx, theme, window, cx))
