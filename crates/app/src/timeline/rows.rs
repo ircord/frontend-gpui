@@ -1,18 +1,39 @@
 //! The timeline as rows: day separators, messages (grouped under one header
 //! when the same person writes again within a few minutes), join/part and
-//! other event rows, and sends still on their way. Pure, so it is tested
-//! without a window.
+//! other event rows (runs of joins, parts, quits and nick changes folded
+//! into one line, or hidden, as the preferences say), the "New messages"
+//! line, rows for history that failed to load, and sends still on their
+//! way. Pure, so it is tested without a window.
 
+use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
 
 use chrono::{DateTime, Local, TimeZone};
-use ircord_client::contract::{Attachment, MembershipEventType, Message, MessageKind};
+use ircord_client::contract::{
+    Attachment, ClientPreferencesEvents, MembershipEventType, Message, MessageKind,
+};
 use ircord_client::format::{self, Formatted};
 use ircord_client::store::{PendingSend, SendState, Workspace};
 
 /// Messages from one sender within this many milliseconds share a header.
 const GROUP_MS: i64 = 7 * 60 * 1000;
+/// A folded run of joins and parts takes events at most this far apart…
+const FOLD_GAP_MS: i64 = 60 * 1000;
+/// …spanning at most this long, and at most [`FOLD_MAX`] of them.
+const FOLD_SPAN_MS: i64 = 5 * 60 * 1000;
+const FOLD_MAX: usize = 50;
+
+/// What the rows depend on beyond the workspace.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Options<'a> {
+    /// The message the "New messages" line sits before.
+    pub unread: Option<&'a str>,
+    /// The message a jump landed on.
+    pub focused: Option<&'a str>,
+    /// Folded runs (by [`FoldRow::id`]) the person opened.
+    pub expanded: Option<&'a HashSet<String>>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Row {
@@ -20,10 +41,20 @@ pub enum Row {
     Start,
     /// Older history is loading.
     Loading,
+    /// History could not finish loading: a row to try again from.
+    Retry,
+    /// The "New messages" line before the first unread message.
+    Unread,
+    /// Newer history is loading (in a window into older history).
+    NewerLoading,
+    /// Newer history could not load: a row to try again from.
+    NewerFailed,
     Day(String),
     Message(Rc<MessageRow>),
     /// Join, part, quit, nick, topic and similar lines.
     Event(Rc<EventRow>),
+    /// A run of joins, parts, quits and nick changes as one line.
+    Fold(Rc<FoldRow>),
     Pending(Rc<PendingSend>),
 }
 
@@ -33,9 +64,14 @@ impl Row {
         match self {
             Row::Start => "start".into(),
             Row::Loading => "loading".into(),
+            Row::Retry => "retry".into(),
+            Row::Unread => "unread".into(),
+            Row::NewerLoading => "newer-loading".into(),
+            Row::NewerFailed => "newer-failed".into(),
             Row::Day(day) => format!("day:{day}"),
             Row::Message(m) => format!("m:{}:{}", m.id, m.version),
             Row::Event(e) => format!("e:{}", e.id),
+            Row::Fold(f) => format!("f:{}:{}:{}", f.id, f.events.len(), f.expanded),
             Row::Pending(p) => format!("p:{}:{:?}", p.client_id, p.state),
         }
     }
@@ -98,7 +134,180 @@ pub struct EventRow {
     pub time: String,
 }
 
-pub fn build(w: &Workspace, conversation: &str) -> Vec<Row> {
+#[derive(Debug, Clone, PartialEq)]
+pub struct FoldRow {
+    /// The first event's ID.
+    pub id: String,
+    /// "alice and bob joined · carol left".
+    pub summary: String,
+    pub time: String,
+    pub events: Vec<EventRow>,
+    /// Opened to show every event.
+    pub expanded: bool,
+}
+
+/// How join and part events show, from the preferences.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EventsMode {
+    Show,
+    Fold,
+    Hide,
+}
+
+pub fn events_mode(w: &Workspace) -> EventsMode {
+    let events = w
+        .documents
+        .preferences
+        .value()
+        .and_then(|p| p.preferences.as_ref())
+        .and_then(|p| p.events);
+    match events {
+        Some(ClientPreferencesEvents::Show) => EventsMode::Show,
+        Some(ClientPreferencesEvents::Hide) => EventsMode::Hide,
+        _ => EventsMode::Fold,
+    }
+}
+
+/// Joins, parts, quits and nick changes: the chatter that folds.
+fn is_chatter(m: &Message) -> bool {
+    m.event.as_ref().is_some_and(|e| {
+        matches!(
+            e.r#type,
+            MembershipEventType::Join
+                | MembershipEventType::Part
+                | MembershipEventType::Quit
+                | MembershipEventType::Nick
+        )
+    })
+}
+
+/// Whether `text` mentions `@nick` or one of `words`, as the web client
+/// decides it (case-insensitive, on word boundaries).
+pub fn mentions(text: &str, nick: &str, words: &[String]) -> bool {
+    let plain = format::parse(text).text.to_lowercase();
+    let at_nick = (!nick.is_empty()).then(|| format!("@{}", nick.to_lowercase()));
+    at_nick.iter().any(|n| contains_word(&plain, n, true))
+        || words
+            .iter()
+            .map(|w| w.trim().to_lowercase())
+            .filter(|w| !w.is_empty())
+            .any(|w| contains_word(&plain, &w, false))
+}
+
+fn contains_word(text: &str, word: &str, mention: bool) -> bool {
+    let word_char = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
+    // A nick goes on with letters and IRC's nick characters.
+    let nick_char = |c: char| word_char(c) || "[]\\`^{}|".contains(c);
+    let mut from = 0;
+    while let Some(i) = text[from..].find(word).map(|i| i + from) {
+        let before = text[..i].chars().next_back();
+        let after = text[i + word.len()..].chars().next();
+        let starts = before.is_none_or(|c| {
+            if mention {
+                c.is_whitespace() || "([{<\"'".contains(c)
+            } else {
+                !word_char(c)
+            }
+        });
+        let ends = after.is_none_or(|c| {
+            if mention {
+                !nick_char(c)
+            } else {
+                !word_char(c)
+            }
+        });
+        if starts && ends {
+            return true;
+        }
+        from = i + word.len().max(1);
+        while !text.is_char_boundary(from) {
+            from += 1;
+        }
+    }
+    false
+}
+
+/// The summary of a folded run: who joined, left, came back, or changed
+/// their nick.
+fn fold_summary(w: &Workspace, events: &[&Message], network: &str) -> String {
+    #[derive(PartialEq, Clone, Copy)]
+    enum Kind {
+        Join,
+        Leave,
+        Nick,
+    }
+    let mut order: Vec<String> = Vec::new();
+    let mut outcomes: std::collections::HashMap<String, (Kind, Kind, Option<String>)> =
+        Default::default();
+    for m in events {
+        let Some(e) = &m.event else { continue };
+        let kind = match e.r#type {
+            MembershipEventType::Join => Kind::Join,
+            MembershipEventType::Nick => Kind::Nick,
+            _ => Kind::Leave,
+        };
+        match outcomes.get_mut(&e.actor_id) {
+            Some(o) if kind == Kind::Nick => o.2 = e.text.clone(),
+            Some(o) => o.1 = kind,
+            None => {
+                order.push(e.actor_id.clone());
+                let nick = (kind == Kind::Nick).then(|| e.text.clone()).flatten();
+                outcomes.insert(e.actor_id.clone(), (kind, kind, nick));
+            }
+        }
+    }
+    let (mut joined, mut left, mut back, mut joined_left, mut renames) =
+        (vec![], vec![], vec![], vec![], vec![]);
+    for id in &order {
+        let (first, last, nick) = &outcomes[id];
+        let name = w.display_name(id, network);
+        if let Some(nick) = nick {
+            renames.push(t!(
+                "timeline-fold-renamed",
+                old = name.clone(),
+                new = nick.clone()
+            ));
+        }
+        match (first, last) {
+            (Kind::Nick, _) => {}
+            (Kind::Leave, Kind::Join) => back.push(name),
+            (Kind::Leave, _) => left.push(name),
+            (_, Kind::Join) | (_, Kind::Nick) => joined.push(name),
+            (Kind::Join, Kind::Leave) => joined_left.push(name),
+        }
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if !back.is_empty() {
+        parts.push(t!("timeline-fold-reconnected", people = people(&back)));
+    }
+    if !joined.is_empty() {
+        parts.push(t!("timeline-fold-joined", people = people(&joined)));
+    }
+    if !joined_left.is_empty() {
+        parts.push(t!(
+            "timeline-fold-joined-left",
+            people = people(&joined_left)
+        ));
+    }
+    if !left.is_empty() {
+        parts.push(t!("timeline-fold-left", people = people(&left)));
+    }
+    parts.extend(renames);
+    parts.join(" · ")
+}
+
+/// "alice", "alice and bob", "alice, bob and carol", "5 people".
+fn people(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [a] => a.clone(),
+        [a, b] => t!("timeline-people-two", first = a, second = b),
+        [a, b, c] => t!("timeline-people-three", first = a, second = b, third = c),
+        _ => t!("timeline-people-many", count = names.len()),
+    }
+}
+
+pub fn build(w: &Workspace, conversation: &str, options: Options) -> Vec<Row> {
     let Some(timeline) = w.timelines.get(conversation) else {
         return vec![Row::Loading];
     };
@@ -106,33 +315,103 @@ pub fn build(w: &Workspace, conversation: &str) -> Vec<Row> {
         .conversation(conversation)
         .map(|c| c.network_id.clone())
         .unwrap_or_default();
+    let nick = w
+        .network(&network)
+        .map(|n| n.nick.clone())
+        .unwrap_or_default();
+    let words: Vec<String> = w
+        .documents
+        .notification_settings
+        .value()
+        .and_then(|s| s.highlight_words.clone())
+        .unwrap_or_default();
+    let mode = events_mode(w);
     let mut rows = Vec::with_capacity(timeline.entries.len() + 8);
     if timeline.loading_older || !timeline.loaded {
         rows.push(Row::Loading);
+    } else if timeline.sync_error.is_some() {
+        rows.push(Row::Retry);
     } else if timeline.older.is_none() {
         rows.push(Row::Start);
     }
     let mut last_day = String::new();
     let mut last: Option<(String, i64)> = None;
+    // The run of chatter being folded: its events and their times.
+    let mut run: Vec<(&Message, i64)> = Vec::new();
+    let flush = |run: &mut Vec<(&Message, i64)>, rows: &mut Vec<Row>| {
+        let events: Vec<EventRow> = run
+            .iter()
+            .map(|(m, at)| EventRow {
+                id: m.id.clone(),
+                text: event_text(w, m, &network),
+                time: local_time(*at).format("%H:%M").to_string(),
+            })
+            .collect();
+        match events.len() {
+            0 => {}
+            1 => rows.push(Row::Event(Rc::new(events.into_iter().next().unwrap()))),
+            _ => {
+                let messages: Vec<&Message> = run.iter().map(|(m, _)| *m).collect();
+                let id = events[0].id.clone();
+                rows.push(Row::Fold(Rc::new(FoldRow {
+                    summary: fold_summary(w, &messages, &network),
+                    time: events[0].time.clone(),
+                    expanded: options.expanded.is_some_and(|e| e.contains(&id)),
+                    id,
+                    events,
+                })));
+            }
+        }
+        run.clear();
+    };
     for entry in &timeline.entries {
         let m = &entry.message;
         let local = local_time(entry.at);
         let day = local.format("%A, %-d %B %Y").to_string();
         if day != last_day {
+            flush(&mut run, &mut rows);
             rows.push(Row::Day(day.clone()));
             last_day = day;
             last = None;
         }
+        if options.unread == Some(m.id.as_str()) {
+            flush(&mut run, &mut rows);
+            rows.push(Row::Unread);
+            last = None;
+        }
         let time = local.format("%H:%M").to_string();
         if m.kind == MessageKind::Event || m.kind == MessageKind::System || m.event.is_some() {
+            last = None;
+            if is_chatter(m) {
+                match mode {
+                    EventsMode::Hide => continue,
+                    EventsMode::Fold => {
+                        let continues = match (run.first(), run.last()) {
+                            (Some((_, first)), Some((_, prev))) => {
+                                entry.at - prev <= FOLD_GAP_MS
+                                    && entry.at - first <= FOLD_SPAN_MS
+                                    && run.len() < FOLD_MAX
+                            }
+                            _ => true,
+                        };
+                        if !continues {
+                            flush(&mut run, &mut rows);
+                        }
+                        run.push((m, entry.at));
+                        continue;
+                    }
+                    EventsMode::Show => {}
+                }
+            }
+            flush(&mut run, &mut rows);
             rows.push(Row::Event(Rc::new(EventRow {
                 id: m.id.clone(),
                 text: event_text(w, m, &network),
                 time,
             })));
-            last = None;
             continue;
         }
+        flush(&mut run, &mut rows);
         let header = match &last {
             Some((sender, at)) => {
                 *sender != m.sender_id || entry.at - at > GROUP_MS || m.kind == MessageKind::Action
@@ -140,21 +419,46 @@ pub fn build(w: &Workspace, conversation: &str) -> Vec<Row> {
             None => true,
         };
         last = Some((m.sender_id.clone(), entry.at));
-        rows.push(Row::Message(Rc::new(message_row(
-            w, m, &network, header, time,
-        ))));
+        let mut row = message_row(w, m, &network, header, time);
+        row.mention = !row.own && !row.deleted && mentions(&m.text, &nick, &words);
+        row.focused = options.focused == Some(m.id.as_str());
+        if row.mention || row.focused {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (row.version, row.mention, row.focused).hash(&mut h);
+            row.version = h.finish();
+        }
+        rows.push(Row::Message(Rc::new(row)));
     }
-    // Sends the server has not echoed yet sit at the end.
-    for pending in w.pending_in(conversation) {
-        let echoed = timeline
-            .entries
-            .iter()
-            .any(|e| e.message.client_id.as_deref() == Some(pending.client_id.as_str()));
-        if !echoed {
-            rows.push(Row::Pending(Rc::new(pending.clone())));
+    flush(&mut run, &mut rows);
+    if timeline.loading_newer {
+        rows.push(Row::NewerLoading);
+    } else if timeline.newer_failed {
+        rows.push(Row::NewerFailed);
+    }
+    // Sends the server has not echoed yet sit at the end of the present.
+    if !timeline.has_newer {
+        for pending in w.pending_in(conversation) {
+            let echoed = timeline
+                .entries
+                .iter()
+                .any(|e| e.message.client_id.as_deref() == Some(pending.client_id.as_str()));
+            if !echoed {
+                rows.push(Row::Pending(Rc::new(pending.clone())));
+            }
         }
     }
     rows
+}
+
+/// The row index of `message`, or of the folded run holding it.
+pub fn index_of(rows: &[Row], message: &str) -> Option<usize> {
+    rows.iter().position(|r| match r {
+        Row::Message(m) => m.id == message,
+        Row::Event(e) => e.id == message,
+        Row::Fold(f) => f.events.iter().any(|e| e.id == message),
+        _ => false,
+    })
 }
 
 fn local_time(ms: i64) -> DateTime<Local> {
@@ -284,7 +588,7 @@ fn without_urls(text: &str, attachments: &[Attachment]) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn event_text(w: &Workspace, m: &Message, network: &str) -> String {
+pub(crate) fn event_text(w: &Workspace, m: &Message, network: &str) -> String {
     let Some(e) = &m.event else {
         return ircord_client::format::parse(&m.text).text;
     };
@@ -481,7 +785,7 @@ mod tests {
             ],
             None,
         );
-        let rows = build(&w, "c");
+        let rows = build(&w, "c", Options::default());
         assert_eq!(rows[0], Row::Start);
         assert!(matches!(rows[1], Row::Day(_)));
         let Row::Event(e) = &rows[2] else {
@@ -523,7 +827,7 @@ mod tests {
             ..Default::default()
         }]);
         load(&mut w, vec![m], Some("more"));
-        let rows = build(&w, "c");
+        let rows = build(&w, "c", Options::default());
         assert!(!matches!(rows[0], Row::Start), "older history remains");
         let Some(Row::Message(m)) = rows.iter().find(|r| matches!(r, Row::Message(_))) else {
             panic!()
@@ -549,7 +853,7 @@ mod tests {
             action: false,
             state: SendState::Failed("Not connected".into()),
         });
-        let rows = build(&w, "c");
+        let rows = build(&w, "c", Options::default());
         let Some(Row::Pending(p)) = rows.last() else {
             panic!()
         };
@@ -564,7 +868,7 @@ mod tests {
             vec![msg("1", "2026-11-20T12:00:00Z", "m-bob", "a")],
             None,
         );
-        let before = build(&w, "c").last().unwrap().key();
+        let before = build(&w, "c", Options::default()).last().unwrap().key();
         let mut edited = msg("1", "2026-11-20T12:00:00Z", "m-bob", "b");
         edited.edited_at = Some("2026-11-20T12:01:00Z".into());
         load(&mut w, vec![edited], None);
@@ -578,12 +882,317 @@ mod tests {
             .unwrap(),
             0,
         );
-        let rows = build(&w, "c");
+        let rows = build(&w, "c", Options::default());
         let Some(Row::Message(m)) = rows.last() else {
             panic!()
         };
         assert!(m.edited);
         assert_ne!(rows.last().unwrap().key(), before);
+    }
+
+    fn event(id: &str, at: &str, actor: &str, kind: MembershipEventType) -> Message {
+        let mut m = msg(id, at, actor, "");
+        m.kind = MessageKind::Event;
+        m.event = Some(MembershipEvent {
+            actor_id: actor.into(),
+            r#type: kind,
+            ..Default::default()
+        });
+        m
+    }
+
+    fn set_events(w: &mut Workspace, mode: ClientPreferencesEvents) {
+        let prefs: StoredPreferences = serde_json::from_value(serde_json::json!({
+            "preferences": {"events": mode}, "updatedAt": "2026-11-20T00:00:00Z"
+        }))
+        .unwrap();
+        w.documents.preferences.read_done(Ok(prefs));
+    }
+
+    fn joins_and_parts(w: &mut Workspace) {
+        load(
+            w,
+            vec![
+                event(
+                    "e1",
+                    "2026-11-20T12:00:00Z",
+                    "m-bob",
+                    MembershipEventType::Join,
+                ),
+                event(
+                    "e2",
+                    "2026-11-20T12:00:20Z",
+                    "m-al",
+                    MembershipEventType::Join,
+                ),
+                event(
+                    "e3",
+                    "2026-11-20T12:00:40Z",
+                    "m-cy",
+                    MembershipEventType::Part,
+                ),
+                event(
+                    "e4",
+                    "2026-11-20T12:00:50Z",
+                    "m-al",
+                    MembershipEventType::Quit,
+                ),
+                msg("1", "2026-11-20T12:01:00Z", "m-bob", "hi"),
+                // Too long after the last: a run of its own (one event).
+                event(
+                    "e5",
+                    "2026-11-20T12:10:00Z",
+                    "m-cy",
+                    MembershipEventType::Join,
+                ),
+                event(
+                    "k",
+                    "2026-11-20T12:10:10Z",
+                    "m-bob",
+                    MembershipEventType::Kick,
+                ),
+            ],
+            None,
+        );
+    }
+
+    #[test]
+    fn runs_of_joins_and_parts_fold_into_one_line() {
+        let mut w = workspace();
+        joins_and_parts(&mut w);
+        let rows = build(&w, "c", Options::default());
+        let folds: Vec<&FoldRow> = rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Fold(f) => Some(f.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(folds.len(), 1);
+        assert_eq!(folds[0].id, "e1");
+        assert_eq!(folds[0].events.len(), 4);
+        assert_eq!(
+            folds[0].summary, "bob joined · m-al joined and left · m-cy left",
+            "{rows:?}"
+        );
+        // The lone join and the kick stand alone.
+        let events: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Event(e) => Some(e.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(events, ["e5", "k"]);
+        // Opened, the fold keeps its place and changes its key.
+        let open = HashSet::from(["e1".to_string()]);
+        let opened = build(
+            &w,
+            "c",
+            Options {
+                expanded: Some(&open),
+                ..Default::default()
+            },
+        );
+        let i = index_of(&opened, "e3").unwrap();
+        let Row::Fold(f) = &opened[i] else { panic!() };
+        assert!(f.expanded);
+        assert_ne!(opened[i].key(), rows[i].key());
+    }
+
+    #[test]
+    fn joins_and_parts_show_or_hide_as_the_preferences_say() {
+        let mut w = workspace();
+        joins_and_parts(&mut w);
+        set_events(&mut w, ClientPreferencesEvents::Hide);
+        let rows = build(&w, "c", Options::default());
+        assert!(!rows.iter().any(|r| matches!(r, Row::Fold(_))));
+        let events: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Event(e) => Some(e.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(events, ["k"], "a kick is never hidden");
+        set_events(&mut w, ClientPreferencesEvents::Show);
+        let rows = build(&w, "c", Options::default());
+        assert_eq!(
+            rows.iter().filter(|r| matches!(r, Row::Event(_))).count(),
+            6
+        );
+    }
+
+    #[test]
+    fn people_reconnecting_and_renaming() {
+        let mut w = workspace();
+        let mut nick = event(
+            "e3",
+            "2026-11-20T12:00:30Z",
+            "m-bob",
+            MembershipEventType::Nick,
+        );
+        nick.event.as_mut().unwrap().text = Some("bobby".into());
+        load(
+            &mut w,
+            vec![
+                event(
+                    "e1",
+                    "2026-11-20T12:00:00Z",
+                    "m-bob",
+                    MembershipEventType::Quit,
+                ),
+                event(
+                    "e2",
+                    "2026-11-20T12:00:10Z",
+                    "m-bob",
+                    MembershipEventType::Join,
+                ),
+                nick,
+                event(
+                    "e4",
+                    "2026-11-20T12:00:40Z",
+                    "m-a",
+                    MembershipEventType::Join,
+                ),
+                event(
+                    "e5",
+                    "2026-11-20T12:00:41Z",
+                    "m-b",
+                    MembershipEventType::Join,
+                ),
+                event(
+                    "e6",
+                    "2026-11-20T12:00:42Z",
+                    "m-c",
+                    MembershipEventType::Join,
+                ),
+                event(
+                    "e7",
+                    "2026-11-20T12:00:43Z",
+                    "m-d",
+                    MembershipEventType::Join,
+                ),
+            ],
+            None,
+        );
+        let rows = build(&w, "c", Options::default());
+        let Some(Row::Fold(f)) = rows.iter().find(|r| matches!(r, Row::Fold(_))) else {
+            panic!("{rows:?}")
+        };
+        assert_eq!(
+            f.summary,
+            "bob reconnected · 4 people joined · bob is now bobby"
+        );
+    }
+
+    #[test]
+    fn the_unread_line_and_the_jump_target() {
+        let mut w = workspace();
+        load(
+            &mut w,
+            vec![
+                msg("1", "2026-11-20T12:00:00Z", "m-bob", "a"),
+                msg("2", "2026-11-20T12:01:00Z", "m-bob", "b"),
+                msg("3", "2026-11-20T12:02:00Z", "m-bob", "c"),
+            ],
+            None,
+        );
+        let rows = build(
+            &w,
+            "c",
+            Options {
+                unread: Some("2"),
+                focused: Some("3"),
+                ..Default::default()
+            },
+        );
+        let line = rows.iter().position(|r| *r == Row::Unread).unwrap();
+        assert_eq!(index_of(&rows, "2"), Some(line + 1));
+        // The line starts a new header.
+        let Row::Message(two) = &rows[line + 1] else {
+            panic!()
+        };
+        assert!(two.header);
+        let Row::Message(three) = &rows[line + 2] else {
+            panic!()
+        };
+        assert!(three.focused && !two.focused);
+    }
+
+    #[test]
+    fn mentions_of_you_and_highlight_words_are_marked() {
+        let words = vec!["deploy".to_string()];
+        assert!(mentions("hey @me look", "me", &[]));
+        assert!(mentions("(@ME)", "me", &[]));
+        assert!(!mentions("hey @meow", "me", &[]));
+        assert!(!mentions("mail me@me.org", "me", &[]));
+        assert!(!mentions("hey me", "me", &[]));
+        assert!(mentions("the Deploy failed", "me", &words));
+        assert!(mentions("deploy", "me", &words));
+        assert!(!mentions("redeploying", "me", &words));
+        assert!(!mentions("pre-deploy", "me", &words));
+
+        let mut w = workspace();
+        load(
+            &mut w,
+            vec![
+                msg("1", "2026-11-20T12:00:00Z", "m-bob", "@me hello"),
+                msg("2", "2026-11-20T12:01:00Z", "u-me", "@me talking to myself"),
+                msg("3", "2026-11-20T12:02:00Z", "m-bob", "nothing"),
+            ],
+            None,
+        );
+        let marked: Vec<bool> = build(&w, "c", Options::default())
+            .iter()
+            .filter_map(|r| match r {
+                Row::Message(m) => Some(m.mention),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(marked, [true, false, false]);
+    }
+
+    #[test]
+    fn failed_history_and_a_window_into_older_history() {
+        let mut w = workspace();
+        load(
+            &mut w,
+            vec![msg("1", "2026-11-20T12:00:00Z", "m-bob", "a")],
+            Some("older"),
+        );
+        w.begin_older("c").unwrap();
+        w.load_older("c", None);
+        let rows = build(&w, "c", Options::default());
+        assert_eq!(rows[0], Row::Retry);
+
+        let mut w = workspace();
+        w.open_around(
+            "c",
+            "1",
+            MessagePage {
+                items: vec![msg("1", "2026-11-20T12:00:00Z", "m-bob", "a")],
+                has_newer: Some(true),
+                ..Default::default()
+            },
+        );
+        w.queue_send(PendingSend {
+            client_id: "k".into(),
+            conversation_id: "c".into(),
+            text: "hi".into(),
+            action: false,
+            state: SendState::Sending,
+        });
+        let b = w.begin_newer("c").unwrap();
+        let rows = build(&w, "c", Options::default());
+        assert_eq!(rows.last(), Some(&Row::NewerLoading));
+        w.load_newer("c", &b, Err("offline".into()));
+        let rows = build(&w, "c", Options::default());
+        assert_eq!(
+            rows.last(),
+            Some(&Row::NewerFailed),
+            "sends wait for the present"
+        );
     }
 
     #[test]
