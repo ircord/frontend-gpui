@@ -410,6 +410,12 @@ fn apply_kit(theme: &super::Theme, cx: &mut App) {
         c.primary_hover = t.accent.opacity(0.9);
         c.primary_active = t.accent.opacity(0.8);
         c.primary_foreground = t.on_accent;
+        // Buttons read their own fields, not `primary`: without these a
+        // primary button keeps gpui-kit's near-black instead of the accent.
+        c.button_primary = t.accent;
+        c.button_primary_hover = t.accent.opacity(0.9);
+        c.button_primary_active = t.accent.opacity(0.8);
+        c.button_primary_foreground = t.on_accent;
         c.secondary = t.raised;
         c.secondary_hover = t.hover;
         c.secondary_active = t.selected;

@@ -62,6 +62,7 @@ pub fn init(cx: &mut App) {
                 t!("channels-menu-join"),
                 |n: &NetworkCtx, window, cx| open(&n.session, Some(&n.network), "", window, cx),
             )
+            .icon(IconName::Plus)
             .order(300),
         );
         r.sidebar_footer

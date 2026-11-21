@@ -321,7 +321,7 @@ impl WorkspaceView {
                 crate::sidebar::layout::watch_notification_settings(client, cx);
                 let items = registry::get(cx).conversation_menu.to_vec();
                 let items = ui::context_menu::visible(&items, &menu_ctx, cx);
-                ui::context_menu::fill(menu, items, menu_ctx.clone())
+                ui::context_menu::fill(menu, items, menu_ctx.clone(), cx)
             });
         div()
             .id("conversation-header")

@@ -76,11 +76,38 @@ fn open_at(f: &Fixture, cx: &mut TestAppContext, row: &'static str) {
     });
 }
 
+/// Click `id`, scrolling the settings page down until it is wholly in view.
 fn click(f: &Fixture, cx: &mut TestAppContext, id: &str) {
-    let id = id.to_string();
+    let id = gpui_kit::ElementId::Name(id.to_string().into());
+    for _ in 0..40 {
+        let shown = cx
+            .update_window(f.window, |_, window, cx| {
+                window.render_frame(cx);
+                let pane = window.find("settings-content").bounds();
+                window.try_find(id.clone()).is_some_and(|e| {
+                    let b = e.bounds();
+                    e.visible() && b.top() >= pane.top() && b.bottom() <= pane.bottom()
+                })
+            })
+            .unwrap();
+        if shown {
+            break;
+        }
+        cx.update_window(f.window, |_, window, cx| {
+            window.scroll(
+                "settings-content",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                    gpui_kit::px(0.),
+                    gpui_kit::px(-120.),
+                )),
+                cx,
+            )
+        })
+        .unwrap();
+    }
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
-        window.click(gpui_kit::ElementId::Name(id.into()), cx);
+        window.click(id, cx);
     })
     .unwrap();
     cx.run_until_parked();

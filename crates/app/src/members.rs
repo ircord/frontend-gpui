@@ -363,7 +363,7 @@ impl Render for MembersView {
                         .context_menu(move |menu, _, cx| {
                             let items = registry::get(cx).member_menu.to_vec();
                             let items = ui::context_menu::visible(&items, &ctx, cx);
-                            ui::context_menu::fill(menu, items, ctx.clone())
+                            ui::context_menu::fill(menu, items, ctx.clone(), cx)
                         }),
                 );
             }

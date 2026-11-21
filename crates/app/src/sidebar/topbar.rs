@@ -212,7 +212,7 @@ pub fn bar(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyE
         tabs = tabs.child(tab.context_menu(move |menu, _, cx| {
             let items = registry::get(cx).network_menu.to_vec();
             let items = ui::context_menu::visible(&items, &ctx, cx);
-            ui::context_menu::fill(menu, items, ctx.clone())
+            ui::context_menu::fill(menu, items, ctx.clone(), cx)
         }));
     }
     let add = {
@@ -323,7 +323,7 @@ pub fn bar(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyE
         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
             let items = registry::get(cx).self_menu.to_vec();
             let items = ui::context_menu::visible(&items, &self_ctx, cx);
-            ui::context_menu::fill(menu, items, self_ctx.clone())
+            ui::context_menu::fill(menu, items, self_ctx.clone(), cx)
         });
 
     div()

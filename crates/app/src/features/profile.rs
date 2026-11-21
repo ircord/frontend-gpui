@@ -101,6 +101,7 @@ pub fn init(cx: &mut App) {
                     }
                 },
             )
+            .icon(IconName::Inbox)
             .when(|ctx, cx| resolve(ctx, cx).is_some_and(|p| !p.me))
             .order(10),
         );
@@ -114,6 +115,7 @@ pub fn init(cx: &mut App) {
                     }
                 },
             )
+            .icon(IconName::Asterisk)
             .when(|ctx, cx| {
                 let open = ctx.session.read(cx).conversation.clone();
                 ctx.conversation.is_some()
@@ -148,6 +150,7 @@ pub fn init(cx: &mut App) {
                     }
                 },
             )
+            .icon(IconName::Copy)
             .when(|ctx, cx| resolve(ctx, cx).is_some_and(|p| people::address(&p.member).is_some()))
             .order(31),
         );
@@ -192,6 +195,7 @@ pub fn init(cx: &mut App) {
                     }
                 },
             )
+            .icon(IconName::Plus)
             .when(|ctx, cx| resolve(ctx, cx).is_some_and(|p| !p.me))
             .order(60),
         );

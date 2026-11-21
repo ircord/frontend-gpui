@@ -40,6 +40,7 @@ pub fn init(cx: &mut App) {
                 t!("channel-settings-menu-op"),
                 |ctx: &MemberCtx, w, cx| status(ctx, 'o', true, w, cx),
             )
+            .icon(IconName::Star)
             .order(700)
             .when(|ctx: &MemberCtx, cx| target(ctx, cx).is_some_and(|t| t.op && !t.has('@'))),
         );
@@ -49,6 +50,7 @@ pub fn init(cx: &mut App) {
                 t!("channel-settings-menu-deop"),
                 |ctx: &MemberCtx, w, cx| status(ctx, 'o', false, w, cx),
             )
+            .icon(IconName::StarOff)
             .order(700)
             .when(|ctx: &MemberCtx, cx| target(ctx, cx).is_some_and(|t| t.op && t.has('@'))),
         );
@@ -58,6 +60,7 @@ pub fn init(cx: &mut App) {
                 t!("channel-settings-menu-voice"),
                 |ctx: &MemberCtx, w, cx| status(ctx, 'v', true, w, cx),
             )
+            .icon(IconName::Mic)
             .order(710)
             .when(|ctx: &MemberCtx, cx| target(ctx, cx).is_some_and(|t| t.voice && !t.has('+'))),
         );
@@ -67,17 +70,20 @@ pub fn init(cx: &mut App) {
                 t!("channel-settings-menu-devoice"),
                 |ctx: &MemberCtx, w, cx| status(ctx, 'v', false, w, cx),
             )
+            .icon(IconName::Minus)
             .order(710)
             .when(|ctx: &MemberCtx, cx| target(ctx, cx).is_some_and(|t| t.voice && t.has('+'))),
         );
         m.add(
             MenuItem::new("moderation-kick", t!("channel-settings-menu-kick"), kick)
+                .icon(IconName::Close)
                 .danger()
                 .order(720)
                 .when(|ctx: &MemberCtx, cx| target(ctx, cx).is_some_and(|t| t.kick)),
         );
         m.add(
             MenuItem::new("moderation-ban", t!("channel-settings-menu-ban"), ban)
+                .icon(IconName::Ban)
                 .danger()
                 .order(730)
                 .when(|ctx: &MemberCtx, cx| target(ctx, cx).is_some_and(|t| t.ban)),

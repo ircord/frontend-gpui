@@ -90,10 +90,10 @@ shot 1-sign-in
 # No window manager runs, so give the window the keyboard focus directly.
 # The window is 1200x800 at the screen's centre; the form is centred in it.
 xdotool windowfocus --sync "$WIN"
-xdotool mousemove --window "$WIN" 600 380 click 1
+xdotool mousemove --window "$WIN" 600 435 click 1
 sleep 0.5
 xdotool type --delay 30 "$USER_NAME"
-xdotool mousemove --window "$WIN" 600 447 click 1
+xdotool mousemove --window "$WIN" 600 506 click 1
 sleep 0.5
 xdotool type --delay 30 "$PASSWORD"
 shot 2-typed

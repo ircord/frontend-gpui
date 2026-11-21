@@ -452,7 +452,7 @@ impl SidebarView {
             layout::watch_notification_settings(client, cx);
             let items = registry::get(cx).conversation_menu.to_vec();
             let items = ui::context_menu::visible(&items, &ctx, cx);
-            ui::context_menu::fill(menu, items, ctx.clone())
+            ui::context_menu::fill(menu, items, ctx.clone(), cx)
         })
         .into_any_element()
     }
@@ -827,7 +827,7 @@ impl Render for SidebarView {
                             .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
                                 let items = registry::get(cx).network_menu.to_vec();
                                 let items = ui::context_menu::visible(&items, &ctx, cx);
-                                ui::context_menu::fill(menu, items, ctx.clone())
+                                ui::context_menu::fill(menu, items, ctx.clone(), cx)
                             }),
                     ),
                 )

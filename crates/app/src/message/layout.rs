@@ -482,7 +482,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                 .child(column);
         }
     }
-    if view.hovered {
+    if view.hovered || super::menu_open(&view.ctx, cx) {
         frame = frame.child(toolbar(&view.ctx, theme, window, cx));
     }
     let ctx = view.ctx.clone();
@@ -490,7 +490,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
         .context_menu(move |menu, _, cx| {
             let items = registry::get(cx).message_menu.to_vec();
             let items = ui::context_menu::visible(&items, &ctx, cx);
-            ui::context_menu::fill(menu, items, ctx.clone())
+            ui::context_menu::fill(menu, items, ctx.clone(), cx)
         })
         .into_any_element()
 }

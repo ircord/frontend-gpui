@@ -35,6 +35,7 @@ pub fn init(cx: &mut App) {
                     }
                 },
             )
+            .icon(IconName::Heart)
             .when(|ctx, _| ctx.network.is_some())
             .order(0),
         );
@@ -48,6 +49,7 @@ pub fn init(cx: &mut App) {
                     }
                 },
             )
+            .icon(IconName::CircleX)
             .when(|ctx, cx| me_status(ctx, cx).is_some_and(|(status, _)| status.is_some()))
             .order(1),
         );
@@ -57,6 +59,7 @@ pub fn init(cx: &mut App) {
                 t!("people-status-go-away"),
                 |ctx: &SidebarCtx, window, cx| set_away(ctx, true, window, cx),
             )
+            .icon(IconName::Moon)
             .when(|ctx, cx| me_status(ctx, cx).is_some_and(|(_, away)| !away))
             .unavailable_when(not_connected)
             .order(10),
@@ -67,6 +70,7 @@ pub fn init(cx: &mut App) {
                 t!("people-status-come-back"),
                 |ctx: &SidebarCtx, window, cx| set_away(ctx, false, window, cx),
             )
+            .icon(IconName::Sun)
             .when(|ctx, cx| me_status(ctx, cx).is_some_and(|(_, away)| away))
             .unavailable_when(not_connected)
             .order(10),

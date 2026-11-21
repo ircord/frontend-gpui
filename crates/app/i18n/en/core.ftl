@@ -22,7 +22,9 @@ core-loading-offline = Cannot reach { $server }: { $reason }. Trying again in { 
 # Sign-in
 core-signin-connect-title = Connect to IRCord
 core-signin-connect-hint = Enter the address of your IRCord server.
-core-signin-welcome = Welcome back
+core-signin-welcome = Sign in to IRCord
+core-signin-tagline = Your IRC networks in one place, connected even when you’re not.
+core-signin-logo = IRCord
 core-signin-sign-in-to = Sign in to { $server }
 core-signin-address = Server address
 core-signin-address-placeholder = https://chat.example.com

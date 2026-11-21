@@ -83,6 +83,7 @@ pub fn init(cx: &mut App) {
                     open(&ctx.session, &ctx.conversation, Tab::List('b'), window, cx)
                 },
             )
+            .icon(IconName::Ban)
             .order(401)
             .when(|ctx: &ConversationCtx, cx| {
                 here(&ctx.session, &ctx.conversation, cx).is_some_and(|h| h.rights.ban)
@@ -94,6 +95,7 @@ pub fn init(cx: &mut App) {
                 t!("channel-settings-menu-topic"),
                 |ctx: &ConversationCtx, window, cx| edit_topic(ctx, window, cx),
             )
+            .icon(IconName::FileText)
             .order(402)
             .when(|ctx: &ConversationCtx, cx| {
                 here(&ctx.session, &ctx.conversation, cx).is_some_and(|h| h.rights.topic)
