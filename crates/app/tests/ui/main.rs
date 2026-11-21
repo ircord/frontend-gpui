@@ -8,6 +8,7 @@ mod registries;
 mod shell;
 
 mod commands;
+mod inbox_saved;
 mod message_actions;
 mod networks;
 mod people;

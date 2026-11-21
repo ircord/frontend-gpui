@@ -258,7 +258,8 @@ fn settings_panes_panels_and_history(cx: &mut TestAppContext) {
 fn a_route_without_a_pane_says_so(cx: &mut TestAppContext) {
     let f = open(cx, true);
     bootstrap(&f, cx);
-    f.session.update(cx, |s, cx| s.navigate(Route::Inbox, cx));
+    let nowhere = Route::Page("no-such-page".into());
+    f.session.update(cx, |s, cx| s.navigate(nowhere, cx));
     cx.run_until_parked();
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
