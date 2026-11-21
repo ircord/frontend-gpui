@@ -374,3 +374,47 @@ fn about_shows_both_versions_the_people_and_the_release_notes(cx: &mut TestAppCo
         shows(&f, cx, id);
     }
 }
+
+#[gpui_kit::test]
+fn settings_show_a_preview_and_log_out_and_escape_leaves(cx: &mut TestAppContext) {
+    let f = signed_in(cx);
+    open_settings(&f, cx);
+    // Log out at the foot of the section list, asking first.
+    shows(&f, cx, "settings-log-out");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("settings-section-appearance", cx);
+    })
+    .unwrap();
+    // Appearance opens with the sample messages and the theme cards.
+    shows(&f, cx, "settings-preview");
+    shows(&f, cx, "appearance-schemes");
+    assert_eq!(
+        label(&f, cx, "settings-preview").as_deref(),
+        Some("Preview")
+    );
+    // Escape goes back to the conversation it was opened from.
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(route(&f, cx), Some(Route::Conversation("c-general".into())));
+}
+
+#[gpui_kit::test]
+fn log_out_in_the_section_list_asks_first(cx: &mut TestAppContext) {
+    let f = signed_in(cx);
+    open_settings(&f, cx);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("settings-log-out", cx);
+        window.render_frame(cx);
+        window.click("ok", cx);
+    })
+    .unwrap();
+    wait(cx, "signed out", |cx| {
+        matches!(f.session.read(cx).phase, Phase::SignIn { .. })
+    });
+}

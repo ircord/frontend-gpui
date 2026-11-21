@@ -509,27 +509,71 @@ impl Render for SignInView {
             t!("core-signin-sign-in-to", server = server)
         };
 
+        // As the web's card: the # mark, the title and a line under it,
+        // centred; signing in also names the server, which a native app
+        // has to let the person choose.
         let mut form = div()
             .id("sign-in-form")
-            .w(px(400.))
-            .p_8()
-            .rounded_lg()
-            .bg(theme.sidebar)
+            .w(px(420.))
+            .p_7()
+            .rounded(theme.radius_large)
+            .bg(theme.main)
+            .border_1()
+            .border_color(theme.border)
+            .shadow_lg()
             .flex()
             .flex_col()
             .gap_3()
+            .child(
+                div().flex().justify_center().child(
+                    div()
+                        .id("sign-in-logo")
+                        .test_support()
+                        .role(Role::Image)
+                        .aria_label(t!("core-signin-logo"))
+                        .size(px(48.))
+                        .rounded(px(12.))
+                        .bg(theme.accent.opacity(0.55))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_2xl()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.text)
+                        .child("#"),
+                ),
+            )
             .child(
                 div()
                     .id("sign-in-title")
                     .test_support()
                     .role(Role::Heading)
                     .aria_label(SharedString::from(title))
-                    .text_2xl()
+                    .text_center()
+                    .text_xl()
                     .font_weight(FontWeight::BOLD)
                     .text_color(theme.text)
                     .child(title),
             )
-            .child(div().text_sm().text_color(theme.muted).child(subtitle));
+            .when(!choosing && !signing_up, |d| {
+                d.child(
+                    div()
+                        .text_center()
+                        .text_sm()
+                        .text_color(theme.muted)
+                        .child(t!("core-signin-tagline")),
+                )
+            })
+            .child(
+                div()
+                    .id("sign-in-server")
+                    .test_support()
+                    .aria_label(SharedString::from(subtitle.clone()))
+                    .text_center()
+                    .text_xs()
+                    .text_color(theme.faint)
+                    .child(subtitle),
+            );
 
         if choosing {
             form = form.child(field(

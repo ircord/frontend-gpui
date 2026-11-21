@@ -280,3 +280,32 @@ fn sending_while_disconnected_says_so(cx: &mut TestAppContext) {
     );
     assert!(label(&f, cx, "connection-indicator").starts_with("IRC disconnected"));
 }
+
+#[gpui_kit::test]
+fn the_server_window_opens_on_overview_cards_over_the_log(cx: &mut TestAppContext) {
+    let f = open(cx);
+    open_window(&f, cx);
+    wait(cx, "the connection details", |cx| {
+        let session = f.session.read(cx);
+        let w = session.client().unwrap().read();
+        w.server_log
+            .connections
+            .get("n1")
+            .is_some_and(|c| c.value.is_some())
+    });
+    // As the web's: the first tab is the overview, with four cards and
+    // the log under them.
+    assert_eq!(label(&f, cx, "server-window-tab-log"), "Overview");
+    for id in [
+        "server-window-card-status",
+        "server-window-card-latency",
+        "server-window-card-security",
+        "server-window-card-session",
+        "server-line-1",
+    ] {
+        assert!(shows(&f, cx, id), "{id} is shown");
+    }
+    assert_eq!(label(&f, cx, "server-window-status-value"), "Connected");
+    assert_eq!(label(&f, cx, "server-window-grade"), "Security grade A+");
+    assert_eq!(label(&f, cx, "server-window-title"), "Home · Server");
+}

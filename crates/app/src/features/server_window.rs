@@ -1,8 +1,9 @@
 //! A network's server window and raw input (package SV1).
 //!
-//! Three tabs over one network: the server log (numerics, notices, errors,
-//! the MOTD and what you sent, with runs of read markers, presence, away
-//! changes, pings and history folded into one row), the connection details
+//! Three tabs over one network: the overview (as the web's: Status, Latency,
+//! Security and Session cards over the server log of numerics, notices,
+//! errors, the MOTD and what you sent, with runs of read markers, presence,
+//! away changes, pings and history folded into one row), the connection details
 //! (`features::connection`), and the connection trace (every line on the
 //! wire, secrets redacted). Under the log, a box sends one raw IRC line.
 //!
@@ -184,7 +185,24 @@ impl ServerWindowView {
             return;
         }
         let buffer = match self.tab {
-            Tab::Log => Buffer::Log,
+            Tab::Log => {
+                // The overview's cards read the details and the latency,
+                // once: a failed read is not retried on every change.
+                let (details, latency) = {
+                    let w = client.read();
+                    (
+                        w.server_log.connections.contains_key(&self.network),
+                        w.server_log.latency.contains_key(&self.network),
+                    )
+                };
+                if !details {
+                    server_log::load_connection(client.handle(), &self.network);
+                }
+                if !latency {
+                    server_log::load_latency(client.handle(), &self.network);
+                }
+                Buffer::Log
+            }
             Tab::Trace => Buffer::Trace,
             Tab::Connection => {
                 connection::ensure_loaded(session, &self.network);
@@ -275,7 +293,11 @@ impl ServerWindowView {
             return;
         };
         match self.tab {
-            Tab::Log => server_log::load(client.handle(), &self.network, Buffer::Log),
+            Tab::Log => {
+                server_log::load(client.handle(), &self.network, Buffer::Log);
+                server_log::load_connection(client.handle(), &self.network);
+                server_log::load_latency(client.handle(), &self.network);
+            }
             Tab::Trace => server_log::load(client.handle(), &self.network, Buffer::Trace),
             Tab::Connection => {
                 server_log::load_connection(client.handle(), &self.network);
@@ -362,34 +384,42 @@ fn line_row(line: &ServerLine, indent: bool, theme: &Theme) -> impl IntoElement 
         .flex()
         .gap_2()
         .text_sm()
-        .font_family("monospace")
+        .font_family(theme.mono_font.clone())
         .hover(|d| d.bg(theme.row_hover))
-        .child(
-            div()
-                .flex_none()
-                .w(px(64.))
-                .text_color(theme.faint)
-                .child(time_of(line, "%H:%M:%S")),
-        )
-        .child(
-            div()
-                .flex_none()
-                .w(px(110.))
-                .truncate()
-                .text_color(kind_colour(line.kind, theme))
-                .child(label),
-        )
+        .child(time_cell(time_of(line, "%H:%M"), theme))
+        .child(command_cell(label, kind_colour(line.kind, theme)))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
-                .text_color(if line.kind == ServerLineKind::Error {
-                    theme.danger
-                } else {
-                    theme.text
+                .text_color(match line.kind {
+                    ServerLineKind::Error => theme.danger,
+                    ServerLineKind::Outgoing => theme.accent,
+                    _ => theme.text,
                 })
                 .child(text),
         )
+}
+
+/// The time column, to the minute as on the web.
+fn time_cell(time: String, theme: &Theme) -> Div {
+    div()
+        .flex_none()
+        .w(px(48.))
+        .text_color(theme.faint)
+        .child(time)
+}
+
+/// The command or numeric column, right-aligned against the text.
+fn command_cell(label: impl Into<SharedString>, color: Hsla) -> Div {
+    div()
+        .flex_none()
+        .w(px(110.))
+        .flex()
+        .justify_end()
+        .truncate()
+        .text_color(color)
+        .child(label.into())
 }
 
 fn text_button<F: Fn(&ClickEvent, &mut Window, &mut App) + 'static>(
@@ -430,12 +460,17 @@ impl Render for ServerWindowView {
         let Some(client) = self.session.read(cx).client().cloned() else {
             return div().into_any_element();
         };
-        let name = client
+        let (name, address) = client
             .read()
             .network(&self.network)
-            .map(|n| n.name.clone())
+            .map(|n| {
+                (
+                    n.name.clone(),
+                    format!("{}:{} · {}", n.host, n.port, n.nick),
+                )
+            })
             .unwrap_or_default();
-        let title = t!("server-window-title", network = name);
+        let title = t!("server-window-title", network = name.clone());
 
         let tab = |id, label, which: Tab, this: &Self, cx: &mut Context<Self>| {
             text_button(
@@ -453,7 +488,13 @@ impl Render for ServerWindowView {
             .role(Role::TabList)
             .aria_label(t!("server-window-tabs"))
             .flex()
-            .gap_1()
+            .flex_none()
+            .p_0p5()
+            .gap_0p5()
+            .rounded_md()
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.sidebar)
             .child(tab(
                 "server-window-tab-log",
                 t!("server-window-tab-log"),
@@ -474,30 +515,58 @@ impl Render for ServerWindowView {
                 Tab::Trace,
                 self,
                 cx,
-            ))
-            .child(ui::icon::button(
-                "server-window-refresh",
-                ui::icon::IconName::Redo,
-                t!("server-window-refresh"),
-                &theme,
-                cx.listener(|this, _, _, cx| this.refresh(cx)),
             ));
+        // As the web's: the network's name with its address and your nick,
+        // then the tabs under it.
         let header = div()
-            .h(px(48.))
             .flex_none()
             .px_4()
+            .pt_3()
+            .pb_2()
             .flex()
-            .items_center()
-            .justify_between()
+            .flex_col()
+            .gap_2()
             .border_b_1()
-            .border_color(theme.rail)
+            .border_color(theme.border)
             .child(
                 div()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(theme.text)
-                    .child(title.clone()),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(ui::icon::icon(
+                        ui::icon::IconName::SquareTerminal,
+                        theme.muted,
+                    ))
+                    .child(
+                        div()
+                            .id("server-window-title")
+                            .test_support()
+                            .role(Role::Heading)
+                            .aria_level(1)
+                            .aria_label(SharedString::from(title.clone()))
+                            .text_lg()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme.text)
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .text_color(theme.muted)
+                            .child(address),
+                    )
+                    .child(ui::icon::button(
+                        "server-window-refresh",
+                        ui::icon::IconName::RotateCw,
+                        t!("server-window-refresh"),
+                        &theme,
+                        cx.listener(|this, _, _, cx| this.refresh(cx)),
+                    )),
             )
-            .child(tabs);
+            .child(div().flex().child(tabs));
 
         let body = match self.tab {
             Tab::Connection => div()
@@ -507,7 +576,23 @@ impl Render for ServerWindowView {
                 .overflow_y_scroll()
                 .child(connection::details(&self.session, &self.network, cx))
                 .into_any_element(),
-            Tab::Log | Tab::Trace => self.render_lines(&client, window, cx),
+            Tab::Log => {
+                // Drop the workspace's read lock before the log takes it
+                // again: a write queued in between would block the second.
+                let cards = {
+                    let w = client.read();
+                    overview(&w, &self.network, &theme).into_any_element()
+                };
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(cards)
+                    .child(self.render_lines(&client, window, cx))
+                    .into_any_element()
+            }
+            Tab::Trace => self.render_lines(&client, window, cx),
         };
 
         div()
@@ -587,19 +672,25 @@ impl ServerWindowView {
                                 .cursor_pointer()
                                 .text_color(theme.muted)
                                 .hover(|d| d.bg(theme.row_hover))
+                                .font_family(theme.mono_font.clone())
+                                .child(time_cell(time_of(lines[0], "%H:%M"), &theme))
+                                .child(command_cell(format!("×{}", lines.len()), theme.muted))
                                 .child(
                                     div()
-                                        .flex_none()
-                                        .w(px(64.))
-                                        .text_color(theme.faint)
-                                        .child(time_of(lines[0], "%H:%M:%S")),
+                                        .flex_1()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .child(ui::icon::icon(
+                                            if open {
+                                                ui::icon::IconName::ChevronDown
+                                            } else {
+                                                ui::icon::IconName::ChevronRight
+                                            },
+                                            theme.faint,
+                                        ))
+                                        .child(text),
                                 )
-                                .child(div().flex_none().w(px(110.)).child(format!(
-                                    "{} ×{}",
-                                    if open { "▾" } else { "▸" },
-                                    lines.len()
-                                )))
-                                .child(div().flex_1().child(text))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.toggle(toggle.clone(), cx)
                                 }))
@@ -653,7 +744,7 @@ impl ServerWindowView {
             .aria_label(if buffer == Buffer::Trace {
                 t!("server-window-tab-trace")
             } else {
-                t!("server-window-tab-log")
+                t!("server-window-log")
             })
             .track_scroll(&self.scroll)
             .flex_1()
@@ -733,4 +824,295 @@ impl ServerWindowView {
         }
         column.into_any_element()
     }
+}
+
+// ---- The overview's cards ----
+
+/// A card with a small icon and title over its body. The caller ends it
+/// with `.test_support()`.
+fn card(
+    id: &'static str,
+    icon: ui::icon::IconName,
+    title: &'static str,
+    theme: &Theme,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .role(Role::Region)
+        .aria_label(title)
+        .flex_1()
+        .min_w_0()
+        .p_3()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .rounded(theme.radius_large)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.sidebar)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_1p5()
+                .text_sm()
+                .text_color(theme.muted)
+                .child(ui::icon::icon(icon, theme.muted))
+                .child(title),
+        )
+}
+
+fn minutes_since(time: &str, now_ms: i64) -> Option<i64> {
+    let at = chrono::DateTime::parse_from_rfc3339(time).ok()?;
+    Some(((now_ms - at.timestamp_millis()) / 60_000).max(0))
+}
+
+/// Status, Latency, Security and Session for `network`, two by two.
+fn overview(
+    w: &ircord_client::store::Workspace,
+    network: &str,
+    theme: &Theme,
+) -> impl IntoElement + use<> {
+    let now = chrono::Utc::now().timestamp_millis();
+    let n = w.network(network);
+    let info = w
+        .server_log
+        .connections
+        .get(network)
+        .and_then(|c| c.value.as_ref());
+
+    // Status: the indicator's words and dot, and for how long.
+    let (status, health) = connection::status(w, Some(network));
+    let dot = match health {
+        connection::Health::Good => theme.online,
+        connection::Health::Degraded => theme.warning,
+        connection::Health::Offline => theme.offline,
+    };
+    let server = info.map(|i| i.server_name.clone()).unwrap_or_default();
+    let since = info
+        .and_then(|i| i.connected_at.as_deref())
+        .filter(|_| health == connection::Health::Good)
+        .and_then(|t| minutes_since(t, now));
+    let status_line = match since {
+        Some(minutes) => t!(
+            "server-window-for-minutes",
+            minutes = minutes,
+            server = server.clone()
+        ),
+        None => server.clone(),
+    };
+    let status_card = card(
+        "server-window-card-status",
+        ui::icon::IconName::Info,
+        t!("server-window-status"),
+        theme,
+    )
+    .child(
+        div()
+            .id("server-window-status-value")
+            .test_support()
+            .aria_label(status)
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_lg()
+            .font_weight(FontWeight::BOLD)
+            .text_color(theme.text)
+            .child(div().size(px(8.)).rounded_full().bg(dot))
+            .child(status),
+    )
+    .child(div().text_sm().text_color(theme.muted).child(status_line));
+
+    // Latency: both hops added up, with the last half hour's average and peak.
+    let device = w.server_log.device_latency(now);
+    let irc = w.server_log.irc_latency(network, now);
+    let total = match (device, irc) {
+        (Some(a), Some(b)) => Some(a + b),
+        (a, b) => a.or(b),
+    };
+    let totals = w.server_log.totals(network);
+    let spread = server_log::average_and_peak(totals.iter().map(|s| s.ms));
+    let ms = |v: Option<f64>| match v {
+        Some(v) => t!("server-window-ms", value = v.round()),
+        None => t!("server-window-no-value").to_string(),
+    };
+    let total_text = ms(total);
+    let mut latency_card = card(
+        "server-window-card-latency",
+        ui::icon::IconName::Loader,
+        t!("server-window-latency"),
+        theme,
+    )
+    .child(
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .text_xs()
+            .text_color(theme.muted)
+            .child(t!("server-window-you"))
+            .child(format!("— {} —", ms(device)))
+            .child("IRCord")
+            .child(format!("— {} —", ms(irc)))
+            .child(server.clone()),
+    )
+    .child(
+        div()
+            .id("server-window-latency-total")
+            .test_support()
+            .aria_label(SharedString::from(total_text.clone()))
+            .flex()
+            .items_baseline()
+            .gap_1()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme.text)
+                    .child(total_text),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(t!("server-window-total-word")),
+            ),
+    );
+    if let Some((average, peak)) = spread {
+        latency_card = latency_card.child(div().text_xs().text_color(theme.muted).child(t!(
+            "server-window-average-peak",
+            average = ms(Some(average)),
+            peak = ms(Some(peak))
+        )));
+    }
+
+    // Security: the grade as a letter tile, and whether traffic is encrypted.
+    let tls = info.and_then(|i| i.tls.as_ref());
+    let (grade, headline, detail) = match (n.is_some_and(|n| n.tls), tls) {
+        (_, Some(tls)) => (
+            connection::grade_text(tls.grade).to_string(),
+            t!("server-window-encrypted").to_string(),
+            tls.version.clone(),
+        ),
+        (true, None) => (
+            "?".to_string(),
+            t!("server-window-encrypted").to_string(),
+            t!("server-window-details-later").to_string(),
+        ),
+        (false, None) => (
+            "F".to_string(),
+            t!("server-window-unencrypted").to_string(),
+            t!("server-window-readable").to_string(),
+        ),
+    };
+    let grade_colour = if grade.starts_with('A') {
+        theme.online
+    } else if grade.starts_with('B') || grade == "?" {
+        theme.warning
+    } else {
+        theme.danger
+    };
+    let security_card = card(
+        "server-window-card-security",
+        ui::icon::IconName::Eye,
+        t!("server-window-security"),
+        theme,
+    )
+    .child(
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .id("server-window-grade")
+                    .test_support()
+                    .aria_label(SharedString::from(t!(
+                        "server-window-grade",
+                        grade = grade.clone()
+                    )))
+                    .size(px(40.))
+                    .flex_none()
+                    .rounded(theme.radius)
+                    .bg(grade_colour.opacity(0.15))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_lg()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(grade_colour)
+                    .child(grade),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.text)
+                            .child(headline),
+                    )
+                    .child(div().text_sm().text_color(theme.muted).child(detail)),
+            ),
+    );
+
+    // Session: your nick here, the address, and how much was negotiated.
+    let nick = n.map(|n| n.nick.clone()).unwrap_or_default();
+    let address = n
+        .map(|n| format!("{}:{}", n.host, n.port))
+        .unwrap_or_default();
+    let session_line = t!(
+        "server-window-session-line",
+        address = address,
+        capabilities = info.map_or(0, |i| i.negotiated_capabilities.len()),
+        settings = info.map_or(0, |i| i.isupport.len())
+    );
+    let session_card = card(
+        "server-window-card-session",
+        ui::icon::IconName::User,
+        t!("server-window-session"),
+        theme,
+    )
+    .child(
+        div()
+            .text_lg()
+            .font_weight(FontWeight::BOLD)
+            .text_color(theme.text)
+            .child(nick),
+    )
+    .child(
+        div()
+            .text_sm()
+            .font_family(theme.mono_font.clone())
+            .text_color(theme.muted)
+            .child(session_line),
+    );
+
+    div()
+        .id("server-window-overview")
+        .test_support()
+        .role(Role::Group)
+        .aria_label(t!("server-window-overview"))
+        .flex_none()
+        .px_4()
+        .pt_3()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            div()
+                .flex()
+                .gap_3()
+                .child(status_card.test_support())
+                .child(latency_card.test_support()),
+        )
+        .child(
+            div()
+                .flex()
+                .gap_3()
+                .child(security_card.test_support())
+                .child(session_card.test_support()),
+        )
 }

@@ -198,6 +198,13 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
         .flex()
         .flex_col()
         .gap_4()
+        .child(super::preview(
+            &theme,
+            super::PreviewLook {
+                font: crate::message::layout::settings(cx).family(),
+                ..Default::default()
+            },
+        ))
         .child(row(
             ctx,
             "appearance-sync",
@@ -560,6 +567,62 @@ fn family_description(id: &str) -> Option<&'static str> {
     })
 }
 
+/// A scheme drawn small, as the web's theme cards: its rail with two dots
+/// beside a panel of text lines and an accent bar.
+fn miniature(seeds: &look::Seeds) -> Div {
+    let bar = |w: f32, color: u32| {
+        div()
+            .h(px(3.))
+            .w(px(w))
+            .rounded_full()
+            .bg(theme::hex(color))
+    };
+    div()
+        .h(px(64.))
+        .p_1p5()
+        .flex()
+        .gap_1p5()
+        .rounded_md()
+        .bg(theme::hex(seeds.canvas))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .size(px(9.))
+                        .rounded_full()
+                        .bg(theme::hex(seeds.accent)),
+                )
+                .child(
+                    div()
+                        .size(px(9.))
+                        .rounded_full()
+                        .bg(theme::hex(seeds.overlay)),
+                ),
+        )
+        .child(
+            div()
+                .flex_1()
+                .p_1p5()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .rounded_sm()
+                .bg(theme::hex(seeds.surface))
+                .child(bar(64., seeds.ink))
+                .child(bar(96., seeds.muted))
+                .child(
+                    div()
+                        .h(px(6.))
+                        .w(px(44.))
+                        .rounded_full()
+                        .bg(theme::hex(seeds.accent)),
+                ),
+        )
+}
+
 fn swatch(color: u32, theme: &Theme) -> Div {
     div()
         .size(px(14.))
@@ -634,48 +697,36 @@ fn schemes(
                     name = family.name
                 )))
                 .aria_selected(selected)
-                .w(px(180.))
-                .p_2()
-                .rounded(theme.radius)
+                .w(px(172.))
+                .p_1p5()
+                .rounded(theme.radius_large)
                 .border_2()
                 .border_color(if selected { theme.accent } else { theme.border })
-                .bg(theme::hex(seeds.surface))
+                .bg(theme.main)
                 .cursor_pointer()
                 .flex()
                 .flex_col()
                 .gap_1()
+                .child(miniature(&seeds))
                 .child(
                     div()
+                        .px_1()
                         .flex()
+                        .items_center()
                         .gap_1()
-                        .child(swatch(seeds.canvas, theme))
-                        .child(swatch(seeds.overlay, theme))
-                        .child(swatch(seeds.accent, theme))
-                        .child(swatch(seeds.palette.green, theme))
-                        .child(swatch(seeds.palette.red, theme)),
-                )
-                .child(
-                    div()
                         .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::hex(seeds.ink))
-                        .child(family.name),
+                        .text_color(theme.text)
+                        .child(family.name)
+                        .when(selected, |d| {
+                            d.child(ui::icon::icon(ui::icon::IconName::Check, theme.muted))
+                        }),
                 )
                 .when_some(family_description(family.id), |d, text| {
-                    d.child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::hex(seeds.muted))
-                            .child(text),
-                    )
+                    d.child(div().px_1().text_xs().text_color(theme.muted).child(text))
                 })
                 .when_some(only, |d, text| {
-                    d.child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::hex(seeds.muted))
-                            .child(text),
-                    )
+                    d.child(div().px_1().text_xs().text_color(theme.muted).child(text))
                 })
                 .on_click(move |_, _, cx| pick_family(family, cx)),
         );

@@ -458,3 +458,62 @@ fn an_account_without_networks_gets_the_quick_set_up(cx: &mut TestAppContext) {
         f.session.read(cx).route() == Some(Route::Conversation("c-lobby".into()))
     });
 }
+
+#[gpui_kit::test]
+fn the_add_form_previews_the_glyph_and_pairs_the_nicknames(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    open_add(&f, cx);
+    let glyph = |f: &Fixture, cx: &mut TestAppContext| {
+        cx.update_window(f.window, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .find("network-glyph-preview")
+                .label()
+                .map(str::to_string)
+        })
+        .unwrap()
+    };
+    assert_eq!(glyph(&f, cx).as_deref(), Some("The network's picture: ?"));
+    type_into(&f, cx, "network-name", "libera");
+    assert_eq!(glyph(&f, cx).as_deref(), Some("The network's picture: L"));
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        // "If taken, use" sits beside the nickname, as on the web.
+        let nick = window.find("network-nick").bounds();
+        let alt = window.find("network-alt-nick").bounds();
+        assert_eq!(nick.origin.y, alt.origin.y);
+        assert!(alt.origin.x > nick.origin.x);
+        assert!(window.find_by_label("If taken, use").visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_network_menu_has_a_title_row(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    let homes = |f: &Fixture, cx: &mut TestAppContext| {
+        cx.update_window(f.window, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .find_all_by_label("Home")
+                .into_iter()
+                .filter(|e| e.visible())
+                .count()
+        })
+        .unwrap()
+    };
+    let before = homes(&f, cx);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click("network-n1", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    // The menu's title row names the network.
+    assert!(homes(&f, cx) > before);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find_by_label("Edit network…").visible());
+    })
+    .unwrap();
+}

@@ -3,6 +3,16 @@
 settings-title = Settings
 settings-empty = No settings yet.
 
+# The sample messages at the top of Appearance and Messages
+settings-preview = Preview
+settings-preview-time = 09:41
+settings-preview-time-12h = 9:41 AM
+settings-preview-first-name = Jules
+settings-preview-first = anyone up for a code review?
+settings-preview-second-name = Noah
+settings-preview-second = sure, send the link
+settings-preview-channel = #development
+
 # The headings the sections are listed under
 settings-group-user = User settings
 settings-group-app = App settings

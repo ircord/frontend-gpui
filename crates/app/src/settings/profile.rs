@@ -340,6 +340,20 @@ pub fn default_picker(
     theme: &Theme,
     on_pick: impl Fn(&DefaultAvatar, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    picker(id, avatars, marks, session, theme, true, on_pick)
+}
+
+/// The default pictures, in a short scroller when `capped` (onboarding) or
+/// all of them at once (the Profile page, as on the web).
+fn picker(
+    id: &str,
+    avatars: &[DefaultAvatar],
+    marks: Marks,
+    session: &Session,
+    theme: &Theme,
+    capped: bool,
+    on_pick: impl Fn(&DefaultAvatar, &mut Window, &mut App) + 'static,
+) -> AnyElement {
     let Marks {
         selected,
         suggested,
@@ -353,8 +367,7 @@ pub fn default_picker(
         .flex()
         .flex_wrap()
         .gap_1()
-        .max_h(px(112.))
-        .overflow_y_scroll();
+        .when(capped, |d| d.max_h(px(112.)).overflow_y_scroll());
     for (i, avatar) in avatars.iter().enumerate() {
         let picked = selected == Some(avatar.id.as_str());
         let hint = suggested == Some(avatar.id.as_str());
@@ -1351,7 +1364,7 @@ impl Render for ProfileView {
             });
         let e = entity.clone();
         let picker = (!avatars.is_empty()).then(|| {
-            default_picker(
+            picker(
                 "profile-default",
                 &avatars,
                 Marks {
@@ -1361,6 +1374,7 @@ impl Render for ProfileView {
                 },
                 self.session.read(cx),
                 &theme,
+                false,
                 move |avatar, _, cx| {
                     let avatar = avatar.clone();
                     e.update(cx, |v, cx| {

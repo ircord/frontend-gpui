@@ -10,6 +10,7 @@
 //! there; this file draws it.
 
 use crate::ui::focus::Reachable;
+use crate::ui::icon::IconName;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -81,6 +82,7 @@ pub fn init(cx: &mut App) {
                 t!("networks-menu-change-nick"),
                 |n: &NetworkCtx, window, cx| change_self(n.clone(), SelfField::Nick, window, cx),
             )
+            .icon(IconName::User)
             .order(530)
             .when(|n, cx| status(n, cx) == Some(NetworkStatus::Connected)),
         );
@@ -92,6 +94,7 @@ pub fn init(cx: &mut App) {
                     change_self(n.clone(), SelfField::Realname, window, cx)
                 },
             )
+            .icon(IconName::CircleUser)
             .order(531)
             .when(|n, cx| {
                 with_network(&n.session, &n.network, cx, |n| {
@@ -106,6 +109,7 @@ pub fn init(cx: &mut App) {
                 t!("networks-menu-edit"),
                 |n: &NetworkCtx, window, cx| open_edit(&n.session, &n.network, window, cx),
             )
+            .icon(IconName::Settings2)
             .order(520),
         );
         menu.add(
@@ -114,6 +118,7 @@ pub fn init(cx: &mut App) {
                 t!("networks-menu-add"),
                 |n: &NetworkCtx, window, cx| open_add(&n.session, window, cx),
             )
+            .icon(IconName::Plus)
             .order(800),
         );
     });
@@ -880,6 +885,37 @@ fn fieldset(
         )
 }
 
+/// The glyph a network gets from its name, drawn while it is typed: its
+/// first letter on the accent's tint, or "?" before there is a name.
+fn glyph_preview(name: &str, theme: &Theme) -> impl IntoElement + use<> {
+    let initial = name
+        .trim()
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".to_string());
+    div()
+        .id("network-glyph-preview")
+        .test_support()
+        .role(Role::Image)
+        .aria_label(SharedString::from(t!(
+            "networks-glyph-preview",
+            initial = initial.clone()
+        )))
+        .size(px(56.))
+        .flex_none()
+        .mb(px(2.))
+        .rounded(theme.radius_large)
+        .bg(theme.accent.opacity(0.25))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_xl()
+        .font_weight(FontWeight::BOLD)
+        .text_color(theme.text)
+        .child(initial)
+}
+
 fn hint(text: impl Into<SharedString>, error: bool, theme: &Theme) -> Div {
     div()
         .text_xs()
@@ -1137,13 +1173,22 @@ impl Render for NetworkFormView {
             let this = cx.entity().downgrade();
             root = root.child(
                 fieldset("network-server", t!("networks-server").into(), &theme)
-                    .child(line_field(
-                        "network-name",
-                        t!("networks-name"),
-                        &self.fields.name,
-                        name_note,
-                        &theme,
-                    ))
+                    .child(
+                        // As the web's: the network's glyph as it will show
+                        // in the tabs, beside its name.
+                        div()
+                            .flex()
+                            .items_end()
+                            .gap_3()
+                            .child(glyph_preview(&form.name, &theme))
+                            .child(line_field(
+                                "network-name",
+                                t!("networks-name"),
+                                &self.fields.name,
+                                name_note,
+                                &theme,
+                            )),
+                    )
                     .child(
                         div()
                             .flex()
@@ -1165,9 +1210,28 @@ impl Render for NetworkFormView {
                     )
                     .child(
                         div()
+                            .mt_1()
+                            .pt_3()
+                            .border_t_1()
+                            .border_color(theme.border)
                             .flex()
                             .items_center()
                             .gap_3()
+                            .child(
+                                div()
+                                    .size(px(32.))
+                                    .flex_none()
+                                    .rounded_full()
+                                    .bg(if tls { theme.online } else { theme.warning }
+                                        .opacity(0.16))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(ui::icon::icon(
+                                        if tls { IconName::EyeOff } else { IconName::Eye },
+                                        if tls { theme.online } else { theme.warning },
+                                    )),
+                            )
                             .child(
                                 div()
                                     .flex_1()
@@ -1193,42 +1257,61 @@ impl Render for NetworkFormView {
 
             // Identity.
             let mut identity = fieldset("network-identity", t!("networks-identity").into(), &theme);
-            if self.place == Place::Dialog {
-                identity = identity.child(line_field(
-                    "network-nick",
-                    t!("networks-nick"),
-                    &self.fields.nick,
-                    nick_note(&form.nick, problems.nick, Some(t!("networks-nick-help"))),
-                    &theme,
-                ));
-            }
-            identity = identity.child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(line_field(
-                        "network-alt-nick",
-                        t!("networks-alt-nick"),
-                        &self.fields.alt_nick,
-                        nick_note(&form.alt_nick, problems.alt_nick, None),
-                        &theme,
-                    ))
-                    .child(line_field(
-                        "network-username",
-                        t!("networks-username"),
-                        &self.fields.username,
-                        None,
-                        &theme,
-                    )),
+            let alt_nick = line_field(
+                "network-alt-nick",
+                t!("networks-alt-nick"),
+                &self.fields.alt_nick,
+                nick_note(&form.alt_nick, problems.alt_nick, None),
+                &theme,
             );
+            let username = line_field(
+                "network-username",
+                t!("networks-username"),
+                &self.fields.username,
+                None,
+                &theme,
+            );
+            // As the web's: "If taken, use" beside the nickname, the real
+            // name beside the username.
             if self.place == Place::Dialog {
-                identity = identity.child(line_field(
-                    "network-realname",
-                    t!("networks-realname"),
-                    &self.fields.realname,
-                    Some((t!("networks-realname-help").into(), false)),
-                    &theme,
-                ));
+                identity =
+                    identity
+                        .child(
+                            div()
+                                .flex()
+                                .items_start()
+                                .gap_2()
+                                .child(line_field(
+                                    "network-nick",
+                                    t!("networks-nick"),
+                                    &self.fields.nick,
+                                    nick_note(
+                                        &form.nick,
+                                        problems.nick,
+                                        Some(t!("networks-nick-help")),
+                                    ),
+                                    &theme,
+                                ))
+                                .child(alt_nick),
+                        )
+                        .child(div().flex().items_start().gap_2().child(username).child(
+                            line_field(
+                                "network-realname",
+                                t!("networks-realname"),
+                                &self.fields.realname,
+                                Some((t!("networks-realname-help").into(), false)),
+                                &theme,
+                            ),
+                        ));
+            } else {
+                identity = identity.child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap_2()
+                        .child(alt_nick)
+                        .child(username),
+                );
             }
             root = root.child(identity);
 

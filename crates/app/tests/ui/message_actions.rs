@@ -477,3 +477,123 @@ fn earlier_versions_and_copy(cx: &mut TestAppContext) {
         Some(format!("{origin}/channel/c-general?m=n1%3Aup-1").as_str())
     );
 }
+
+#[gpui_kit::test]
+fn the_message_actions_button_opens_the_menu_drawn_as_the_webs(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    // Your own message: its menu ends with Delete, a destructive row.
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.hover("message-3", cx);
+        window.render_frame(cx);
+        assert!(window.find("message-actions-menu").visible());
+        window.click("message-actions-menu", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find_by_label("Copy text").visible());
+        // Drawn in the danger colour, so through the destructive path.
+        assert!(window.find("menu-danger-delete").visible());
+        // The pointer leaving the row for the menu keeps it open.
+        window.hover("message-1", cx);
+        window.render_frame(cx);
+        assert!(window.find_by_label("Copy text").visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_conversation_menu_names_its_channel_and_marks_leaving(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    let named = |f: &Fixture, cx: &mut TestAppContext| {
+        cx.update_window(f.window, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .find_all_by_label("#general")
+                .into_iter()
+                .filter(|e| e.visible())
+                .count()
+        })
+        .unwrap()
+    };
+    let before = named(&f, cx);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("conversation-menu", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    // The title row names the channel, as on the web.
+    assert!(named(&f, cx) > before);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("menu-danger-sidebar-leave").visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn every_menu_row_has_an_icon_and_groups_are_separated(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    cx.update(|cx| {
+        let r = ircord_app::registry::get(cx);
+        let mut missing = Vec::new();
+        let mut check = |menu: &str, items: Vec<(String, bool)>| {
+            for (id, has_icon) in items {
+                // The quick reactions show their emoji in the label.
+                if !has_icon && !id.starts_with("react-") {
+                    missing.push(format!("{menu}: {id}"));
+                }
+            }
+        };
+        check(
+            "message",
+            r.message_menu
+                .iter()
+                .map(|i| (i.id.to_string(), i.icon.is_some()))
+                .collect(),
+        );
+        check(
+            "conversation",
+            r.conversation_menu
+                .iter()
+                .map(|i| (i.id.to_string(), i.icon.is_some()))
+                .collect(),
+        );
+        check(
+            "member",
+            r.member_menu
+                .iter()
+                .map(|i| (i.id.to_string(), i.icon.is_some()))
+                .collect(),
+        );
+        check(
+            "network",
+            r.network_menu
+                .iter()
+                .map(|i| (i.id.to_string(), i.icon.is_some()))
+                .collect(),
+        );
+        check(
+            "self",
+            r.self_menu
+                .iter()
+                .map(|i| (i.id.to_string(), i.icon.is_some()))
+                .collect(),
+        );
+        assert!(missing.is_empty(), "menu rows without an icon: {missing:?}");
+
+        // A separator where the hundreds change and before the first
+        // destructive row.
+        let items = r.conversation_menu.to_vec();
+        let breaks = ircord_app::ui::context_menu::separators(&items);
+        for (i, item) in items.iter().enumerate().skip(1) {
+            let prev = &items[i - 1];
+            let expected = prev.order / 100 != item.order / 100 || (item.danger && !prev.danger);
+            assert_eq!(breaks[i], expected, "{}", item.id);
+        }
+    });
+    drop(f);
+}

@@ -1,4 +1,5 @@
-//! A form field: a small capitalised label over its control.
+//! A form field: a small label in sentence case, medium weight, over its
+//! control, as the web's forms.
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -15,10 +16,10 @@ pub fn field(
         .gap_1()
         .child(
             div()
-                .text_xs()
-                .font_weight(FontWeight::BOLD)
-                .text_color(theme.muted)
-                .child(label.to_uppercase()),
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text)
+                .child(label),
         )
         .child(control)
 }

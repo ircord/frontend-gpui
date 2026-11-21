@@ -11,8 +11,10 @@
 //! show their saving state here by themselves; a setting kept on this device
 //! calls [`saved`] once it is written.
 //!
-//! The page opens from the gear in a conversation's header, with [`open`],
-//! or with N1's Ctrl+, (Cmd+, on a Mac).
+//! The page opens from Settings in the top bar, with [`open`], or with N1's
+//! Ctrl+, (Cmd+, on a Mac); Escape goes back to where it was opened from.
+//! As on the web, each section is listed with its icon on a soft tint, and
+//! Log out sits at the foot of the list.
 
 pub mod about;
 pub mod account;
@@ -32,7 +34,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::TestSupportExt;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::store::{SaveState, Workspace};
@@ -166,6 +168,38 @@ fn ordered(sections: &[SettingsSection]) -> Vec<&SettingsSection> {
     list
 }
 
+/// A section's icon and its tint in the list, as the web's settings.
+fn section_icon(id: &str, theme: &Theme) -> (ui::icon::IconName, Hsla) {
+    use ui::icon::IconName as I;
+    match id {
+        "profile" => (I::User, theme.accent),
+        "account" => (I::Settings2, theme.warning),
+        "networks" => (I::Globe, theme.online),
+        "appearance" => (I::Palette, theme.danger),
+        "messages" => (I::Inbox, theme.online),
+        "notifications" => (I::Bell, theme.danger),
+        "device" => (I::HardDrive, theme.accent),
+        "privacy" => (I::Eye, theme.accent),
+        "shortcuts" => (I::SquareTerminal, theme.warning),
+        "emotes" => (I::Heart, theme.warning),
+        "about" => (I::Info, theme.accent),
+        _ => (I::Settings, theme.muted),
+    }
+}
+
+/// An icon on a small rounded tint of its colour.
+fn tinted_icon(name: ui::icon::IconName, tint: Hsla, theme: &Theme) -> Div {
+    div()
+        .size(px(24.))
+        .flex_none()
+        .rounded(theme.radius)
+        .bg(tint.opacity(0.16))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(ui::icon::icon(name, tint))
+}
+
 fn group_title(group: SettingsGroup) -> &'static str {
     match group {
         SettingsGroup::User => t!("settings-group-user"),
@@ -186,6 +220,10 @@ pub struct SettingsView {
     scroll: ScrollHandle,
     /// A change on this device was just written.
     flash: Option<Task<()>>,
+    /// The page itself, focused when it is entered so Escape reaches it.
+    focus: FocusHandle,
+    /// Focus the page at the next draw: it was just entered.
+    focus_pending: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -204,15 +242,28 @@ impl SettingsView {
                     _ => {}
                 },
             ),
-            cx.subscribe(&session, |_, _, event: &SessionEvent, cx| {
-                if let SessionEvent::Changed(changes) = event
-                    && changes
-                        .topics
-                        .contains_key(ircord_client::store::topic::DOCUMENTS)
-                {
-                    cx.notify();
-                }
-            }),
+            cx.subscribe_in(
+                &session,
+                window,
+                |this, session, event: &SessionEvent, window, cx| {
+                    if let SessionEvent::Route = event {
+                        let here = session.read(cx).route() == Some(Route::Settings);
+                        this.focus_pending = here;
+                        // Leaving: a focus left on the hidden page would keep
+                        // the app's keys from reaching the window.
+                        if !here && this.focus.contains_focused(window, cx) {
+                            window.blur(cx);
+                        }
+                    }
+                    if let SessionEvent::Changed(changes) = event
+                        && changes
+                            .topics
+                            .contains_key(ircord_client::store::topic::DOCUMENTS)
+                    {
+                        cx.notify();
+                    }
+                },
+            ),
         ];
         Self {
             session,
@@ -222,6 +273,8 @@ impl SettingsView {
             query,
             scroll,
             flash: None,
+            focus: cx.focus_handle(),
+            focus_pending: true,
             _subscriptions: subscriptions,
         }
     }
@@ -253,6 +306,14 @@ impl SettingsView {
         let sections = registry::get(cx).settings_sections.to_vec();
         if let Some(found) = search(&sections, &query).into_iter().next() {
             self.land(found.section, found.row.map(|r| r.id), window, cx);
+        }
+    }
+
+    /// Escape: back to where the page was opened from.
+    fn leave(&mut self, cx: &mut Context<Self>) {
+        let session = self.session.clone();
+        if session.read(cx).route() == Some(Route::Settings) {
+            session.update(cx, |s, cx| s.go_back(cx));
         }
     }
 
@@ -311,6 +372,10 @@ impl Render for SettingsView {
             .filter(|id| sections.iter().any(|s| &s.id == id))
             .or_else(|| ordered(&sections).first().map(|s| s.id.clone()));
         let query = self.query.read(cx).value().to_string();
+        let hover_bg = theme.hover;
+        if std::mem::take(&mut self.focus_pending) {
+            self.focus.focus(window, cx);
+        }
 
         let mut nav = div()
             .id("settings-sections")
@@ -343,8 +408,8 @@ impl Render for SettingsView {
                         .pb_1()
                         .px_2()
                         .text_xs()
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(theme.faint)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.muted)
                         .child(group_title(section.group).to_uppercase()),
                 );
             }
@@ -363,11 +428,18 @@ impl Render for SettingsView {
                     .aria_selected(active)
                     .px_2()
                     .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .rounded_md()
                     .cursor_pointer()
-                    .text_color(if active { theme.text } else { theme.muted })
+                    .text_color(theme.text)
                     .when(active, |d| d.bg(theme.selected))
                     .when(!active, |d| d.hover(move |d| d.bg(hover)))
+                    .child({
+                        let (icon, tint) = section_icon(&section.id, &theme);
+                        tinted_icon(icon, tint, &theme)
+                    })
                     .child(section.title.clone())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let id = id.clone();
@@ -375,6 +447,46 @@ impl Render for SettingsView {
                     })),
             );
         }
+
+        // Log out, at the foot of the list.
+        let session = self.session.clone();
+        nav = nav.child(div().flex_1().min_h(px(16.))).child(
+            div()
+                .id("settings-log-out")
+                .test_support()
+                .role(Role::Button)
+                .reachable(&theme)
+                .aria_label(t!("settings-account-log-out"))
+                .px_2()
+                .py_1()
+                .flex()
+                .items_center()
+                .gap_2()
+                .rounded_md()
+                .cursor_pointer()
+                .text_color(theme.danger)
+                .hover(move |d| d.bg(hover_bg))
+                .child(tinted_icon(
+                    ui::icon::IconName::ArrowLeft,
+                    theme.danger,
+                    &theme,
+                ))
+                .child(t!("settings-account-log-out"))
+                .on_click(move |_, window, cx| {
+                    let session = session.clone();
+                    ui::confirm::confirm(
+                        window,
+                        cx,
+                        ui::confirm::Confirm {
+                            title: t!("settings-account-log-out-title").into(),
+                            body: t!("settings-account-log-out-body").into(),
+                            ok: t!("settings-account-log-out").into(),
+                            danger: true,
+                        },
+                        move |_, cx| session.update(cx, |s, cx| s.sign_out(cx)),
+                    );
+                }),
+        );
 
         let content = if !query.trim().is_empty() {
             self.results(&sections, &query, &theme, cx)
@@ -431,7 +543,21 @@ impl Render for SettingsView {
         if let Some(state) = self.save_state(cx) {
             page = page.action(save_indicator(&state, &theme));
         }
-        page.render(&theme)
+        div()
+            .size_full()
+            .track_focus(&self.focus)
+            .capture_action(cx.listener(|this, _: &Escape, _, cx| {
+                this.leave(cx);
+                cx.stop_propagation();
+            }))
+            // Escape is the app's "mark read" key; on this page it leaves.
+            .capture_action(
+                cx.listener(|this, _: &crate::features::shortcuts::MarkRead, _, cx| {
+                    this.leave(cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .child(page.render(&theme))
     }
 }
 
@@ -541,6 +667,127 @@ fn save_indicator(state: &SaveState, theme: &Theme) -> impl IntoElement + use<> 
         .child(text)
 }
 
+/// How the sample messages are drawn: the message settings' font, size,
+/// clock and name colours; the defaults are the app's.
+#[derive(Clone, Debug)]
+pub struct PreviewLook {
+    pub font: Option<&'static str>,
+    pub size: f32,
+    pub clock_12h: bool,
+    pub colored_names: bool,
+}
+
+impl Default for PreviewLook {
+    fn default() -> Self {
+        Self {
+            font: None,
+            size: 14.,
+            clock_12h: false,
+            colored_names: true,
+        }
+    }
+}
+
+/// Two sample messages drawn with the active theme, as the web's preview
+/// at the top of Appearance and Messages, so a change shows at once.
+pub fn preview(theme: &Theme, look: PreviewLook) -> impl IntoElement + use<> {
+    let time: SharedString = if look.clock_12h {
+        t!("settings-preview-time-12h").into()
+    } else {
+        t!("settings-preview-time").into()
+    };
+    let message = |id: &'static str,
+                   account: &'static str,
+                   tone: &'static str,
+                   name: &'static str,
+                   text: Div| {
+        let member = ircord_client::contract::Member {
+            id: id.to_string(),
+            account: account.to_string(),
+            nick: name.to_lowercase(),
+            display_name: name.to_string(),
+            ..Default::default()
+        };
+        let color = ui::avatar::name_color(&member, look.colored_names, theme)
+            .map(theme::hex)
+            .unwrap_or(theme.text);
+        let (fill, ink) = ircord_client::store::people::tone(tone);
+        div()
+            .flex()
+            .gap_3()
+            .child(
+                div()
+                    .size(px(36.))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(theme::hex(fill))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::hex(ink))
+                    .child(name.chars().next().unwrap_or('?').to_string()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(color)
+                                    .child(name),
+                            )
+                            .child(div().text_xs().text_color(theme.faint).child(time.clone())),
+                    )
+                    .child(text.text_color(theme.body)),
+            )
+    };
+    div()
+        .id("settings-preview")
+        .test_support()
+        .role(Role::Group)
+        .aria_label(t!("settings-preview"))
+        .p_4()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .rounded(theme.radius_large)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.main)
+        .shadow_sm()
+        .text_size(px(look.size))
+        .when_some(look.font, |d, family| d.font_family(family))
+        .child(message(
+            "preview-jules",
+            "jules",
+            "mint",
+            t!("settings-preview-first-name"),
+            div().child(t!("settings-preview-first")),
+        ))
+        .child(message(
+            "preview-noah",
+            "noah",
+            "blue",
+            t!("settings-preview-second-name"),
+            div()
+                .flex()
+                .gap_1()
+                .child(t!("settings-preview-second"))
+                .child(
+                    div()
+                        .text_color(theme.link)
+                        .child(t!("settings-preview-channel")),
+                ),
+        ))
+}
+
 /// A setting: its label (and a short description) beside its control, under
 /// the row ID settings search lands on.
 pub fn row<L: Into<SharedString>, C: IntoElement>(
@@ -603,15 +850,18 @@ fn frame(ctx: &SettingsCtx, id: &str, label: SharedString, theme: &Theme) -> Sta
         .id(ElementId::Name(format!("setting-{id}").into()))
         .role(Role::Group)
         .aria_label(label)
-        .p_3()
+        // Flat, as the web's settings: no box per row; a search landing
+        // on a row frames it in the accent.
+        .px_3()
+        .py_3()
         .rounded_md()
-        .bg(theme.sidebar)
         .border_1()
         .border_color(if target.is_some() {
             theme.accent
         } else {
-            theme.sidebar
+            gpui_kit::transparent_black()
         })
+        .when(target.is_some(), |d| d.bg(theme.selected))
         .when_some(target, |d, target| {
             let reached = target.reached.clone();
             d.relative().child(
