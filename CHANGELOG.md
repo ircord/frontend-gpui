@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Inbox, saved messages, drafts and search look like the web client's: a large title with its description, a count chip and a close button, rows with the sender's picture and coloured name, "Today" over the day's items, and a bar naming the keys each page takes (Up and Down choose, Enter opens, E dismisses from the inbox, Escape returns to the conversation).
 - Joins after a reconnect fold into one line again instead of showing every person twice, and the timeline looks like the web client's: a "Today" pill between days, a channel's name and topic at the start of its history, and mentions marked in amber.
 
 ### New
