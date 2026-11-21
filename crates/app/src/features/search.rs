@@ -17,7 +17,6 @@ use std::time::Duration;
 
 use chrono::{Local, NaiveDate};
 use gpui_kit::TestSupportExt;
-use gpui_kit::base::test_support::Observed;
 use gpui_kit::component::input::{
     Backspace, Escape, Input, InputEvent, InputState, MoveDown, MoveUp,
 };
@@ -658,11 +657,10 @@ fn text_button(
     label: impl Into<SharedString>,
     theme: &Theme,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> Observed<Stateful<Div>> {
+) -> Stateful<Div> {
     let label: SharedString = label.into();
     div()
         .id(id)
-        .test_support()
         .role(Role::Button)
         .aria_label(label.clone())
         .px_2()
@@ -687,11 +685,10 @@ fn toggle_pill(
     on: bool,
     theme: &Theme,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> Observed<Stateful<Div>> {
+) -> Stateful<Div> {
     let label: SharedString = label.into();
     div()
         .id(id)
-        .test_support()
         .role(Role::CheckBox)
         .aria_label(label.clone())
         .aria_toggled(if on { Toggled::True } else { Toggled::False })
@@ -832,7 +829,7 @@ fn result_row(
     selected: bool,
     theme: &Theme,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> Observed<Stateful<Div>> {
+) -> Stateful<Div> {
     let network = &result.conversation.network_id;
     let member = w
         .member(&result.message.sender_id, network)
@@ -857,7 +854,6 @@ fn result_row(
     }
     div()
         .id(ElementId::Name(id.into()))
-        .test_support()
         .role(Role::ListBoxOption)
         .aria_label(SharedString::from(label))
         .aria_selected(selected)
@@ -958,12 +954,15 @@ fn messages_part(
                 .text_sm()
                 .text_color(theme.danger)
                 .child(text)
-                .child(text_button(
-                    ElementId::Name(format!("{prefix}-retry").into()),
-                    t!("search-try-again"),
-                    theme,
-                    move |_, _, cx| model.update(cx, |m, cx| m.retry(cx)),
-                )),
+                .child(
+                    text_button(
+                        ElementId::Name(format!("{prefix}-retry").into()),
+                        t!("search-try-again"),
+                        theme,
+                        move |_, _, cx| model.update(cx, |m, cx| m.retry(cx)),
+                    )
+                    .test_support(),
+                ),
         );
     }
     if m.status != Status::Done {
@@ -1009,18 +1008,21 @@ fn messages_part(
         let session = session.clone();
         let model = model.clone();
         let r = result.clone();
-        part = part.child(result_row(
-            format!("{prefix}-result-{i}"),
-            &w,
-            result,
-            show_place,
-            selected == Some(offset + i),
-            theme,
-            move |_, window, cx| {
-                model.update(cx, |_, cx| cx.emit(Opened));
-                open_result(&session, &r, window, cx)
-            },
-        ));
+        part = part.child(
+            result_row(
+                format!("{prefix}-result-{i}"),
+                &w,
+                result,
+                show_place,
+                selected == Some(offset + i),
+                theme,
+                move |_, window, cx| {
+                    model.update(cx, |_, cx| cx.emit(Opened));
+                    open_result(&session, &r, window, cx)
+                },
+            )
+            .test_support(),
+        );
     }
     if let More::Failed(error) = &m.more {
         let text = t!("search-load-more-failed", error = error.clone());
@@ -1039,16 +1041,21 @@ fn messages_part(
     if m.cursor.is_some() {
         let loading = m.more == More::Loading;
         let model = model.clone();
-        part = part.child(div().px_3().py_2().child(text_button(
-            ElementId::Name(format!("{prefix}-load-older").into()),
-            if loading {
-                t!("search-loading-older")
-            } else {
-                t!("search-load-older")
-            },
-            theme,
-            move |_, _, cx| model.update(cx, |m, cx| m.load_more(cx)),
-        )));
+        part = part.child(
+            div().px_3().py_2().child(
+                text_button(
+                    ElementId::Name(format!("{prefix}-load-older").into()),
+                    if loading {
+                        t!("search-loading-older")
+                    } else {
+                        t!("search-load-older")
+                    },
+                    theme,
+                    move |_, _, cx| model.update(cx, |m, cx| m.load_more(cx)),
+                )
+                .test_support(),
+            ),
+        );
     }
     part
 }
@@ -1108,12 +1115,15 @@ fn offers_row(
     for (i, offer) in offers.into_iter().enumerate() {
         let (input, model) = (input.clone(), model.clone());
         let chip = offer.chip.clone();
-        row = row.child(text_button(
-            ElementId::Name(format!("{prefix}-offer-{i}").into()),
-            offer.label,
-            theme,
-            move |_, window, cx| apply_offer(&input, &model, chip.clone(), window, cx),
-        ));
+        row = row.child(
+            text_button(
+                ElementId::Name(format!("{prefix}-offer-{i}").into()),
+                offer.label,
+                theme,
+                move |_, window, cx| apply_offer(&input, &model, chip.clone(), window, cx),
+            )
+            .test_support(),
+        );
     }
     Some(row.into_any_element())
 }
@@ -1745,6 +1755,7 @@ impl SearchPage {
                         }
                     },
                 )
+                .test_support()
                 .aria_label(SharedString::from(t!("search-recent", search = shown))),
             );
         }
@@ -1756,6 +1767,7 @@ impl SearchPage {
                 }
             }
         })
+        .test_support()
         .aria_label(t!("search-clear-recent"));
         div()
             .flex()
@@ -1877,6 +1889,7 @@ impl Render for SearchPage {
                     &theme,
                     cx.listener(move |this, _, window, cx| this.start(key, window, cx)),
                 )
+                .test_support()
                 .aria_label(label),
             );
         }
@@ -1913,6 +1926,7 @@ impl Render for SearchPage {
                             &theme,
                             cx.listener(|this, _, window, cx| this.open_filters(window, cx)),
                         )
+                        .test_support()
                         .aria_label(SharedString::from(filters_label)),
                     ),
             )
@@ -2135,36 +2149,39 @@ impl Render for FiltersDialog {
         if let Some(client) = client {
             let w = client.read();
             let everyone = people(&w);
-            let person_section = |key: Key,
-                                  title: &'static str,
-                                  help: &'static str,
-                                  cx: &mut Context<Self>| {
-                let mut pills = div().flex().flex_wrap().gap_1();
-                if everyone.is_empty() {
-                    pills = pills.child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.faint)
-                            .child(t!("search-filters-nobody-here")),
-                    );
-                }
-                for p in &everyone {
-                    let chip = if key == Key::From {
-                        Chip::From(p.id.clone())
-                    } else {
-                        Chip::Mentions(p.id.clone())
-                    };
-                    let on = chips.contains(&chip);
-                    pills = pills.child(toggle_pill(
-                        ElementId::Name(format!("search-filter-{}-{}", key.as_str(), p.id).into()),
-                        format!("{} (@{})", member_name(p), p.nick),
-                        on,
-                        &theme,
-                        cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
-                    ));
-                }
-                field(title, Some(help), &theme).child(pills)
-            };
+            let person_section =
+                |key: Key, title: &'static str, help: &'static str, cx: &mut Context<Self>| {
+                    let mut pills = div().flex().flex_wrap().gap_1();
+                    if everyone.is_empty() {
+                        pills = pills.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.faint)
+                                .child(t!("search-filters-nobody-here")),
+                        );
+                    }
+                    for p in &everyone {
+                        let chip = if key == Key::From {
+                            Chip::From(p.id.clone())
+                        } else {
+                            Chip::Mentions(p.id.clone())
+                        };
+                        let on = chips.contains(&chip);
+                        pills = pills.child(
+                            toggle_pill(
+                                ElementId::Name(
+                                    format!("search-filter-{}-{}", key.as_str(), p.id).into(),
+                                ),
+                                format!("{} (@{})", member_name(p), p.nick),
+                                on,
+                                &theme,
+                                cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
+                            )
+                            .test_support(),
+                        );
+                    }
+                    field(title, Some(help), &theme).child(pills)
+                };
             let from = person_section(
                 Key::From,
                 t!("search-filters-from"),
@@ -2181,13 +2198,16 @@ impl Render for FiltersDialog {
             for kind in Has::ALL {
                 let chip = Chip::Has(kind);
                 let on = chips.contains(&chip);
-                kinds = kinds.child(toggle_pill(
-                    ElementId::Name(format!("search-filter-has-{}", kind.as_str()).into()),
-                    kind_label(kind),
-                    on,
-                    &theme,
-                    cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
-                ));
+                kinds = kinds.child(
+                    toggle_pill(
+                        ElementId::Name(format!("search-filter-has-{}", kind.as_str()).into()),
+                        kind_label(kind),
+                        on,
+                        &theme,
+                        cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
+                    )
+                    .test_support(),
+                );
             }
             body = body.child(from).child(
                 field(
@@ -2203,13 +2223,16 @@ impl Render for FiltersDialog {
                 for c in &w.conversations {
                     let chip = Chip::In(c.id.clone());
                     let on = chips.contains(&chip);
-                    places = places.child(toggle_pill(
-                        ElementId::Name(format!("search-filter-in-{}", c.id).into()),
-                        conversation_label(c),
-                        on,
-                        &theme,
-                        cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
-                    ));
+                    places = places.child(
+                        toggle_pill(
+                            ElementId::Name(format!("search-filter-in-{}", c.id).into()),
+                            conversation_label(c),
+                            on,
+                            &theme,
+                            cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
+                        )
+                        .test_support(),
+                    );
                 }
                 body = body.child(
                     field(
@@ -2238,6 +2261,7 @@ impl Render for FiltersDialog {
                         cx.notify();
                     }),
                 )
+                .test_support()
                 .role(Role::RadioButton),
             );
         }
@@ -2282,6 +2306,7 @@ impl Render for FiltersDialog {
                         cx.notify();
                     }),
                 )
+                .test_support()
                 .role(Role::RadioButton),
             );
         }
@@ -2305,18 +2330,24 @@ impl Render for FiltersDialog {
                 .flex()
                 .justify_end()
                 .gap_2()
-                .child(text_button(
-                    "search-filters-clear",
-                    t!("search-filters-clear"),
-                    &theme,
-                    cx.listener(|this, _, window, cx| this.clear(window, cx)),
-                ))
-                .child(text_button(
-                    "search-filters-cancel",
-                    t!("core-cancel"),
-                    &theme,
-                    |_, window, cx| ui::dialog::close(window, cx),
-                ))
+                .child(
+                    text_button(
+                        "search-filters-clear",
+                        t!("search-filters-clear"),
+                        &theme,
+                        cx.listener(|this, _, window, cx| this.clear(window, cx)),
+                    )
+                    .test_support(),
+                )
+                .child(
+                    text_button(
+                        "search-filters-cancel",
+                        t!("core-cancel"),
+                        &theme,
+                        |_, window, cx| ui::dialog::close(window, cx),
+                    )
+                    .test_support(),
+                )
                 .child(
                     text_button(
                         "search-filters-apply",
@@ -2324,6 +2355,7 @@ impl Render for FiltersDialog {
                         &theme,
                         cx.listener(|this, _, window, cx| this.apply(window, cx)),
                     )
+                    .test_support()
                     .bg(theme.accent)
                     .text_color(theme.on_accent),
                 ),
@@ -2540,12 +2572,17 @@ impl Render for ConversationSearch {
             );
         }
         if !text.trim().is_empty() {
-            list = list.child(div().px_3().py_2().child(text_button(
-                "conversation-search-everywhere",
-                t!("search-conversation-everywhere", query = text.clone()),
-                &theme,
-                cx.listener(|this, _, _, cx| this.everywhere(cx)),
-            )));
+            list = list.child(
+                div().px_3().py_2().child(
+                    text_button(
+                        "conversation-search-everywhere",
+                        t!("search-conversation-everywhere", query = text.clone()),
+                        &theme,
+                        cx.listener(|this, _, _, cx| this.everywhere(cx)),
+                    )
+                    .test_support(),
+                ),
+            );
         }
         div()
             .id("conversation-search")
