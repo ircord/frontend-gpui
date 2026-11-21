@@ -10,7 +10,6 @@ networks-connect-submit = Connect
 networks-saving = Saving…
 networks-verifying = Checking the server…
 networks-cancel = Cancel
-networks-setup-later = Set up later
 networks-remove = Remove network
 networks-presets = Suggested networks
 

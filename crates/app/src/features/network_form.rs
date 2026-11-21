@@ -49,6 +49,20 @@ pub fn init(cx: &mut App) {
             {
                 session.navigate(Route::Page(SETUP_PAGE.into()), cx);
             }
+            // A network added elsewhere (another device) while the set-up
+            // waits untouched, or the one just set up: go to it, which
+            // leaves the page once it has a conversation to show.
+            if let SessionEvent::Changed(changes) = event
+                && changes.sidebar
+                && session.route() == Some(Route::Page(SETUP_PAGE.into()))
+                && let Some(Setup(form)) = cx.try_global::<Setup>()
+                && !form.read(cx).dirty(cx)
+                && let Some(first) = session
+                    .client()
+                    .and_then(|c| c.read().networks.first().map(|n| n.id.clone()))
+            {
+                session.select_network(&first, cx);
+            }
         })
         .detach();
     })
@@ -316,8 +330,14 @@ fn open_dialog(
     };
     let session = session.clone();
     let form = cx.new(|cx| NetworkFormView::new(session, network, Place::Dialog, window, cx));
-    form.update(cx, |f, cx| f.focus_first(window, cx));
-    ui::dialog::open(window, cx, title, move |dialog, _, cx| {
+    // Focus the first field once the dialog is up, as `ui::prompt` does:
+    // opening the dialog moves the focus into it.
+    let focus = std::cell::Cell::new(true);
+    ui::dialog::open(window, cx, title, move |dialog, window, cx| {
+        if focus.replace(false) {
+            let first = form.read(cx).first_field();
+            first.focus_handle(cx).focus(window, cx);
+        }
         let guard = form.downgrade();
         dialog
             .w(px(640.))
@@ -552,12 +572,12 @@ impl NetworkFormView {
         this
     }
 
-    fn focus_first(&self, window: &mut Window, cx: &mut App) {
-        let first = match self.place {
-            Place::Setup => &self.fields.nick,
-            Place::Dialog => &self.fields.name,
-        };
-        first.focus_handle(cx).focus(window, cx);
+    /// The field the person starts with.
+    fn first_field(&self) -> Entity<InputState> {
+        match self.place {
+            Place::Setup => self.fields.nick.clone(),
+            Place::Dialog => self.fields.name.clone(),
+        }
     }
 
     fn client(&self, cx: &App) -> Option<Rc<Client>> {
@@ -792,13 +812,10 @@ impl NetworkFormView {
 
     /// Cancel: ask first when something was typed.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.place {
-            Place::Dialog if self.dirty(cx) => self.ask_discard(window, cx),
-            Place::Dialog => ui::dialog::close(window, cx),
-            Place::Setup => {
-                // "Set up later": leave the page for whatever comes next.
-                self.session.update(cx, |s, cx| s.go_back(cx));
-            }
+        if self.dirty(cx) {
+            self.ask_discard(window, cx)
+        } else {
+            ui::dialog::close(window, cx)
         }
     }
 
@@ -1442,16 +1459,16 @@ impl NetworkFormView {
         }
         actions = actions
             .child(div().flex_1())
-            .child(
-                Button::new("network-cancel")
-                    .ghost()
-                    .label(if self.place == Place::Setup {
-                        t!("networks-setup-later")
-                    } else {
-                        t!("networks-cancel")
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx))),
-            )
+            // The set-up page has nowhere to go back to: it is how a first
+            // network is added.
+            .when(self.place == Place::Dialog, |d| {
+                d.child(
+                    Button::new("network-cancel")
+                        .ghost()
+                        .label(t!("networks-cancel"))
+                        .on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx))),
+                )
+            })
             .child(
                 Button::new("network-submit")
                     .primary()

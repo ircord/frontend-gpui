@@ -441,4 +441,18 @@ fn an_account_without_networks_gets_the_quick_set_up(cx: &mut TestAppContext) {
     assert_eq!(body["host"], "irc.example.net");
     wait_showing(&f, cx, "network-setup-done", true);
     assert_eq!(networks(&f, cx), ["Example"]);
+    // The network joins its channel: the app goes to it.
+    let lobby: Conversation = serde_json::from_value(json!({
+        "id": "c-lobby", "networkId": "n2", "kind": "channel", "name": "lobby",
+        "favorite": false, "joined": true, "memberIds": [], "memberModes": {},
+        "modes": "", "topic": "", "unreadCount": 0, "mentionCount": 0}))
+    .unwrap();
+    f.server.push(ircord_client::testing::frame(
+        4,
+        "conversation.updated",
+        &lobby,
+    ));
+    wait(cx, "the set-up to give way to #lobby", |cx| {
+        f.session.read(cx).route() == Some(Route::Conversation("c-lobby".into()))
+    });
 }
