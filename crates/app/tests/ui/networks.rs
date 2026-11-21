@@ -368,6 +368,8 @@ fn settings_list_the_networks_and_register_channels(cx: &mut TestAppContext) {
         assert_eq!(window.find("network-status-n1").label(), Some("Connected"));
         assert!(window.find("network-edit-n1").visible());
         assert!(window.find("network-add").visible());
+        assert!(window.find("setting-register-channels").visible());
+        assert!(window.find("setting-network-list").visible());
     })
     .unwrap();
     f.server.wait_for("GET", "/api/v1/app/preferences", WAIT);

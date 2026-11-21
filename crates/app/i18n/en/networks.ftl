@@ -101,12 +101,14 @@ networks-change = Change
 
 # Settings → Networks
 networks-settings-title = Networks
+networks-settings-list = Your networks
+networks-settings-keywords = irc, server, nick, sasl, nickserv, connect, disconnect, add network
 networks-settings-empty = No networks yet. Add one to start chatting.
 networks-settings-edit = Edit
 networks-status-connected = Connected
 networks-status-disconnected = Disconnected
 networks-status-connecting = Connecting
 networks-status-error = Connection problem
-networks-channels = Channels
 networks-register-channels = Register channels you create
+networks-register-channels-keywords = chanserv, register, channel, services
 networks-register-channels-help = Registers new channels with the network's services, so they stay yours when you leave.

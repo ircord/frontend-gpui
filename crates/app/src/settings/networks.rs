@@ -17,7 +17,7 @@ use ircord_client::contract::NetworkStatus;
 use ircord_client::documents::PREFERENCES;
 
 use crate::features::network_form;
-use crate::registry::{self, SettingsCtx, SettingsSection};
+use crate::registry::{self, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection};
 use crate::session::Session;
 use crate::theme::{self, Theme};
 
@@ -29,8 +29,18 @@ pub fn init(cx: &mut App) {
                 t!("networks-settings-title"),
                 |ctx, window, cx| render(ctx, window, cx).into_any_element(),
             )
+            .group(SettingsGroup::User)
             .order(40)
-            .keywords(["irc", "server", "nick", "sasl", "nickserv", "connect"]),
+            .keywords(t!("networks-settings-keywords").split(", "))
+            .row(
+                SettingsRow::new("network-list", t!("networks-settings-list"))
+                    .keywords(t!("networks-settings-keywords")),
+            )
+            .row(
+                SettingsRow::new("register-channels", t!("networks-register-channels"))
+                    .description(t!("networks-register-channels-help"))
+                    .keywords(t!("networks-register-channels-keywords")),
+            ),
         );
     });
 }
@@ -226,6 +236,13 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> impl IntoEle
     let add_session = session.clone();
     let register = register_channels(&client);
     let switch_client = client.clone();
+    let body = div().flex().flex_col().gap_2().child(list).child(
+        div().child(
+            Button::new("network-add")
+                .label(t!("networks-menu-add"))
+                .on_click(move |_, window, cx| network_form::open_add(&add_session, window, cx)),
+        ),
+    );
     div()
         .id("network-settings-page")
         .flex()
@@ -233,55 +250,22 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> impl IntoEle
         .gap_3()
         .text_sm()
         .text_color(theme.text)
-        .child(list)
-        .child(
-            div().child(
-                Button::new("network-add")
-                    .label(t!("networks-menu-add"))
-                    .on_click(move |_, window, cx| {
-                        network_form::open_add(&add_session, window, cx)
-                    }),
-            ),
-        )
-        .child(
-            div()
-                .mt_4()
-                .text_xs()
-                .font_weight(FontWeight::BOLD)
-                .text_color(theme.muted)
-                .child(t!("networks-channels").to_uppercase()),
-        )
-        .child(
-            div()
-                .id("network-register-channels")
-                .test_support()
-                .role(Role::Group)
-                .aria_label(t!("networks-register-channels"))
-                .flex()
-                .items_center()
-                .gap_4()
-                .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(t!("networks-register-channels")),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.muted)
-                                .child(t!("networks-register-channels-help")),
-                        ),
-                )
-                .child(
-                    Switch::new("network-register-channels-switch")
-                        .checked(register)
-                        .accessibility_label(t!("networks-register-channels"))
-                        .on_click(move |on, _, _| set_register_channels(&switch_client, *on)),
-                ),
-        )
+        .child(super::block(
+            ctx,
+            "network-list",
+            t!("networks-settings-list"),
+            body,
+            &theme,
+        ))
+        .child(super::row(
+            ctx,
+            "register-channels",
+            t!("networks-register-channels"),
+            Some(t!("networks-register-channels-help").into()),
+            Switch::new("network-register-channels-switch")
+                .checked(register)
+                .accessibility_label(t!("networks-register-channels"))
+                .on_click(move |on, _, _| set_register_channels(&switch_client, *on)),
+            &theme,
+        ))
 }
