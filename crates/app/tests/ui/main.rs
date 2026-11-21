@@ -21,6 +21,7 @@ mod people;
 mod search;
 mod server_window;
 mod settings;
+mod settings_messages;
 mod sidebar;
 mod text;
 mod timeline;

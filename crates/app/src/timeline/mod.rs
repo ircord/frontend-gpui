@@ -58,6 +58,15 @@ struct Reading {
 
 impl Global for Reading {}
 
+/// Rebuild the timeline's rows now, as after a change to how they look that
+/// no workspace change announces (an appearance kept on this device).
+pub fn refresh(cx: &mut App) {
+    let view = cx.try_global::<Reading>().and_then(|r| r.view.clone());
+    if let Some(view) = view.and_then(|v| v.upgrade()) {
+        view.update(cx, |view, cx| view.rebuild(cx));
+    }
+}
+
 /// Register the timeline's menu entries and keys (package R1).
 pub fn init(cx: &mut App) {
     cx.default_global::<Reading>();
@@ -523,6 +532,8 @@ pub struct TimelineView {
     at_end: bool,
     /// Shows a window into older history.
     detached: bool,
+    /// The message settings the rows were measured with (`layout::look`).
+    look: u64,
     _subscription: Subscription,
 }
 
@@ -533,8 +544,13 @@ impl TimelineView {
                 SessionEvent::Changed(changes) => {
                     let open = this.conversation.clone();
                     let reading = changes.topics.contains_key(TOPIC);
+                    // The preferences and appearance say how rows look.
+                    let documents = changes
+                        .topics
+                        .contains_key(ircord_client::store::topic::DOCUMENTS);
                     if changes.reset
                         || reading
+                        || documents
                         || open.as_ref().is_some_and(|id| {
                             changes.timelines.contains(id) || changes.typing.contains(id)
                         })
@@ -559,6 +575,7 @@ impl TimelineView {
             jumped: 0,
             at_end: true,
             detached: false,
+            look: 0,
             _subscription: subscription,
         };
         view.install_scroll_handler(cx);
@@ -616,6 +633,8 @@ impl TimelineView {
         let switched = conversation != self.conversation;
         let mut target = None;
         let mut detached = false;
+        // The message settings shown (`layout::look`).
+        let look = message::layout::look(cx);
         let rows = match (&client, &conversation) {
             (Some(client), Some(id)) => {
                 let mut line = None;
@@ -657,9 +676,13 @@ impl TimelineView {
             self.list.set_follow_mode(FollowMode::Tail);
             self.list.scroll_to_end();
             self.at_end = true;
+        } else if look != self.look {
+            // Every row may have a new height.
+            self.list.splice(0..self.keys.len(), keys.len());
         } else if let Some((range, count)) = rows::splice(&self.keys, &keys) {
             self.list.splice(range, count);
         }
+        self.look = look;
         if detached != self.detached {
             self.detached = detached;
             if detached {
@@ -871,7 +894,9 @@ impl TimelineView {
                     div()
                         .text_xs()
                         .text_color(theme.faint)
-                        .w(px(40.))
+                        .min_w(px(40.))
+                        .flex_none()
+                        .whitespace_nowrap()
                         .child(e.time.clone()),
                 )
                 .child(e.text.clone())
@@ -969,7 +994,9 @@ impl TimelineView {
                     div()
                         .text_xs()
                         .text_color(theme.faint)
-                        .w(px(40.))
+                        .min_w(px(40.))
+                        .flex_none()
+                        .whitespace_nowrap()
                         .child(f.time.clone()),
                 )
                 .child(
@@ -1006,7 +1033,9 @@ impl TimelineView {
                             div()
                                 .text_xs()
                                 .text_color(theme.faint)
-                                .w(px(40.))
+                                .min_w(px(40.))
+                                .flex_none()
+                                .whitespace_nowrap()
                                 .child(e.time.clone()),
                         )
                         .child(e.text.clone()),

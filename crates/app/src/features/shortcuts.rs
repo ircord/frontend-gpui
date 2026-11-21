@@ -524,14 +524,22 @@ pub fn open_help(window: &mut Window, cx: &mut App) {
                     if key.id.starts_with("channel-") || key.id == "help-question" {
                         continue;
                     }
-                    let mut chords = if key.keys.is_empty() {
+                    let mut bound = Vec::new();
+                    if key.id == "help" {
+                        for other in keys.iter().filter(|k| k.id == "help-question") {
+                            bound.extend(registry::keys_of(cx, other));
+                        }
+                    }
+                    bound.extend(registry::keys_of(cx, key));
+                    let chords = if bound.is_empty() {
                         t!("sidebar-help-no-key").to_string()
                     } else {
-                        chord_label(key.keys, MAC)
+                        bound
+                            .iter()
+                            .map(|k| chord_label(k, MAC))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     };
-                    if key.id == "help" {
-                        chords = format!("{}, {chords}", chord_label("?", MAC));
-                    }
                     rows.push((key.id.to_string(), key.label.clone(), chords));
                 }
                 if group == Group::GettingAround {

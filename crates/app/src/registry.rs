@@ -731,6 +731,23 @@ fn empty() -> &'static Registry {
     EMPTY.with(|e| *e)
 }
 
+/// The keys the person gave registered key IDs in the shortcuts settings
+/// (S2), which sets it whenever it binds them. An ID not here has its
+/// default; an empty list means no key.
+#[derive(Default)]
+pub struct BoundKeys(pub std::collections::HashMap<SharedString, Vec<String>>);
+impl Global for BoundKeys {}
+
+/// The keys `key` is bound to now, as GPUI keystrokes: the person's own, or
+/// its default.
+pub fn keys_of(cx: &App, key: &KeyDefault) -> Vec<String> {
+    match cx.try_global::<BoundKeys>().and_then(|b| b.0.get(&key.id)) {
+        Some(keys) => keys.clone(),
+        None if key.keys.trim().is_empty() => Vec::new(),
+        None => vec![key.keys.to_string()],
+    }
+}
+
 /// Bind every registered default key. `overrides` maps a key ID to the keys
 /// the person chose instead (from the shortcuts settings).
 pub fn bind_keys(cx: &mut App, overrides: &dyn Fn(&str) -> Option<String>) {

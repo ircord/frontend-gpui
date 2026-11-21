@@ -353,7 +353,7 @@ pub fn build(w: &Workspace, conversation: &str, options: Options) -> Vec<Row> {
             .map(|(m, at)| EventRow {
                 id: m.id.clone(),
                 text: event_text(w, m, &network),
-                time: local_time(*at).format("%H:%M").to_string(),
+                time: crate::message::layout::time_label(w, &local_time(*at)),
             })
             .collect();
         match events.len() {
@@ -388,7 +388,7 @@ pub fn build(w: &Workspace, conversation: &str, options: Options) -> Vec<Row> {
             rows.push(Row::Unread);
             last = None;
         }
-        let time = local.format("%H:%M").to_string();
+        let time = crate::message::layout::time_label(w, &local);
         if m.kind == MessageKind::Event || m.kind == MessageKind::System || m.event.is_some() {
             last = None;
             if is_chatter(m) {
