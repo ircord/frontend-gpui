@@ -24,7 +24,7 @@ pub mod auth;
 pub mod channels;
 mod conversations;
 mod devices;
-mod emotes;
+pub mod emotes;
 mod inbox;
 pub mod links;
 mod messages;

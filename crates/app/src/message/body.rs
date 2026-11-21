@@ -10,8 +10,9 @@
 //! all find them. They are placed from the previous frame's layout; a frame
 //! whose layout moved them draws again.
 //!
-//! Inline renderers that return `Inline::Element` are still drawn as their
-//! text: an element inside a line needs an inline layout this does not have.
+//! Inline renderers that return `Inline::Element` (an emoji picture) get the
+//! same treatment as a pill: the text keeps a fixed space for the element
+//! ([`ELEMENT_SPACE`]) and the element is placed over where that space landed.
 
 use std::cell::RefCell;
 use std::ops::Range;
@@ -29,7 +30,7 @@ use ircord_client::format::links::{MessageLink, parse_message_link};
 use ircord_client::format::mentions::{fold, group_mention};
 use ircord_client::format::{Color as IrcColor, Formatted};
 
-use crate::registry::{Inline, InlineRenderer, MessageCtx};
+use crate::registry::{ElementFn, Inline, InlineRenderer, MessageCtx};
 use crate::session::Session;
 use crate::theme::{self, Theme};
 use crate::timeline::rows::MessageRow;
@@ -51,12 +52,15 @@ pub fn render(
             .into_any_element();
     }
     let mut extra = Vec::new();
+    let mut elements = Vec::new();
     for renderer in inline {
-        for span in (renderer.spans)(m, theme) {
-            if let Inline::Style(style) = span.inline
-                && span.range.end <= m.body.text.len()
-            {
-                extra.push((span.range, style));
+        for span in (renderer.spans)(m, theme, cx) {
+            if span.range.end > m.body.text.len() {
+                continue;
+            }
+            match span.inline {
+                Inline::Style(style) => extra.push((span.range, style)),
+                Inline::Element(draw) => elements.push((span.range, draw)),
             }
         }
     }
@@ -67,6 +71,7 @@ pub fn render(
         theme,
         env: &env,
         extra: &extra,
+        elements: &elements,
         paragraphs: 0,
         codes: 0,
         lists: 0,
@@ -183,7 +188,12 @@ enum Action {
     Message(MessageLink),
 }
 
-/// A pill or a link in a paragraph.
+/// What the text shows in place of an [`Inline::Element`]: figure spaces,
+/// which take a fixed width and never break between themselves, so the
+/// element's place is one box on one line.
+pub const ELEMENT_SPACE: &str = "\u{2007}\u{2007}\u{2007}";
+
+/// A pill, a link or an inline element in a paragraph.
 #[derive(Clone)]
 struct Piece {
     range: Range<usize>,
@@ -191,6 +201,8 @@ struct Piece {
     background: Option<Hsla>,
     label: SharedString,
     action: Option<Action>,
+    /// Drawn over the piece's place (an emoji picture).
+    element: Option<ElementFn>,
 }
 
 struct Body<'a> {
@@ -200,6 +212,8 @@ struct Body<'a> {
     env: &'a Env,
     /// Styles from the registered inline renderers, over the whole text.
     extra: &'a [(Range<usize>, HighlightStyle)],
+    /// Elements from the registered inline renderers, over the whole text.
+    elements: &'a [(Range<usize>, ElementFn)],
     paragraphs: usize,
     codes: usize,
     lists: usize,
@@ -393,6 +407,7 @@ impl Body<'_> {
                             background: Some(theme.selected),
                             label: label.into(),
                             action: Some(Action::Message(link)),
+                            element: None,
                         });
                     } else {
                         let irc = url.to_ascii_lowercase().starts_with("irc");
@@ -405,6 +420,7 @@ impl Body<'_> {
                             } else {
                                 Action::Url(url)
                             }),
+                            element: None,
                         });
                     }
                 }
@@ -425,6 +441,7 @@ impl Body<'_> {
                         }),
                         label: t!("text-mention", name = nick).into(),
                         action: None,
+                        element: None,
                     });
                 }
                 Token::Channel(name) => {
@@ -447,10 +464,34 @@ impl Body<'_> {
                             t!("text-join-channel", channel = name.clone()).into()
                         },
                         action: Some(Action::Channel(name)),
+                        element: None,
                     });
                 }
             }
         }
+        // Inline elements, where no pill or link already is.
+        for (range, draw) in self.elements {
+            let Some(range) = text.project(range) else {
+                continue;
+            };
+            if range.is_empty()
+                || pieces
+                    .iter()
+                    .any(|p: &Piece| p.range.start < range.end && range.start < p.range.end)
+            {
+                continue;
+            }
+            replace.push((range.clone(), ELEMENT_SPACE.to_string()));
+            pieces.push(Piece {
+                label: f.text[range.clone()].to_string().into(),
+                range,
+                background: None,
+                action: None,
+                element: Some(draw.clone()),
+            });
+        }
+        replace.sort_by_key(|(r, _)| r.start);
+        pieces.sort_by_key(|p| p.range.start);
         let mut highlights = merge(spans);
         let mut shown = f.text.clone();
         if !replace.is_empty() {
@@ -507,7 +548,7 @@ impl Body<'_> {
                 continue;
             };
             for (j, b) in bounds.iter().enumerate() {
-                wrapper = wrapper.child(self.overlay(&id, i, j, *b, &piece));
+                wrapper = wrapper.child(self.overlay(&id, (i, j), *b, &piece, window, cx));
             }
         }
         wrapper.into_any_element()
@@ -517,10 +558,11 @@ impl Body<'_> {
     fn overlay(
         &self,
         id: &str,
-        i: usize,
-        j: usize,
+        (i, j): (usize, usize),
         bounds: Bounds<Pixels>,
         piece: &Piece,
+        window: &mut Window,
+        cx: &mut App,
     ) -> AnyElement {
         let overlay_id = if j == 0 {
             format!("{id}-piece-{i}")
@@ -538,6 +580,19 @@ impl Body<'_> {
         // Only the first line of a wrapped pill speaks; the rest repeat it.
         if j == 0 {
             d = d.aria_label(piece.label.clone());
+        }
+        if let Some(draw) = &piece.element {
+            if j > 0 {
+                return d.into_any_element();
+            }
+            return d
+                .role(Role::Image)
+                .flex()
+                .items_center()
+                .justify_center()
+                .tooltip(ui::tooltip::text(piece.label.clone()))
+                .child(draw(window, cx))
+                .into_any_element();
         }
         match piece.action.clone() {
             None => d.role(Role::Mark).into_any_element(),

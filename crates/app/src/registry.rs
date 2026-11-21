@@ -539,8 +539,11 @@ impl SettingsSection {
 #[derive(Clone)]
 pub enum Inline {
     Style(HighlightStyle),
-    /// Draw an element in place of the text (an emoji picture, a pill). The
-    /// text stays as the fallback and for copying.
+    /// Draw an element in place of the text (an emoji picture). The body
+    /// keeps a small fixed space in the line for it, about a line high and
+    /// one and a half wide, and the element fills that space; the text is
+    /// its label for screen readers and tests. Spans inside a link, a pill
+    /// or a code block stay text.
     Element(ElementFn),
 }
 
@@ -551,13 +554,15 @@ pub struct InlineSpan {
     pub inline: Inline,
 }
 
-/// Finds spans of message text to draw differently.
+/// Finds spans of message text to draw differently. It reads what it
+/// needs (an emoji catalog) from the app; it runs on every draw of a
+/// message, so it should be quick.
 #[derive(Clone)]
 pub struct InlineRenderer {
     pub id: SharedString,
     pub order: i32,
     #[allow(clippy::type_complexity)]
-    pub spans: Rc<dyn Fn(&MessageRow, &Theme) -> Vec<InlineSpan>>,
+    pub spans: Rc<dyn Fn(&MessageRow, &Theme, &App) -> Vec<InlineSpan>>,
 }
 
 /// Hides timeline rows (ignored people, folded events). A row shows when
