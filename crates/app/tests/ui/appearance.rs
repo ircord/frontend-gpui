@@ -265,7 +265,7 @@ fn a_theme_css_sets_the_root_variables_until_the_switch_is_off(cx: &mut TestAppC
         "format": 1, "id": "t-red", "name": "Red", "updatedAt": "s1",
         "base": {"dark": "ircord-dark", "light": "ircord-light"},
         "colors": {},
-        "css": ":root { --accent: #ff0000 } .x { color: red }"
+        "css": ":root { --accent: #ff0000; --rail: #00ff00 } .x { color: red }"
     });
     let f = signed_in(cx, json!({"mode": "dark"}), json!([red]));
     open_at(&f, cx, "appearance-themes");
@@ -284,6 +284,8 @@ fn a_theme_css_sets_the_root_variables_until_the_switch_is_off(cx: &mut TestAppC
         })
         .unwrap();
     assert!(report.unwrap().contains("not used"));
+    // The rail is drawn in borders and backdrops, not in the default view.
+    assert_eq!(colour(cx).rail, theme::hex(0x00ff00));
 
     // Switched off: the account is saved with CSS off and the accent is the scheme's.
     // The switch itself is not reported visible to the harness, so the setter it calls runs here.
