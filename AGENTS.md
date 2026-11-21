@@ -64,6 +64,10 @@ client; it never speaks IRC itself. Layout and commands are in
   a Lucide-only `gpui_kit::assets::IconName` compiles but draws nothing.
   GPUI timers never fire in the headless tests: a debounce sleeps on the
   session's tokio runtime (`Session::runtime`), as `features/links.rs` does.
+  A full page is a `ui::page::Page` (description, count chip, close, key
+  hints; its hints name only keys the page handles). Escape is bound app-wide
+  to Mark read, whose action runs before any `on_key_down`: a page that
+  leaves on Escape captures `shortcuts::MarkRead`, as `features/inbox.rs` does.
 - A live case that needs a server owner calls `support::make_owner`; `cargo
   xtask integration` gives the backend an operator token for it.
 - Your own messages carry your member ID as `senderId`, not `you`; use
