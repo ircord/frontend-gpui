@@ -10,6 +10,7 @@
 - Send messages and `/me` actions, retry a message that failed to send, and see who is typing.
 - See who is in a channel and whether they are online or away.
 - Stay connected: IRCord catches up on missed messages after a reconnect and shows when it is offline.
+- See that IRCord is reaching your server while it starts, with a way to sign out if it cannot.
 - Get desktop notifications for the messages your server routes to this device, and click one to open its conversation.
 - Keep IRCord running in the tray when you close its window.
 - Run IRCord on Linux, installed from a tarball with a menu entry, and on macOS, built from source on a Mac; keep it in the tray on both, with the sign-in in the Secret Service or the login keychain.

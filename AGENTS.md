@@ -28,6 +28,14 @@ client; it never speaks IRC itself. Layout and commands are in
   `store/`, runs requests with `Client::call`, and tests against
   `ircord_client::testing::CannedServer` (feature `test-support`). Gate features on the server's
   `features` and `capabilities`, never on a version number.
+- In `crates/app` a feature edits no shared view: it fills its pre-created
+  `features/<name>.rs` (or `settings/<name>.rs`) and adds menu items, slots,
+  panes, panels and keys through `registry.rs`. Every string a person reads
+  goes through `t!("id")`, with the text in its own
+  `crates/app/i18n/en/<area>.ftl` (IDs start with the file name; the `i18n`
+  tests fail on a missing or unused ID). Colours come from `theme::get(cx)`.
+  UI tests share `tests/ui/fixture.rs`, which runs the app against the
+  `CannedServer`; wait with `fixture::wait`, not one `run_until_parked`.
 - Your own messages carry your member ID as `senderId`, not `you`; use
   `Workspace::is_self`.
 - `vendor/gpui-pre-windows` is GPUI's Windows backend with
