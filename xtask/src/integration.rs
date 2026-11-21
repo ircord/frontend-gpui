@@ -29,71 +29,110 @@ impl Drop for Cleanup {
     }
 }
 
-pub fn run(root: &Path) -> Result<()> {
-    let backend = match std::env::var_os("IRCORD_BACKEND") {
-        Some(dir) => PathBuf::from(dir),
-        None => root.join("../ircord-backend"),
-    };
-    if !backend.join("Dockerfile").is_file() {
-        bail!(
-            "no backend checkout at {} (set IRCORD_BACKEND)",
-            backend.display()
-        );
+/// A disposable backend and Ergo IRC server on a private Docker network,
+/// removed when dropped. `server` and `ergo` are the container names; a
+/// container started with `--network container:{server}` reaches the backend
+/// at `http://127.0.0.1:8080` and the IRC server at `{ergo}:6667`.
+pub struct Backend {
+    pub server: String,
+    pub ergo: String,
+    _cleanup: Cleanup,
+}
+
+impl Backend {
+    /// Build the backend image from `IRCORD_BACKEND` and start both servers.
+    pub fn start(root: &Path) -> Result<Self> {
+        let backend = match std::env::var_os("IRCORD_BACKEND") {
+            Some(dir) => PathBuf::from(dir),
+            None => root.join("../ircord-backend"),
+        };
+        if !backend.join("Dockerfile").is_file() {
+            bail!(
+                "no backend checkout at {} (set IRCORD_BACKEND)",
+                backend.display()
+            );
+        }
+        println!("building the backend image from {}", backend.display());
+        docker(&[
+            "build",
+            "-q",
+            "-t",
+            BACKEND_IMAGE,
+            &backend.display().to_string(),
+        ])?;
+
+        let id = std::process::id();
+        let net = format!("ircord-gpui-it-{id}");
+        let ergo = format!("ircord-gpui-it-ergo-{id}");
+        let server = format!("ircord-gpui-it-backend-{id}");
+        let mut cleanup = Cleanup(Vec::new());
+
+        docker(&["network", "create", &net])?;
+        cleanup
+            .0
+            .push(vec!["network".into(), "rm".into(), net.clone()]);
+        docker(&["run", "-d", "--name", &ergo, "--network", &net, ERGO_IMAGE])?;
+        cleanup.0.push(vec!["rm".into(), "-f".into(), ergo.clone()]);
+        docker(&[
+            "run",
+            "-d",
+            "--name",
+            &server,
+            "--network",
+            &net,
+            "--tmpfs",
+            "/data:uid=65532,gid=65532",
+            "-e",
+            "IRCORD_LISTEN=0.0.0.0:8080",
+            "-e",
+            "IRCORD_PUBLIC_URL=http://127.0.0.1:8080",
+            "-e",
+            "IRCORD_ALLOW_PRIVATE_IRC=true",
+            "-e",
+            "IRCORD_YTDLP_BINARY=disabled",
+            BACKEND_IMAGE,
+        ])?;
+        cleanup
+            .0
+            .push(vec!["rm".into(), "-f".into(), server.clone()]);
+        Ok(Self {
+            server,
+            ergo,
+            _cleanup: cleanup,
+        })
     }
-    println!("building the backend image from {}", backend.display());
-    docker(&[
-        "build",
-        "-q",
-        "-t",
-        BACKEND_IMAGE,
-        &backend.display().to_string(),
-    ])?;
 
-    let id = std::process::id();
-    let net = format!("ircord-gpui-it-{id}");
-    let ergo = format!("ircord-gpui-it-ergo-{id}");
-    let server = format!("ircord-gpui-it-backend-{id}");
-    let mut cleanup = Cleanup(Vec::new());
+    /// `docker run` arguments that put a container in the backend's network
+    /// namespace.
+    pub fn network_args(&self) -> Vec<String> {
+        vec!["--network".into(), format!("container:{}", self.server)]
+    }
 
-    docker(&["network", "create", &net])?;
-    cleanup
-        .0
-        .push(vec!["network".into(), "rm".into(), net.clone()]);
-    docker(&["run", "-d", "--name", &ergo, "--network", &net, ERGO_IMAGE])?;
-    cleanup.0.push(vec!["rm".into(), "-f".into(), ergo.clone()]);
-    docker(&[
-        "run",
-        "-d",
-        "--name",
-        &server,
-        "--network",
-        &net,
-        "--tmpfs",
-        "/data:uid=65532,gid=65532",
-        "-e",
-        "IRCORD_LISTEN=0.0.0.0:8080",
-        "-e",
-        "IRCORD_PUBLIC_URL=http://127.0.0.1:8080",
-        "-e",
-        "IRCORD_ALLOW_PRIVATE_IRC=true",
-        "-e",
-        "IRCORD_YTDLP_BINARY=disabled",
-        BACKEND_IMAGE,
-    ])?;
-    cleanup
-        .0
-        .push(vec!["rm".into(), "-f".into(), server.clone()]);
+    /// Print the tail of both servers' logs, for a failed run.
+    pub fn print_logs(&self) {
+        eprintln!("--- backend log ---");
+        let _ = Command::new("docker")
+            .args(["logs", "--tail", "60", &self.server])
+            .status();
+        eprintln!("--- ergo log ---");
+        let _ = Command::new("docker")
+            .args(["logs", "--tail", "30", &self.ergo])
+            .status();
+    }
+}
 
+pub fn run(root: &Path) -> Result<()> {
+    let backend = Backend::start(root)?;
+    let mut extra = backend.network_args();
+    extra.extend([
+        "-e".into(),
+        "IRCORD_IT_SERVER=http://127.0.0.1:8080".into(),
+        "-e".into(),
+        format!("IRCORD_IT_IRC={}:6667", backend.ergo),
+    ]);
     let result = crate::container::run_with(
         root,
-        &[
-            "--network".into(),
-            format!("container:{server}"),
-            "-e".into(),
-            "IRCORD_IT_SERVER=http://127.0.0.1:8080".into(),
-            "-e".into(),
-            format!("IRCORD_IT_IRC={ergo}:6667"),
-        ],
+        &extra,
         &[
             "cargo",
             "test",
@@ -106,16 +145,9 @@ pub fn run(root: &Path) -> Result<()> {
         ],
     );
     if result.is_err() {
-        eprintln!("--- backend log ---");
-        let _ = Command::new("docker")
-            .args(["logs", "--tail", "60", &server])
-            .status();
-        eprintln!("--- ergo log ---");
-        let _ = Command::new("docker")
-            .args(["logs", "--tail", "30", &ergo])
-            .status();
+        backend.print_logs();
     }
-    drop(cleanup);
+    drop(backend);
     result.context("the live integration test failed")?;
     println!("integration passed");
     Ok(())
