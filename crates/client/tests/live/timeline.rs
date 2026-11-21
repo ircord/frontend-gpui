@@ -1,6 +1,8 @@
 //! Live cases for package R1: a window of history around an older message,
 //! paging from it back to the present, locating a message by its ID, and
 //! marking a conversation unread from a message, through a real backend.
+//! V1: after a reconnect the history service's replayed `system` lines sit
+//! between the join events, which still fold once those lines are left out.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -9,6 +11,7 @@ use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
 use ircord_client::api::Api;
 use ircord_client::client::{runtime, sign_in};
+use ircord_client::contract::{MembershipEventType, Message, MessageKind};
 use ircord_client::credentials::{CredentialStore, MemoryStore};
 use ircord_client::events::Update;
 use ircord_client::store::Connection;
@@ -173,4 +176,134 @@ fn around_an_old_message_back_to_the_present_and_unread() {
         .map(str::to_string);
     assert_eq!(line.as_deref(), Some(ids[5].as_str()));
     let _ = rt.block_on(write.write_all(b"QUIT :done\r\n"));
+}
+
+/// Joins, parts, quits and nick changes: what the timeline folds.
+fn chatter(m: &Message) -> bool {
+    m.event.as_ref().is_some_and(|e| {
+        matches!(
+            e.r#type,
+            MembershipEventType::Join
+                | MembershipEventType::Part
+                | MembershipEventType::Quit
+                | MembershipEventType::Nick
+        )
+    })
+}
+
+fn millis(m: &Message) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(&m.created_at)
+        .map(|t| t.timestamp_millis())
+        .unwrap_or_default()
+}
+
+#[test]
+fn replayed_joins_after_a_reconnect_still_fold() {
+    let Some((server, irc)) = environment() else {
+        return;
+    };
+    const ROOM: &str = "#gpui-v1";
+    let rt = runtime().unwrap();
+    let address = ServerAddress::parse(&server).unwrap();
+    let username = unique("gpuiv");
+    let password = ircord_client::client::random_id();
+    wait_for_backend(&rt, &address);
+    rt.block_on(setup_account(&address, &username, &password, &irc, ROOM));
+    let api = Api::new(address.clone());
+    let store: Arc<dyn CredentialStore> = Arc::new(MemoryStore::default());
+    rt.block_on(sign_in(&api, store.as_ref(), &username, &password))
+        .expect("sign in");
+    let (client, mut updates) = Client::start(rt.clone(), api.clone());
+    let next = |updates: &mut UnboundedReceiver<Update>, wait: Duration| {
+        rt.block_on(async {
+            tokio::time::timeout(wait, updates.next())
+                .await
+                .ok()
+                .flatten()
+        })
+    };
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let (conversation, network) = loop {
+        let found = client
+            .read()
+            .conversations
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(ROOM.trim_start_matches('#')) && c.joined)
+            .map(|c| (c.id.clone(), c.network_id.clone()));
+        if let (Some(found), Some(Connection::Live)) = (found, client.read().connection.clone()) {
+            break found;
+        }
+        assert!(Instant::now() < deadline, "the channel never appeared");
+        next(&mut updates, Duration::from_millis(500));
+    };
+
+    // Several people join, a moment apart.
+    let mut people = Vec::new();
+    for i in 0..4 {
+        let nick = unique(&format!("v1p{i}"));
+        people.push(rt.block_on(irc_user(&irc_host_for_test(&irc), &nick, ROOM)));
+        rt.block_on(async { tokio::time::sleep(Duration::from_millis(200)).await });
+    }
+    rt.block_on(async { tokio::time::sleep(Duration::from_secs(1)).await });
+
+    // The account's IRC connection drops and comes back: the history
+    // service replays what it missed as text lines.
+    rt.block_on(api.connect_network(&network, false))
+        .expect("disconnect");
+    rt.block_on(async { tokio::time::sleep(Duration::from_secs(2)).await });
+    rt.block_on(api.connect_network(&network, true))
+        .expect("connect again");
+
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let items = loop {
+        let page = rt
+            .block_on(api.messages(&conversation, None, ircord_client::client::PAGE_SIZE))
+            .expect("read the history");
+        let replayed = page
+            .items
+            .iter()
+            .any(|m| m.kind == MessageKind::System && m.text.contains("joined the channel"));
+        if replayed {
+            break page.items;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no replayed join lines after the reconnect: {:?}",
+            page.items
+                .iter()
+                .map(|m| (&m.kind, &m.text, m.event.as_ref().map(|e| &e.r#type)))
+                .collect::<Vec<_>>()
+        );
+        rt.block_on(async { tokio::time::sleep(Duration::from_millis(500)).await });
+    };
+
+    // Some replayed line sits between two joins close enough to fold; with
+    // the `system` lines left out, as the timeline does, they are adjacent.
+    let between = items.windows(3).any(|w| {
+        chatter(&w[0])
+            && w[1].kind == MessageKind::System
+            && chatter(&w[2])
+            && millis(&w[2]) - millis(&w[0]) <= 60_000
+    });
+    assert!(
+        between,
+        "no system line between two joins: {:?}",
+        items
+            .iter()
+            .map(|m| (&m.kind, &m.text, m.event.as_ref().map(|e| &e.r#type)))
+            .collect::<Vec<_>>()
+    );
+    let shown: Vec<&Message> = items
+        .iter()
+        .filter(|m| m.kind != MessageKind::System)
+        .collect();
+    let longest = shown
+        .chunk_by(|a, b| chatter(a) && chatter(b) && millis(b) - millis(a) <= 60_000)
+        .map(|run| run.len())
+        .max()
+        .unwrap_or(0);
+    assert!(longest >= 2, "the joins no longer form a run");
+    for (_, mut write) in people {
+        let _ = rt.block_on(write.write_all(b"QUIT :done\r\n"));
+    }
 }

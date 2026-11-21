@@ -4,20 +4,27 @@
 //! into one line, or hidden, as the preferences say), the "New messages"
 //! line, rows for history that failed to load, and sends still on their
 //! way. Pure, so it is tested without a window.
+//!
+//! As the web client does, `system` messages (the history service's
+//! replayed "X joined the channel" lines after a reconnect) are left out:
+//! the Server window shows them, and between two joins they would end
+//! every fold.
 
 use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
 
-use chrono::{DateTime, Local, TimeZone};
+use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone};
 use ircord_client::contract::{
-    Attachment, ClientPreferencesEvents, MembershipEventType, Message, MessageKind,
+    Attachment, ClientPreferencesEvents, ConversationKind, MembershipEventType, Message,
+    MessageKind,
 };
 use ircord_client::format::{self, Formatted};
 use ircord_client::store::{PendingSend, SendState, Workspace};
 
-/// Messages from one sender within this many milliseconds share a header.
-const GROUP_MS: i64 = 7 * 60 * 1000;
+/// Messages from one sender less than this many milliseconds apart share a
+/// header.
+const GROUP_MS: i64 = 5 * 60 * 1000;
 /// A folded run of joins and parts takes events at most this far apart…
 const FOLD_GAP_MS: i64 = 60 * 1000;
 /// …spanning at most this long, and at most [`FOLD_MAX`] of them.
@@ -33,12 +40,14 @@ pub struct Options<'a> {
     pub focused: Option<&'a str>,
     /// Folded runs (by [`FoldRow::id`]) the person opened.
     pub expanded: Option<&'a HashSet<String>>,
+    /// The day that reads "Today"; the local date when unset.
+    pub today: Option<NaiveDate>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Row {
     /// The start of the history: nothing older to load.
-    Start,
+    Start(Rc<Intro>),
     /// Older history is loading.
     Loading,
     /// History could not finish loading: a row to try again from.
@@ -62,7 +71,12 @@ impl Row {
     /// Stable identity, for splicing the virtual list.
     pub fn key(&self) -> String {
         match self {
-            Row::Start => "start".into(),
+            Row::Start(i) => {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                i.hash(&mut h);
+                format!("start:{:x}", h.finish())
+            }
             Row::Loading => "loading".into(),
             Row::Retry => "retry".into(),
             Row::Unread => "unread".into(),
@@ -74,6 +88,88 @@ impl Row {
             Row::Fold(f) => format!("f:{}:{}:{}", f.id, f.events.len(), f.expanded),
             Row::Pending(p) => format!("p:{}:{:?}", p.client_id, p.state),
         }
+    }
+}
+
+/// What the start of a conversation's history says about it.
+#[derive(Debug, Clone, PartialEq, Hash, Default)]
+pub struct Intro {
+    pub kind: IntroKind,
+    /// "#general"; empty for a direct message (its own intro names them).
+    pub title: String,
+    /// "This is the beginning of #general."
+    pub text: String,
+    /// A channel's topic, as plain text.
+    pub topic: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum IntroKind {
+    Channel,
+    Direct,
+    Group,
+    #[default]
+    Other,
+}
+
+fn intro(w: &Workspace, conversation: &str) -> Intro {
+    let Some(c) = w.conversation(conversation) else {
+        return Intro {
+            text: t!("timeline-start").into(),
+            ..Default::default()
+        };
+    };
+    if let Some(party) = &c.party {
+        let name = if party.name.is_empty() {
+            c.name.clone()
+        } else {
+            party.name.clone()
+        };
+        return Intro {
+            kind: IntroKind::Group,
+            title: name,
+            text: t!("timeline-start-group").into(),
+            topic: String::new(),
+        };
+    }
+    match c.kind {
+        ConversationKind::Channel => {
+            let title = if c.name.starts_with('#') {
+                c.name.clone()
+            } else {
+                format!("#{}", c.name)
+            };
+            Intro {
+                kind: IntroKind::Channel,
+                text: t!("timeline-start-channel", channel = title.clone()),
+                title,
+                topic: format::parse(&c.topic).text.trim().to_string(),
+            }
+        }
+        ConversationKind::Direct => Intro {
+            kind: IntroKind::Direct,
+            title: String::new(),
+            text: t!("timeline-start-direct").into(),
+            topic: String::new(),
+        },
+        _ => Intro {
+            text: t!("timeline-start").into(),
+            ..Default::default()
+        },
+    }
+}
+
+/// "Today", "Yesterday", "Saturday, November 21" and, in another year,
+/// "Saturday, November 21, 2025", as the web client labels days.
+fn day_label(day: NaiveDate, today: NaiveDate) -> String {
+    if day == today {
+        t!("timeline-day-today").into()
+    } else if today.pred_opt() == Some(day) {
+        t!("timeline-day-yesterday").into()
+    } else if day.year() == today.year() {
+        day.format("%A, %B %-d").to_string()
+    } else {
+        day.format("%A, %B %-d, %Y").to_string()
     }
 }
 
@@ -236,6 +332,21 @@ fn contains_word(text: &str, word: &str, mention: bool) -> bool {
     false
 }
 
+/// The nick to show in event lines, as the web client does: your own
+/// network nick, else the member's nick, else their name.
+fn nick(w: &Workspace, id: &str, network: &str) -> String {
+    if w.is_self(id, network)
+        && let Some(n) = w.network(network)
+        && !n.nick.is_empty()
+    {
+        return n.nick.clone();
+    }
+    match w.member(id, network) {
+        Some(m) if !m.nick.is_empty() => m.nick.clone(),
+        _ => w.display_name(id, network),
+    }
+}
+
 /// The summary of a folded run: who joined, left, came back, or changed
 /// their nick.
 fn fold_summary(w: &Workspace, events: &[&Message], network: &str) -> String {
@@ -269,7 +380,7 @@ fn fold_summary(w: &Workspace, events: &[&Message], network: &str) -> String {
         (vec![], vec![], vec![], vec![], vec![]);
     for id in &order {
         let (first, last, nick) = &outcomes[id];
-        let name = w.display_name(id, network);
+        let name = self::nick(w, id, network);
         if let Some(nick) = nick {
             renames.push(t!(
                 "timeline-fold-renamed",
@@ -341,10 +452,15 @@ pub fn build(w: &Workspace, conversation: &str, options: Options) -> Vec<Row> {
     } else if timeline.sync_error.is_some() {
         rows.push(Row::Retry);
     } else if timeline.older.is_none() {
-        rows.push(Row::Start);
+        rows.push(Row::Start(Rc::new(intro(w, conversation))));
     }
-    let mut last_day = String::new();
-    let mut last: Option<(String, i64)> = None;
+    let today = options.today.unwrap_or_else(|| Local::now().date_naive());
+    let mut last_day: Option<NaiveDate> = None;
+    // The sender, time and kind of the message above, for grouping.
+    let mut last: Option<(String, i64, MessageKind)> = None;
+    // The "New messages" line belongs before a skipped message: it goes
+    // before the next row instead.
+    let mut unread_pending = false;
     // The run of chatter being folded: its events and their times.
     let mut run: Vec<(&Message, i64)> = Vec::new();
     let flush = |run: &mut Vec<(&Message, i64)>, rows: &mut Vec<Row>| {
@@ -352,7 +468,7 @@ pub fn build(w: &Workspace, conversation: &str, options: Options) -> Vec<Row> {
             .iter()
             .map(|(m, at)| EventRow {
                 id: m.id.clone(),
-                text: event_text(w, m, &network),
+                text: event_nicks(w, m, &network),
                 time: crate::message::layout::time_label(w, &local_time(*at)),
             })
             .collect();
@@ -375,21 +491,26 @@ pub fn build(w: &Workspace, conversation: &str, options: Options) -> Vec<Row> {
     };
     for entry in &timeline.entries {
         let m = &entry.message;
+        if m.kind == MessageKind::System {
+            unread_pending |= options.unread == Some(m.id.as_str());
+            continue;
+        }
         let local = local_time(entry.at);
-        let day = local.format("%A, %-d %B %Y").to_string();
-        if day != last_day {
+        let day = local.date_naive();
+        if last_day != Some(day) {
             flush(&mut run, &mut rows);
-            rows.push(Row::Day(day.clone()));
-            last_day = day;
+            rows.push(Row::Day(day_label(day, today)));
+            last_day = Some(day);
             last = None;
         }
-        if options.unread == Some(m.id.as_str()) {
+        if unread_pending || options.unread == Some(m.id.as_str()) {
+            unread_pending = false;
             flush(&mut run, &mut rows);
             rows.push(Row::Unread);
             last = None;
         }
         let time = crate::message::layout::time_label(w, &local);
-        if m.kind == MessageKind::Event || m.kind == MessageKind::System || m.event.is_some() {
+        if m.kind == MessageKind::Event || m.event.is_some() {
             last = None;
             if is_chatter(m) {
                 match mode {
@@ -415,19 +536,25 @@ pub fn build(w: &Workspace, conversation: &str, options: Options) -> Vec<Row> {
             flush(&mut run, &mut rows);
             rows.push(Row::Event(Rc::new(EventRow {
                 id: m.id.clone(),
-                text: event_text(w, m, &network),
+                text: event_nicks(w, m, &network),
                 time,
             })));
             continue;
         }
         flush(&mut run, &mut rows);
+        // A new header for another sender, a pause, a reply, a change of
+        // kind (message, action, notice) and every action, as the web does.
         let header = match &last {
-            Some((sender, at)) => {
-                *sender != m.sender_id || entry.at - at > GROUP_MS || m.kind == MessageKind::Action
+            Some((sender, at, kind)) => {
+                *sender != m.sender_id
+                    || entry.at - at >= GROUP_MS
+                    || m.reply_to.is_some()
+                    || *kind != m.kind
+                    || m.kind == MessageKind::Action
             }
             None => true,
         };
-        last = Some((m.sender_id.clone(), entry.at));
+        last = Some((m.sender_id.clone(), entry.at, m.kind));
         let mut row = message_row(w, m, &network, header, time);
         row.mention = !row.own && !row.deleted && mentions(&m.text, &nick, &words);
         row.focused = options.focused == Some(m.id.as_str());
@@ -592,16 +719,22 @@ fn without_urls(text: &str, attachments: &[Attachment]) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// An event as a line with people's names (the exported log).
 pub(crate) fn event_text(w: &Workspace, m: &Message, network: &str) -> String {
+    event_line(m, &|id| w.display_name(id, network))
+}
+
+/// An event as the timeline shows it: with nicks, as the web client does.
+fn event_nicks(w: &Workspace, m: &Message, network: &str) -> String {
+    event_line(m, &|id| nick(w, id, network))
+}
+
+fn event_line(m: &Message, name: &dyn Fn(&str) -> String) -> String {
     let Some(e) = &m.event else {
         return ircord_client::format::parse(&m.text).text;
     };
-    let actor = w.display_name(&e.actor_id, network);
-    let target = e
-        .target_id
-        .as_deref()
-        .map(|t| w.display_name(t, network))
-        .unwrap_or_default();
+    let actor = name(&e.actor_id);
+    let target = e.target_id.as_deref().map(name).unwrap_or_default();
     let detail = e.text.clone().unwrap_or_default();
     let with = |s: String| {
         if detail.is_empty() {
@@ -790,7 +923,7 @@ mod tests {
             None,
         );
         let rows = build(&w, "c", Options::default());
-        assert_eq!(rows[0], Row::Start);
+        assert!(matches!(&rows[0], Row::Start(i) if i.title == "#x"));
         assert!(matches!(rows[1], Row::Day(_)));
         let Row::Event(e) = &rows[2] else {
             panic!("{:?}", rows[2])
@@ -832,7 +965,7 @@ mod tests {
         }]);
         load(&mut w, vec![m], Some("more"));
         let rows = build(&w, "c", Options::default());
-        assert!(!matches!(rows[0], Row::Start), "older history remains");
+        assert!(!matches!(rows[0], Row::Start(_)), "older history remains");
         let Some(Row::Message(m)) = rows.iter().find(|r| matches!(r, Row::Message(_))) else {
             panic!()
         };
@@ -1201,6 +1334,173 @@ mod tests {
             Some(&Row::NewerFailed),
             "sends wait for the present"
         );
+    }
+
+    /// The shape the live backend returned after a restart
+    /// (`live-general-history.json` in the V1 evidence): each replayed join
+    /// is a membership event followed by the history service's `system`
+    /// line saying the same.
+    #[test]
+    fn replayed_join_lines_neither_show_nor_break_the_fold() {
+        let mut w = workspace();
+        let people = ["mika", "jules", "noah", "sage", "ada", "lin", "ellis"];
+        let mut items = vec![msg("hi", "2026-11-20T12:00:00Z", "m-bob", "morning")];
+        for (i, nick) in people.iter().enumerate() {
+            let at = format!("2026-11-20T12:01:{:02}.{:03}Z", i / 2, (i * 51) % 1000);
+            items.push(event(
+                &format!("j{i}"),
+                &at,
+                &format!("m-{nick}"),
+                MembershipEventType::Join,
+            ));
+            let mut line = msg(
+                &format!("_s{i}"),
+                &at,
+                "m-histserv",
+                &format!("{nick} joined the channel"),
+            );
+            line.kind = MessageKind::System;
+            line.historical = Some(true);
+            line.upstream_id = Some(format!("_s{i}"));
+            items.push(line);
+        }
+        load(&mut w, items, None);
+        let rows = build(&w, "c", Options::default());
+        let folds: Vec<&FoldRow> = rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Fold(f) => Some(f.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(folds.len(), 1, "{rows:?}");
+        assert_eq!(folds[0].summary, "7 people joined");
+        assert_eq!(folds[0].events.len(), 7);
+        assert!(!rows.iter().any(|r| matches!(r, Row::Event(_))), "{rows:?}");
+        let shown = format!("{rows:?}");
+        assert!(!shown.contains("joined the channel"), "{shown}");
+
+        // The "New messages" line on a skipped line moves to the next row.
+        let rows = build(
+            &w,
+            "c",
+            Options {
+                unread: Some("_s1"),
+                ..Default::default()
+            },
+        );
+        let line = rows
+            .iter()
+            .position(|r| *r == Row::Unread)
+            .expect("the line");
+        assert!(matches!(&rows[line - 1], Row::Event(e) if e.id == "j0"));
+        assert!(matches!(&rows[line + 1], Row::Fold(f) if f.id == "j1"));
+    }
+
+    #[test]
+    fn a_pause_a_reply_and_a_change_of_kind_start_a_new_header() {
+        let mut w = workspace();
+        let mut reply = msg("3", "2026-11-20T12:02:00Z", "m-bob", "re");
+        reply.reply_to = Some(Reply {
+            id: "1".into(),
+            nick: "bob".into(),
+            text: "a".into(),
+        });
+        let mut notice = msg("4", "2026-11-20T12:03:00Z", "m-bob", "n");
+        notice.kind = MessageKind::Notice;
+        load(
+            &mut w,
+            vec![
+                msg("1", "2026-11-20T12:00:00Z", "m-bob", "a"),
+                msg("2", "2026-11-20T12:01:00Z", "m-bob", "b"),
+                reply,
+                notice,
+                msg("5", "2026-11-20T12:04:00Z", "m-bob", "c"),
+                msg("6", "2026-11-20T12:08:59Z", "m-bob", "d"),
+                // Five minutes after the last: a new header.
+                msg("7", "2026-11-20T12:13:59Z", "m-bob", "e"),
+            ],
+            None,
+        );
+        let headers: Vec<bool> = build(&w, "c", Options::default())
+            .iter()
+            .filter_map(|r| match r {
+                Row::Message(m) => Some(m.header),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(headers, [true, false, true, true, true, false, true]);
+    }
+
+    #[test]
+    fn days_read_today_yesterday_or_their_date() {
+        let today = NaiveDate::from_ymd_opt(2026, 11, 21).unwrap();
+        let day = |y, m, d| day_label(NaiveDate::from_ymd_opt(y, m, d).unwrap(), today);
+        assert_eq!(day(2026, 11, 21), "Today");
+        assert_eq!(day(2026, 11, 20), "Yesterday");
+        assert_eq!(day(2026, 11, 19), "Thursday, November 19");
+        assert_eq!(day(2025, 12, 31), "Wednesday, December 31, 2025");
+
+        let mut w = workspace();
+        load(
+            &mut w,
+            vec![msg("1", "2026-11-20T12:00:00Z", "m-bob", "a")],
+            None,
+        );
+        let local = local_time(
+            chrono::DateTime::parse_from_rfc3339("2026-11-20T12:00:00Z")
+                .unwrap()
+                .timestamp_millis(),
+        )
+        .date_naive();
+        let rows = build(
+            &w,
+            "c",
+            Options {
+                today: Some(local),
+                ..Default::default()
+            },
+        );
+        assert!(rows.contains(&Row::Day("Today".into())), "{rows:?}");
+    }
+
+    #[test]
+    fn the_start_names_the_channel_and_its_topic() {
+        let mut w = workspace();
+        w.conversations[0].topic = "\x02Welcome\x02 aboard".into();
+        load(&mut w, vec![], None);
+        let rows = build(&w, "c", Options::default());
+        let Row::Start(intro) = &rows[0] else {
+            panic!("{rows:?}")
+        };
+        assert_eq!(intro.kind, IntroKind::Channel);
+        assert_eq!(intro.title, "#x");
+        assert_eq!(intro.text, "This is the beginning of #x.");
+        assert_eq!(intro.topic, "Welcome aboard");
+        let before = rows[0].key();
+        w.conversations[0].topic = "Changed".into();
+        let rows = build(&w, "c", Options::default());
+        assert_ne!(rows[0].key(), before, "a new topic redraws the start");
+
+        w.conversations[0].kind = ConversationKind::Direct;
+        let rows = build(&w, "c", Options::default());
+        let Row::Start(intro) = &rows[0] else {
+            panic!()
+        };
+        assert_eq!(intro.kind, IntroKind::Direct);
+        assert_eq!(intro.text, "This is the beginning of your direct messages.");
+    }
+
+    #[test]
+    fn event_lines_use_nicks() {
+        let mut w = workspace();
+        w.members.get_mut("m-bob").unwrap().display_name = "Bob Builder".into();
+        joins_and_parts(&mut w);
+        let rows = build(&w, "c", Options::default());
+        let Some(Row::Fold(f)) = rows.iter().find(|r| matches!(r, Row::Fold(_))) else {
+            panic!()
+        };
+        assert!(f.summary.starts_with("bob joined"), "{}", f.summary);
     }
 
     #[test]

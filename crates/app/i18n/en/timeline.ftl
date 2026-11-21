@@ -1,6 +1,11 @@
 # The timeline and its rows (package R1).
 
 timeline-start = This is the beginning of the history kept for this conversation.
+timeline-start-channel = This is the beginning of { $channel }.
+timeline-start-direct = This is the beginning of your direct messages.
+timeline-start-group = This is the beginning of the group conversation.
+timeline-day-today = Today
+timeline-day-yesterday = Yesterday
 timeline-sending = Sending…
 timeline-not-sent = Not sent: { $reason }
 timeline-retry = Retry

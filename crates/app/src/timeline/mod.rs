@@ -706,6 +706,7 @@ impl TimelineView {
                         unread: line.as_deref(),
                         focused: focused.as_deref(),
                         expanded: Some(&self.expanded),
+                        ..Default::default()
                     },
                 );
                 if !filters.is_empty() {
@@ -890,7 +891,7 @@ impl TimelineView {
         };
         let theme = theme::get(cx).clone();
         match row {
-            Row::Start => {
+            Row::Start(intro) => {
                 let slots = registry::get(cx).timeline_start.to_vec();
                 let extra: Vec<AnyElement> = match &self.conversation {
                     Some(id) => {
@@ -905,21 +906,7 @@ impl TimelineView {
                     }
                     None => Vec::new(),
                 };
-                div()
-                    .px_4()
-                    .pt_8()
-                    .pb_4()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .children(extra)
-                    .child(
-                        div()
-                            .text_color(theme.muted)
-                            .text_sm()
-                            .child(t!("timeline-start")),
-                    )
-                    .into_any_element()
+                render_intro(&intro, extra, &theme)
             }
             Row::Loading => div()
                 .px_4()
@@ -928,21 +915,36 @@ impl TimelineView {
                 .text_sm()
                 .child(t!("core-loading"))
                 .into_any_element(),
+            // A centred pill between two rules, as the web draws it.
             Row::Day(day) => div()
+                .id(ElementId::Name(format!("day-{day}").into()))
+                .test_support()
+                .role(Role::Group)
+                .aria_label(day.clone())
+                .w_full()
                 .px_4()
-                .py_2()
+                .pt_4()
+                .pb_1()
                 .flex()
                 .items_center()
-                .gap_2()
-                .child(div().flex_1().h(px(1.)).bg(theme.selected))
+                .gap(px(10.))
+                .child(div().flex_1().h(px(1.)).bg(theme.border))
                 .child(
                     div()
+                        .flex_none()
+                        .px(px(10.))
+                        .py(px(2.))
+                        .rounded_full()
+                        .bg(theme.raised)
+                        .border_1()
+                        .border_color(theme.border)
                         .text_xs()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.muted)
+                        .text_color(theme.faint)
+                        .whitespace_nowrap()
                         .child(day),
                 )
-                .child(div().flex_1().h(px(1.)).bg(theme.selected))
+                .child(div().flex_1().h(px(1.)).bg(theme.border))
                 .into_any_element(),
             Row::Retry => self.render_retry(false, &theme, cx),
             Row::NewerFailed => self.render_retry(true, &theme, cx),
@@ -1100,14 +1102,22 @@ impl TimelineView {
                         .aria_label(format!("{} · {label}", f.summary))
                         .aria_expanded(f.expanded)
                         .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
                         .hover({
                             let text = theme.text;
                             move |d| d.text_color(text)
                         })
-                        .child(format!(
-                            "{} {}",
-                            if f.expanded { "▾" } else { "▸" },
-                            f.summary
+                        .child(ui::icon::icon(IconName::User, theme.faint))
+                        .child(f.summary.clone())
+                        .child(ui::icon::icon(
+                            if f.expanded {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
+                            },
+                            theme.faint,
                         ))
                         .on_click(move |_, _, cx| {
                             if let Some(this) = this.upgrade() {
@@ -1259,6 +1269,81 @@ impl TimelineView {
 }
 
 /// The typing line under the timeline.
+/// The start of the history, as the web draws it: for a channel a `#` disc,
+/// its name as a heading, "This is the beginning of #general." and the
+/// topic; for a direct message the registered intro (their picture, name and
+/// bio) and the line under it.
+fn render_intro(intro: &rows::Intro, extra: Vec<AnyElement>, theme: &Theme) -> AnyElement {
+    use rows::IntroKind;
+    let mut column = div()
+        .id("timeline-intro")
+        .test_support()
+        .role(Role::Group)
+        .aria_label(intro.text.clone())
+        .px_4()
+        .pt_8()
+        .pb_4()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .children(extra);
+    if matches!(intro.kind, IntroKind::Channel | IntroKind::Group) {
+        // The app embeds gpui-kit's default icons, which have no `#`: the
+        // channel's glyph is the character itself.
+        let glyph = if intro.kind == IntroKind::Channel {
+            div()
+                .text_2xl()
+                .font_weight(FontWeight::BOLD)
+                .text_color(theme.accent)
+                .child("#")
+                .into_any_element()
+        } else {
+            ui::icon::icon(IconName::User, theme.accent).into_any_element()
+        };
+        column = column
+            .child(
+                div()
+                    .mb_2()
+                    .size(px(56.))
+                    .flex_none()
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme.accent.opacity(0.16))
+                    .border_1()
+                    .border_color(theme.accent.opacity(0.35))
+                    .child(glyph),
+            )
+            .child(
+                div()
+                    .id("timeline-intro-title")
+                    .test_support()
+                    .role(Role::Heading)
+                    .aria_label(intro.title.clone())
+                    .text_2xl()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme.text)
+                    .child(intro.title.clone()),
+            );
+    }
+    column = column.child(
+        div()
+            .text_sm()
+            .text_color(theme.muted)
+            .child(intro.text.clone()),
+    );
+    if !intro.topic.is_empty() {
+        column = column.child(
+            div()
+                .text_sm()
+                .text_color(theme.muted)
+                .child(intro.topic.clone()),
+        );
+    }
+    column.into_any_element()
+}
+
 pub fn typing_text(names: &[String]) -> String {
     match names {
         [] => String::new(),

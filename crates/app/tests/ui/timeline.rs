@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
 use gpui_kit::{AppContext, MouseButton, TestAppContext};
+use ircord_app::Screen;
 use ircord_client::contract::*;
 use ircord_client::testing::{CannedServer, Reply};
 use serde_json::json;
@@ -320,4 +321,90 @@ fn export_writes_the_conversation_as_a_log(cx: &mut TestAppContext) {
         "{log}"
     );
     assert!(lines[3].ends_with("] <bob> second line"), "{log}");
+}
+
+/// After a reconnect the backend's history holds each replayed join twice:
+/// the membership event and the history service's `system` line (V1, the
+/// shape of `live-general-history.json`). The timeline folds the events
+/// into one line and leaves the `system` lines out; its start names the
+/// channel and its topic.
+#[gpui_kit::test]
+fn replayed_joins_fold_and_the_start_names_the_channel(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |server| {
+        server.route_fn("GET", "/api/v1/conversations/*/messages", |r| {
+            if !r.path.ends_with("/c-general/messages") {
+                return Reply::json(200, json!({"items": [], "nextCursor": null}));
+            }
+            let mut items = Vec::new();
+            for (i, nick) in ["mika", "jules", "noah", "sage", "ada", "lin", "ellis"]
+                .iter()
+                .enumerate()
+            {
+                let at = format!("2026-11-21T18:23:52.{:03}Z", 100 + i * 50);
+                let mut join = message(&format!("j{i}"), "c-general", "");
+                join.kind = MessageKind::Event;
+                join.created_at = at.clone();
+                join.sender_id = format!("m-{nick}");
+                join.event = Some(MembershipEvent {
+                    actor_id: format!("m-{nick}"),
+                    r#type: MembershipEventType::Join,
+                    ..Default::default()
+                });
+                items.push(join);
+                let mut line = message(
+                    &format!("s{i}"),
+                    "c-general",
+                    &format!("{nick} joined the channel"),
+                );
+                line.kind = MessageKind::System;
+                line.created_at = at;
+                line.sender_id = "m-histserv".into();
+                line.historical = Some(true);
+                items.push(line);
+            }
+            let page = MessagePage {
+                items,
+                next_cursor: None,
+                ..Default::default()
+            };
+            Reply::json(200, serde_json::to_value(page).unwrap())
+        });
+    });
+    wait(cx, "the replayed joins", |cx| timeline_has(&f, cx, "s6"));
+    cx.run_until_parked();
+    frame(&f, cx, |window| {
+        assert!(
+            window
+                .find_by_label("7 people joined · Show each event")
+                .visible()
+        );
+        assert!(window.find("fold-j0").visible());
+        assert!(window.find("timeline-intro-title").visible(), "the heading");
+        assert!(
+            window
+                .find_by_label("This is the beginning of #general.")
+                .visible()
+        );
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("fold-j0", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    frame(&f, cx, |window| {
+        assert!(
+            window
+                .find_by_label("7 people joined · Fold the events")
+                .visible()
+        );
+    });
+    cx.update(|cx| {
+        let Screen::Workspace(w) = f.view.read(cx).screen() else {
+            panic!("not signed in")
+        };
+        let shown = format!("{:?}", w.read(cx).timeline.read(cx).rows());
+        assert!(!shown.contains("joined the channel"), "{shown}");
+        assert!(shown.contains("mika joined"), "opened, it lists each join");
+    });
 }

@@ -100,7 +100,8 @@ impl Theme {
             online: hex(t.mint),
             away: hex(t.yellow),
             offline: hex(t.faint),
-            mention: hex(t.danger),
+            // Amber, as the web marks a mention: red reads as an error.
+            mention: hex(t.yellow),
             code: hex(t.rail),
             panel: hex(t.panel),
             raised: hex(t.raised),
