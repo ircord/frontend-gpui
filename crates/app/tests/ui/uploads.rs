@@ -1,1 +1,442 @@
 //! Package U1: the upload tray, attachments in the timeline and the image viewer.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+use gpui_kit::test::{TestQueryExt, TestWindowExt};
+use gpui_kit::{AppContext, ClipboardItem, Image, ImageFormat, TestAppContext};
+use ircord_app::composer::uploads::{self as tray, Status, Uploads};
+use ircord_client::api::uploads::FileData;
+use ircord_client::contract::*;
+use ircord_client::testing::{CannedServer, Reply};
+use serde_json::json;
+
+use crate::fixture::{Fixture, bootstrap, message, open_with, snapshot, wait};
+
+/// The server accepts pictures and PDFs up to 1 MB; `#general` is not
+/// sensitive, unless `nsfw`.
+fn server(server: &CannedServer, nsfw: Option<bool>) {
+    let mut s = snapshot();
+    s.capabilities.upload = Some(UploadCapability {
+        max_bytes: 1_000_000,
+        types: vec!["image/*".into(), "application/pdf".into()],
+    });
+    if let Some(nsfw) = nsfw {
+        s.conversations[0].channel_settings = Some(ChannelSettings {
+            nsfw,
+            ..Default::default()
+        });
+    }
+    server.snapshot(&s);
+}
+
+/// Each upload answers with a new ID, after `delay`.
+fn uploads_answer(server: &CannedServer, delay: Duration) {
+    let n = Arc::new(AtomicUsize::new(0));
+    server.route_fn("POST", "/api/v1/uploads", move |request| {
+        std::thread::sleep(delay);
+        let i = n.fetch_add(1, Ordering::SeqCst) + 1;
+        assert!(
+            request
+                .header("content-type")
+                .is_some_and(|t| t.starts_with("multipart/form-data; boundary=")),
+            "uploads are multipart"
+        );
+        assert_eq!(request.query_param("networkId").as_deref(), Some("n1"));
+        Reply::json(
+            201,
+            json!({"id": format!("u{i}"), "url": format!("/files/u{i}/tok/f{i}.png"),
+                   "name": format!("f{i}.png"), "size": 4, "contentType": "image/png",
+                   "width": 10, "height": 10}),
+        )
+    });
+    server.route_fn("POST", "/api/v1/conversations/*/messages", |request| {
+        let body = request.json();
+        Reply::json(
+            200,
+            json!({"clientId": body["clientId"], "conversationId": "c-general",
+                   "state": "queued"}),
+        )
+    });
+}
+
+fn png(name: &str) -> FileData {
+    FileData::named(name, vec![0x89, b'P', b'N', b'G'])
+}
+
+fn add(f: &Fixture, cx: &mut TestAppContext, files: Vec<FileData>) {
+    let session = f.session.clone();
+    cx.update_window(f.window, |_, window, cx| {
+        tray::add(
+            &session,
+            "c-general",
+            files.into_iter().map(|f| (f, None)).collect(),
+            window,
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+fn pending(cx: &mut TestAppContext) -> Vec<tray::Pending> {
+    cx.update(|cx| Uploads::pending(cx, "c-general"))
+}
+
+#[gpui_kit::test]
+fn a_batch_uploads_and_sends_as_one_message(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |s| {
+        server(s, Some(false));
+        uploads_answer(s, Duration::ZERO);
+    });
+    bootstrap(&f, cx);
+    add(&f, cx, vec![png("one.png"), png("two.png")]);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("upload-tray").visible());
+        assert!(window.find("upload-item-1").visible());
+        assert_eq!(window.find("upload-status-2").label(), Some("4 B"));
+        assert!(window.find("composer-attach").visible());
+        // Enter with an empty box sends the files.
+        window.click("composer-input", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    wait(cx, "the message with the files", |_| {
+        !f.server
+            .requests_to("POST", "/api/v1/conversations/c-general/messages")
+            .is_empty()
+    });
+    let sent = f
+        .server
+        .requests_to("POST", "/api/v1/conversations/c-general/messages")
+        .remove(0);
+    let body = sent.json();
+    assert_eq!(body["attachments"], json!(["u1", "u2"]));
+    let origin = f.server.address().origin();
+    assert_eq!(
+        body["text"],
+        json!(format!(
+            "{origin}/files/u1/tok/f1.png {origin}/files/u2/tok/f2.png"
+        ))
+    );
+    assert_eq!(f.server.requests_to("POST", "/api/v1/uploads").len(), 2);
+    wait(cx, "the tray to empty", |cx| {
+        Uploads::pending(cx, "c-general").is_empty()
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("upload-tray").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn files_the_server_does_not_take_stay_out(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |s| server(s, Some(false)));
+    bootstrap(&f, cx);
+    add(
+        &f,
+        cx,
+        vec![
+            FileData::named("notes.txt", b"hi".to_vec()),
+            FileData::named("big.png", vec![0; 1_000_001]),
+            FileData::named("doc.pdf", b"%PDF".to_vec()),
+        ],
+    );
+    let items = pending(cx);
+    assert_eq!(items.len(), 1, "only the PDF joins");
+    assert_eq!(items[0].file.name, "doc.pdf");
+    assert_eq!(items[0].file.content_type, "application/pdf");
+}
+
+#[gpui_kit::test]
+fn a_pasted_picture_joins_the_batch_and_text_pastes_as_usual(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |s| server(s, Some(false)));
+    bootstrap(&f, cx);
+    cx.write_to_clipboard(ClipboardItem::new_image(&Image::from_bytes(
+        ImageFormat::Png,
+        vec![0x89, b'P', b'N', b'G'],
+    )));
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("composer-input", cx);
+        window.press("ctrl-v", cx);
+    })
+    .unwrap();
+    let items = pending(cx);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].file.name, "pasted-image.png");
+    assert!(items[0].preview.is_some());
+
+    cx.write_to_clipboard(ClipboardItem::new_string("just text".into()));
+    cx.update_window(f.window, |_, window, cx| {
+        window.press("ctrl-v", cx);
+    })
+    .unwrap();
+    assert_eq!(pending(cx).len(), 1, "text is not a file");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let input = window.find_by_label("Message #general");
+        assert_eq!(input.value(), Some("just text"));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_stalled_upload_says_so(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |s| {
+        server(s, Some(false));
+        uploads_answer(s, Duration::from_millis(1500));
+    });
+    bootstrap(&f, cx);
+    cx.update(|cx| Uploads::set_stall(cx, Duration::from_millis(200)));
+    add(&f, cx, vec![png("slow.png")]);
+    cx.update_window(f.window, |_, window, cx| {
+        window.click("composer-input", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    wait(cx, "the stall", |cx| {
+        Uploads::pending(cx, "c-general")
+            .first()
+            .is_some_and(|p| matches!(p.status, Status::Failed(_)))
+    });
+    let items = pending(cx);
+    assert_eq!(
+        items[0].status,
+        Status::Failed("The upload stopped making progress. Try again.".into())
+    );
+    assert!(
+        f.server
+            .requests_to("POST", "/api/v1/conversations/c-general/messages")
+            .is_empty()
+    );
+}
+
+#[gpui_kit::test]
+fn a_refused_upload_shows_the_servers_reason(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |s| {
+        server(s, Some(false));
+        s.route_reply(
+            "POST",
+            "/api/v1/uploads",
+            Reply::problem(413, "Your upload quota is used up."),
+        );
+    });
+    bootstrap(&f, cx);
+    add(&f, cx, vec![png("one.png")]);
+    cx.update_window(f.window, |_, window, cx| {
+        window.click("composer-input", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    wait(cx, "the refusal", |cx| {
+        Uploads::pending(cx, "c-general")
+            .first()
+            .is_some_and(|p| matches!(p.status, Status::Failed(_)))
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("upload-status-1").label(),
+            Some("Your upload quota is used up.")
+        );
+    })
+    .unwrap();
+    // The file stays in the tray; once the server takes it, Enter sends it.
+    uploads_answer(&f.server, Duration::ZERO);
+    cx.update_window(f.window, |_, window, cx| {
+        window.press("enter", cx);
+    })
+    .unwrap();
+    wait(cx, "the retried batch", |cx| {
+        Uploads::pending(cx, "c-general").is_empty()
+    });
+    let sent = f
+        .server
+        .requests_to("POST", "/api/v1/conversations/c-general/messages");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].json()["attachments"], json!(["u1"]));
+}
+
+#[gpui_kit::test]
+fn removing_an_uploading_file_cancels_it(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |s| {
+        server(s, Some(false));
+        uploads_answer(s, Duration::from_millis(800));
+    });
+    bootstrap(&f, cx);
+    add(&f, cx, vec![png("one.png")]);
+    cx.update_window(f.window, |_, window, cx| {
+        window.click("composer-input", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    wait(cx, "the upload to start", |_| {
+        !f.server.requests_to("POST", "/api/v1/uploads").is_empty()
+    });
+    assert_eq!(pending(cx)[0].status, Status::Uploading);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("upload-remove-1").label(),
+            Some("Cancel upload of one.png")
+        );
+        window.click("upload-remove-1", cx);
+    })
+    .unwrap();
+    assert!(pending(cx).is_empty());
+    std::thread::sleep(Duration::from_millis(1200));
+    cx.run_until_parked();
+    assert!(
+        f.server
+            .requests_to("POST", "/api/v1/conversations/c-general/messages")
+            .is_empty(),
+        "nothing is sent"
+    );
+}
+
+/// `#general`'s history: one message with two pictures and a PDF.
+fn gallery_history(server: &CannedServer) {
+    server.route_fn("GET", "/api/v1/conversations/*/messages", |_| {
+        let mut m = message(
+            "g1",
+            "c-general",
+            "https://x.test/files/a/t/a.png https://x.test/files/b/t/b.gif https://x.test/files/c/t/c.pdf",
+        );
+        let picture = |id: &str, kind: &str| Attachment {
+            url: format!("https://x.test/files/{id}/t/{id}.{kind}"),
+            name: format!("{id}.{kind}"),
+            width: 800,
+            height: 600,
+            content_type: Some(format!("image/{kind}")),
+            size: Some(1000),
+            ..Default::default()
+        };
+        m.attachments = Some(vec![
+            picture("a", "png"),
+            picture("b", "gif"),
+            Attachment {
+                url: "https://x.test/files/c/t/c.pdf".into(),
+                name: "c.pdf".into(),
+                content_type: Some("application/pdf".into()),
+                size: Some(2_500_000),
+                ..Default::default()
+            },
+        ]);
+        Reply::json(
+            200,
+            serde_json::to_value(MessagePage {
+                items: vec![m],
+                ..Default::default()
+            })
+            .unwrap(),
+        )
+    });
+}
+
+fn bootstrap_one(f: &Fixture, cx: &mut TestAppContext) {
+    wait(cx, "#general's history", |cx| {
+        let session = f.session.read(cx);
+        session.client().is_some_and(|c| {
+            c.read()
+                .timelines
+                .get("c-general")
+                .is_some_and(|t| t.loaded && t.entries.len() == 1)
+        })
+    });
+}
+
+#[gpui_kit::test]
+fn a_gallery_opens_the_viewer_and_pages_through(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |s| {
+        server(s, Some(false));
+        gallery_history(s);
+    });
+    bootstrap_one(&f, cx);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let gallery = window.find("gallery-g1");
+        assert_eq!(gallery.label(), Some("Gallery of 2 files"));
+        let size = gallery.bounds().size;
+        assert_eq!(
+            (size.width, size.height),
+            (gpui_kit::px(440.), gpui_kit::px(280.)),
+            "the space is reserved"
+        );
+        assert!(window.find("attachment-g1-1").visible());
+        assert_eq!(
+            window.find("file-g1-0-detail").label(),
+            Some("PDF document · 2.5 MB")
+        );
+        assert!(window.find("file-g1-0-download").visible());
+        // The text without the uploads' URLs is empty.
+        window.click("attachment-g1-0", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("viewer-position").label(),
+            Some("a.png · 1 of 2")
+        );
+        window.press("right", cx);
+        assert_eq!(
+            window.find("viewer-position").label(),
+            Some("b.gif · 2 of 2")
+        );
+        window.click("viewer-zoom-in", cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("viewer-zoom").label(), Some("125%"));
+        window.click("viewer-copy", cx);
+    })
+    .unwrap();
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+        Some("https://x.test/files/b/t/b.gif")
+    );
+    cx.update_window(f.window, |_, window, cx| {
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("viewer").is_none(), "Escape closes it");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn sensitive_media_stays_covered_until_shown(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |s| {
+        server(s, Some(true));
+        gallery_history(s);
+    });
+    bootstrap_one(&f, cx);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("media-cover-g1").label(), Some("NSFW media"));
+        assert!(window.try_find("gallery-g1").is_none());
+        window.click("media-reveal-g1", cx);
+        window.render_frame(cx);
+        assert!(window.find("gallery-g1").visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn unknown_channel_settings_cover_media_too(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |s| {
+        server(s, None);
+        gallery_history(s);
+    });
+    bootstrap_one(&f, cx);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("media-cover-g1").label(),
+            Some("Channel settings unavailable")
+        );
+    })
+    .unwrap();
+}

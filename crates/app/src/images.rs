@@ -50,3 +50,42 @@ impl HttpClient for ImageClient {
         .boxed()
     }
 }
+
+/// Stills made so far, by URL, so each is uploaded to the GPU once.
+#[derive(Default)]
+struct Stills(std::collections::HashMap<gpui_kit::SharedString, Arc<gpui_kit::RenderImage>>);
+
+impl gpui_kit::Global for Stills {}
+
+/// At most this many stills are kept; past it the cache starts again.
+const MAX_STILLS: usize = 256;
+
+/// An animated picture held on its first frame: GPUI's `img` always plays
+/// every frame, so a GIF that should stand still is drawn from this source.
+/// It loads the picture through the same cache as `img(url)`.
+pub fn still(url: gpui_kit::SharedString) -> gpui_kit::ImageSource {
+    use gpui_kit::{ImgResourceLoader, RenderImage, Resource, SharedUri};
+    gpui_kit::ImageSource::Custom(Arc::new(move |window, cx| {
+        if let Some(cached) = cx.try_global::<Stills>().and_then(|s| s.0.get(&url)) {
+            return Some(Ok(cached.clone()));
+        }
+        let resource = Resource::Uri(SharedUri::from(url.to_string()));
+        let full = match window.use_asset::<ImgResourceLoader>(&resource, cx)? {
+            Ok(full) => full,
+            Err(e) => return Some(Err(e)),
+        };
+        if full.frame_count() <= 1 {
+            return Some(Ok(full));
+        }
+        let size = full.size(0);
+        let bytes = full.as_bytes(0)?.to_vec();
+        let buffer = image::RgbaImage::from_raw(size.width.0 as u32, size.height.0 as u32, bytes)?;
+        let still = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
+        let stills = cx.default_global::<Stills>();
+        if stills.0.len() >= MAX_STILLS {
+            stills.0.clear();
+        }
+        stills.0.insert(url.clone(), still.clone());
+        Some(Ok(still))
+    }))
+}
