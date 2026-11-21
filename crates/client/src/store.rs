@@ -491,7 +491,8 @@ impl Workspace {
                 ],
                 ..Default::default()
             },
-            Durable::ConnectionUpdated(_) | Durable::Other(_) => Changes::default(),
+            // Decoded now, but nothing here uses them yet.
+            _ => Changes::default(),
         }
     }
 

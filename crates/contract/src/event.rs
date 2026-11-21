@@ -12,6 +12,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 /// One frame from `GET /api/v1/events`.
+///
+/// Every type the pinned contract names decodes to its own variant (see
+/// [`SERVER_EVENT_TYPES`]); the test in `tests/events.rs` fails when a backend
+/// bump adds a type this enum does not decode.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)] // decoded once, then moved
 pub enum ServerEvent {
@@ -20,6 +24,12 @@ pub enum ServerEvent {
     Resync(SessionResync),
     CommandError(CommandError),
     Typing(TypingData),
+    /// Someone asked for your attention in a conversation (`attract`).
+    Attract(AttractData),
+    /// The emoji catalog changed; re-read it if its version is newer.
+    EmotesUpdated(EmoteVersion),
+    /// The account's device list changed; re-read it if shown.
+    DevicesUpdated,
     Alert(Alert),
     Routing(RoutingSnapshot),
     /// A durable event with its replay sequence number.
@@ -34,7 +44,7 @@ pub enum ServerEvent {
     },
 }
 
-/// The durable events this client acts on. Everything else is `Other`.
+/// The durable events: each carries a sequence number and is replayed on resume.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Durable {
@@ -43,19 +53,130 @@ pub enum Durable {
     ConversationUpdated(Conversation),
     ConversationCounts(ConversationCounts),
     ConversationRemoved(Removal),
+    ChannelServicesUpdated(ChannelServicesChange),
     NetworkUpdated(Network),
     NetworkRemoved(Removal),
     MemberUpdated(Member),
     ProfileUpdated(Member),
     InvitationReceived(Invitation),
     InvitationRemoved(Removal),
+    PartyUpdated(Party),
+    PartyRemoved(PartyRemoval),
     HistorySynced(HistoryUpdate),
     HistoryGap(HistoryUpdate),
     HistoryFailed(HistoryUpdate),
     ConnectionUpdated(ConnectionInfo),
-    /// A durable event the client has no use for yet (saved, inbox, themes...).
+    /// One line of a network's server window.
+    ServerLine(ServerLine),
+    /// A network's server log changed beyond single lines; re-read it if shown.
+    ServerLogUpdated(NetworkInvalidation),
+    /// One of the account's revisioned documents changed on the server.
+    DocumentUpdated {
+        document: Document,
+        update: RevisionUpdate,
+    },
+    SavedAdded(SavedMessage),
+    SavedRemoved(SavedRemoval),
+    InboxAdded(InboxEntry),
+    InboxUpdated(InboxChange),
+    /// A durable event type newer than this client. It still advances the cursor.
     Other(String),
 }
+
+/// The account documents the server keeps with a revision, each announced by
+/// its own `*.updated` event carrying only the new revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Document {
+    /// `client-preferences.updated`, `/api/v1/app/preferences`.
+    Preferences,
+    /// `appearance.updated`, `/api/v1/app/appearance`.
+    Appearance,
+    /// `themes.updated`, `/api/v1/app/themes`.
+    Themes,
+    /// `library.updated`, `/api/v1/app/library`.
+    Library,
+    /// `notification-settings.updated`, `/api/v1/notifications/settings`.
+    NotificationSettings,
+}
+
+impl Document {
+    pub const ALL: [Document; 5] = [
+        Document::Preferences,
+        Document::Appearance,
+        Document::Themes,
+        Document::Library,
+        Document::NotificationSettings,
+    ];
+
+    /// The event type that announces a new revision.
+    pub fn event_type(self) -> &'static str {
+        match self {
+            Document::Preferences => "client-preferences.updated",
+            Document::Appearance => "appearance.updated",
+            Document::Themes => "themes.updated",
+            Document::Library => "library.updated",
+            Document::NotificationSettings => "notification-settings.updated",
+        }
+    }
+
+    /// Where the document is read and written.
+    pub fn path(self) -> &'static str {
+        match self {
+            Document::Preferences => "/api/v1/app/preferences",
+            Document::Appearance => "/api/v1/app/appearance",
+            Document::Themes => "/api/v1/app/themes",
+            Document::Library => "/api/v1/app/library",
+            Document::NotificationSettings => "/api/v1/notifications/settings",
+        }
+    }
+
+    fn from_event_type(kind: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|d| d.event_type() == kind)
+    }
+}
+
+/// Every event type this envelope decodes, as the server spells them.
+pub const SERVER_EVENT_TYPES: &[&str] = &[
+    "session.ready",
+    "session.synced",
+    "session.resync",
+    "command.error",
+    "typing",
+    "attract",
+    "emotes.updated",
+    "devices.updated",
+    "notification.alert",
+    "notification.routing",
+    "message.created",
+    "message.updated",
+    "conversation.updated",
+    "conversation.counts",
+    "conversation.removed",
+    "channel-services.updated",
+    "network.updated",
+    "network.removed",
+    "member.updated",
+    "profile.updated",
+    "invitation.received",
+    "invitation.removed",
+    "party.updated",
+    "party.removed",
+    "history.synced",
+    "history.gap",
+    "history.sync.failed",
+    "connection.updated",
+    "server.line",
+    "server-log.updated",
+    "client-preferences.updated",
+    "appearance.updated",
+    "themes.updated",
+    "library.updated",
+    "notification-settings.updated",
+    "saved.added",
+    "saved.removed",
+    "inbox.added",
+    "inbox.updated",
+];
 
 #[derive(Deserialize)]
 struct Envelope {
@@ -103,6 +224,9 @@ impl ServerEvent {
             "typing" => data(e.data).map(ServerEvent::Typing),
             "notification.alert" => data(e.data).map(ServerEvent::Alert),
             "notification.routing" => data(e.data).map(ServerEvent::Routing),
+            "attract" => data(e.data).map(ServerEvent::Attract),
+            "emotes.updated" => data(e.data).map(ServerEvent::EmotesUpdated),
+            "devices.updated" => Some(ServerEvent::DevicesUpdated),
             kind => match e.seq {
                 Some(seq) => {
                     Self::durable(kind, e.data).map(|event| ServerEvent::Durable { seq, event })
@@ -129,12 +253,79 @@ impl ServerEvent {
             "profile.updated" => Durable::ProfileUpdated(de(d)?),
             "invitation.received" => Durable::InvitationReceived(de(d)?),
             "invitation.removed" => Durable::InvitationRemoved(de(d)?),
+            "channel-services.updated" => Durable::ChannelServicesUpdated(de(d)?),
+            "party.updated" => Durable::PartyUpdated(de(d)?),
+            "party.removed" => Durable::PartyRemoved(de(d)?),
+            "server.line" => Durable::ServerLine(de(d)?),
+            "server-log.updated" => Durable::ServerLogUpdated(de(d)?),
+            "saved.added" => Durable::SavedAdded(de(d)?),
+            "saved.removed" => Durable::SavedRemoved(de(d)?),
+            "inbox.added" => Durable::InboxAdded(de(d)?),
+            "inbox.updated" => Durable::InboxUpdated(de(d)?),
             "history.synced" => Durable::HistorySynced(de(d)?),
             "history.gap" => Durable::HistoryGap(de(d)?),
             "history.sync.failed" => Durable::HistoryFailed(de(d)?),
             "connection.updated" => Durable::ConnectionUpdated(de(d)?),
-            other => Durable::Other(other.to_string()),
+            other => match Document::from_event_type(other) {
+                Some(document) => Durable::DocumentUpdated {
+                    document,
+                    update: de(d)?,
+                },
+                None => Durable::Other(other.to_string()),
+            },
         })
+    }
+
+    /// The event type as the server spells it (`Unknown` keeps the one it had).
+    pub fn kind(&self) -> &str {
+        match self {
+            ServerEvent::Ready(_) => "session.ready",
+            ServerEvent::Synced(_) => "session.synced",
+            ServerEvent::Resync(_) => "session.resync",
+            ServerEvent::CommandError(_) => "command.error",
+            ServerEvent::Typing(_) => "typing",
+            ServerEvent::Attract(_) => "attract",
+            ServerEvent::EmotesUpdated(_) => "emotes.updated",
+            ServerEvent::DevicesUpdated => "devices.updated",
+            ServerEvent::Alert(_) => "notification.alert",
+            ServerEvent::Routing(_) => "notification.routing",
+            ServerEvent::Durable { event, .. } => event.kind(),
+            ServerEvent::Unknown { kind, .. } => kind,
+        }
+    }
+}
+
+impl Durable {
+    /// The event type as the server spells it.
+    pub fn kind(&self) -> &str {
+        match self {
+            Durable::MessageCreated(_) => "message.created",
+            Durable::MessageUpdated(_) => "message.updated",
+            Durable::ConversationUpdated(_) => "conversation.updated",
+            Durable::ConversationCounts(_) => "conversation.counts",
+            Durable::ConversationRemoved(_) => "conversation.removed",
+            Durable::ChannelServicesUpdated(_) => "channel-services.updated",
+            Durable::NetworkUpdated(_) => "network.updated",
+            Durable::NetworkRemoved(_) => "network.removed",
+            Durable::MemberUpdated(_) => "member.updated",
+            Durable::ProfileUpdated(_) => "profile.updated",
+            Durable::InvitationReceived(_) => "invitation.received",
+            Durable::InvitationRemoved(_) => "invitation.removed",
+            Durable::PartyUpdated(_) => "party.updated",
+            Durable::PartyRemoved(_) => "party.removed",
+            Durable::HistorySynced(_) => "history.synced",
+            Durable::HistoryGap(_) => "history.gap",
+            Durable::HistoryFailed(_) => "history.sync.failed",
+            Durable::ConnectionUpdated(_) => "connection.updated",
+            Durable::ServerLine(_) => "server.line",
+            Durable::ServerLogUpdated(_) => "server-log.updated",
+            Durable::DocumentUpdated { document, .. } => document.event_type(),
+            Durable::SavedAdded(_) => "saved.added",
+            Durable::SavedRemoved(_) => "saved.removed",
+            Durable::InboxAdded(_) => "inbox.added",
+            Durable::InboxUpdated(_) => "inbox.updated",
+            Durable::Other(kind) => kind,
+        }
     }
 }
 
@@ -200,14 +391,34 @@ mod tests {
 
     #[test]
     fn unused_durable_events_still_advance() {
-        let e = ServerEvent::decode(r#"{"v":1,"seq":3,"type":"saved.added","data":{}}"#).unwrap();
+        // `saved.added` was this test's example until F1 decoded every
+        // contract type; a type newer than the contract takes its place.
+        let e = ServerEvent::decode(r#"{"v":1,"seq":3,"type":"saved.renamed","data":{}}"#).unwrap();
         assert_eq!(
             e,
             ServerEvent::Durable {
                 seq: 3,
-                event: Durable::Other("saved.added".into())
+                event: Durable::Other("saved.renamed".into())
             }
         );
+    }
+
+    #[test]
+    fn revisioned_documents_share_one_variant() {
+        let e = ServerEvent::decode(
+            r#"{"v":1,"seq":4,"type":"themes.updated","data":{"revision":"r9"}}"#,
+        )
+        .unwrap();
+        let ServerEvent::Durable {
+            event: Durable::DocumentUpdated { document, update },
+            ..
+        } = &e
+        else {
+            panic!("{e:?}")
+        };
+        assert_eq!(*document, Document::Themes);
+        assert_eq!(update.revision, "r9");
+        assert_eq!(e.kind(), "themes.updated");
     }
 
     #[test]

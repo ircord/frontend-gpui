@@ -12,33 +12,16 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The schemas the client uses. Everything they reference is generated too.
-const ROOTS: &[&str] = &[
-    "Snapshot",
-    "Message",
-    "MessagePage",
-    "MessageInputBody",
-    "RetrySendInputBody",
-    "CommandResponse",
-    "ConversationPatchBody",
-    "ConversationCounts",
-    "Credentials",
-    "LoginResult",
-    "Account",
-    "Removal",
-    "HistoryUpdate",
-    "ConnectionInfo",
-    "Report",
-    "RoutingSnapshot",
-    "Alert",
-    "TypingData",
-    "SessionReady",
-    "SessionResume",
-    "SessionSynced",
-    "SessionResync",
-    "CommandError",
-    "TypingCommand",
-    "ErrorModel",
+/// Every schema in the contract is generated, so a feature never has to touch
+/// this file: it changes only when the backend is bumped. These schemas are
+/// skipped because the hand-written envelope in `event.rs` replaces them: they
+/// are untagged unions of every event, which serde cannot decode tolerantly.
+const SKIP: &[&str] = &[
+    "ServerEvent",
+    "DurableEvent",
+    "Event",
+    "ClientEvent",
+    "TraceEvent",
 ];
 
 pub fn run(root: &Path, check: bool) -> Result<()> {
@@ -143,6 +126,11 @@ struct Generator<'a> {
     items: BTreeMap<String, String>,
     queue: Vec<String>,
     queued: BTreeSet<String>,
+    /// The schema each Rust name was emitted from, so two different schemas
+    /// that would get the same name fail the generator instead of one
+    /// silently standing in for the other.
+    sources: BTreeMap<String, Value>,
+    collisions: Vec<String>,
 }
 
 pub fn generate(spec: &Value) -> Result<String> {
@@ -154,16 +142,23 @@ pub fn generate(spec: &Value) -> Result<String> {
         items: BTreeMap::new(),
         queue: Vec::new(),
         queued: BTreeSet::new(),
+        sources: BTreeMap::new(),
+        collisions: Vec::new(),
     };
-    for root in ROOTS {
-        if !schemas.contains_key(*root) {
-            bail!("schema {root} is missing from openapi.json");
+    for name in schemas.keys() {
+        if !SKIP.contains(&name.as_str()) {
+            g.enqueue(name);
         }
-        g.enqueue(root);
     }
     while let Some(name) = g.queue.pop() {
         let schema = &g.schemas[&name];
         g.emit_named(&rust_name(&name), schema);
+    }
+    if !g.collisions.is_empty() {
+        bail!(
+            "two different schemas would share a Rust name: {}",
+            g.collisions.join(", ")
+        );
     }
     let mut out = String::new();
     out.push_str(
@@ -186,8 +181,23 @@ impl Generator<'_> {
         }
     }
 
+    /// Note that `name` comes from `schema`; false if it is already taken by another.
+    fn claim(&mut self, name: &str, schema: &Value) -> bool {
+        match self.sources.get(name) {
+            Some(existing) if strip_docs(existing) == strip_docs(schema) => false,
+            Some(_) => {
+                self.collisions.push(name.to_string());
+                false
+            }
+            None => {
+                self.sources.insert(name.to_string(), schema.clone());
+                true
+            }
+        }
+    }
+
     fn emit_named(&mut self, name: &str, schema: &Value) {
-        if self.items.contains_key(name) {
+        if !self.claim(name, schema) {
             return;
         }
         if let Some(values) = string_enum(schema) {
@@ -300,8 +310,10 @@ impl Generator<'_> {
                 if let Some(values) = string_enum(schema) {
                     if values.len() > 1 {
                         let name = hint.to_string();
-                        let item = enum_item(&name, &values, schema);
-                        self.items.entry(name.clone()).or_insert(item);
+                        if self.claim(&name, schema) {
+                            let item = enum_item(&name, &values, schema);
+                            self.items.insert(name.clone(), item);
+                        }
                         name
                     } else {
                         "String".into()
@@ -338,6 +350,20 @@ impl Generator<'_> {
             _ => "serde_json::Value".into(),
         };
         if nullable { option(rust) } else { rust }
+    }
+}
+
+/// A schema without its descriptions, so the same shape documented twice is one type.
+fn strip_docs(schema: &Value) -> Value {
+    match schema {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(k, _)| !matches!(k.as_str(), "description" | "examples" | "example"))
+                .map(|(k, v)| (k.clone(), strip_docs(v)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(strip_docs).collect()),
+        other => other.clone(),
     }
 }
 

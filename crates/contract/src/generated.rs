@@ -5,6 +5,53 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct AccessChangeBody {
+    pub mode: AccessChangeBodyMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AccessChangeBodyMode {
+    #[serde(rename = "a")]
+    A,
+    #[serde(rename = "o")]
+    O,
+    #[serde(rename = "h")]
+    H,
+    #[serde(rename = "v")]
+    V,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AccessEntry {
+    pub account: String,
+    pub mode: AccessEntryMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AccessEntryMode {
+    #[serde(rename = "q")]
+    Q,
+    #[serde(rename = "a")]
+    A,
+    #[serde(rename = "o")]
+    O,
+    #[serde(rename = "h")]
+    H,
+    #[serde(rename = "v")]
+    V,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Account {
     #[serde(rename = "createdAt")]
     pub created_at: String,
@@ -20,6 +67,102 @@ pub struct Account {
     )]
     pub onboarding_network_id: Option<String>,
     pub username: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AccountDeletion {
+    pub password: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdminCapabilities {
+    pub features: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdminChannelGuide {
+    /// The server's configured default channels
+    pub defaults: Vec<String>,
+    /// Whether channel facts (existence, member counts, warnings) are available from the associated server
+    pub directory: bool,
+    pub guide: ChannelGuide,
+    pub requests: Vec<ChannelGuideRequestView>,
+    /// Send this back when saving. 0 means no guide was saved and the default channels are in effect.
+    pub revision: i64,
+    pub saved: bool,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    #[serde(rename = "updatedBy", skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<String>,
+    pub warnings: Vec<ChannelGuideWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdminChannelGuideInput {
+    pub guide: ChannelGuide,
+    pub revision: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdminOverview {
+    pub accounts: i64,
+    /// SQLite allocated page bytes, excluding WAL and uploaded files.
+    #[serde(rename = "databaseBytes")]
+    pub database_bytes: i64,
+    /// Currently connected upstream IRC sessions, not IRC users or accounts.
+    #[serde(rename = "ircConnections")]
+    pub irc_connections: i64,
+    pub messages: i64,
+    pub networks: i64,
+    pub sessions: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdminUser {
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    pub id: String,
+    #[serde(rename = "lastSeenAt")]
+    pub last_seen_at: String,
+    pub networks: i64,
+    pub owner: bool,
+    #[serde(rename = "ownerSource", skip_serializing_if = "Option::is_none")]
+    pub owner_source: Option<AdminUserOwnerSource>,
+    pub sessions: i64,
+    pub username: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AdminUserOwnerSource {
+    #[serde(rename = "environment")]
+    Environment,
+    #[serde(rename = "operator")]
+    Operator,
+    #[serde(rename = "owner")]
+    Owner,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdminUserPage {
+    pub items: Vec<AdminUser>,
+    pub more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdministrationAccess {
+    pub owner: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -71,6 +214,287 @@ pub enum AlertKind {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct AppDocument {
+    pub data: serde_json::Value,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppEmoji {
+    pub aliases: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creator: Option<String>,
+    pub group: AppEmojiGroup,
+    pub id: String,
+    pub label: String,
+    pub shortcode: String,
+    pub source: AppEmojiSource,
+    #[serde(rename = "sourceUrl", skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+    /// URL or path to a still image.
+    #[serde(rename = "staticUrl")]
+    pub static_url: String,
+    /// Preview URL or path to a bundled image.
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppEmojiCatalog {
+    /// Bundled workspace emoji and the cached 7TV global set.
+    pub items: Vec<AppEmoji>,
+    pub sources: Vec<String>,
+    /// Path to the Unicode catalog bundled with the frontend.
+    #[serde(rename = "standardUrl")]
+    pub standard_url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AppEmojiGroup {
+    #[serde(rename = "workspace")]
+    Workspace,
+    #[serde(rename = "7tv")]
+    V7tv,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AppEmojiSource {
+    #[serde(rename = "workspace")]
+    Workspace,
+    #[serde(rename = "7tv")]
+    V7tv,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Appearance {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accent: Option<AppearanceAccent>,
+    #[serde(rename = "accentCustom", skip_serializing_if = "Option::is_none")]
+    pub accent_custom: Option<String>,
+    #[serde(rename = "animateMedia", skip_serializing_if = "Option::is_none")]
+    pub animate_media: Option<bool>,
+    #[serde(rename = "coloredNames", skip_serializing_if = "Option::is_none")]
+    pub colored_names: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corners: Option<AppearanceCorners>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub density: Option<AppearanceDensity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font: Option<AppearanceFont>,
+    /// Pixels between message groups.
+    #[serde(rename = "groupSpacing", skip_serializing_if = "Option::is_none")]
+    pub group_spacing: Option<i64>,
+    /// Interface scale in percent.
+    #[serde(rename = "interfaceScale", skip_serializing_if = "Option::is_none")]
+    pub interface_scale: Option<i64>,
+    #[serde(rename = "messageFont", skip_serializing_if = "Option::is_none")]
+    pub message_font: Option<AppearanceMessageFont>,
+    #[serde(rename = "messageLayout", skip_serializing_if = "Option::is_none")]
+    pub message_layout: Option<AppearanceMessageLayout>,
+    #[serde(rename = "messageSize", skip_serializing_if = "Option::is_none")]
+    pub message_size: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<AppearanceMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub motion: Option<AppearanceMotion>,
+    /// Dark scheme identifier. Defaults to ircord-dark.
+    #[serde(rename = "schemeDark", skip_serializing_if = "Option::is_none")]
+    pub scheme_dark: Option<String>,
+    /// Light scheme identifier. Defaults to ircord-light.
+    #[serde(rename = "schemeLight", skip_serializing_if = "Option::is_none")]
+    pub scheme_light: Option<String>,
+    /// Saved theme ID, or null to use the scheme.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    #[serde(rename = "timeFormat", skip_serializing_if = "Option::is_none")]
+    pub time_format: Option<AppearanceTimeFormat>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AppearanceAccent {
+    #[serde(rename = "scheme")]
+    Scheme,
+    #[serde(rename = "custom")]
+    Custom,
+    #[serde(rename = "lavender")]
+    Lavender,
+    #[serde(rename = "indigo")]
+    Indigo,
+    #[serde(rename = "blue")]
+    Blue,
+    #[serde(rename = "sky")]
+    Sky,
+    #[serde(rename = "teal")]
+    Teal,
+    #[serde(rename = "emerald")]
+    Emerald,
+    #[serde(rename = "lime")]
+    Lime,
+    #[serde(rename = "amber")]
+    Amber,
+    #[serde(rename = "orange")]
+    Orange,
+    #[serde(rename = "rose")]
+    Rose,
+    #[serde(rename = "pink")]
+    Pink,
+    #[serde(rename = "fuchsia")]
+    Fuchsia,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AppearanceCorners {
+    #[serde(rename = "rounded")]
+    Rounded,
+    #[serde(rename = "soft")]
+    Soft,
+    #[serde(rename = "square")]
+    Square,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AppearanceDensity {
+    #[serde(rename = "comfortable")]
+    Comfortable,
+    #[serde(rename = "compact")]
+    Compact,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AppearanceFont {
+    #[serde(rename = "geist")]
+    Geist,
+    #[serde(rename = "inter")]
+    Inter,
+    #[serde(rename = "ibm-plex")]
+    IbmMinusPlex,
+    #[serde(rename = "manrope")]
+    Manrope,
+    #[serde(rename = "nunito")]
+    Nunito,
+    #[serde(rename = "atkinson")]
+    Atkinson,
+    #[serde(rename = "source-sans")]
+    SourceMinusSans,
+    #[serde(rename = "system")]
+    System,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AppearanceMessageFont {
+    #[serde(rename = "interface")]
+    Interface,
+    #[serde(rename = "atkinson")]
+    Atkinson,
+    #[serde(rename = "lexend")]
+    Lexend,
+    #[serde(rename = "serif")]
+    Serif,
+    #[serde(rename = "literata")]
+    Literata,
+    #[serde(rename = "jetbrains-mono")]
+    JetbrainsMinusMono,
+    #[serde(rename = "geist-mono")]
+    GeistMinusMono,
+    #[serde(rename = "atkinson-mono")]
+    AtkinsonMinusMono,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AppearanceMessageLayout {
+    #[serde(rename = "cozy")]
+    Cozy,
+    #[serde(rename = "compact")]
+    Compact,
+    #[serde(rename = "irc")]
+    Irc,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AppearanceMode {
+    #[serde(rename = "system")]
+    System,
+    #[serde(rename = "dark")]
+    Dark,
+    #[serde(rename = "light")]
+    Light,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AppearanceMotion {
+    #[serde(rename = "system")]
+    System,
+    #[serde(rename = "full")]
+    Full,
+    #[serde(rename = "reduced")]
+    Reduced,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AppearanceTimeFormat {
+    #[serde(rename = "24h")]
+    V24h,
+    #[serde(rename = "12h")]
+    V12h,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppearanceUpdatedEvent {
+    pub data: RevisionUpdate,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Attachment {
     pub alt: String,
     #[serde(rename = "contentType", skip_serializing_if = "Option::is_none")]
@@ -81,6 +505,98 @@ pub struct Attachment {
     pub size: Option<i64>,
     pub url: String,
     pub width: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AttractData {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    #[serde(rename = "memberId")]
+    pub member_id: String,
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AttractEvent {
+    pub data: AttractData,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AuthInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    pub method: AuthInputMethod,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum AuthInputMethod {
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "sasl-plain")]
+    SaslMinusPlain,
+    #[serde(rename = "sasl-external")]
+    SaslMinusExternal,
+    #[serde(rename = "server-password")]
+    ServerMinusPassword,
+    #[serde(rename = "nickserv")]
+    Nickserv,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BackendChangelog {
+    /// Release notes embedded in this backend build, newest first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub releases: Option<Vec<Release>>,
+    /// Version of the backend serving this request.
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BrowserSubscription {
+    pub endpoint: String,
+    #[serde(rename = "expirationTime", skip_serializing_if = "Option::is_none")]
+    pub expiration_time: Option<f64>,
+    pub keys: Keys,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CTCPReply {
+    /// False when no reply arrived in time; many clients ignore CTCP.
+    pub answered: bool,
+    pub command: CTCPReplyCommand,
+    #[serde(rename = "latencyMs", skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum CTCPReplyCommand {
+    #[serde(rename = "VERSION")]
+    VERSION,
+    #[serde(rename = "TIME")]
+    TIME,
+    #[serde(rename = "PING")]
+    PING,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -98,6 +614,278 @@ pub struct Capabilities {
     /// Application upload service availability and limits; distinct from IRC network features.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upload: Option<UploadCapability>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelAvailability {
+    pub status: ChannelAvailabilityStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ChannelAvailabilityStatus {
+    #[serde(rename = "available")]
+    Available,
+    #[serde(rename = "unavailable")]
+    Unavailable,
+    #[serde(rename = "unknown")]
+    UnknownValue,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelCreate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flags: Option<String>,
+    #[serde(rename = "modeParams", skip_serializing_if = "Option::is_none")]
+    pub mode_params: Option<BTreeMap<String, String>>,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelCreateResult {
+    pub configured: bool,
+    pub conversation: Conversation,
+    pub registered: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelGuide {
+    pub entries: Vec<ChannelGuideEntry>,
+    pub groups: Vec<ChannelGuideGroup>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelGuideChannel {
+    pub channel: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Member count, when the server could be asked
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub members: Option<i64>,
+    /// The channel's operators marked it as sensitive content
+    pub nsfw: bool,
+    pub state: ChannelGuideChannelState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ChannelGuideChannelState {
+    #[serde(rename = "everyone")]
+    Everyone,
+    #[serde(rename = "suggested")]
+    Suggested,
+    #[serde(rename = "listed")]
+    Listed,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelGuideEntry {
+    /// Channel name, including its # prefix
+    pub channel: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    pub state: ChannelGuideEntryState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ChannelGuideEntryState {
+    #[serde(rename = "everyone")]
+    Everyone,
+    #[serde(rename = "suggested")]
+    Suggested,
+    #[serde(rename = "listed")]
+    Listed,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelGuideGroup {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelGuideJoinFailure {
+    pub channel: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelGuideJoinInput {
+    /// Channels from the guide to join
+    pub channels: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelGuideJoinResult {
+    pub failed: Vec<ChannelGuideJoinFailure>,
+    pub joined: Vec<Conversation>,
+    /// Channels saved while the connection is down; they are joined when it is back
+    pub queued: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelGuideListing {
+    /// False for channels outside this server's own network
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// The guide's groups, to suggest one
+    pub groups: Vec<String>,
+    /// Whether you can ask for the channel to be listed
+    pub operator: bool,
+    pub status: ChannelGuideListingStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ChannelGuideListingStatus {
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "pending")]
+    Pending,
+    #[serde(rename = "listed")]
+    Listed,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelGuideRequestInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelGuideRequestView {
+    pub channel: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub members: Option<i64>,
+    /// The IRCord account that asked
+    pub requester: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelGuideView {
+    /// False on networks other than this server's own, which have no guide
+    pub available: bool,
+    pub entries: Vec<ChannelGuideChannel>,
+    pub groups: Vec<ChannelGuideGroup>,
+    /// 0 while no owner has saved a guide and the default channels are shown
+    pub revision: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelGuideWarning {
+    pub channel: String,
+    /// missing: the channel doesn't exist right now; hidden: it is secret, invite-only or has a key; unregistered: nobody registered it, so it could vanish or be taken over
+    pub kind: ChannelGuideWarningKind,
+}
+
+/// missing: the channel doesn't exist right now; hidden: it is secret, invite-only or has a key; unregistered: nobody registered it, so it could vanish or be taken over
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ChannelGuideWarningKind {
+    #[serde(rename = "missing")]
+    Missing,
+    #[serde(rename = "hidden")]
+    Hidden,
+    #[serde(rename = "unregistered")]
+    Unregistered,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelListEntry {
+    pub mask: String,
+    #[serde(rename = "setAt", skip_serializing_if = "Option::is_none")]
+    pub set_at: Option<String>,
+    #[serde(rename = "setBy", skip_serializing_if = "Option::is_none")]
+    pub set_by: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelListing {
+    pub name: String,
+    pub topic: String,
+    pub users: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelRegistration {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub automatic: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub founder: Option<String>,
+    pub registered: bool,
+    #[serde(rename = "registeredAt", skip_serializing_if = "Option::is_none")]
+    pub registered_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelServicesChange {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelServicesUpdatedEvent {
+    pub data: ChannelServicesChange,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -143,6 +931,94 @@ pub enum ChannelSettingsNotifications {
     Mentions,
     #[serde(rename = "none")]
     None,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelSettingsPatchBody {
+    #[serde(rename = "groupMentions", skip_serializing_if = "Option::is_none")]
+    pub group_mentions: Option<ChannelSettingsPatchBodyGroupMentions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notifications: Option<ChannelSettingsPatchBodyNotifications>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nsfw: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ChannelSettingsPatchBodyGroupMentions {
+    #[serde(rename = "all")]
+    All,
+    #[serde(rename = "ops")]
+    Ops,
+    #[serde(rename = "off")]
+    Off,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ChannelSettingsPatchBodyNotifications {
+    #[serde(rename = "default")]
+    Default,
+    #[serde(rename = "all")]
+    All,
+    #[serde(rename = "mentions")]
+    Mentions,
+    #[serde(rename = "none")]
+    None,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClientPreferences {
+    #[serde(rename = "askBeforeEmbeds", skip_serializing_if = "Option::is_none")]
+    pub ask_before_embeds: Option<bool>,
+    #[serde(rename = "channelGuideSeen", skip_serializing_if = "Option::is_none")]
+    pub channel_guide_seen: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub events: Option<ClientPreferencesEvents>,
+    /// Network IDs mapped to PNG, JPEG or WebP data URLs up to 64 KiB each.
+    #[serde(rename = "networkIcons", skip_serializing_if = "Option::is_none")]
+    pub network_icons: Option<BTreeMap<String, String>>,
+    /// Legacy opt-ins by network ID.
+    #[serde(rename = "nsfwNetworks", skip_serializing_if = "Option::is_none")]
+    pub nsfw_networks: Option<BTreeMap<String, bool>>,
+    /// Register new home-network channels. Defaults to true.
+    #[serde(rename = "registerChannels", skip_serializing_if = "Option::is_none")]
+    pub register_channels: Option<bool>,
+    /// Keyboard overrides by action. An empty list clears the bindings for that action.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shortcuts: Option<BTreeMap<String, Option<Vec<Shortcut>>>>,
+    #[serde(rename = "showNsfw", skip_serializing_if = "Option::is_none")]
+    pub show_nsfw: Option<bool>,
+    /// Up to 200 ordered conversation IDs per sidebar section.
+    #[serde(rename = "sidebarOrder", skip_serializing_if = "Option::is_none")]
+    pub sidebar_order: Option<BTreeMap<String, Option<Vec<String>>>>,
+    /// Speech service settings. API keys stay on the device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech: Option<SpeechService>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup: Option<Startup>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ClientPreferencesEvents {
+    #[serde(rename = "show")]
+    Show,
+    #[serde(rename = "collapse")]
+    Collapse,
+    #[serde(rename = "hide")]
+    Hide,
     /// A value this client does not know yet.
     #[default]
     #[serde(other)]
@@ -226,6 +1102,29 @@ pub struct ConnectionInfo {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct ConnectionLatency {
+    /// How often IRCord pings the server
+    #[serde(rename = "intervalSeconds")]
+    pub interval_seconds: i64,
+    #[serde(rename = "networkId")]
+    pub network_id: String,
+    pub samples: Vec<LatencySample>,
+    /// How far back samples are kept
+    #[serde(rename = "windowSeconds")]
+    pub window_seconds: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConnectionUpdatedEvent {
+    pub data: ConnectionInfo,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Conversation {
     #[serde(rename = "channelSettings", skip_serializing_if = "Option::is_none")]
     pub channel_settings: Option<ChannelSettings>,
@@ -281,6 +1180,31 @@ pub struct ConversationCounts {
     pub unread_from: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConversationCountsEvent {
+    pub data: ConversationCounts,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConversationInputBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(rename = "memberId", skip_serializing_if = "Option::is_none")]
+    pub member_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "networkId")]
+    pub network_id: String,
+    /// An IRC nickname on networkId; cannot be combined with name or memberId.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum ConversationKind {
     #[serde(rename = "channel")]
@@ -313,9 +1237,463 @@ pub struct ConversationPatchBody {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct ConversationRemovedEvent {
+    pub data: Removal,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConversationUpdatedEvent {
+    pub data: Conversation,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Credentials {
     pub password: String,
     pub username: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CtcpRequest {
+    pub command: CtcpRequestCommand,
+    pub nick: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum CtcpRequestCommand {
+    #[serde(rename = "VERSION")]
+    VERSION,
+    #[serde(rename = "TIME")]
+    TIME,
+    #[serde(rename = "PING")]
+    PING,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DatabasePool {
+    pub idle: i64,
+    #[serde(rename = "inUse")]
+    pub in_use: i64,
+    #[serde(rename = "maxOpen")]
+    pub max_open: i64,
+    pub open: i64,
+    /// Cumulative waits for a pooled connection since this backend started.
+    #[serde(rename = "waitCount")]
+    pub wait_count: i64,
+    /// Cumulative time all callers spent waiting for a pooled connection. This is not SQLite lock time.
+    #[serde(rename = "waitTotalMs")]
+    pub wait_total_ms: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DatabaseStatus {
+    /// SQLite page count times page size, including pages currently represented in WAL.
+    #[serde(rename = "allocatedBytes")]
+    pub allocated_bytes: i64,
+    #[serde(rename = "autoCheckpointPages")]
+    pub auto_checkpoint_pages: i64,
+    pub available: bool,
+    #[serde(rename = "busyTimeoutMs")]
+    pub busy_timeout_ms: i64,
+    pub engine: String,
+    #[serde(rename = "fileBytes", skip_serializing_if = "Option::is_none")]
+    pub file_bytes: Option<i64>,
+    #[serde(rename = "foreignKeys")]
+    pub foreign_keys: bool,
+    #[serde(rename = "journalMode", skip_serializing_if = "Option::is_none")]
+    pub journal_mode: Option<String>,
+    pub pool: DatabasePool,
+    /// Unused pages within allocated space, reusable by SQLite without shrinking the file.
+    #[serde(rename = "reusableBytes")]
+    pub reusable_bytes: i64,
+    #[serde(rename = "sampledAt")]
+    pub sampled_at: String,
+    /// Backend process start; cumulative pool counters reset when the process restarts.
+    #[serde(rename = "startedAt")]
+    pub started_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub synchronous: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Physical WAL file size, not pending work or the number of live WAL frames.
+    #[serde(rename = "walBytes", skip_serializing_if = "Option::is_none")]
+    pub wal_bytes: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeleteApiV1PushSubscriptionsRequest {
+    pub endpoint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeleteRecentMessagesRequest {
+    pub range: DeleteRecentMessagesRequestRange,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DeleteRecentMessagesRequestRange {
+    #[serde(rename = "1h")]
+    V1h,
+    #[serde(rename = "24h")]
+    V24h,
+    #[serde(rename = "7d")]
+    V7d,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Device {
+    pub active: bool,
+    /// Browser or app name from the User-Agent it signed in with; empty when unknown. Untrusted display text.
+    pub browser: String,
+    /// This is the device making the request.
+    pub current: bool,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: String,
+    pub focal: bool,
+    #[serde(rename = "formFactor")]
+    pub form_factor: DeviceFormFactor,
+    /// Opaque device ID for sign-out; not a session ID or token.
+    pub id: String,
+    #[serde(rename = "lastActiveAt", skip_serializing_if = "Option::is_none")]
+    pub last_active_at: Option<String>,
+    /// Last authenticated request or live connection, written at most once a minute. Absent for sessions from before this was recorded. Background connections count, so this is not user activity.
+    #[serde(rename = "lastSeenAt", skip_serializing_if = "Option::is_none")]
+    pub last_seen_at: Option<String>,
+    pub name: String,
+    pub notifications: DeviceNotifications,
+    /// Operating system from the same User-Agent; empty when unknown. Untrusted display text.
+    pub os: String,
+    /// Whether a Web Push subscription is registered for this device. Registered does not prove the browser will still deliver it.
+    pub push: DevicePush,
+    #[serde(rename = "signedInAt")]
+    pub signed_in_at: String,
+    /// connected: has a live event connection now; recent: seen in the last five minutes; offline: seen longer ago; unknown: never recorded.
+    pub status: DeviceStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DeviceFormFactor {
+    #[serde(rename = "desktop")]
+    Desktop,
+    #[serde(rename = "phone")]
+    Phone,
+    #[serde(rename = "tablet")]
+    Tablet,
+    #[serde(rename = "unknown")]
+    UnknownValue,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeviceList {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub devices: Option<Vec<Device>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeviceNotifications {
+    #[serde(
+        rename = "capabilityReportedAt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub capability_reported_at: Option<String>,
+    pub content: DeviceNotificationsContent,
+    pub delivery: DeviceNotificationsDelivery,
+    /// A deliberate settings edit. False for an untouched or migrated local default; remote Off is explicit.
+    pub explicit: bool,
+    pub initialized: bool,
+    pub permission: DeviceNotificationsPermission,
+    pub preview: bool,
+    pub revision: i64,
+    pub sound: DeviceNotificationsSound,
+    /// Backend-observed push registration, not proof of provider delivery.
+    pub subscription: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DeviceNotificationsContent {
+    #[serde(rename = "inherit")]
+    Inherit,
+    #[serde(rename = "all")]
+    All,
+    #[serde(rename = "mentions")]
+    Mentions,
+    #[serde(rename = "none")]
+    None,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DeviceNotificationsDelivery {
+    #[serde(rename = "off")]
+    Off,
+    #[serde(rename = "open")]
+    Open,
+    #[serde(rename = "push")]
+    Push,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DeviceNotificationsPermission {
+    #[serde(rename = "unknown")]
+    UnknownValue,
+    #[serde(rename = "default")]
+    Default,
+    #[serde(rename = "granted")]
+    Granted,
+    #[serde(rename = "denied")]
+    Denied,
+    #[serde(rename = "unsupported")]
+    Unsupported,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DeviceNotificationsSound {
+    #[serde(rename = "off")]
+    Off,
+    #[serde(rename = "mentions")]
+    Mentions,
+    #[serde(rename = "all")]
+    All,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DevicePreferences {
+    pub content: DevicePreferencesContent,
+    pub delivery: DevicePreferencesDelivery,
+    /// Import this requesting device's old local choice once. An existing initialized record wins.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub migrate: Option<bool>,
+    pub name: String,
+    pub preview: bool,
+    /// Expected current notification revision. A concurrent edit returns 409.
+    pub revision: i64,
+    pub sound: DevicePreferencesSound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DevicePreferencesContent {
+    #[serde(rename = "inherit")]
+    Inherit,
+    #[serde(rename = "all")]
+    All,
+    #[serde(rename = "mentions")]
+    Mentions,
+    #[serde(rename = "none")]
+    None,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DevicePreferencesDelivery {
+    #[serde(rename = "off")]
+    Off,
+    #[serde(rename = "open")]
+    Open,
+    #[serde(rename = "push")]
+    Push,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DevicePreferencesSound {
+    #[serde(rename = "off")]
+    Off,
+    #[serde(rename = "mentions")]
+    Mentions,
+    #[serde(rename = "all")]
+    All,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// Whether a Web Push subscription is registered for this device. Registered does not prove the browser will still deliver it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DevicePush {
+    #[serde(rename = "registered")]
+    Registered,
+    #[serde(rename = "none")]
+    None,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// connected: has a live event connection now; recent: seen in the last five minutes; offline: seen longer ago; unknown: never recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DeviceStatus {
+    #[serde(rename = "connected")]
+    Connected,
+    #[serde(rename = "recent")]
+    Recent,
+    #[serde(rename = "offline")]
+    Offline,
+    #[serde(rename = "unknown")]
+    UnknownValue,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DevicesUpdatedEvent {
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiscoveryCategory {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiscoveryFilters {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub animations: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub categories: Option<Vec<DiscoveryCategory>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sources: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiscoveryItem {
+    pub animated: bool,
+    pub category: String,
+    pub creator: String,
+    pub height: i64,
+    pub installed: bool,
+    pub license: String,
+    pub name: String,
+    #[serde(rename = "previewUrl")]
+    pub preview_url: String,
+    pub provider: String,
+    #[serde(rename = "providerId")]
+    pub provider_id: String,
+    #[serde(rename = "sourceUrl")]
+    pub source_url: String,
+    pub width: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiscoveryResult {
+    pub filters: DiscoveryFilters,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<DiscoveryItem>>,
+    #[serde(rename = "nextCursor")]
+    pub next_cursor: String,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Doctor {
+    pub checks: Vec<DoctorCheck>,
+    pub status: DoctorStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DoctorCheck {
+    pub detail: String,
+    pub name: String,
+    pub status: DoctorCheckStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DoctorCheckStatus {
+    #[serde(rename = "ok")]
+    Ok,
+    #[serde(rename = "unavailable")]
+    Unavailable,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DoctorStatus {
+    #[serde(rename = "ok")]
+    Ok,
+    #[serde(rename = "degraded")]
+    Degraded,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditInputBody {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditResponse {
+    pub message: Message,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -324,6 +1702,263 @@ pub struct EmbedGeometry {
     pub height: i64,
     pub url: String,
     pub width: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmojiManagement {
+    pub managers: Vec<AdminUser>,
+    pub restricted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmojiManagementUpdate {
+    /// IRCord account IDs, as returned by the user list or identity lookup
+    pub managers: Vec<String>,
+    pub restricted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmojiUsage {
+    pub count: i64,
+    pub id: String,
+    #[serde(rename = "lastUsed")]
+    pub last_used: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Emote {
+    /// Further names that render and complete to this emote.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aliases: Option<Vec<String>>,
+    pub animated: bool,
+    #[serde(rename = "canManage")]
+    pub can_manage: bool,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    /// Attribution: the provider's creator, or one given for an upload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creator: Option<String>,
+    pub enabled: bool,
+    pub height: i64,
+    /// Stable instance emote ID. Clients namespace it as instance:<id>.
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    /// Canonical name, such as the provider's original casing.
+    pub name: String,
+    #[serde(rename = "providerId", skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    /// Former names. They still render in message history but are not offered for new messages, and a new emote may claim them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retired: Option<Vec<String>>,
+    /// Lowercase :shortcode: written into message text.
+    pub shortcode: String,
+    pub source: EmoteSource,
+    #[serde(rename = "sourceUrl", skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+    /// Still frame, used when animation is off. Equals url for still images.
+    #[serde(rename = "staticUrl")]
+    pub static_url: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+    pub url: String,
+    pub width: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmoteCatalog {
+    #[serde(rename = "canAdd")]
+    pub can_add: bool,
+    /// Whether this account may manage the entire catalog.
+    #[serde(rename = "canManage")]
+    pub can_manage: bool,
+    /// Enabled entries; managers also receive disabled ones.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<Emote>>,
+    #[serde(rename = "maxBytes")]
+    pub max_bytes: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub providers: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub types: Option<Vec<String>>,
+    /// Changes whenever the catalog changes; emotes.updated carries the new value.
+    pub version: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmoteImport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aliases: Option<Vec<String>>,
+    pub provider: EmoteImportProvider,
+    #[serde(rename = "providerId")]
+    pub provider_id: String,
+    /// Defaults to the provider's name in lowercase.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shortcode: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum EmoteImportProvider {
+    #[serde(rename = "7tv")]
+    V7tv,
+    #[serde(rename = "ffz")]
+    Ffz,
+    #[serde(rename = "emoji.gg")]
+    EmojiGg,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmotePatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aliases: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creator: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shortcode: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum EmoteSource {
+    #[serde(rename = "upload")]
+    Upload,
+    #[serde(rename = "7tv")]
+    V7tv,
+    #[serde(rename = "ffz")]
+    Ffz,
+    #[serde(rename = "emoji.gg")]
+    EmojiGg,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmoteVersion {
+    pub version: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmotesUpdatedEvent {
+    pub data: EmoteVersion,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ErgoAccount {
+    pub channels: Vec<String>,
+    pub name: String,
+    #[serde(rename = "registeredAt", skip_serializing_if = "Option::is_none")]
+    pub registered_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ErgoChannel {
+    #[serde(rename = "hasKey")]
+    pub has_key: bool,
+    #[serde(rename = "inviteOnly")]
+    pub invite_only: bool,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    pub registered: bool,
+    pub secret: bool,
+    pub topic: String,
+    pub users: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ErgoStatistics {
+    pub channels: i64,
+    #[serde(rename = "goVersion")]
+    pub go_version: String,
+    pub servers: i64,
+    #[serde(rename = "startedAt")]
+    pub started_at: String,
+    #[serde(rename = "uptimeSeconds")]
+    pub uptime_seconds: i64,
+    pub users: ErgoUsers,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ErgoStatus {
+    #[serde(rename = "checkedAt")]
+    pub checked_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub server: String,
+    pub state: ErgoStatusState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statistics: Option<ErgoStatistics>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ErgoStatusState {
+    #[serde(rename = "ok")]
+    Ok,
+    #[serde(rename = "unavailable")]
+    Unavailable,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ErgoUser {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub away: Option<String>,
+    pub channels: Vec<ErgoUserChannel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modes: Option<String>,
+    pub nickname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub realname: Option<String>,
+    pub sessions: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ErgoUserChannel {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ErgoUsers {
+    pub invisible: i64,
+    pub operators: i64,
+    pub peak: i64,
+    pub total: i64,
+    pub unknown: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -362,6 +1997,8 @@ pub struct ErrorModel {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
 }
+
+pub type Event = serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -404,6 +2041,81 @@ pub struct GIF {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct GuideDirectoryChannel {
+    pub name: String,
+    pub registered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    pub users: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HashFieldEntry {
+    pub name: String,
+    /// Place in the table, starting at 1
+    pub rank: i64,
+    pub score: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HashFieldResult {
+    /// The table after the submission, best first
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<HashFieldEntry>>,
+    /// Whether the score made the table
+    pub placed: bool,
+    /// The new entry's place, or 0 when it did not place
+    pub rank: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HashFieldScoreInputBody {
+    /// Name shown in the table; trimmed, at most 24 characters
+    pub name: String,
+    /// Final score of one game
+    pub score: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HashFieldTable {
+    /// The top entries, best first
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<HashFieldEntry>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistoryFailedEvent {
+    pub data: HistoryUpdate,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistoryGapEvent {
+    pub data: HistoryUpdate,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistorySyncedEvent {
+    pub data: HistoryUpdate,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HistoryUpdate {
     #[serde(rename = "conversationId")]
     pub conversation_id: String,
@@ -411,6 +2123,163 @@ pub struct HistoryUpdate {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IdentityMatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    pub eligible: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<AdminUser>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InboxAddedEvent {
+    pub data: InboxEntry,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InboxChange {
+    pub dismissed: bool,
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InboxEntry {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+    #[serde(rename = "networkId")]
+    pub network_id: String,
+    /// Why the message is in the inbox
+    pub reasons: Vec<InboxEntryReasonsItem>,
+    #[serde(rename = "senderId")]
+    pub sender_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum InboxEntryReasonsItem {
+    #[serde(rename = "mention")]
+    Mention,
+    #[serde(rename = "reply")]
+    Reply,
+    #[serde(rename = "direct")]
+    Direct,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InboxItem {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    pub dismissed: bool,
+    /// The message as plain text, at most 280 characters
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excerpt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<InboxItemKind>,
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+    #[serde(rename = "networkId")]
+    pub network_id: String,
+    /// Why the message is in the inbox
+    pub reasons: Vec<InboxItemReasonsItem>,
+    #[serde(rename = "senderId", skip_serializing_if = "Option::is_none")]
+    pub sender_id: Option<String>,
+    pub status: InboxItemStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+    /// The message is unread in its conversation; reading the conversation reads it, dismissing does not
+    pub unread: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum InboxItemKind {
+    #[serde(rename = "message")]
+    Message,
+    #[serde(rename = "action")]
+    Action,
+    #[serde(rename = "notice")]
+    Notice,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum InboxItemReasonsItem {
+    #[serde(rename = "mention")]
+    Mention,
+    #[serde(rename = "reply")]
+    Reply,
+    #[serde(rename = "direct")]
+    Direct,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum InboxItemStatus {
+    #[serde(rename = "available")]
+    Available,
+    #[serde(rename = "deleted")]
+    Deleted,
+    #[serde(rename = "unavailable")]
+    Unavailable,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InboxPage {
+    pub items: Vec<InboxItem>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub unread: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InboxSummary {
+    /// Undismissed inbox items whose message is still unread in its conversation
+    pub unread: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InboxUpdatedEvent {
+    pub data: InboxChange,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -432,12 +2301,455 @@ pub struct Invitation {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct InvitationReceivedEvent {
+    pub data: Invitation,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InvitationRemovedEvent {
+    pub data: Removal,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsAccessEntry {
+    pub items: Vec<AccessEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsAdminUser {
+    pub items: Vec<AdminUser>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsChannelListEntry {
+    pub items: Vec<ChannelListEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsChannelListing {
+    pub items: Vec<ChannelListing>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsErgoAccount {
+    pub items: Vec<ErgoAccount>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsErgoChannel {
+    pub items: Vec<ErgoChannel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsGuideDirectoryChannel {
+    pub items: Vec<GuideDirectoryChannel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsIdentityMatch {
+    pub items: Vec<IdentityMatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsOwnerEvent {
+    pub items: Vec<OwnerEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsParty {
+    pub items: Vec<Party>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsPartyCandidate {
+    pub items: Vec<PartyCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsSavedMessage {
+    pub items: Vec<SavedMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Keys {
+    pub auth: String,
+    pub p256dh: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Kick {
     /// Member who kicked you
     #[serde(rename = "byId")]
     pub by_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LatencySample {
+    pub at: String,
+    pub ms: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Library {
+    /// Emoji ranked by use count with a two-week half-life.
+    #[serde(rename = "emojiUsage")]
+    pub emoji_usage: Vec<EmojiUsage>,
+    /// Saved Klipy GIFs, most recently saved first.
+    pub gifs: Vec<SavedGIF>,
+    #[serde(rename = "skinTone")]
+    pub skin_tone: LibrarySkinTone,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LibraryPatch {
+    /// Picked IDs in oldest-to-newest order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recent: Option<Vec<String>>,
+    #[serde(rename = "skinTone", skip_serializing_if = "Option::is_none")]
+    pub skin_tone: Option<LibraryPatchSkinTone>,
+    /// Emoji ID to additional picks. Each positive count is capped at 100.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uses: Option<BTreeMap<String, i64>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum LibraryPatchSkinTone {
+    #[serde(rename = "0")]
+    V0,
+    #[serde(rename = "1")]
+    V1,
+    #[serde(rename = "2")]
+    V2,
+    #[serde(rename = "3")]
+    V3,
+    #[serde(rename = "4")]
+    V4,
+    #[serde(rename = "5")]
+    V5,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum LibrarySkinTone {
+    #[serde(rename = "0")]
+    V0,
+    #[serde(rename = "1")]
+    V1,
+    #[serde(rename = "2")]
+    V2,
+    #[serde(rename = "3")]
+    V3,
+    #[serde(rename = "4")]
+    V4,
+    #[serde(rename = "5")]
+    V5,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LibraryUpdatedEvent {
+    pub data: RevisionUpdate,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkCard {
+    /// How many matching posts name this resource
+    pub count: i64,
+    pub host: String,
+    /// Groups posts of the same resource; opaque
+    pub identity: String,
+    pub kind: LinkCardKind,
+    #[serde(rename = "lastPostedAt")]
+    pub last_posted_at: String,
+    /// The newest matching posts
+    pub sources: Vec<LinkSource>,
+    /// The most recent post's URL
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum LinkCardKind {
+    #[serde(rename = "link")]
+    Link,
+    #[serde(rename = "image")]
+    Image,
+    #[serde(rename = "gif")]
+    Gif,
+    #[serde(rename = "video")]
+    Video,
+    #[serde(rename = "audio")]
+    Audio,
+    #[serde(rename = "youtube")]
+    Youtube,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkMediaAsset {
+    #[serde(rename = "contentType", skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+    /// Absolute expiry of this CDN copy; resolve the original message link again to refresh it
+    #[serde(rename = "expiresAt", skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<i64>,
+    pub kind: LinkMediaAssetKind,
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum LinkMediaAssetKind {
+    #[serde(rename = "image")]
+    Image,
+    #[serde(rename = "video")]
+    Video,
+    #[serde(rename = "audio")]
+    Audio,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkMediaCard {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "expiresAt", skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// Validated CDN site icon
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Validated CDN preview image
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(rename = "imageHeight", skip_serializing_if = "Option::is_none")]
+    pub image_height: Option<i64>,
+    #[serde(rename = "imageWidth", skip_serializing_if = "Option::is_none")]
+    pub image_width: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<LinkMediaCardReason>,
+    pub site: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum LinkMediaCardReason {
+    #[serde(rename = "unsupported_type")]
+    UnsupportedType,
+    #[serde(rename = "type_mismatch")]
+    TypeMismatch,
+    #[serde(rename = "too_large")]
+    TooLarge,
+    #[serde(rename = "invalid_file")]
+    InvalidFile,
+    #[serde(rename = "fetch_failed")]
+    FetchFailed,
+    #[serde(rename = "busy")]
+    Busy,
+    #[serde(rename = "storage_unavailable")]
+    StorageUnavailable,
+    #[serde(rename = "no_oembed")]
+    NoOembed,
+    #[serde(rename = "restricted")]
+    Restricted,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkMediaFile {
+    /// Detected content type when available
+    #[serde(rename = "contentType")]
+    pub content_type: String,
+    #[serde(rename = "expiresAt", skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<LinkMediaFileReason>,
+    /// Observed file size when available
+    pub size: i64,
+    /// Validated CDN copy or authorized IRCord file; empty for rejected or uncached files
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum LinkMediaFileReason {
+    #[serde(rename = "unsupported_type")]
+    UnsupportedType,
+    #[serde(rename = "type_mismatch")]
+    TypeMismatch,
+    #[serde(rename = "too_large")]
+    TooLarge,
+    #[serde(rename = "invalid_file")]
+    InvalidFile,
+    #[serde(rename = "fetch_failed")]
+    FetchFailed,
+    #[serde(rename = "storage_unavailable")]
+    StorageUnavailable,
+    #[serde(rename = "no_oembed")]
+    NoOembed,
+    #[serde(rename = "restricted")]
+    Restricted,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkMediaInputBody {
+    pub url: String,
+    /// Ignored; all links use the same resolver
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub widget: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkMediaResponse {
+    pub assets: Vec<LinkMediaAsset>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub card: Option<LinkMediaCard>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<LinkMediaFile>,
+    pub kind: LinkMediaResponseKind,
+    pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub widget: Option<LinkMediaWidget>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum LinkMediaResponseKind {
+    #[serde(rename = "media")]
+    Media,
+    #[serde(rename = "file")]
+    File,
+    #[serde(rename = "card")]
+    Card,
+    #[serde(rename = "widget")]
+    Widget,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkMediaWidget {
+    /// Validated widget width divided by height
+    #[serde(rename = "aspectRatio", skip_serializing_if = "Option::is_none")]
+    pub aspect_ratio: Option<f64>,
+    /// Load the provider player after the user activates it
+    #[serde(rename = "clickToLoad", skip_serializing_if = "Option::is_none")]
+    pub click_to_load: Option<bool>,
+    /// Refresh before this widget document or its CDN thumbnail expires
+    #[serde(rename = "expiresAt", skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// An HTTPS provider iframe; all other widget URLs are opaque-origin documents
+    pub external: bool,
+    pub height: i64,
+    /// Validated CDN preview image
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<String>,
+    /// Validates size messages from this widget document only
+    pub token: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkPage {
+    /// History stored before the link catalog existed is still being indexed, so older links may be missing
+    pub indexing: bool,
+    pub items: Vec<LinkCard>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkSource {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    /// The message text without IRC formatting, bounded like inbox excerpts
+    pub excerpt: String,
+    /// Canonical IRCord message ID, for jumping to the post
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+    #[serde(rename = "networkId")]
+    pub network_id: String,
+    /// Current sensitive-content classification for this source channel
+    pub nsfw: bool,
+    /// False when the canonical source identity or shared classification is unavailable
+    #[serde(rename = "nsfwKnown")]
+    pub nsfw_known: bool,
+    #[serde(rename = "postedAt")]
+    pub posted_at: String,
+    #[serde(rename = "senderId")]
+    pub sender_id: String,
+    /// The link as it was posted, including its query string
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -568,6 +2880,15 @@ pub enum MemberStatus {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct MemberUpdatedEvent {
+    pub data: Member,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MembershipEvent {
     #[serde(rename = "actorId")]
     pub actor_id: String,
@@ -667,6 +2988,15 @@ pub struct Message {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct MessageCreatedEvent {
+    pub data: Message,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MessageEdit {
     pub at: String,
     pub text: String,
@@ -739,6 +3069,15 @@ pub struct MessagePage {
     pub next_cursor: Option<String>,
     #[serde(rename = "syncError", skip_serializing_if = "Option::is_none")]
     pub sync_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MessageUpdatedEvent {
+    pub data: Message,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -822,6 +3161,127 @@ pub enum NetworkAuthMethod {
     Unknown,
 }
 
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkCheck {
+    pub detail: String,
+    pub reachable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkCheckInputBody {
+    pub host: String,
+    pub port: i64,
+    pub tls: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkConfig {
+    #[serde(rename = "altNick", skip_serializing_if = "Option::is_none")]
+    pub alt_nick: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<AuthInput>,
+    #[serde(rename = "autoJoin", skip_serializing_if = "Option::is_none")]
+    pub auto_join: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channels: Option<Vec<String>>,
+    pub host: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub name: String,
+    pub nick: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub perform: Option<Vec<String>>,
+    pub port: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub realname: Option<String>,
+    #[serde(rename = "saslPassword", skip_serializing_if = "Option::is_none")]
+    pub sasl_password: Option<String>,
+    #[serde(rename = "saslUser", skip_serializing_if = "Option::is_none")]
+    pub sasl_user: Option<String>,
+    #[serde(rename = "serverPassword", skip_serializing_if = "Option::is_none")]
+    pub server_password: Option<String>,
+    pub tls: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkInvalidation {
+    #[serde(rename = "networkId")]
+    pub network_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkPreset {
+    #[serde(rename = "authMethod")]
+    pub auth_method: NetworkPresetAuthMethod,
+    #[serde(rename = "autoJoin")]
+    pub auto_join: Vec<String>,
+    pub color: NetworkPresetColor,
+    pub host: String,
+    pub initial: String,
+    pub name: String,
+    #[serde(rename = "passwordProvided")]
+    pub password_provided: bool,
+    pub port: i64,
+    pub tls: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum NetworkPresetAuthMethod {
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "server-password")]
+    ServerMinusPassword,
+    #[serde(rename = "sasl-plain")]
+    SaslMinusPlain,
+    #[serde(rename = "nickserv")]
+    Nickserv,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum NetworkPresetColor {
+    #[serde(rename = "lavender")]
+    Lavender,
+    #[serde(rename = "mint")]
+    Mint,
+    #[serde(rename = "peach")]
+    Peach,
+    #[serde(rename = "blue")]
+    Blue,
+    #[serde(rename = "yellow")]
+    Yellow,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkPresetPage {
+    pub configured: bool,
+    pub items: Vec<NetworkPreset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkRemovedEvent {
+    pub data: Removal,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum NetworkStatus {
     #[serde(rename = "connected")]
@@ -836,6 +3296,191 @@ pub enum NetworkStatus {
     #[default]
     #[serde(other)]
     Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkUpdate {
+    #[serde(rename = "altNick", skip_serializing_if = "Option::is_none")]
+    pub alt_nick: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<AuthInput>,
+    #[serde(rename = "autoJoin", skip_serializing_if = "Option::is_none")]
+    pub auto_join: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nick: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub perform: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub realname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<NetworkUpdateStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum NetworkUpdateStatus {
+    #[serde(rename = "connected")]
+    Connected,
+    #[serde(rename = "disconnected")]
+    Disconnected,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkUpdatedEvent {
+    pub data: Network,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationAlertEvent {
+    pub data: Alert,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationRoutingEvent {
+    pub data: RoutingSnapshot,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationsUpdatedEvent {
+    pub data: RevisionUpdate,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OfflineMessageRef {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OfflinePinned {
+    pub cursor: i64,
+    pub items: Vec<Message>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OfflineSnapshot {
+    pub cursor: i64,
+    pub items: Vec<Message>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub since: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<Snapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OutboxEntry {
+    #[serde(rename = "clientId")]
+    pub client_id: String,
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(rename = "messageId", skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    pub payload: SendInput,
+    pub state: OutboxEntryState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum OutboxEntryState {
+    #[serde(rename = "queued")]
+    Queued,
+    #[serde(rename = "pending")]
+    Pending,
+    #[serde(rename = "sent")]
+    Sent,
+    #[serde(rename = "unconfirmed")]
+    Unconfirmed,
+    #[serde(rename = "uncertain")]
+    Uncertain,
+    #[serde(rename = "failed")]
+    Failed,
+    #[serde(rename = "discarded")]
+    Discarded,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OutboxPage {
+    pub items: Vec<OutboxEntry>,
+    pub more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OutputStructClientIDStringJsonClientIdBody {
+    #[serde(rename = "clientId")]
+    pub client_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OutputStructItemsListEventJsonItemsValidBoolJsonValidBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<Event>>,
+    pub valid: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OwnerEvent {
+    pub action: String,
+    pub actor: String,
+    pub at: String,
+    pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OwnerGrant {
+    /// The IRCord account ID to grant, as returned by the user list or identity lookup
+    pub account: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -861,6 +3506,36 @@ pub struct Party {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct PartyAccountInputBody {
+    #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(rename = "memberId", skip_serializing_if = "Option::is_none")]
+    pub member_id: Option<String>,
+    #[serde(rename = "servicesAccount", skip_serializing_if = "Option::is_none")]
+    pub services_account: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PartyCandidate {
+    #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    #[serde(rename = "backendAccountId", skip_serializing_if = "Option::is_none")]
+    pub backend_account_id: Option<String>,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    pub id: String,
+    #[serde(rename = "servicesAccount")]
+    pub services_account: String,
+    #[serde(rename = "servicesRegisteredAt")]
+    pub services_registered_at: String,
+    pub username: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PartyCapability {
     #[serde(rename = "maxDescriptionLength")]
     pub max_description_length: i64,
@@ -870,6 +3545,44 @@ pub struct PartyCapability {
     pub max_name_length: i64,
     #[serde(rename = "networkId")]
     pub network_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PartyConversionResult {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prerequisite: Option<String>,
+    pub status: PartyConversionResultStatus,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum PartyConversionResultStatus {
+    #[serde(rename = "converted")]
+    Converted,
+    #[serde(rename = "pending")]
+    Pending,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PartyCreateBody {
+    #[serde(rename = "accountIds", skip_serializing_if = "Option::is_none")]
+    pub account_ids: Option<Vec<String>>,
+    #[serde(rename = "clientId")]
+    pub client_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "servicesAccounts")]
+    pub services_accounts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -905,6 +3618,33 @@ pub struct PartyMember {
     pub username: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PartyPatchBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PartyRemoval {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    pub id: String,
+    pub revision: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PartyRemovedEvent {
+    pub data: PartyRemoval,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum PartyState {
     #[serde(rename = "provisioning")]
@@ -925,10 +3665,419 @@ pub enum PartyState {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct PartyUpdatedEvent {
+    pub data: Party,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PasswordChange {
+    pub current: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PasswordReset {
+    pub password: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PasswordResetResult {
+    /// Whether the account also has an account on the associated IRC server that the reset changes.
+    pub associated: bool,
+    /// Why a reset is still pending.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Signed-in IRCord sessions that this reset signed out.
+    #[serde(rename = "sessionsRevoked")]
+    pub sessions_revoked: i64,
+    /// completed: IRCord, the associated IRC server and the saved IRC login all use the new password. pending: the reset is saved and the backend keeps retrying the remaining steps; sign-in stays blocked until they finish.
+    pub status: PasswordResetResultStatus,
+    /// The account's username, as stored.
+    pub username: String,
+}
+
+/// completed: IRCord, the associated IRC server and the saved IRC login all use the new password. pending: the reset is saved and the backend keeps retrying the remaining steps; sign-in stays blocked until they finish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum PasswordResetResultStatus {
+    #[serde(rename = "completed")]
+    Completed,
+    #[serde(rename = "pending")]
+    Pending,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PeoplePage {
+    pub items: Vec<Person>,
+    pub more: bool,
+    /// Known means people retained in this workspace, not a server-wide online roster.
+    pub source: PeoplePageSource,
+    pub status: PeoplePageStatus,
+}
+
+/// Known means people retained in this workspace, not a server-wide online roster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum PeoplePageSource {
+    #[serde(rename = "known")]
+    Known,
+    #[serde(rename = "registered")]
+    Registered,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum PeoplePageStatus {
+    #[serde(rename = "ready")]
+    Ready,
+    #[serde(rename = "partial")]
+    Partial,
+    #[serde(rename = "unavailable")]
+    Unavailable,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Person {
+    #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    #[serde(rename = "backendAccountId", skip_serializing_if = "Option::is_none")]
+    pub backend_account_id: Option<String>,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    pub eligible: bool,
+    pub key: String,
+    #[serde(rename = "memberId", skip_serializing_if = "Option::is_none")]
+    pub member_id: Option<String>,
+    #[serde(rename = "networkId")]
+    pub network_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nicknames: Option<Vec<String>>,
+    pub presence: PersonPresence,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<PersonReason>,
+    #[serde(rename = "servicesAccount", skip_serializing_if = "Option::is_none")]
+    pub services_account: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum PersonPresence {
+    #[serde(rename = "online")]
+    Online,
+    #[serde(rename = "away")]
+    Away,
+    #[serde(rename = "offline")]
+    Offline,
+    #[serde(rename = "unknown")]
+    UnknownValue,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum PersonReason {
+    #[serde(rename = "account_unknown")]
+    AccountUnknown,
+    #[serde(rename = "identity_unverified")]
+    IdentityUnverified,
+    #[serde(rename = "local_account_required")]
+    LocalAccountRequired,
+    #[serde(rename = "nickname_unknown")]
+    NicknameUnknown,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ping {
+    #[serde(rename = "serverTime")]
+    pub server_time: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PostApiV1OfflinePinnedRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<OfflineMessageRef>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PreferencesUpdatedEvent {
+    pub data: RevisionUpdate,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProfileUpdate {
+    /// PNG, JPEG or WebP data URL, at most 180000 bytes. This takes precedence over avatarUrl.
+    #[serde(rename = "avatarDataUrl", skip_serializing_if = "Option::is_none")]
+    pub avatar_data_url: Option<String>,
+    /// Up to 32 ASCII lowercase letters, digits or hyphens. Null or empty clears; omission retains.
+    #[serde(rename = "avatarFrame", skip_serializing_if = "Option::is_none")]
+    pub avatar_frame: Option<String>,
+    /// HTTPS URL, at most 300 UTF-8 bytes. An owned HTTP upload URL remains local and is not shared over IRC. Null or empty clears; omission retains.
+    #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    /// HTTPS URL, at most 300 UTF-8 bytes. An owned HTTP upload URL remains local and is not shared over IRC. Null or empty clears; omission retains.
+    #[serde(rename = "bannerUrl", skip_serializing_if = "Option::is_none")]
+    pub banner_url: Option<String>,
+    /// At most 300 characters in local storage. Omit to retain it; an empty string clears it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bio: Option<String>,
+    /// Explicit profile name, at most 80 UTF-8 bytes. Omit to retain it; send an empty string or null to clear it.
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Single-line text without controls, at most 120 UTF-8 bytes. Null or empty clears; omission retains.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headline: Option<String>,
+    /// Absolute HTTPS URL without credentials, at most 300 UTF-8 bytes. Null or empty clears; omission retains.
+    #[serde(rename = "homepageUrl", skip_serializing_if = "Option::is_none")]
+    pub homepage_url: Option<String>,
+    /// Up to 10 entries of at most 32 UTF-8 bytes each. Compact JSON must fit 300 bytes. Null or an empty array clears; omission retains.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interests: Option<Vec<String>>,
+    /// Up to 10 BCP 47 tags of at most 32 UTF-8 bytes each. Compact JSON must fit 300 bytes. Null or an empty array clears; omission retains.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub languages: Option<Vec<String>>,
+    /// Single-line text without controls, at most 120 UTF-8 bytes. Null or empty clears; omission retains.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// A #RRGGBB color. Null or empty clears; omission retains.
+    #[serde(rename = "nameColor", skip_serializing_if = "Option::is_none")]
+    pub name_color: Option<String>,
+    /// A #RRGGBB color. Null or empty clears; omission retains.
+    #[serde(rename = "profileAccentColor", skip_serializing_if = "Option::is_none")]
+    pub profile_accent_color: Option<String>,
+    /// HTTPS URL, at most 300 UTF-8 bytes. An owned HTTP upload URL remains local and is not shared over IRC. Null or empty clears; omission retains.
+    #[serde(
+        rename = "profileBackgroundUrl",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub profile_background_url: Option<String>,
+    /// Single-line text without controls, at most 80 UTF-8 bytes. Null or empty clears; omission retains.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pronouns: Option<String>,
+    /// Single-line text without controls, at most 64 UTF-8 bytes. Null or empty clears; omission retains.
+    #[serde(rename = "statusEmoji", skip_serializing_if = "Option::is_none")]
+    pub status_emoji: Option<String>,
+    /// RFC3339 status deadline, at most 64 bytes. Null or empty clears the deadline. Editing status without a deadline clears the old deadline.
+    #[serde(rename = "statusExpiresAt", skip_serializing_if = "Option::is_none")]
+    pub status_expires_at: Option<String>,
+    /// Single-line text without controls, at most 200 UTF-8 bytes. Null or empty clears; omission retains.
+    #[serde(rename = "statusText", skip_serializing_if = "Option::is_none")]
+    pub status_text: Option<String>,
+    /// IANA timezone or UTC, at most 64 UTF-8 bytes. Null or empty clears; omission retains.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProfileUpdatedEvent {
+    pub data: Member,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Provider {
+    pub available: bool,
+    #[serde(rename = "canDelete")]
+    pub can_delete: bool,
+    #[serde(rename = "maxBytes")]
+    pub max_bytes: i64,
+    pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub types: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PurgeJob {
+    pub authority: PurgeJobAuthority,
+    pub channel: String,
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    /// Messages deleted so far, including ones someone else deleted meanwhile.
+    pub deleted: i64,
+    /// Messages the network refused to delete for another reason or did not confirm.
+    pub failed: i64,
+    pub id: String,
+    pub nick: String,
+    #[serde(rename = "startedAt")]
+    pub started_at: String,
+    pub state: PurgeJobState,
+    /// Messages the network no longer has, usually because they are older than its history.
+    #[serde(rename = "tooOld")]
+    pub too_old: i64,
+    /// Messages selected for deletion.
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum PurgeJobAuthority {
+    #[serde(rename = "operator")]
+    Operator,
+    #[serde(rename = "owner")]
+    Owner,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum PurgeJobState {
+    #[serde(rename = "running")]
+    Running,
+    #[serde(rename = "done")]
+    Done,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PushKey {
+    pub enabled: bool,
+    #[serde(rename = "publicKey")]
+    pub public_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QuietHours {
+    pub enabled: bool,
+    pub end: String,
+    pub start: String,
+    #[serde(rename = "timeZone")]
+    pub time_zone: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Reaction {
     pub emoji: String,
     #[serde(rename = "memberIds")]
     pub member_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReactionInputBody {
+    pub emoji: String,
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecentMessagesPreview {
+    pub authority: RecentMessagesPreviewAuthority,
+    /// Messages that would be deleted, at most limit.
+    pub count: i64,
+    pub limit: i64,
+    pub nick: String,
+    /// Older history in the range could not be loaded, so there may be more messages than count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum RecentMessagesPreviewAuthority {
+    #[serde(rename = "operator")]
+    Operator,
+    #[serde(rename = "owner")]
+    Owner,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RedactResponse {
+    /// True when the deleted message carried one or more attachments that were not deleted with it.
+    #[serde(rename = "attachmentRetained")]
+    pub attachment_retained: bool,
+    /// How the deletion was carried out: as the author, as a channel operator, or as a server owner through the server's moderation login.
+    pub authority: RedactResponseAuthority,
+    /// Files hosted by this server that were deleted with the message at a server owner's request.
+    #[serde(rename = "filesDeleted", skip_serializing_if = "Option::is_none")]
+    pub files_deleted: Option<i64>,
+    pub message: Message,
+    /// The caller's own deletable upload behind a single attachment. File deletion requires a separate DELETE /api/v1/uploads/{id} request.
+    #[serde(rename = "uploadId", skip_serializing_if = "Option::is_none")]
+    pub upload_id: Option<String>,
+    /// The caller's own deletable uploads from a gallery, in attachment order. File deletion requires separate DELETE /api/v1/uploads/{id} requests.
+    #[serde(rename = "uploadIds", skip_serializing_if = "Option::is_none")]
+    pub upload_ids: Option<Vec<String>>,
+}
+
+/// How the deletion was carried out: as the author, as a channel operator, or as a server owner through the server's moderation login.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum RedactResponseAuthority {
+    #[serde(rename = "author")]
+    Author,
+    #[serde(rename = "operator")]
+    Operator,
+    #[serde(rename = "owner")]
+    Owner,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RegistrationPolicy {
+    #[serde(rename = "registrationEnabled")]
+    pub registration_enabled: bool,
+    #[serde(rename = "registrationKeyRequired")]
+    pub registration_key_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Release {
+    pub date: String,
+    pub notes: String,
+    pub version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -1024,6 +4173,12 @@ pub struct RetrySendInputBody {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct RevisionUpdate {
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RoutingSnapshot {
     /// Opaque current-socket capability, private to this connection; fence activity reports with it.
     #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
@@ -1057,10 +4212,398 @@ pub enum RoutingSnapshotPhase {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct SaveAppAppearanceRequest {
+    pub settings: Appearance,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SaveAppPreferencesRequest {
+    pub preferences: ClientPreferences,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SaveAppThemeInputBody {
+    /// The updatedAt value the editor loaded. Null for a new theme.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected: Option<String>,
+    /// Replace the theme even when its saved version changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub force: Option<bool>,
+    pub theme: Theme,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SaveInputBody {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavePickerGIF {
+    pub height: i64,
+    pub id: String,
+    #[serde(rename = "previewUrl")]
+    pub preview_url: String,
+    pub provider: String,
+    pub slug: String,
+    #[serde(rename = "stillUrl")]
+    pub still_url: String,
+    pub title: String,
+    pub url: String,
+    pub width: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavePushSubscriptionRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    pub subscription: BrowserSubscription,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedAddedEvent {
+    pub data: SavedMessage,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedGIF {
+    pub height: i64,
+    pub id: String,
+    #[serde(rename = "previewUrl")]
+    pub preview_url: String,
+    pub provider: String,
+    #[serde(rename = "savedAt")]
+    pub saved_at: String,
+    pub slug: String,
+    #[serde(rename = "stillUrl")]
+    pub still_url: String,
+    pub title: String,
+    pub url: String,
+    pub width: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<Conversation>,
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<Message>,
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+    #[serde(rename = "networkId")]
+    pub network_id: String,
+    #[serde(rename = "savedAt")]
+    pub saved_at: String,
+    pub status: SavedItemStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SavedItemStatus {
+    #[serde(rename = "available")]
+    Available,
+    #[serde(rename = "deleted")]
+    Deleted,
+    #[serde(rename = "unavailable")]
+    Unavailable,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedMessage {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+    #[serde(rename = "networkId")]
+    pub network_id: String,
+    #[serde(rename = "savedAt")]
+    pub saved_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedPage {
+    pub items: Vec<SavedItem>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedRemoval {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedRemovedEvent {
+    pub data: SavedRemoval,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchContext {
+    pub available: bool,
+    pub identity: SearchContextIdentity,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<SearchContextReason>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SearchContextIdentity {
+    #[serde(rename = "retained")]
+    Retained,
+    #[serde(rename = "ephemeral")]
+    Ephemeral,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SearchContextReason {
+    #[serde(rename = "not-retained")]
+    NotMinusRetained,
+    #[serde(rename = "missing-msgid")]
+    MissingMinusMsgid,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchPage {
+    pub items: Vec<SearchResult>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<SearchSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<SearchContext>,
+    pub conversation: Conversation,
+    pub message: Message,
+    /// Display nickname for an ephemeral upstream hit; not an account identity.
+    #[serde(rename = "senderNick", skip_serializing_if = "Option::is_none")]
+    pub sender_nick: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchSource {
+    pub actual: SearchSourceActual,
+    pub completeness: String,
+    pub coverage: SearchSourceCoverage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<SearchSourceReason>,
+    pub requested: SearchSourceRequested,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SearchSourceActual {
+    #[serde(rename = "retained")]
+    Retained,
+    #[serde(rename = "upstream")]
+    Upstream,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SearchSourceCoverage {
+    #[serde(rename = "retained-indexed")]
+    RetainedMinusIndexed,
+    #[serde(rename = "upstream-bounded")]
+    UpstreamMinusBounded,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SearchSourceReason {
+    #[serde(rename = "unsupported-scope")]
+    UnsupportedMinusScope,
+    #[serde(rename = "unsupported-filters")]
+    UnsupportedMinusFilters,
+    #[serde(rename = "capability-unavailable")]
+    CapabilityMinusUnavailable,
+    #[serde(rename = "upstream-unavailable")]
+    UpstreamMinusUnavailable,
+    #[serde(rename = "continuation")]
+    Continuation,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SearchSourceRequested {
+    #[serde(rename = "retained")]
+    Retained,
+    #[serde(rename = "upstream")]
+    Upstream,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SelfUpdate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub away: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nick: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub realname: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SendEndpoint {
     pub host: String,
     pub port: i64,
     pub tls: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SendInput {
+    /// Ordered upload IDs. Text must contain only their URLs in the same order, separated by spaces or newlines.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<String>>,
+    #[serde(rename = "clientId")]
+    pub client_id: String,
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<SendEndpoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gif: Option<GIF>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<SendInputKind>,
+    #[serde(rename = "replyToId", skip_serializing_if = "Option::is_none")]
+    pub reply_to_id: Option<String>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SendInputKind {
+    #[serde(rename = "message")]
+    Message,
+    #[serde(rename = "action")]
+    Action,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SendRawRequest {
+    #[serde(rename = "clientId")]
+    pub client_id: String,
+    pub line: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerLine {
+    pub command: String,
+    pub id: String,
+    pub kind: ServerLineKind,
+    #[serde(rename = "networkId")]
+    pub network_id: String,
+    pub params: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<BTreeMap<String, String>>,
+    pub text: String,
+    pub time: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerLineEvent {
+    pub data: ServerLine,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ServerLineKind {
+    #[serde(rename = "numeric")]
+    Numeric,
+    #[serde(rename = "notice")]
+    Notice,
+    #[serde(rename = "error")]
+    Error,
+    #[serde(rename = "motd")]
+    Motd,
+    #[serde(rename = "raw")]
+    Raw,
+    #[serde(rename = "outgoing")]
+    Outgoing,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerLogPage {
+    pub items: Vec<ServerLine>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerLogUpdatedEvent {
+    pub data: NetworkInvalidation,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -1116,6 +4659,104 @@ pub struct SessionSynced {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct SetMemberBotRequest {
+    /// true marks the person as a bot, false removes the mark.
+    pub bot: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    /// Seconds without an active client before every device is alerted, with one reminder of what is still unread. At least lastDeviceDelay; equal values skip the last-device-only window.
+    #[serde(rename = "allDevicesDelay")]
+    pub all_devices_delay: i64,
+    /// Seconds without an active IRCord client before you are marked away on IRC. 0 never marks you away automatically.
+    #[serde(rename = "autoAwayDelay")]
+    pub auto_away_delay: i64,
+    #[serde(rename = "channelDefault")]
+    pub channel_default: SettingsChannelDefault,
+    #[serde(rename = "directDefault")]
+    pub direct_default: SettingsDirectDefault,
+    #[serde(rename = "highlightWords", skip_serializing_if = "Option::is_none")]
+    pub highlight_words: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ignore: Option<Vec<String>>,
+    /// Seconds without an active IRCord client before the most recently active device alone is alerted. 0 alerts it as soon as no client is active.
+    #[serde(rename = "lastDeviceDelay")]
+    pub last_device_delay: i64,
+    pub levels: BTreeMap<String, SettingsLevelsValue>,
+    #[serde(rename = "quietHours")]
+    pub quiet_hours: QuietHours,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SettingsChannelDefault {
+    #[serde(rename = "all")]
+    All,
+    #[serde(rename = "mentions")]
+    Mentions,
+    #[serde(rename = "none")]
+    None,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SettingsDirectDefault {
+    #[serde(rename = "all")]
+    All,
+    #[serde(rename = "mentions")]
+    Mentions,
+    #[serde(rename = "none")]
+    None,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SettingsLevelsValue {
+    #[serde(rename = "all")]
+    All,
+    #[serde(rename = "mentions")]
+    Mentions,
+    #[serde(rename = "none")]
+    None,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Shortcut {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alt: Option<bool>,
+    pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#mod: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shift: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SignupCredentials {
+    /// How the account appears in chat; optional, and changeable later.
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    pub password: String,
+    #[serde(rename = "registrationKey", skip_serializing_if = "Option::is_none")]
+    pub registration_key: Option<String>,
+    pub username: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Snapshot {
     pub capabilities: Capabilities,
     pub conversations: Vec<Conversation>,
@@ -1126,6 +4767,102 @@ pub struct Snapshot {
     pub networks: Vec<Network>,
     pub user: Member,
     pub version: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpeechService {
+    /// HTTPS base URL, or HTTP on loopback. Leave empty to disable. Credentials, queries and fragments are forbidden.
+    #[serde(rename = "baseUrl", skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Startup {
+    #[serde(rename = "channelId", skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<StartupMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum StartupMode {
+    #[serde(rename = "last")]
+    Last,
+    #[serde(rename = "channel")]
+    Channel,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Status {
+    pub commit: String,
+    pub database: StatusDatabase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ergo: Option<ErgoStatus>,
+    #[serde(rename = "goVersion")]
+    pub go_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overview: Option<AdminOverview>,
+    #[serde(rename = "startedAt")]
+    pub started_at: String,
+    pub status: StatusStatus,
+    #[serde(rename = "uptimeSeconds")]
+    pub uptime_seconds: i64,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum StatusDatabase {
+    #[serde(rename = "available")]
+    Available,
+    #[serde(rename = "unavailable")]
+    Unavailable,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum StatusStatus {
+    #[serde(rename = "ok")]
+    Ok,
+    #[serde(rename = "degraded")]
+    Degraded,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StoredAppearance {
+    /// The account's appearance. Null until saved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Appearance>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StoredPreferences {
+    /// The account's preferences. Null until saved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferences: Option<ClientPreferences>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -1208,10 +4945,238 @@ pub enum TLSInfoKeyAlgorithm {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct Theme {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<ThemeBackground>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<ThemeBase>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub colors: Option<ThemeColors>,
+    /// Custom CSS up to 64 KiB. Clients filter CSS before applying it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub css: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<i64>,
+    /// The save route takes the ID from the path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "madeWith", skip_serializing_if = "Option::is_none")]
+    pub made_with: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Version of the stored theme. The server sets it on save.
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeBackground {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blur: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dim: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fit: Option<ThemeBackgroundFit>,
+    #[serde(rename = "panelOpacity", skip_serializing_if = "Option::is_none")]
+    pub panel_opacity: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placement: Option<ThemeBackgroundPlacement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<ThemeBackgroundPosition>,
+    /// Two measured image colors, dark then light, or null.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tones: Option<Vec<String>>,
+    /// An upload path on this instance. Null if an imported theme needs an image.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ThemeBackgroundFit {
+    #[serde(rename = "cover")]
+    Cover,
+    #[serde(rename = "contain")]
+    Contain,
+    #[serde(rename = "tile")]
+    Tile,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ThemeBackgroundPlacement {
+    #[serde(rename = "conversation")]
+    Conversation,
+    #[serde(rename = "app")]
+    App,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ThemeBackgroundPosition {
+    #[serde(rename = "center")]
+    Center,
+    #[serde(rename = "top")]
+    Top,
+    #[serde(rename = "bottom")]
+    Bottom,
+    #[serde(rename = "left")]
+    Left,
+    #[serde(rename = "right")]
+    Right,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeBase {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dark: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub light: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ThemeCapability {
     /// Whether themes may apply their custom CSS. When false, colors and backgrounds still apply and the CSS stays stored.
     #[serde(rename = "customCss")]
     pub custom_css: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeColors {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dark: Option<ThemeSeeds>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub light: Option<ThemeSeeds>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeConflict {
+    pub data: ThemeConflictDataStruct,
+    /// A human-readable explanation specific to this occurrence of the problem.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Optional list of individual error details
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub errors: Option<Vec<ErrorDetail>>,
+    /// A URI reference that identifies the specific occurrence of the problem.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
+    /// HTTP status code
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<i64>,
+    /// A short, human-readable summary of the problem type. This value should not change between occurrences of the error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// A URI reference to human-readable documentation for the error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeConflictDataStruct {
+    /// The current saved theme.
+    pub theirs: Theme,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemePalette {
+    pub blue: String,
+    pub cyan: String,
+    pub green: String,
+    pub orange: String,
+    pub pink: String,
+    pub purple: String,
+    pub red: String,
+    pub yellow: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeSeeds {
+    pub accent: String,
+    pub canvas: String,
+    pub ink: String,
+    pub muted: String,
+    pub overlay: String,
+    pub palette: ThemePalette,
+    pub surface: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Themes {
+    /// The account's opt-in to using its stored custom CSS.
+    #[serde(rename = "customCss")]
+    pub custom_css: bool,
+    pub format: i64,
+    pub themes: Vec<Theme>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemesUpdatedEvent {
+    pub data: RevisionUpdate,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TraceLine {
+    pub data: ServerLine,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TraceResync {
+    pub reason: String,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TransferChannelRequest {
+    pub account: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TransferResult {
+    pub status: TransferResultStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum TransferResultStatus {
+    #[serde(rename = "pending")]
+    Pending,
+    #[serde(rename = "done")]
+    Done,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -1264,8 +5229,80 @@ pub enum TypingDataState {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct TypingEvent {
+    pub data: TypingData,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateAppThemesRequest {
+    #[serde(rename = "customCss")]
+    pub custom_css: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Upload {
+    #[serde(rename = "contentType")]
+    pub content_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<i64>,
+    pub id: String,
+    pub name: String,
+    pub size: i64,
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UploadCapability {
     #[serde(rename = "maxBytes")]
     pub max_bytes: i64,
     pub types: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UsernameCheck {
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WhoisDetails {
+    /// Services account they are logged in to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// Away message, when they are away.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub away: Option<String>,
+    /// Channels the server shows them in, with status prefixes.
+    pub channels: Vec<String>,
+    /// False when the server says no one uses this nickname.
+    pub found: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(rename = "idleSeconds", skip_serializing_if = "Option::is_none")]
+    pub idle_seconds: Option<i64>,
+    pub nickname: String,
+    /// An IRC operator (numeric 313).
+    pub operator: bool,
+    #[serde(rename = "realName", skip_serializing_if = "Option::is_none")]
+    pub real_name: Option<String>,
+    /// Connected with TLS (numeric 671).
+    pub secure: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+    #[serde(rename = "serverInfo", skip_serializing_if = "Option::is_none")]
+    pub server_info: Option<String>,
+    #[serde(rename = "signedOnAt", skip_serializing_if = "Option::is_none")]
+    pub signed_on_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
 }

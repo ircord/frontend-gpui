@@ -1,0 +1,39 @@
+{"v":1,"type":"session.ready","cursor":7,"routing":true,"emoteVersion":3}
+{"v":1,"type":"session.synced","cursor":12}
+{"v":1,"type":"session.resync","reason":"cursor is outside retained events"}
+{"v":1,"type":"command.error","clientId":"k1","message":"Not connected"}
+{"v":1,"type":"typing","data":{"conversationId":"c-a","memberId":"m-bob","state":"active"}}
+{"v":1,"type":"attract","data":{"conversationId":"c-a","memberId":"m-bob","messageId":"msg-1"}}
+{"v":1,"type":"emotes.updated","data":{"version":4}}
+{"v":1,"type":"devices.updated"}
+{"v":1,"type":"notification.alert","data":{"delivery":"os","generation":"g1","alertId":"a1","sound":true,"preview":true,"conversationId":"c-a","messageId":"msg-1","title":"#alpha","body":"bob: hello me","kind":"mention","badge":1,"unread":3,"conversations":1,"reminder":false}}
+{"v":1,"type":"notification.routing","data":{"revision":"r1","deviceId":"d1","phase":"active","connectionId":"conn-1"}}
+{"v":1,"seq":1,"type":"message.created","data":{"id":"msg-1","conversationId":"c-a","senderId":"m-bob","text":"hello me","createdAt":"2026-11-21T10:00:00Z","kind":"message","reactions":[{"emoji":"👍","memberIds":["m-me"]}]}}
+{"v":1,"seq":2,"type":"message.updated","data":{"id":"msg-1","conversationId":"c-a","senderId":"m-bob","text":"hello me, edited","createdAt":"2026-11-21T10:00:00Z","editedAt":"2026-11-21T10:01:00Z","kind":"message","reactions":[]}}
+{"v":1,"seq":3,"type":"conversation.updated","data":{"id":"c-a","networkId":"n1","kind":"channel","name":"alpha","topic":"Welcome","modes":"nt","memberModes":{"m-me":"@"},"unreadCount":0,"mentionCount":0,"favorite":false,"memberIds":["m-me","m-bob"],"joined":true}}
+{"v":1,"seq":4,"type":"conversation.counts","data":{"id":"c-a","unreadCount":4,"mentionCount":1,"unreadFrom":"msg-1"}}
+{"v":1,"seq":5,"type":"conversation.removed","data":{"id":"c-b"}}
+{"v":1,"seq":6,"type":"channel-services.updated","data":{"conversationId":"c-a"}}
+{"v":1,"seq":7,"type":"network.updated","data":{"id":"n1","name":"Home","host":"irc.example.org","port":6697,"tls":true,"nick":"me","initials":"H","color":"","status":"connected","auth":{"method":"none","passwordSet":false},"autoJoin":["#alpha"],"perform":[],"isupport":{"PREFIX":"(qaohv)~&@%+"},"capabilities":["message-tags"],"features":{"replies":true,"reactions":true,"typing":true,"attract":false,"readMarkers":true,"history":true,"messageLineBytes":512,"setname":true,"metadata":[],"away":true,"redact":true,"edit":true}}}
+{"v":1,"seq":8,"type":"network.removed","data":{"id":"n2"}}
+{"v":1,"seq":9,"type":"member.updated","data":{"id":"m-bob","nick":"bob","displayName":"Bob","color":"","status":"away","role":"member","bio":"","account":"bob"}}
+{"v":1,"seq":10,"type":"profile.updated","data":{"id":"m-me","nick":"me","displayName":"Me","color":"#3366ff","status":"online","role":"member","bio":"hi","account":"me"}}
+{"v":1,"seq":11,"type":"invitation.received","data":{"id":"inv-1","networkId":"n1","channel":"#secret","inviterId":"m-bob","inviterNick":"bob","createdAt":"2026-11-21T10:02:00Z"}}
+{"v":1,"seq":12,"type":"invitation.removed","data":{"id":"inv-1"}}
+{"v":1,"seq":13,"type":"party.updated","data":{"id":"p1","conversationId":"c-p","networkId":"n1","name":"Friends","description":"","ownerId":"m-me","state":"active","revision":2,"members":[{"id":"m-me","username":"me","displayName":"Me","servicesAccount":"me","servicesRegisteredAt":"2026-11-20T09:00:00Z","joinedAt":"2026-11-20T09:00:00Z"}],"createdAt":"2026-11-20T09:00:00Z","updatedAt":"2026-11-21T09:00:00Z"}}
+{"v":1,"seq":14,"type":"party.removed","data":{"id":"p1","conversationId":"c-p","revision":3}}
+{"v":1,"seq":15,"type":"history.synced","data":{"conversationId":"c-a"}}
+{"v":1,"seq":16,"type":"history.gap","data":{"conversationId":"c-a","reason":"The network does not keep history this far back."}}
+{"v":1,"seq":17,"type":"history.sync.failed","data":{"conversationId":"c-a","message":"history request timed out"}}
+{"v":1,"seq":18,"type":"connection.updated","data":{"networkId":"n1","state":"connected","serverName":"irc.example.org","connectedAt":"2026-11-21T09:59:00Z","isupport":{"PREFIX":"(qaohv)~&@%+"},"offeredCapabilities":{"message-tags":""},"negotiatedCapabilities":["message-tags"],"motd":["Welcome"]}}
+{"v":1,"seq":19,"type":"server.line","data":{"id":"l1","networkId":"n1","time":"2026-11-21T10:00:00Z","kind":"numeric","command":"001","params":["me","Welcome"],"text":"Welcome"}}
+{"v":1,"seq":20,"type":"server-log.updated","data":{"networkId":"n1"}}
+{"v":1,"seq":21,"type":"client-preferences.updated","data":{"revision":"r2"}}
+{"v":1,"seq":22,"type":"appearance.updated","data":{"revision":"r3"}}
+{"v":1,"seq":23,"type":"themes.updated","data":{"revision":"r4"}}
+{"v":1,"seq":24,"type":"library.updated","data":{"revision":"r5"}}
+{"v":1,"seq":25,"type":"notification-settings.updated","data":{"revision":"r6"}}
+{"v":1,"seq":26,"type":"saved.added","data":{"messageId":"msg-1","conversationId":"c-a","networkId":"n1","savedAt":"2026-11-21T10:03:00Z"}}
+{"v":1,"seq":27,"type":"saved.removed","data":{"messageId":"msg-1","conversationId":"c-a"}}
+{"v":1,"seq":28,"type":"inbox.added","data":{"messageId":"msg-1","conversationId":"c-a","networkId":"n1","senderId":"m-bob","reasons":["mention"],"createdAt":"2026-11-21T10:00:00Z"}}
+{"v":1,"seq":29,"type":"inbox.updated","data":{"messageId":"msg-1","dismissed":true}}
