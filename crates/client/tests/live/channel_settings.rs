@@ -136,7 +136,7 @@ fn an_operator_sets_the_topic_a_mode_and_a_ban() {
     let listing = rt.block_on(api.guide_listing(&id)).expect("guide listing");
     assert!(!listing.available);
     // Not logged in to services: not registered, or no ChanServ to manage.
-    match rt.block_on(api.registration(&id)) {
+    match rt.block_on(api.channel_registration(&id)) {
         Ok(r) => assert!(!r.registered, "{r:?}"),
         Err(ApiError::Http { status, .. }) => assert!(matches!(status, 501 | 403), "{status}"),
         Err(e) => panic!("{e}"),

@@ -141,7 +141,7 @@ impl Api {
 
     /// The channel's registration with services. A network without a
     /// ChanServ IRCord can manage answers 501.
-    pub async fn registration(
+    pub async fn channel_registration(
         &self,
         conversation: &str,
     ) -> Result<c::ChannelRegistration, ApiError> {

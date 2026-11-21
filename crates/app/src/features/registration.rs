@@ -164,7 +164,7 @@ impl RegistrationView {
         };
         let conversation = self.conversation.clone();
         let task = client.request(move |api| async move {
-            let status = api.registration(&conversation).await;
+            let status = api.channel_registration(&conversation).await;
             let access = match &status {
                 Ok(r) if r.registered => Some(api.channel_access(&conversation).await),
                 _ => None,
