@@ -39,7 +39,10 @@ client; it never speaks IRC itself. Layout and commands are in
   Composer slots and suggestion providers run while the composer is being
   updated: read its text and caret with `composer::typed`, never
   `ctx.composer.read`. A view a slash command opens (`/list`, `/server`,
-  `/gif`…) is wired with `features::commands::on_view`.
+  `/gif`…) is wired with `features::commands::on_view`. Never name the type
+  `.test_support()` returns in a signature: it exists only in test builds, so
+  the release (`.exe`) build fails; return `Stateful<Div>` or
+  `impl IntoElement` and call `.test_support()` at the use.
 - Your own messages carry your member ID as `senderId`, not `you`; use
   `Workspace::is_self`.
 - `vendor/gpui-pre-windows` is GPUI's Windows backend with
