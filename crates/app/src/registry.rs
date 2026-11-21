@@ -344,6 +344,44 @@ pub struct SuggestionProvider {
     pub suggest: Rc<dyn Fn(&ComposerCtx, &str, &App) -> Vec<Suggestion>>,
 }
 
+/// A stretch of the composer's text drawn as one picture and edited as one
+/// unit (a server emoji's `:name:`). The text stays as it is: sending,
+/// drafts, suggestions and send filters all see `text[range]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComposerToken {
+    /// A byte range of the composer text.
+    pub range: Range<usize>,
+    /// What the provider's `render` is given to draw it (an emoji's name).
+    pub key: SharedString,
+}
+
+/// What a token provider is given to draw one of its tokens.
+#[derive(Clone, Debug)]
+pub struct TokenView {
+    pub key: SharedString,
+    /// The text the token stands for.
+    pub text: SharedString,
+    /// The height of a line of the box.
+    pub line_height: Pixels,
+}
+
+/// Finds stretches of the composer's text to draw as tokens, after every
+/// change to the text. A stretch the caret is inside stays text until the
+/// next change. Call `composer::retokenize` when what it finds changes
+/// without the text changing (a catalog loaded).
+#[derive(Clone)]
+pub struct TokenProvider {
+    /// Kept out of `:`, which separates it from a token's key.
+    pub id: SharedString,
+    pub order: i32,
+    #[allow(clippy::type_complexity)]
+    pub find: Rc<dyn Fn(&str, &App) -> Vec<ComposerToken>>,
+    /// The token's look, filling the box the composer gives it; the
+    /// composer draws the selected look around it.
+    #[allow(clippy::type_complexity)]
+    pub render: Rc<dyn Fn(&TokenView, &mut Window, &mut App) -> AnyElement>,
+}
+
 /// What a send filter decided.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SendOutcome {
@@ -398,6 +436,8 @@ pub struct ComposerSlots {
     /// Buttons beside the box: upload, emoji, GIF.
     pub buttons: List<Slot<ComposerCtx>>,
     pub suggestions: List<SuggestionProvider>,
+    /// Text drawn as pictures in the box (server emoji).
+    pub tokens: List<TokenProvider>,
     pub send_filters: List<SendFilter>,
     pub on_submit: List<SubmitHook>,
 }
@@ -677,6 +717,7 @@ entry!(
     MenuItem<C>,
     Slot<C>,
     SuggestionProvider,
+    TokenProvider,
     SendFilter,
     SubmitHook,
     SettingsSection,

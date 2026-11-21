@@ -89,4 +89,5 @@ there and run it again.
 For development, `IRCORD_SERVER=http://127.0.0.1:8080` overrides the saved
 server and `RUST_LOG=info` turns on logging. `cargo xtask capture` runs the
 Linux build on a virtual display against a disposable backend, signs in through
-the form and saves screenshots, so a change can be looked at without a screen.
+the form, types a server emoji into the message box and saves
+screenshots, so a change can be looked at without a screen.

@@ -4,9 +4,10 @@
 use std::time::Duration;
 
 use gpui_kit::test::{TestQueryExt, TestWindowExt};
-use gpui_kit::{AppContext, TestAppContext};
+use gpui_kit::{AppContext, ClipboardItem, TestAppContext};
 use ircord_app::composer::expressions::Tab;
 use ircord_app::features::{klipy, message_actions};
+use ircord_app::message::emoji;
 use ircord_client::contract::*;
 use ircord_client::testing::{CannedServer, Reply};
 use serde_json::{Value, json};
@@ -244,6 +245,12 @@ fn the_servers_emoji_have_their_own_group_and_go_in_as_names(cx: &mut TestAppCon
     click(&f, cx, "emoji-group-workspace");
     click(&f, cx, "emoji-instance:e1");
     cx.update(|cx| assert_eq!(message_actions::box_text(cx), ":party:"));
+    draw(&f, cx);
+    assert_eq!(
+        tokens(&f, cx),
+        1,
+        "the pick draws as its picture in the box"
+    );
 }
 
 #[gpui_kit::test]
@@ -422,4 +429,152 @@ fn the_gif_key_opens_the_gif_picker(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
     cx.update(|cx| assert_eq!(klipy::open_tab(cx), None));
+}
+
+// ---- Server emoji as pictures in the message box ----
+
+/// How many tokens (pictures) the message box draws.
+fn tokens(f: &Fixture, cx: &mut TestAppContext) -> usize {
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .find_all("composer-token")
+            .into_iter()
+            .filter(|t| t.visible())
+            .count()
+    })
+    .unwrap()
+}
+
+fn press(f: &Fixture, cx: &mut TestAppContext, keys: &[&str]) {
+    cx.update_window(f.window, |_, window, cx| {
+        for key in keys {
+            window.press(key, cx);
+        }
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+fn type_in_box(f: &Fixture, cx: &mut TestAppContext, text: &str) {
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("composer-input", cx);
+        window.input(text, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    draw(f, cx);
+}
+
+/// Type at the caret, the box already focused.
+fn type_on(f: &Fixture, cx: &mut TestAppContext, text: &str) {
+    cx.update_window(f.window, |_, window, cx| window.input(text, cx))
+        .unwrap();
+    cx.run_until_parked();
+    draw(f, cx);
+}
+
+fn box_text(cx: &mut TestAppContext) -> String {
+    cx.update(|cx| message_actions::box_text(cx))
+}
+
+#[gpui_kit::test]
+fn a_typed_server_emoji_draws_as_its_picture_and_edits_as_one(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    type_in_box(&f, cx, "hi :part");
+    assert_eq!(tokens(&f, cx), 0, "a name half typed stays text");
+    type_on(&f, cx, "y:");
+    assert_eq!(tokens(&f, cx), 1, "the picture is drawn in the box");
+    assert_eq!(box_text(cx), "hi :party:", "the text is still the name");
+
+    // Left steps over the whole picture.
+    press(&f, cx, &["left"]);
+    type_on(&f, cx, "X");
+    assert_eq!(box_text(cx), "hi X:party:");
+    // Right steps back over it, then Backspace takes it whole.
+    press(&f, cx, &["right", "backspace"]);
+    draw(&f, cx);
+    assert_eq!(box_text(cx), "hi X");
+    assert_eq!(tokens(&f, cx), 0);
+    // Undo brings it back as a picture, redo takes it away again.
+    press(&f, cx, &["ctrl-z"]);
+    draw(&f, cx);
+    assert_eq!(box_text(cx), "hi X:party:");
+    assert_eq!(tokens(&f, cx), 1, "after undo");
+    press(&f, cx, &["ctrl-y"]);
+    draw(&f, cx);
+    assert_eq!(box_text(cx), "hi X");
+    assert_eq!(tokens(&f, cx), 0, "after redo");
+}
+
+#[gpui_kit::test]
+fn only_known_names_outside_code_become_pictures(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    type_in_box(&f, cx, ":nope: `:party:` :pog: :party:");
+    assert_eq!(
+        tokens(&f, cx),
+        2,
+        "an unknown name and one in code stay text; the 7TV and server emoji are pictures"
+    );
+}
+
+#[gpui_kit::test]
+fn a_pasted_name_becomes_a_picture(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("so :party:".into())));
+    type_in_box(&f, cx, "");
+    press(&f, cx, &["ctrl-v"]);
+    draw(&f, cx);
+    assert_eq!(box_text(cx), "so :party:");
+    assert_eq!(tokens(&f, cx), 1);
+}
+
+#[gpui_kit::test]
+fn a_picture_on_a_wrapped_line_still_draws(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    let long = "word ".repeat(80);
+    type_in_box(&f, cx, &format!("{long}:party: end"));
+    assert_eq!(tokens(&f, cx), 1);
+}
+
+#[gpui_kit::test]
+fn sending_a_picture_sends_its_name(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    type_in_box(&f, cx, "hi :party:");
+    assert_eq!(tokens(&f, cx), 1);
+    press(&f, cx, &["enter"]);
+    let body = f
+        .server
+        .wait_for("POST", "/api/v1/conversations/c-general/messages", WAIT)
+        .json();
+    assert_eq!(body["text"], "hi :party:");
+    draw(&f, cx);
+    assert_eq!(box_text(cx), "");
+    assert_eq!(tokens(&f, cx), 0);
+}
+
+#[gpui_kit::test]
+fn a_draft_turns_into_pictures_once_the_emoji_are_known(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    type_in_box(&f, cx, "later :party:");
+    f.session
+        .update(cx, |s, cx| s.select_conversation("c-random", cx));
+    cx.run_until_parked();
+    // The catalog is not known yet when the draft comes back.
+    let pictures = cx.update(|cx| {
+        let kept = cx.global::<emoji::Pictures>().0.as_ref().clone();
+        emoji::set(Default::default(), cx);
+        kept
+    });
+    f.session
+        .update(cx, |s, cx| s.select_conversation("c-general", cx));
+    cx.run_until_parked();
+    draw(&f, cx);
+    assert_eq!(box_text(cx), "later :party:", "the draft is back");
+    assert_eq!(tokens(&f, cx), 0, "as text while no emoji are known");
+    cx.update(|cx| emoji::set(pictures, cx));
+    cx.run_until_parked();
+    draw(&f, cx);
+    assert_eq!(tokens(&f, cx), 1, "a picture once they are");
 }

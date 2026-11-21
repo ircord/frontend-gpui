@@ -6,6 +6,10 @@
 //! Enter takes one and Escape hides them; Tab with no suggestions completes
 //! a nick; the formatting keys wrap the selection in Markdown markers; and
 //! typing while nothing else takes text brings the focus here.
+//!
+//! Registered token providers mark stretches of the text (a server emoji's
+//! `:name:`) that the box draws as a picture and edits as one unit; the
+//! text itself never changes.
 
 pub mod drafts;
 pub mod expressions;
@@ -14,13 +18,17 @@ pub mod suggest;
 pub mod uploads;
 
 use gpui_kit::TestSupportExt;
-use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use std::ops::Range;
+
+use gpui_kit::component::input::{
+    InlineToken, InlineTokenContext, InputContent, InputEvent, Textarea, TextareaState,
+};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::commands::complete::{self, TabCycle};
 use ircord_client::contract::ConversationKind;
 
-use crate::registry::{self, ComposerCtx, SendOutcome, Suggestion};
+use crate::registry::{self, ComposerCtx, SendOutcome, Suggestion, TokenView};
 use crate::route::Route;
 use crate::session::{Session, SessionEvent};
 use crate::theme;
@@ -53,6 +61,20 @@ pub fn typed(composer: &Entity<ComposerView>, cx: &App) -> (String, usize) {
     cx.try_global::<Typed>()
         .and_then(|t| t.0.get(&composer.entity_id()).cloned())
         .unwrap_or_default()
+}
+
+/// Bumped by [`retokenize`]; every composer works its tokens out again.
+#[derive(Default)]
+struct Tokens(u64);
+
+impl Global for Tokens {}
+
+/// What the token providers find has changed without the text changing (an
+/// emoji catalog loaded): every composer works its tokens out again, so a
+/// draft restored before the catalog turns into pictures.
+pub fn retokenize(cx: &mut App) {
+    let next = cx.try_global::<Tokens>().map_or(0, |t| t.0) + 1;
+    cx.set_global(Tokens(next));
 }
 
 pub struct ComposerView {
@@ -94,6 +116,7 @@ impl ComposerView {
                         this.submit(text, window, cx);
                     }
                     InputEvent::Change => {
+                        state.update(cx, tokenize);
                         this.selected = 0;
                         this.picked = false;
                         this.tab = None;
@@ -109,6 +132,7 @@ impl ComposerView {
                     _ => {}
                 },
             ),
+            cx.observe_global::<Tokens>(|this, cx| this.input.update(cx, tokenize)),
             cx.subscribe(&session, |_, _, event: &SessionEvent, cx| match event {
                 SessionEvent::Selection | SessionEvent::Phase => cx.notify(),
                 SessionEvent::Changed(changes) if changes.sidebar => cx.notify(),
@@ -204,8 +228,26 @@ impl ComposerView {
     }
 
     pub fn set_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.input
-            .update(cx, |s, cx| s.set_value(text.to_string(), window, cx));
+        self.replace(text, None, window, cx);
+    }
+
+    /// Replace the text, select `selected` in it (or leave the caret where
+    /// the box puts it), then work out the tokens: `set_value` reports no
+    /// change, so the Change handler does not.
+    fn replace(
+        &mut self,
+        text: &str,
+        selected: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.input.update(cx, |s, cx| {
+            s.set_value(text.to_string(), window, cx);
+            if let Some(selected) = selected {
+                s.set_selected_range(selected, cx);
+            }
+            tokenize(s, cx);
+        });
     }
 
     /// Replace the text and put the caret at `caret` (a byte offset).
@@ -216,10 +258,8 @@ impl ComposerView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_text(text, window, cx);
         let caret = caret.min(text.len());
-        self.input
-            .update(cx, |s, cx| s.set_selected_range(caret..caret, cx));
+        self.replace(text, Some(caret..caret), window, cx);
         cx.notify();
     }
 
@@ -258,10 +298,8 @@ impl ComposerView {
             &text[start..end],
             &text[end..]
         );
-        self.set_text(&next, window, cx);
         let (from, to) = (start + marker.len(), end + marker.len());
-        self.input
-            .update(cx, |s, cx| s.set_selected_range(from..to, cx));
+        self.replace(&next, Some(from..to), window, cx);
         cx.notify();
     }
 
@@ -559,6 +597,7 @@ impl Render for ComposerView {
                         .min_w_0()
                         .child(
                             Textarea::new(&self.input)
+                                .token(draw_token)
                                 .appearance(false)
                                 .aria_label(t!("composer-label", target = name)),
                         ),
@@ -566,4 +605,63 @@ impl Render for ComposerView {
                 .children(buttons),
         )
     }
+}
+
+/// Mark what the token providers find in the box's text as tokens. A
+/// stretch the caret or the selection's edge is inside stays text until the
+/// next change, so a name being typed is not swallowed.
+fn tokenize(input: &mut TextareaState, cx: &mut Context<TextareaState>) {
+    let providers = registry::get(cx).composer.tokens.to_vec();
+    if providers.is_empty() && input.tokens().is_empty() {
+        return;
+    }
+    let text = input.value().to_string();
+    let selected = input.selected_range();
+    let cuts = |range: &Range<usize>, at: usize| range.start < at && at < range.end;
+    let mut content = InputContent::new(text.clone());
+    for provider in &providers {
+        for found in (provider.find)(&text, cx) {
+            let range = found.range;
+            if cuts(&range, selected.start) || cuts(&range, selected.end) {
+                continue;
+            }
+            let Some(part) = text.get(range.clone()) else {
+                continue;
+            };
+            let id = format!("{}:{}", provider.id, found.key);
+            let token = InlineToken::new(id, part.to_string());
+            // Overlapping another token, or not on a character's edge.
+            if let Ok(next) = content.clone().with_token(range, token) {
+                content = next;
+            }
+        }
+    }
+    if content != input.content() {
+        // Refused while an IME composes; the change that ends it comes back.
+        let _ = input.set_tokens(content, cx);
+    }
+}
+
+/// A token as its provider draws it, tinted while selected.
+fn draw_token(token: &InlineTokenContext, window: &mut Window, cx: &mut App) -> AnyElement {
+    let selected = theme::get(cx).selected;
+    let id = token.token().id().clone();
+    let (provider, key) = id.split_once(':').unwrap_or((id.as_ref(), ""));
+    let view = TokenView {
+        key: key.to_string().into(),
+        text: token.token().text().clone(),
+        line_height: token.line_height(),
+    };
+    let render = registry::get(cx)
+        .composer
+        .tokens
+        .get(provider)
+        .map(|p| p.render.clone());
+    div()
+        .id("composer-token")
+        .test_support()
+        .rounded_sm()
+        .when(token.is_selected(), |d| d.bg(selected))
+        .children(render.map(|render| render(&view, window, cx)))
+        .into_any_element()
 }

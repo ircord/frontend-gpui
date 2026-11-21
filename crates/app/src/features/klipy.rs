@@ -92,6 +92,7 @@ pub fn init(cx: &mut App) {
     registry::register(cx, |r| {
         r.inline_renderers.add(pictures::renderer());
         let c = &mut r.composer;
+        c.tokens.add(pictures::token_provider());
         c.above.add(Slot::new("expressions", picker_slot).order(20));
         c.buttons.add(Slot::new("gif", gif_button).order(20));
         c.buttons.add(Slot::new("emoji", emoji_button).order(30));

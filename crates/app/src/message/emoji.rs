@@ -13,7 +13,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::store::emoji::{self, EmojiItem};
 
-use crate::registry::{Inline, InlineRenderer, InlineSpan};
+use crate::registry::{ComposerToken, Inline, InlineRenderer, InlineSpan, TokenProvider};
 
 /// `name` → the picture `:name:` draws, its URL resolved against the server.
 #[derive(Default)]
@@ -21,9 +21,10 @@ pub struct Pictures(pub Rc<HashMap<String, SharedString>>);
 
 impl Global for Pictures {}
 
-/// Replace the pictures messages draw, and redraw.
+/// Replace the pictures messages and the message box draw, and redraw.
 pub fn set(pictures: HashMap<String, SharedString>, cx: &mut App) {
     cx.set_global(Pictures(Rc::new(pictures)));
+    crate::composer::retokenize(cx);
     cx.refresh_windows();
 }
 
@@ -97,6 +98,43 @@ pub fn renderer() -> InlineRenderer {
                     })
                 })
                 .collect()
+        }),
+    }
+}
+
+/// The registered composer tokens: a `:name:` typed, pasted or picked in the
+/// message box draws as its picture, one line high, and edits as one unit.
+/// What is sent is still the name.
+pub fn token_provider() -> TokenProvider {
+    TokenProvider {
+        id: "emoji".into(),
+        order: 0,
+        find: Rc::new(|text, cx| {
+            let Some(pictures) = cx.try_global::<Pictures>().map(|p| p.0.clone()) else {
+                return Vec::new();
+            };
+            if pictures.is_empty() || !text.contains(':') {
+                return Vec::new();
+            }
+            emoji::shortcodes_in(text)
+                .into_iter()
+                .filter(|(_, name)| pictures.contains_key(*name))
+                .map(|(range, name)| ComposerToken {
+                    range,
+                    key: name.to_string().into(),
+                })
+                .collect()
+        }),
+        render: Rc::new(|view, _, cx| {
+            let faint = crate::theme::get(cx).faint;
+            let url = cx
+                .try_global::<Pictures>()
+                .and_then(|p| p.0.get(view.key.as_ref()).cloned());
+            div()
+                .size(view.line_height)
+                .flex_none()
+                .children(url.map(|url| picture(url, faint)))
+                .into_any_element()
         }),
     }
 }

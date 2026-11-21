@@ -5,7 +5,8 @@
 //! In the build container it starts a session bus with GNOME Keyring, signs
 //! up an account (with an IRC network and a channel) over HTTP, signs in
 //! through the app's own form, captures the workspace, checks the sign-in is
-//! in the keyring, then restarts the app to show it signs in from there.
+//! in the keyring, types a server emoji into the message box, then restarts
+//! the app to show it signs in from there.
 //! Screenshots and the app's logs land in `target/capture/`; look at them.
 //!
 //! Xvfb runs without its COMPOSITE extension. With it, GPUI picks a 32-bit
@@ -40,6 +41,20 @@ COOKIE=$(curl -fsS -D - -o /dev/null -H "Origin: $SERVER" -H 'Content-Type: appl
 curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
   -d "{\"name\":\"Test\",\"host\":\"$IRC_HOST\",\"port\":6667,\"tls\":false,\"nick\":\"$USER_NAME\",\"autoJoin\":[\"#capture\"]}" \
   "$SERVER/api/v1/networks"
+
+# A server emote, a 64x64 orange disc, for the message box to draw.
+python3 -c '
+import struct, sys, zlib
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+rows = b"".join(b"\0" + b"".join(
+    bytes((240, 140, 40, 255) if (x - 31.5) ** 2 + (y - 31.5) ** 2 < 900 else (0, 0, 0, 0))
+    for x in range(64)) for y in range(64))
+sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 64, 8, 6, 0, 0, 0))
+    + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+' >/tmp/capture.png
+curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" \
+  -F name=Capture -F shortcode=capture -F "file=@/tmp/capture.png;type=image/png" "$SERVER/api/v1/emotes"
 
 # An unlocked login keyring, as a desktop session has after signing in.
 printf capture | gnome-keyring-daemon --unlock --components=secrets >/dev/null
@@ -88,6 +103,13 @@ secret-tool search --all service com.ircord.gpui 2>&1 | grep -v '^secret' >"$OUT
 grep -q 'attribute.service = com.ircord.gpui' "$OUT/keyring.txt" \
   || { echo "the sign-in was not saved in the keyring"; exit 1; }
 echo "the sign-in is in GNOME Keyring (target/capture/keyring.txt)"
+
+# A server emoji typed into the message box draws as its picture. Typing
+# with nothing focused goes into the box.
+xdotool type --delay 30 "hello :capture: there"
+sleep 2
+shot 5-emoji-in-box
+xdotool key ctrl+a BackSpace
 
 # A fresh start signs in from the keyring alone.
 stop_app 1
