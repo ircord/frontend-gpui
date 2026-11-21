@@ -1,34 +1,77 @@
 //! The reaction chips under a message. They get the message's context, so
-//! a chip can toggle your reaction (package A1).
+//! a chip toggles your reaction (package A1); yours are marked.
 
+use gpui_kit::TestSupportExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+use crate::features::message_actions;
 use crate::registry::MessageCtx;
 use crate::theme::Theme;
 use crate::timeline::rows::MessageRow;
 
 pub fn render(
     m: &MessageRow,
-    _ctx: &MessageCtx,
+    ctx: &MessageCtx,
     theme: &Theme,
     _window: &mut Window,
-    _cx: &mut App,
+    cx: &mut App,
 ) -> Option<AnyElement> {
     if m.reactions.is_empty() {
         return None;
     }
-    let mut chips = div().flex().flex_wrap().gap_1().pt_0p5();
+    let mine = message_actions::my_reactions(ctx, cx);
+    let mut chips = div()
+        .id(ElementId::Name(format!("reactions-{}", m.id).into()))
+        .test_support()
+        .role(Role::Group)
+        .aria_label(t!("message-actions-reactions"))
+        .flex()
+        .flex_wrap()
+        .gap_1()
+        .pt_0p5();
     for (emoji, count) in &m.reactions {
+        let own = mine.contains(emoji);
+        let (ctx, react) = (ctx.clone(), emoji.clone());
         chips = chips.child(
             div()
+                .id(ElementId::Name(format!("reaction-{}-{emoji}", m.id).into()))
+                .test_support()
+                .role(Role::Button)
+                .aria_label(t!(
+                    "message-actions-reaction-label",
+                    emoji = emoji,
+                    count = count
+                ))
+                .aria_selected(own)
                 .px_1p5()
                 .py_0p5()
                 .rounded_md()
-                .bg(theme.sidebar)
+                .border_1()
+                .border_color(if own { theme.accent } else { theme.sidebar })
+                .bg(if own { theme.selected } else { theme.sidebar })
                 .text_xs()
                 .text_color(theme.text)
-                .child(format!("{emoji} {count}")),
+                .cursor_pointer()
+                .hover({
+                    let hover = theme.hover;
+                    move |d| d.bg(hover)
+                })
+                .child(t!(
+                    "message-actions-reaction-chip",
+                    emoji = emoji,
+                    count = count
+                ))
+                .on_click(move |_, window, cx| {
+                    message_actions::react(
+                        &ctx.session,
+                        &ctx.conversation,
+                        &ctx.message,
+                        &react,
+                        window,
+                        cx,
+                    )
+                }),
         );
     }
     Some(chips.into_any_element())
