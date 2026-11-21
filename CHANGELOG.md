@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Joins after a reconnect fold into one line again instead of showing every person twice, and the timeline looks like the web client's: a "Today" pill between days, a channel's name and topic at the start of its history, and mentions marked in amber.
+
 ### New
 
 - Connect to your IRCord server, sign in, and stay signed in between launches, with the sign-in kept in your system's credential store.
