@@ -384,10 +384,189 @@ fn generic_title(title: &str) -> Option<String> {
     .then(|| name.to_string())
 }
 
+/// `raw` made absolute against the server's `origin` when it is a path on
+/// the server (`/media/a.jpg`), as a browser would; anything else as it is.
+pub fn resolve_url(raw: &str, origin: Option<&str>) -> String {
+    if url::Url::parse(raw).is_ok() {
+        return raw.to_string();
+    }
+    origin
+        .and_then(|o| url::Url::parse(o).ok())
+        .and_then(|base| base.join(raw).ok())
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| raw.to_string())
+}
+
+/// One colour scheme of a link's artwork tile, as `0xRRGGBB` and an
+/// opacity for the two glows (`POSTER_PALETTES` in the web's
+/// `utils/satori-card.ts`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Palette {
+    pub glow_a: (u32, f32),
+    pub glow_b: (u32, f32),
+    pub dot: u32,
+    pub bar_start: u32,
+    pub bar_end: u32,
+}
+
+/// The tile's dark backdrop, its title and its quieter text.
+pub const ARTWORK_BACKDROP: u32 = 0x141111;
+pub const ARTWORK_TITLE: u32 = 0xf7f2f4;
+pub const ARTWORK_TEXT: u32 = 0xb4a8af;
+
+pub const PALETTES: [Palette; 5] = [
+    Palette {
+        glow_a: (0xe06c53, 0.34),
+        glow_b: (0xf59e0b, 0.20),
+        dot: 0xe06c53,
+        bar_start: 0xf43f5e,
+        bar_end: 0xf59e0b,
+    },
+    Palette {
+        glow_a: (0xf43f5e, 0.32),
+        glow_b: (0xfb923c, 0.22),
+        dot: 0xf43f5e,
+        bar_start: 0xfb7185,
+        bar_end: 0xfb923c,
+    },
+    Palette {
+        glow_a: (0xea580c, 0.32),
+        glow_b: (0xf43f5e, 0.22),
+        dot: 0xfb923c,
+        bar_start: 0xf97316,
+        bar_end: 0xf43f5e,
+    },
+    Palette {
+        glow_a: (0xd946ef, 0.24),
+        glow_b: (0xf43f5e, 0.24),
+        dot: 0xf472b6,
+        bar_start: 0xec4899,
+        bar_end: 0xf59e0b,
+    },
+    Palette {
+        glow_a: (0xf59e0b, 0.28),
+        glow_b: (0xe06c53, 0.24),
+        dot: 0xfbbf24,
+        bar_start: 0xf59e0b,
+        bar_end: 0xe06c53,
+    },
+];
+
+/// What the generated artwork of a link without a picture shows: the web
+/// draws it with Satori (`SatoriLinkGraphic.vue`), the app with its own
+/// elements, from the same text and colours.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Artwork {
+    /// The site's name, or the link's host without `www.`.
+    pub host: String,
+    pub title: String,
+    pub description: String,
+    pub palette: Palette,
+}
+
+/// FNV-1a over UTF-16 code units, as the web's `hashString`, so a site gets
+/// the same colours in both clients.
+fn fnv1a(text: &str) -> u32 {
+    text.encode_utf16().fold(2_166_136_261u32, |h, unit| {
+        (h ^ u32::from(unit)).wrapping_mul(16_777_619)
+    })
+}
+
+/// Whitespace collapsed and cut to `max` characters with an ellipsis.
+fn clean(text: &str, max: usize) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= max {
+        return collapsed;
+    }
+    let cut: String = collapsed.chars().take(max - 1).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// The artwork for `url` with what its preview said about it.
+pub fn artwork(url: &str, site: &str, title: &str, description: &str) -> Artwork {
+    let parsed = url::Url::parse(url).ok();
+    let host = match (site.trim(), &parsed) {
+        (s, _) if !s.is_empty() => s.to_string(),
+        (_, Some(u)) => u
+            .host_str()
+            .map(|h| h.strip_prefix("www.").unwrap_or(h).to_string())
+            .unwrap_or_else(|| "link".into()),
+        _ => "link".into(),
+    };
+    let path = parsed
+        .as_ref()
+        .map(|u| u.path())
+        .filter(|p| *p != "/")
+        .map(|p| clean(p, 52))
+        .unwrap_or_default();
+    let title = Some(clean(title, 92))
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| host.clone());
+    let description = Some(clean(description, 120))
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| {
+            if path.is_empty() {
+                url.to_string()
+            } else {
+                format!("{host}{path}")
+            }
+        });
+    let seed = if host.is_empty() { url } else { &host };
+    let palette = PALETTES[(fnv1a(seed) % PALETTES.len() as u32) as usize];
+    Artwork {
+        host,
+        title,
+        description,
+        palette,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ircord_contract::{LinkMediaAsset, LinkMediaCard};
+
+    #[test]
+    fn artwork_colours_match_the_web() {
+        // Hashes from the web's `hashString` run in Node.
+        assert_eq!(fnv1a("github.com"), 1_228_281_881);
+        assert_eq!(fnv1a("musicforprogramming.net"), 982_306_389);
+        assert_eq!(fnv1a("ä😀"), 3_800_846_462);
+        let a = artwork("https://github.com/zed-industries/zed", "", "", "");
+        assert_eq!(a.palette, PALETTES[1]);
+        let a = artwork("https://example.com/", "", "", "");
+        assert_eq!(a.palette, PALETTES[3]);
+    }
+
+    #[test]
+    fn artwork_falls_back_to_the_host_and_path() {
+        let a = artwork("https://www.example.com/a/b", " ", "", "  ");
+        assert_eq!(a.host, "example.com");
+        assert_eq!(a.title, "example.com");
+        assert_eq!(a.description, "example.com/a/b");
+        let a = artwork("https://example.com/", "Example", "", "");
+        assert_eq!((a.host.as_str(), a.title.as_str()), ("Example", "Example"));
+        assert_eq!(a.description, "https://example.com/");
+        let long = "word ".repeat(40);
+        let a = artwork("https://example.com", "", &long, "x\n  y");
+        assert_eq!(a.title.chars().count(), 92);
+        assert!(a.title.ends_with("word w…"), "as the web cuts it");
+        assert_eq!(a.description, "x y");
+    }
+
+    #[test]
+    fn relative_media_resolves_against_the_server() {
+        let origin = Some("https://chat.example.com");
+        assert_eq!(
+            resolve_url("/media/weekend.jpg", origin),
+            "https://chat.example.com/media/weekend.jpg"
+        );
+        assert_eq!(
+            resolve_url("https://cdn.example.org/a.png", origin),
+            "https://cdn.example.org/a.png"
+        );
+        assert_eq!(resolve_url("/media/a.jpg", None), "/media/a.jpg");
+    }
 
     fn post(
         provider: &str,

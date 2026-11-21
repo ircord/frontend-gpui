@@ -190,6 +190,10 @@ fn the_links_view_lists_cards_with_previews_and_jumps_to_a_post(cx: &mut TestApp
     // The page card takes its title from the server's preview.
     reads(&f, cx, "links-card-0", "IRCord, the IRC client");
     reads(&f, cx, "links-card-0-posts", "Posted 3 times");
+    // Without a picture the page draws its artwork, which carries the
+    // title, so the body leaves the title out.
+    reads(&f, cx, "links-card-0-art", "IRCord, the IRC client");
+    assert!(gone(&f, cx, "links-card-0-title"));
     reads(
         &f,
         cx,
@@ -202,6 +206,10 @@ fn the_links_view_lists_cards_with_previews_and_jumps_to_a_post(cx: &mut TestApp
     shows(&f, cx, "links-card-1-cover");
     click(&f, cx, "links-card-1-show");
     assert!(gone(&f, cx, "links-card-1-cover"));
+    assert!(
+        gone(&f, cx, "links-card-1-art"),
+        "a picture needs no artwork"
+    );
 
     // Older links load behind the cursor.
     click(&f, cx, "links-load-more");

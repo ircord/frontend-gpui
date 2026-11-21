@@ -464,6 +464,75 @@ pub(crate) fn still(media: &Media) -> AnyElement {
         .into_any_element()
 }
 
+/// The bottom of a card's preview: a shade with the open (or play) mark,
+/// and on a still picture its site and title, after the web's catalog card.
+fn open_mark(titled: Option<(String, String)>, play: bool, theme: &Theme) -> AnyElement {
+    use crate::theme::{hex, hex_alpha};
+    let shade = |top: f32, bottom: f32| {
+        linear_gradient(
+            180.,
+            linear_color_stop(hex_alpha(0x000000, top), 0.),
+            linear_color_stop(hex_alpha(0x000000, bottom), 1.),
+        )
+    };
+    let mark = div()
+        .flex_none()
+        .size(px(32.))
+        .rounded_full()
+        .bg(theme.accent)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(ui::icon::icon(
+            if play {
+                IconName::Play
+            } else {
+                IconName::ExternalLink
+            },
+            theme.on_accent,
+        ));
+    let titled_shade = titled.is_some();
+    div()
+        .absolute()
+        .left_0()
+        .right_0()
+        .bottom_0()
+        .when(titled_shade, |d| d.h(relative(0.7)).bg(shade(0., 0.85)))
+        .when(!titled_shade, |d| d.h(px(64.)).bg(shade(0., 0.55)))
+        .p(px(10.))
+        .flex()
+        .items_end()
+        .gap_3()
+        .when(!titled_shade, |d| d.justify_end())
+        .when_some(titled, |d, (site, title)| {
+            d.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(hex_alpha(0xffffff, 0.75))
+                            .truncate()
+                            .child(site),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(hex(0xffffff))
+                            .line_clamp(2)
+                            .child(title),
+                    ),
+            )
+        })
+        .child(mark)
+        .into_any_element()
+}
+
 /// `#channel`, or that it is closed.
 pub(crate) fn place(w: &Workspace, conversation: &str) -> String {
     match w.conversation(conversation) {
@@ -1089,12 +1158,20 @@ impl LinksView {
             Some(remark)
         } else if let Some(reason) = reason {
             Some(reason.to_string())
+        } else if shown.cover.is_none() && shown.picture.is_none() {
+            // The artwork already shows the description.
+            None
         } else {
-            description
+            description.clone()
         };
         let selected = i == self.selected;
         let id = format!("links-card-{i}");
 
+        // A still picture carries the site and title on it; a card without
+        // a picture draws them as its artwork. Players keep their still
+        // clear, as on the web.
+        let widget = response.is_some_and(|r| r.kind == LinkMediaResponseKind::Widget);
+        let overlaid = shown.cover.is_none() && shown.picture.is_some() && !widget;
         let preview: AnyElement = match (&shown.cover, source, &shown.picture) {
             (Some(why), Some(source), _) => {
                 cover_view(id.clone(), *why, source, &card.url, false, theme)
@@ -1103,23 +1180,30 @@ impl LinksView {
                 .size_full()
                 .relative()
                 .child(still(media))
+                .child(open_mark(
+                    overlaid.then(|| (site.clone(), title.clone())),
+                    widget,
+                    theme,
+                ))
                 .into_any_element(),
-            _ => div()
-                .size_full()
-                .p_3()
-                .flex()
-                .flex_col()
-                .justify_end()
-                .gap_1()
-                .child(div().text_xs().text_color(theme.muted).child(site.clone()))
-                .child(
-                    div()
-                        .text_color(theme.text)
-                        .font_weight(FontWeight::BOLD)
-                        .line_clamp(3)
-                        .child(title.clone()),
-                )
-                .into_any_element(),
+            _ => {
+                let art = link_media::artwork(
+                    &card.url,
+                    &site,
+                    &title,
+                    description.as_deref().unwrap_or_default(),
+                );
+                div()
+                    .size_full()
+                    .relative()
+                    .child(crate::message::links::artwork(
+                        format!("{id}-art"),
+                        &art,
+                        crate::message::links::ArtSize::Poster,
+                    ))
+                    .child(open_mark(None, false, theme))
+                    .into_any_element()
+            }
         };
 
         let posted = (card.count > 1).then(|| {
@@ -1144,9 +1228,8 @@ impl LinksView {
                 )
         });
 
-        // A card without a picture draws its site and title as the
-        // preview, so the body leaves them out.
-        let graphic = shown.cover.is_none() && shown.picture.is_none();
+        // The preview shows the site and title, so the body leaves them out.
+        let graphic = shown.cover.is_none() && (shown.picture.is_none() || overlaid);
         let url = card.url.clone();
         let openable = catalog::openable(&url);
         let open_label = SharedString::from(t!("links-view-open", url = url.clone()));
@@ -1190,7 +1273,7 @@ impl LinksView {
                 .mt_1()
                 .pt_1p5()
                 .border_t_1()
-                .border_color(theme.rail)
+                .border_color(theme.border)
                 .flex()
                 .items_center()
                 .gap_2()
@@ -1235,11 +1318,11 @@ impl LinksView {
             .flex_none()
             .flex()
             .flex_col()
-            .rounded_lg()
+            .rounded(theme.radius_large)
             .overflow_hidden()
             .border_1()
-            .border_color(if selected { theme.accent } else { theme.rail })
-            .bg(theme.sidebar)
+            .border_color(if selected { theme.accent } else { theme.border })
+            .bg(theme.raised)
             .child(
                 div()
                     .id(ElementId::Name(format!("{id}-preview").into()))
@@ -1376,16 +1459,32 @@ impl Render for LinksView {
         };
         let picked = self.picked(cx);
         let mut starts = div().flex().flex_wrap().gap_1p5();
-        for (key, label, show) in [
-            ("in", t!("links-view-tag-in"), channels > 1),
+        for (key, label, icon, show) in [
+            ("in", t!("links-view-tag-in"), None, channels > 1),
             (
                 "network",
                 t!("links-view-tag-network"),
+                Some(IconName::Globe),
                 networks > 1 && picked.is_empty(),
             ),
-            ("host", t!("links-view-tag-host"), true),
-            ("since", t!("links-view-tag-since"), true),
-            ("until", t!("links-view-tag-until"), true),
+            (
+                "host",
+                t!("links-view-tag-host"),
+                Some(IconName::Globe),
+                true,
+            ),
+            (
+                "since",
+                t!("links-view-tag-since"),
+                Some(IconName::Calendar),
+                true,
+            ),
+            (
+                "until",
+                t!("links-view-tag-until"),
+                Some(IconName::Calendar),
+                true,
+            ),
         ] {
             if !show {
                 continue;
@@ -1397,16 +1496,26 @@ impl Render for LinksView {
                     .role(Role::Button)
                     .reachable(&theme)
                     .aria_label(label)
-                    .px_2p5()
-                    .py_0p5()
+                    .h(px(28.))
+                    .px_3()
                     .rounded_full()
                     .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
                     .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
                     .bg(theme.input)
+                    .border_1()
+                    .border_color(theme.border)
                     .text_color(theme.muted)
                     .hover({
                         let (hover, text) = (theme.hover, theme.text);
                         move |d| d.bg(hover).text_color(text)
+                    })
+                    .child(match icon {
+                        Some(icon) => ui::icon::icon(icon, theme.muted).into_any_element(),
+                        None => div().child("#").into_any_element(),
                     })
                     .child(label)
                     .on_click(cx.listener(move |this, _, window, cx| this.start(key, window, cx))),

@@ -19,6 +19,7 @@ const PAGE: &str = "https://vimeo.com/blog/post/hello";
 const FILE: &str = "https://files.example/report.pdf";
 const RESTRICTED: &str = "https://twitter.com/potus";
 const PICTURE: &str = "https://media.giphy.com/media/3o6Zt09XtyqOJWVgRO/source.gif";
+const LONG: &str = "https://github.com/zed-industries/zed";
 
 /// What the server finds behind each link.
 fn answer(url: &str) -> Value {
@@ -53,6 +54,13 @@ fn answer(url: &str) -> Value {
         RESTRICTED => json!({
             "kind": "card", "provider": "link", "url": RESTRICTED, "assets": [],
             "card": {"site": "twitter.com", "title": "twitter.com", "reason": "restricted"}
+        }),
+        LONG => json!({
+            "kind": "card", "provider": "page", "url": LONG, "assets": [],
+            "card": {"site": "github.com",
+                     "title": "GitHub - zed-industries/zed: Code at the speed of thought – Zed is a high-performance, multiplayer code editor from the creators of Atom and Tree-sitter.",
+                     "description": "Code at the speed of thought – Zed is a high-performance, multiplayer code editor from the creators of Atom and Tree-sitter. It is also open source and written in Rust, with a lot of words after that.",
+                     "reason": "no_oembed"}
         }),
         PICTURE => json!({
             "kind": "media", "provider": "media", "url": PICTURE,
@@ -193,7 +201,7 @@ fn cards_show_what_the_server_found(cx: &mut TestAppContext) {
         );
         assert_eq!(
             window.find("link-p1-2").bounds().size.height,
-            gpui_kit::px(120.),
+            gpui_kit::px(150.),
             "a page card has one height"
         );
         // A file: its detected type and size.
@@ -202,11 +210,55 @@ fn cards_show_what_the_server_found(cx: &mut TestAppContext) {
             window.find("link-p1-3-detail").label(),
             Some("PDF document · 2.5 MB")
         );
-        // A site that refuses previews says so.
+        // A site that refuses previews says so, and still has a tile.
         assert_eq!(
             window.find("link-p1-4-status").label(),
             Some("This site does not allow previews.")
         );
+        assert_eq!(window.find("link-p1-4-art").label(), Some("twitter.com"));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_long_page_card_keeps_every_line_in_its_own_row(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |s| {
+        server(s, false, vec![message("p1", "c-general", LONG)])
+    });
+    loaded(&f, cx, 1);
+    resolved(&f, cx, "p1", &[LONG]);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let card = window.find("link-p1-0").bounds();
+        assert_eq!(card.size.height, gpui_kit::px(150.));
+        // No picture: the generated artwork sits beside the text.
+        let art = window.find("link-p1-0-art");
+        assert!(art.visible());
+        let label = art.label().unwrap_or_default();
+        assert!(
+            label.starts_with("GitHub - zed-industries/zed") && label.ends_with('…'),
+            "the artwork carries the cut title: {label}"
+        );
+        assert_eq!(art.bounds().size.width, gpui_kit::px(96.));
+        let site = window.find("link-p1-0-site").bounds();
+        let title = window.find("link-p1-0-title").bounds();
+        let description = window.find("link-p1-0-description").bounds();
+        let status = window.find("link-p1-0-status").bounds();
+        assert!(site.bottom() <= title.top(), "{site:?} above {title:?}");
+        assert!(
+            title.size.height <= gpui_kit::px(40.),
+            "two title lines at most"
+        );
+        assert!(
+            title.bottom() <= description.top(),
+            "{title:?} above {description:?}"
+        );
+        assert!(
+            description.bottom() <= status.top(),
+            "{description:?} above {status:?}"
+        );
+        assert!(status.bottom() <= card.bottom(), "{status:?} in {card:?}");
+        assert!(art.bounds().right() <= title.left());
     })
     .unwrap();
 }

@@ -20,6 +20,7 @@ use gpui_kit::*;
 use ircord_client::api::uploads::human_size;
 use ircord_client::contract::{Attachment, ConversationKind};
 use ircord_client::documents;
+use ircord_client::store::link_media;
 use tokio::runtime::Runtime;
 
 use crate::features::viewer::{self, Media};
@@ -67,12 +68,15 @@ struct Context {
     runtime: Arc<Runtime>,
     sensitivity: Option<Sensitivity>,
     animate: bool,
+    /// The server's origin, for media named by a path on it.
+    origin: Option<String>,
 }
 
 fn context(ctx: &MessageCtx, cx: &mut App) -> Option<Context> {
     let session = ctx.session.read(cx);
     let client = session.client()?.clone();
     let runtime = session.runtime.clone();
+    let origin = session.server().map(|s| s.origin());
     let key = std::rc::Rc::as_ptr(&client) as usize;
     if cx.default_global::<Watched>().0.insert(key) {
         client.watch_document(&documents::PREFERENCES);
@@ -118,12 +122,13 @@ fn context(ctx: &MessageCtx, cx: &mut App) -> Option<Context> {
         runtime,
         sensitivity,
         animate,
+        origin,
     })
 }
 
-fn media_of(a: &Attachment) -> Media {
+fn media_of(a: &Attachment, origin: Option<&str>) -> Media {
     Media {
-        url: a.url.clone(),
+        url: link_media::resolve_url(&a.url, origin),
         name: a.name.clone(),
         width: a.width.max(0) as u32,
         height: a.height.max(0) as u32,
@@ -132,9 +137,9 @@ fn media_of(a: &Attachment) -> Media {
     }
 }
 
-fn media_of_image(i: &Image) -> Media {
+fn media_of_image(i: &Image, origin: Option<&str>) -> Media {
     Media {
-        url: i.url.clone(),
+        url: link_media::resolve_url(&i.url, origin),
         name: i.alt.clone(),
         width: i.width,
         height: i.height,
@@ -162,19 +167,20 @@ pub fn render(
     let Some(context) = context(ctx, cx) else {
         return Vec::new();
     };
+    let origin = context.origin.as_deref();
     let pictures: Vec<Media> = m
         .attachments
         .iter()
         .filter(|a| is_picture(a))
-        .map(media_of)
+        .map(|a| media_of(a, origin))
         .collect();
     let files: Vec<Media> = m
         .attachments
         .iter()
         .filter(|a| !is_picture(a))
-        .map(media_of)
+        .map(|a| media_of(a, origin))
         .collect();
-    let inline: Vec<Media> = m.images.iter().map(media_of_image).collect();
+    let inline: Vec<Media> = m.images.iter().map(|i| media_of_image(i, origin)).collect();
     if pictures.is_empty() && files.is_empty() && inline.is_empty() {
         return Vec::new();
     }

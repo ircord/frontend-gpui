@@ -35,8 +35,11 @@ use crate::ui::icon::IconName;
 
 /// Cards are at most this wide…
 const CARD_W: f32 = 480.0;
-/// …and a page card this high, whatever it holds.
-const CARD_H: f32 = 120.0;
+/// …and a page card this high, whatever it holds (the web's 150 px):
+/// room for the site, two title lines, two description lines and the status.
+const CARD_H: f32 = 150.0;
+/// The page's picture, or its artwork, beside the text.
+const THUMB: f32 = 96.0;
 /// A message-link card's height in every state.
 const MESSAGE_CARD_H: f32 = 58.0;
 /// The space a picture whose size is unknown reserves while it loads.
@@ -156,9 +159,9 @@ fn frame(key: &str, url: &str, theme: &Theme) -> Stateful<Div> {
         .max_w(px(CARD_W))
         .w_full()
         .mt_1()
-        .rounded_md()
+        .rounded_lg()
         .border_1()
-        .border_color(theme.rail)
+        .border_color(theme.border)
         .bg(theme.sidebar)
         .overflow_hidden()
         .cursor_pointer()
@@ -184,7 +187,134 @@ fn caption(id: String, text: impl Into<SharedString>, theme: &Theme) -> AnyEleme
         .into_any_element()
 }
 
-/// A page: its picture, site, title and description, or why there is none.
+/// How large an artwork tile is drawn.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum ArtSize {
+    /// The square beside a page card's text in the timeline.
+    Thumb,
+    /// The 16:9 preview of a card in the links view.
+    Poster,
+}
+
+/// The artwork drawn for a link whose page has no picture, after the web's
+/// `SatoriLinkGraphic.vue`: a dark backdrop lit in the site's colours, two
+/// rings, the site in a chip, the title, a line under it and a coloured
+/// bar. It fills its box.
+pub(crate) fn artwork(id: String, art: &link_media::Artwork, size: ArtSize) -> AnyElement {
+    use crate::theme::{hex, hex_alpha};
+    let p = art.palette;
+    let poster = size == ArtSize::Poster;
+    let glow = |(rgb, alpha): (u32, f32), angle: f32| {
+        div().absolute().inset_0().bg(linear_gradient(
+            angle,
+            linear_color_stop(hex_alpha(rgb, alpha), 0.),
+            linear_color_stop(hex_alpha(rgb, 0.), 0.6),
+        ))
+    };
+    let ring = |size: f32, right: f32, top: f32, alpha: f32| {
+        div()
+            .absolute()
+            .right(px(right))
+            .top(px(top))
+            .size(px(size))
+            .rounded_full()
+            .border_1()
+            .border_color(hex_alpha(0xffffff, alpha))
+    };
+    let (pad, chip_text, title_text, rings) = if poster {
+        (px(14.), px(10.), px(15.), (92., -19., -19., 41., 6., 6.))
+    } else {
+        (px(8.), px(8.), px(10.), (56., -14., -14., 26., 4., 4.))
+    };
+    let chip = div()
+        .flex_none()
+        .max_w_full()
+        .flex()
+        .items_center()
+        .gap_1()
+        .px(if poster { px(8.) } else { px(5.) })
+        .py(px(2.))
+        .rounded_full()
+        .bg(hex_alpha(0xffffff, 0.08))
+        .border_1()
+        .border_color(hex_alpha(0xffffff, 0.14))
+        .text_size(chip_text)
+        .font_weight(FontWeight::BOLD)
+        .text_color(hex(link_media::ARTWORK_TITLE))
+        .child(
+            div()
+                .flex_none()
+                .size(if poster { px(6.) } else { px(4.) })
+                .rounded_full()
+                .bg(hex(p.dot)),
+        )
+        .child(div().min_w_0().truncate().child(art.host.clone()));
+    let text = div()
+        .flex()
+        .flex_col()
+        .gap(if poster { px(4.) } else { px(2.) })
+        .child(
+            div()
+                .text_size(title_text)
+                .line_height(relative(1.2))
+                .font_weight(FontWeight::BOLD)
+                .text_color(hex(link_media::ARTWORK_TITLE))
+                .line_clamp(if poster { 2 } else { 3 })
+                .child(art.title.clone()),
+        )
+        .when(poster, |d| {
+            d.child(
+                div()
+                    .text_size(px(10.))
+                    .line_height(relative(1.35))
+                    .text_color(hex(link_media::ARTWORK_TEXT))
+                    .line_clamp(2)
+                    .child(art.description.clone()),
+            )
+        });
+    let bar = div()
+        .flex_none()
+        .w(if poster { px(48.) } else { px(26.) })
+        .h(if poster { px(3.) } else { px(2.) })
+        .rounded_full()
+        .bg(linear_gradient(
+            90.,
+            linear_color_stop(hex(p.bar_start), 0.),
+            linear_color_stop(hex(p.bar_end), 1.),
+        ));
+    div()
+        .id(ElementId::Name(id.into()))
+        .test_support()
+        .role(Role::Image)
+        .aria_label(SharedString::from(art.title.clone()))
+        .relative()
+        .size_full()
+        .overflow_hidden()
+        .bg(hex(link_media::ARTWORK_BACKDROP))
+        .child(glow(p.glow_a, 135.))
+        .child(glow(p.glow_b, 315.))
+        .child(ring(rings.0, rings.1, rings.2, 0.06))
+        .child(ring(rings.3, rings.4, rings.5, 0.10))
+        .child(
+            div()
+                .relative()
+                .size_full()
+                .p(pad)
+                .flex()
+                .flex_col()
+                .justify_between()
+                .gap_1()
+                .child(chip)
+                .child(text)
+                .child(bar),
+        )
+        .into_any_element()
+}
+
+/// A page: its picture (or the generated artwork), site, title and
+/// description, and what became of the preview, after the web's
+/// `LinkCard.vue`. The card is one height in every state and every line
+/// has its own row, so nothing a preview returns overlaps or moves.
 /// Before the server answers, and when it could not, the card shows the
 /// link's host.
 fn page_card(
@@ -225,43 +355,84 @@ fn page_card(
     let detail = note.unwrap_or_else(|| link.detail.clone());
     let image = card.image.as_deref().and_then(link_media::public_url);
     let icon = card.icon.as_deref().and_then(link_media::public_url);
-    let mut text = div()
+    let art = link_media::artwork(
+        &link.url,
+        &site,
+        &title,
+        card.description.as_deref().unwrap_or_default(),
+    );
+    let thumb_id = format!("link-{key}-art");
+    let thumb: AnyElement = match image {
+        Some(image) => {
+            let art = art.clone();
+            img(SharedUri::from(image))
+                .size_full()
+                .object_fit(ObjectFit::Cover)
+                .with_fallback(move || artwork(thumb_id.clone(), &art, ArtSize::Thumb))
+                .into_any_element()
+        }
+        None => artwork(thumb_id, &art, ArtSize::Thumb),
+    };
+    let text = div()
         .flex_1()
         .min_w_0()
+        .h_full()
         .flex()
         .flex_col()
-        .gap_0p5()
+        .gap_1()
         .child(
             div()
+                .h(px(18.))
+                .flex_none()
                 .flex()
                 .items_center()
                 .gap_1p5()
                 .when_some(icon, |d, icon| {
                     d.child(img(SharedUri::from(icon)).size(px(14.)).flex_none())
                 })
-                .child(caption(format!("link-{key}-site"), site, theme)),
+                .child(div().flex_1().min_w_0().child(caption(
+                    format!("link-{key}-site"),
+                    site,
+                    theme,
+                ))),
         )
         .child(
             div()
                 .id(ElementId::Name(format!("link-{key}-title").into()))
                 .test_support()
                 .aria_label(SharedString::from(title.clone()))
+                .flex_none()
+                .max_h(px(40.))
+                .overflow_hidden()
                 .text_sm()
+                .line_height(px(20.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.link)
                 .line_clamp(2)
                 .child(title),
-        );
-    if !description.is_empty() {
-        text = text.child(
-            div()
-                .text_xs()
-                .text_color(theme.text)
-                .line_clamp(2)
-                .child(description),
-        );
-    }
-    text = text.child(caption(format!("link-{key}-status"), detail, theme));
+        )
+        .when(!description.is_empty(), |d| {
+            d.child(
+                div()
+                    .id(ElementId::Name(format!("link-{key}-description").into()))
+                    .test_support()
+                    .aria_label(SharedString::from(description.clone()))
+                    .flex_none()
+                    .max_h(px(38.))
+                    .overflow_hidden()
+                    .text_xs()
+                    .line_height(px(19.))
+                    .text_color(theme.body)
+                    .line_clamp(2)
+                    .child(description),
+            )
+        })
+        .child(div().flex_1())
+        .child(div().flex_none().h(px(18.)).child(caption(
+            format!("link-{key}-status"),
+            detail,
+            theme,
+        )));
     frame(key, &link.url, theme)
         .test_support()
         .role(Role::Link)
@@ -271,27 +442,15 @@ fn page_card(
         .p_3()
         .flex()
         .gap_3()
-        .border_l_4()
-        .border_color(if link.video {
-            theme.danger
-        } else {
-            theme.accent
-        })
-        .when_some(image, |d, image| {
-            d.child(
-                div()
-                    .size(px(CARD_H - 26.))
-                    .flex_none()
-                    .rounded_md()
-                    .overflow_hidden()
-                    .bg(theme.main)
-                    .child(
-                        img(SharedUri::from(image))
-                            .size_full()
-                            .object_fit(ObjectFit::Cover),
-                    ),
-            )
-        })
+        .child(
+            div()
+                .size(px(THUMB))
+                .flex_none()
+                .rounded_lg()
+                .overflow_hidden()
+                .bg(theme.main)
+                .child(thumb),
+        )
         .child(text)
         .into_any_element()
 }
@@ -403,7 +562,7 @@ fn media(
         .p_3()
         .rounded_md()
         .border_1()
-        .border_color(theme.rail)
+        .border_color(theme.border)
         .bg(theme.sidebar)
         .flex()
         .flex_col()
@@ -557,7 +716,7 @@ fn open_card(
         .mt_1()
         .rounded_md()
         .border_1()
-        .border_color(theme.rail)
+        .border_color(theme.border)
         .bg(theme.sidebar)
         .overflow_hidden()
         .cursor_pointer()
@@ -813,7 +972,7 @@ fn message_card(
         .pr_3()
         .rounded_md()
         .border_1()
-        .border_color(theme.rail)
+        .border_color(theme.border)
         .bg(theme.sidebar)
         .overflow_hidden()
         .flex()
