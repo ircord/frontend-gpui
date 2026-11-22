@@ -188,6 +188,7 @@ fn edits_the_profile_in_settings(cx: &mut TestAppContext) {
     type_into(&f, cx, "profile-bio-input", "Hi there");
     land(&f, cx, "profile-color", "profile-color-mode-custom");
     click(&f, cx, "profile-color-mode-custom");
+    shows(&f, cx, "profile-name-color-picker");
     type_into(&f, cx, "profile-color-input", "blue");
 
     // A colour that is not #RRGGBB stops the save and says why.

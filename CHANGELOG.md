@@ -13,6 +13,7 @@
 - Profile cards display the chosen card background, use a taller banner, and open the Profile settings directly from Edit profile.
 - In Profile settings, the server name stays visible and you can upload a picture by clicking the avatar next to your display name.
 - The Profile settings preview shows the name people will see when you leave your display name blank.
+- Choose a custom name color with the Profile color picker and see it in the name preview.
 - The Inbox tabs and Saved messages filter stay visible while you scroll.
 - Links uses the same header and keyboard hints as the other workspace pages, with filters that stay visible while you scroll.
 - The Appearance and Messages previews reflect your selected message layout, font, spacing, clock and name colors.

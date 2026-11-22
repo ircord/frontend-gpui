@@ -14,9 +14,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::Colorize;
 use gpui_kit::component::Disableable;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -24,6 +26,7 @@ use ircord_client::api::ApiError;
 use ircord_client::api::auth::{self, DefaultAvatar};
 use ircord_client::api::uploads::{self, FileData, Progress};
 use ircord_client::contract::{Member, ProfileUpdate};
+use ircord_client::store::appearance::parse_hex;
 use ircord_client::store::people;
 
 use super::{block, frame, row};
@@ -711,6 +714,7 @@ pub struct ProfileView {
     loading: bool,
     load_error: Option<String>,
     inputs: Vec<(Field, Entity<InputState>)>,
+    name_color: Entity<ColorPickerState>,
     custom_color: bool,
     custom_accent: bool,
     avatar: AvatarChoice,
@@ -730,13 +734,40 @@ impl ProfileView {
     fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
         let mut inputs = Vec::new();
+        let name_color = cx.new(|cx| ColorPickerState::new(window, cx));
+        subscriptions.push(cx.subscribe_in(
+            &name_color,
+            window,
+            |this: &mut Self, _, event: &ColorPickerEvent, window, cx| {
+                if let ColorPickerEvent::Change(Some(value)) = event {
+                    let color = Hsla { a: 1., ..*value };
+                    if value.a < 1. {
+                        this.name_color
+                            .update(cx, |picker, cx| picker.set_value(color, window, cx));
+                    }
+                    let hex = color.to_hex();
+                    this.input(Field::Color)
+                        .update(cx, |input, cx| input.set_value(hex, window, cx));
+                    this.done = false;
+                    this.problem = None;
+                    cx.notify();
+                }
+            },
+        ));
         for field in Field::ALL {
             let input = cx.new(|cx| InputState::new(window, cx).placeholder(field.placeholder()));
             subscriptions.push(cx.subscribe_in(
                 &input,
                 window,
-                |this: &mut Self, _, event: &InputEvent, window, cx| match event {
+                move |this: &mut Self, input, event: &InputEvent, window, cx| match event {
                     InputEvent::Change => {
+                        if field == Field::Color
+                            && let Some(color) = parse_hex(input.read(cx).value().trim())
+                        {
+                            this.name_color.update(cx, |picker, cx| {
+                                picker.set_value(theme::hex(color), window, cx);
+                            });
+                        }
                         this.done = false;
                         this.problem = None;
                         cx.notify();
@@ -770,6 +801,7 @@ impl ProfileView {
             loading: false,
             load_error: None,
             inputs,
+            name_color,
             custom_color: false,
             custom_accent: false,
             avatar: AvatarChoice::Keep,
@@ -908,6 +940,16 @@ impl ProfileView {
             let value = field.saved(&member);
             input.update(cx, |s, cx| s.set_value(value, window, cx));
         }
+        let theme = theme::get(cx);
+        let color = member
+            .name_color
+            .as_deref()
+            .and_then(parse_hex)
+            .or_else(|| ui::avatar::name_color(&member, true, theme))
+            .map(theme::hex)
+            .unwrap_or(theme.text);
+        self.name_color
+            .update(cx, |picker, cx| picker.set_value(color, window, cx));
         self.custom_color = member.name_color.as_deref().is_some_and(|c| !c.is_empty());
         self.custom_accent = member
             .profile_accent_color
@@ -1339,6 +1381,14 @@ impl Render for ProfileView {
                 typed.trim().to_string()
             }
         };
+        let mut preview_member = saved.clone();
+        let color_text = self.text(Field::Color, cx);
+        preview_member.name_color = (self.custom_color && is_color(color_text.trim()))
+            .then(|| color_text.trim().to_string());
+        let colored = crate::message::layout::settings(cx).colored_names;
+        let preview_color = ui::avatar::name_color(&preview_member, colored, &theme)
+            .map(theme::hex)
+            .unwrap_or(theme.text);
         let selected = match &self.avatar {
             AvatarChoice::Default(a) => Some(a.id.clone()),
             AvatarChoice::Keep => {
@@ -1468,11 +1518,18 @@ impl Render for ProfileView {
                 )))
                 .text_sm()
                 .text_color(theme.muted)
-                .child(t!(
-                    "profile-shown-as",
-                    name = name_now,
-                    nick = saved.nick.clone()
-                )),
+                .flex()
+                .flex_wrap()
+                .items_baseline()
+                .gap_1()
+                .child(t!("profile-shown-as-label"))
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(preview_color)
+                        .child(name_now),
+                )
+                .child(format!("· @{}", saved.nick)),
         )
         .test_support();
         page = page
@@ -1533,10 +1590,18 @@ impl Render for ProfileView {
                         "automatic"
                     },
                     &theme,
-                    move |key, _, cx| {
+                    move |key, window, cx| {
                         let custom = key == "custom";
                         e.update(cx, |v, cx| {
                             v.custom_color = custom;
+                            if custom
+                                && v.text(Field::Color, cx).trim().is_empty()
+                                && let Some(color) = v.name_color.read(cx).value()
+                            {
+                                v.input(Field::Color).update(cx, |input, cx| {
+                                    input.set_value(color.to_hex(), window, cx);
+                                });
+                            }
                             v.done = false;
                             v.problem = None;
                             cx.notify();
@@ -1544,7 +1609,25 @@ impl Render for ProfileView {
                     },
                 ))
                 .when(self.custom_color, |d| {
-                    d.child(self.field(Field::Color, &theme))
+                    d.child(
+                        div()
+                            .flex()
+                            .items_end()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(self.field(Field::Color, &theme)),
+                            )
+                            .child(
+                                div().id("profile-name-color-picker").test_support().child(
+                                    ColorPicker::new(&self.name_color)
+                                        .small()
+                                        .accessibility_label(t!("profile-choose-name-color")),
+                                ),
+                            ),
+                    )
                 })
                 .child(
                     div()
