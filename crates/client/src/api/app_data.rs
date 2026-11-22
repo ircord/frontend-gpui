@@ -10,7 +10,13 @@ use ircord_contract as c;
 // ---- S1: personal themes ----
 
 use crate::store::appearance::background::{MAX_IMAGE_BYTES, is_upload_path};
-use ircord_contract::{SaveAppThemeInputBody, Theme, Themes};
+use ircord_contract::{SaveAppThemeInputBody, Theme, ThemeConflict, Themes};
+
+#[derive(Debug)]
+pub enum ThemeSave {
+    Saved(Themes),
+    Conflict(Box<Theme>),
+}
 
 impl Api {
     /// Read a theme's image from this instance without following redirects.
@@ -50,7 +56,7 @@ impl Api {
         theme: &Theme,
         expected: Option<&str>,
         force: bool,
-    ) -> Result<Themes, ApiError> {
+    ) -> Result<ThemeSave, ApiError> {
         let id = theme.id.as_deref().unwrap_or_default();
         let path = format!("/api/v1/app/themes/{}", segment(id));
         let body = SaveAppThemeInputBody {
@@ -58,13 +64,82 @@ impl Api {
             force: force.then_some(true),
             theme: theme.clone(),
         };
-        self.call(Method::PUT, &path, &body).await
+        let response = self
+            .request(Method::PUT, &path)
+            .json(&body)
+            .send()
+            .await
+            .map_err(ApiError::network)?;
+        if response.status() == reqwest::StatusCode::PRECONDITION_FAILED {
+            let conflict: ThemeConflict = Self::read_json(response).await?;
+            let theirs = conflict.data.theirs;
+            if theirs.id.as_deref() == Some(id)
+                && theirs
+                    .updated_at
+                    .as_ref()
+                    .is_some_and(|stamp| !stamp.is_empty())
+            {
+                return Ok(ThemeSave::Conflict(Box::new(theirs)));
+            }
+            return Err(ApiError::Http {
+                status: 412,
+                detail: conflict.detail.or(conflict.title).unwrap_or_else(|| {
+                    "The server didn't provide the current version of this theme.".into()
+                }),
+            });
+        }
+        let themes = Self::read_json(Self::check_response(response).await?).await?;
+        Ok(ThemeSave::Saved(themes))
     }
 
     /// Remove one personal theme; answers the whole library.
     pub async fn delete_theme(&self, id: &str) -> Result<Themes, ApiError> {
         let path = format!("/api/v1/app/themes/{}", segment(id));
         self.json(self.request(Method::DELETE, &path)).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::runtime;
+    use crate::testing::CannedServer;
+    use serde_json::json;
+
+    #[test]
+    fn saving_a_theme_preserves_the_conflicting_revision_and_auth_errors() {
+        const PATH: &str = "/api/v1/app/themes/t-saved";
+        let runtime = runtime().unwrap();
+        let server = CannedServer::start(&runtime);
+        let api = server.api();
+        let draft = Theme {
+            id: Some("t-saved".into()),
+            name: Some("Draft".into()),
+            ..Default::default()
+        };
+        server.route(
+            "PUT",
+            PATH,
+            412,
+            json!({"data": {"theirs": {
+                "id": "t-saved", "name": "The saved copy", "updatedAt": "new-revision"
+            }}}),
+        );
+        let result = runtime.block_on(api.save_theme(&draft, Some("old-revision"), false));
+        assert!(matches!(result, Ok(ThemeSave::Conflict(saved))
+            if saved.updated_at.as_deref() == Some("new-revision")
+                && saved.name.as_deref() == Some("The saved copy")));
+
+        server.route("PUT", PATH, 412, json!({"detail": "Theme changed"}));
+        let result = runtime.block_on(api.save_theme(&draft, Some("old-revision"), false));
+        assert!(matches!(result, Err(ApiError::Http { status: 412, detail })
+            if detail == "Theme changed"));
+
+        server.route("PUT", PATH, 401, json!({}));
+        assert!(matches!(
+            runtime.block_on(api.save_theme(&draft, Some("old-revision"), false)),
+            Err(ApiError::Unauthorized)
+        ));
     }
 }
 

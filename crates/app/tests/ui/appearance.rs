@@ -14,7 +14,7 @@ use crate::fixture::{Fixture, bootstrap, open_with, wait};
 /// The account's appearance (`settings`) and theme library (`themes`); a
 /// save answers what was sent, and a read after it answers the saved copy,
 /// as the backend does.
-fn serve(server: &CannedServer, settings: Value, themes: Value) {
+fn serve(server: &CannedServer, settings: Value, themes: Value) -> Arc<Mutex<Value>> {
     let appearance = Arc::new(Mutex::new(json!({"settings": settings, "updatedAt": "r1"})));
     let stored = appearance.clone();
     server.route_fn("GET", "/api/v1/app/appearance", move |_| {
@@ -39,21 +39,29 @@ fn serve(server: &CannedServer, settings: Value, themes: Value) {
         library["customCss"] = request.json()["customCss"].clone();
         Reply::json(200, library.clone())
     });
+    let stored = library.clone();
     server.route_fn("PUT", "/api/v1/app/themes/*", move |request| {
-        let mut library = library.lock().unwrap();
-        let theme = request.json()["theme"].clone();
+        let mut library = stored.lock().unwrap();
+        let body = request.json();
+        let theme = body["theme"].clone();
         let themes = library["themes"].as_array_mut().unwrap();
         if let Some(existing) = themes.iter_mut().find(|item| item["id"] == theme["id"]) {
+            if body["force"] != true && body["expected"] != existing["updatedAt"] {
+                return Reply::json(412, json!({"data": {"theirs": existing}}));
+            }
             *existing = theme;
         } else {
             themes.push(theme);
         }
         Reply::json(200, library.clone())
     });
+    library
 }
 
 fn signed_in(cx: &mut TestAppContext, settings: Value, themes: Value) -> Fixture {
-    let f = open_with(cx, true, move |s| serve(s, settings, themes));
+    let f = open_with(cx, true, move |s| {
+        serve(s, settings, themes);
+    });
     bootstrap(&f, cx);
     wait(cx, "the appearance and themes", |cx| {
         let session = f.session.read(cx);
@@ -265,6 +273,8 @@ fn click(f: &Fixture, cx: &mut TestAppContext, id: &str) {
             | "appearance-theme-cancel"
             | "theme-studio-compare"
             | "theme-studio-collapse"
+            | "theme-studio-keep-mine"
+            | "theme-studio-load-saved"
     );
     let id = gpui_kit::ElementId::Name(id.to_string().into());
     for _ in 0..40 {
@@ -824,6 +834,88 @@ fn pick_studio_base(f: &Fixture, cx: &mut TestAppContext, name: &str) {
         window.pointer_up(item, MouseButton::Left, cx);
     })
     .unwrap();
+}
+
+fn conflicted_theme(cx: &mut TestAppContext) -> Fixture {
+    let mut library = None;
+    let f = open_with(cx, true, |server| {
+        library = Some(serve(
+            server,
+            json!({"mode": "dark"}),
+            json!([{"id": "t-conflict", "format": 1, "name": "Original", "updatedAt": "r1"}]),
+        ));
+    });
+    bootstrap(&f, cx);
+    wait(cx, "the original theme", |cx| {
+        theme::appearance::themes(cx).len() == 1
+    });
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-theme-edit-t-conflict");
+    pick_studio_base(&f, cx, "Hibiki Stage");
+    library.unwrap().lock().unwrap()["themes"][0] = json!({
+        "id": "t-conflict", "format": 1, "name": "Saved elsewhere", "updatedAt": "r2",
+        "base": {"dark": "github-dark"}
+    });
+    click(&f, cx, "appearance-theme-save");
+    wait(cx, "the conflict choices", |cx| {
+        f.window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find("theme-studio-conflict").is_some()
+            })
+            .unwrap()
+    });
+    assert_eq!(
+        f.server.requests_to("PUT", "/api/v1/app/themes/t-conflict")[0].json()["expected"],
+        "r1"
+    );
+    f
+}
+
+#[gpui_kit::test]
+fn theme_studio_keeps_the_local_draft_when_confirming_a_conflict(cx: &mut TestAppContext) {
+    let f = conflicted_theme(cx);
+    cx.update(|cx| assert_eq!(theme::appearance::compiled(cx).scheme, "hibiki-dark"));
+    click(&f, cx, "theme-studio-keep-mine");
+    wait(cx, "the local theme was saved", |cx| {
+        theme::appearance::themes(cx).iter().any(|theme| {
+            theme.name.as_deref() == Some("Original")
+                && theme.base.as_ref().and_then(|base| base.dark.as_deref()) == Some("hibiki-dark")
+        })
+    });
+    let updates = f.server.requests_to("PUT", "/api/v1/app/themes/t-conflict");
+    let body = updates[1].json();
+    assert_eq!(body["force"], true);
+    assert_eq!(body["theme"]["name"], "Original");
+    assert_eq!(body["theme"]["base"]["dark"], "hibiki-dark");
+}
+
+#[gpui_kit::test]
+fn theme_studio_loads_the_saved_version_and_uses_its_revision(cx: &mut TestAppContext) {
+    let f = conflicted_theme(cx);
+    click(&f, cx, "theme-studio-load-saved");
+    wait(cx, "the saved palette is previewed", |cx| {
+        theme::appearance::compiled(cx).scheme == "github-dark"
+    });
+    assert_eq!(
+        f.server
+            .requests_to("PUT", "/api/v1/app/themes/t-conflict")
+            .len(),
+        1
+    );
+    click(&f, cx, "appearance-theme-save");
+    wait(cx, "the save uses the latest revision", |_| {
+        f.server
+            .requests_to("PUT", "/api/v1/app/themes/t-conflict")
+            .len()
+            == 2
+    });
+    let updates = f.server.requests_to("PUT", "/api/v1/app/themes/t-conflict");
+    let body = updates[1].json();
+    assert_eq!(body["expected"], "r2");
+    assert_eq!(body["force"], Value::Null);
+    assert_eq!(body["theme"]["name"], "Saved elsewhere");
+    assert_eq!(body["theme"]["base"]["dark"], "github-dark");
 }
 
 #[gpui_kit::test]

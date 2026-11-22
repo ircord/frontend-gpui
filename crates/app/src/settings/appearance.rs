@@ -23,6 +23,7 @@ use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use ircord_client::api::{ApiError, ThemeSave};
 use ircord_client::contract::{
     Appearance, AppearanceAccent, AppearanceCorners, AppearanceDensity, AppearanceFont,
     AppearanceMode, AppearanceMotion, Theme as UserTheme,
@@ -143,6 +144,7 @@ struct Editor {
     seeds: Vec<colors::Field>,
     /// The unsaved theme and its editing mode.
     editing: Option<(UserTheme, Mode)>,
+    conflict: Option<Box<UserTheme>>,
     tab: ThemeTab,
     studio_open: bool,
     collapsed: bool,
@@ -198,6 +200,7 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
             css,
             seeds,
             editing: None,
+            conflict: None,
             tab: ThemeTab::Colors,
             studio_open: false,
             collapsed: false,
@@ -215,6 +218,7 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
                         .update(cx, |preview, cx| preview.clear(None, cx));
                     editor.studio_open = false;
                     editor.editing = None;
+                    editor.conflict = None;
                     editor.edit_generation = editor.edit_generation.wrapping_add(1);
                     editor.notice = None;
                     editor.busy = false;
@@ -1702,21 +1706,14 @@ fn open_studio(
     let session = state.session.clone();
     let focus = state.focus.clone();
     if !resume {
-        let css = state.css.clone();
-        let name = state.name.clone();
-        fill_seeds(editor, user_theme, mode, window, cx);
-        css.update(cx, |s, cx| {
-            s.set_value(user_theme.css.clone().unwrap_or_default(), window, cx)
-        });
-        name.update(cx, |s, cx| {
-            s.set_value(user_theme.name.clone().unwrap_or_default(), window, cx)
-        });
+        fill_theme_fields(editor, user_theme, mode, window, cx);
     }
     editor.update(cx, |e, _| {
         if !resume {
             e.editing = Some((user_theme.clone(), mode));
             e.tab = ThemeTab::Colors;
             e.new_theme = new_theme;
+            e.conflict = None;
             e.edit_generation = e.edit_generation.wrapping_add(1);
             e.notice = None;
         }
@@ -1727,6 +1724,24 @@ fn open_studio(
     crate::settings::close(&session, cx);
     refresh_studio(editor, cx);
     window.on_next_frame(move |window, cx| focus.focus(window, cx));
+}
+
+fn fill_theme_fields(
+    editor: &Entity<Editor>,
+    theme: &UserTheme,
+    mode: Mode,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let css = editor.read(cx).css.clone();
+    let name = editor.read(cx).name.clone();
+    fill_seeds(editor, theme, mode, window, cx);
+    css.update(cx, |input, cx| {
+        input.set_value(theme.css.clone().unwrap_or_default(), window, cx);
+    });
+    name.update(cx, |input, cx| {
+        input.set_value(theme.name.clone().unwrap_or_default(), window, cx);
+    });
 }
 
 fn fill_seeds(
@@ -1803,6 +1818,7 @@ fn hide_studio(editor: &Entity<Editor>, discard: bool, cx: &mut App) {
             .update(cx, |preview, cx| preview.clear(None, cx));
         if discard {
             editor.editing = None;
+            editor.conflict = None;
             editor.notice = None;
             editor.edit_generation = editor.edit_generation.wrapping_add(1);
         }
@@ -1939,6 +1955,7 @@ fn theme_editor(
     let tab = state.tab;
     let busy = state.busy;
     let compare = state.compare;
+    let conflict = state.conflict.is_some();
     let name = state.name.clone();
     let mut form = div()
         .id("theme-studio-content")
@@ -1951,7 +1968,47 @@ fn theme_editor(
         .flex()
         .flex_col()
         .gap_2()
-        .p_3()
+        .p_3();
+    let conflict_banner = conflict.then(|| {
+        let keep = editor.clone();
+        let load = editor.clone();
+        div()
+            .id("theme-studio-conflict")
+            .test_support()
+            .role(Role::Alert)
+            .aria_label(t!("appearance-themes-conflict"))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.warning)
+                    .child(t!("appearance-themes-conflict")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        Button::new("theme-studio-keep-mine")
+                            .label(t!("appearance-studio-keep-mine"))
+                            .disabled(busy)
+                            .on_click(move |_, _, cx| save_edit(&keep, true, cx)),
+                    )
+                    .child(
+                        Button::new("theme-studio-load-saved")
+                            .label(t!("appearance-studio-load-saved"))
+                            .disabled(busy)
+                            .on_click(move |_, window, cx| load_saved_theme(&load, window, cx)),
+                    ),
+            )
+    });
+    form = form
         .child(div().text_sm().child(t!("appearance-themes-name")))
         .child(
             Input::new(&name)
@@ -2021,13 +2078,13 @@ fn theme_editor(
     let save_editor = editor.clone();
     let cancel_editor = editor.clone();
     let compare_editor = editor.clone();
-    let edited = user_theme.clone();
     div()
         .id("appearance-theme-editor")
         .flex()
         .flex_col()
         .flex_1()
         .min_h_0()
+        .children(conflict_banner)
         .child(form)
         .child(
             div()
@@ -2063,16 +2120,8 @@ fn theme_editor(
                             Button::new("appearance-theme-save")
                                 .label(t!("appearance-themes-save"))
                                 .primary()
-                                .disabled(busy)
-                                .on_click(move |_, _, cx| {
-                                    match draft_fields(save_editor.read(cx), &edited, mode, cx) {
-                                        Ok(mut draft) => {
-                                            draft.made_with = Some(made_with().into());
-                                            save_edit(&save_editor, draft, cx);
-                                        }
-                                        Err(message) => say(&save_editor, message, true, cx),
-                                    }
-                                }),
+                                .disabled(busy || conflict)
+                                .on_click(move |_, _, cx| save_edit(&save_editor, false, cx)),
                         )
                         .child(
                             Button::new("appearance-theme-cancel")
@@ -2163,28 +2212,65 @@ fn css_editor(
     )
 }
 
-fn save_edit(editor: &Entity<Editor>, draft: UserTheme, cx: &mut App) {
-    if editor.read(cx).busy {
+fn load_saved_theme(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) {
+    let state = editor.read(cx);
+    let (Some(theirs), Some((_, mode))) = (&state.conflict, &state.editing) else {
+        return;
+    };
+    if state.busy {
         return;
     }
-    if editor.read(cx).new_theme {
-        save(editor, draft, None, true, None, cx);
+    let theirs = (**theirs).clone();
+    let mode = *mode;
+    fill_theme_fields(editor, &theirs, mode, window, cx);
+    editor.update(cx, |e, _| {
+        e.editing = Some((theirs, mode));
+        e.new_theme = false;
+        e.conflict = None;
+        e.notice = None;
+        e.edit_generation = e.edit_generation.wrapping_add(1);
+    });
+    refresh_studio(editor, cx);
+    editor.read(cx).name.focus_handle(cx).focus(window, cx);
+    cx.refresh_windows();
+}
+
+fn save_edit(editor: &Entity<Editor>, force: bool, cx: &mut App) {
+    let state = editor.read(cx);
+    let Some((base, mode)) = &state.editing else {
+        return;
+    };
+    if state.busy || (force != state.conflict.is_some()) {
         return;
     }
-    let expected = draft.updated_at.clone();
+    let mut draft = match draft_fields(state, base, *mode, cx) {
+        Ok(draft) => draft,
+        Err(message) => return say(editor, message, true, cx),
+    };
+    draft.made_with = Some(made_with().into());
+    let new_theme = state.new_theme;
+    let reason = SaveTheme::Studio { new_theme, force };
+    if new_theme && !force {
+        save(editor, draft, reason, cx);
+        return;
+    }
+    let current = state.conflict.as_deref().cloned();
     let preview = draft.clone();
     let keep_editor = editor.clone();
+    let generation = state.edit_generation;
     if appearance::trial::preview_edit(
         &draft,
+        current.as_ref(),
         move |cx| {
-            let expected = preview.updated_at.clone();
-            save(&keep_editor, preview, expected, false, None, cx);
+            if keep_editor.read(cx).edit_generation == generation {
+                save(&keep_editor, preview, reason, cx);
+            }
         },
         cx,
     ) {
         hide_studio(editor, false, cx);
     } else {
-        save(editor, draft, expected, false, None, cx);
+        save(editor, draft, SaveTheme::Studio { new_theme, force }, cx);
     }
 }
 
@@ -2196,30 +2282,39 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-/// Save `user_theme` to the account; `then_use` applies it once stored.
-fn save(
-    editor: &Entity<Editor>,
-    user_theme: UserTheme,
-    expected: Option<String>,
-    then_use: bool,
-    done: Option<String>,
-    cx: &mut App,
-) {
+enum SaveTheme {
+    Studio { new_theme: bool, force: bool },
+    Import(String),
+}
+
+fn save(editor: &Entity<Editor>, user_theme: UserTheme, reason: SaveTheme, cx: &mut App) {
     let Some(client) = editor.read(cx).session.read(cx).client().cloned() else {
         return;
     };
     if editor.read(cx).busy {
         return;
     }
-    editor.update(cx, |e, _| e.busy = true);
+    editor.update(cx, |e, _| {
+        e.busy = true;
+        e.notice = None;
+    });
     let id = user_theme.id.clone();
-    let saves_draft = editor
-        .read(cx)
-        .editing
-        .as_ref()
-        .is_some_and(|(draft, _)| draft.id == id);
+    let saves_draft = matches!(reason, SaveTheme::Studio { .. });
+    let then_use = matches!(
+        reason,
+        SaveTheme::Studio {
+            new_theme: true,
+            ..
+        }
+    );
+    let force = matches!(reason, SaveTheme::Studio { force: true, .. });
+    let expected = if saves_draft && !then_use {
+        user_theme.updated_at.clone()
+    } else {
+        None
+    };
     let task = client.request(move |api| async move {
-        api.save_theme(&user_theme, expected.as_deref(), false)
+        api.save_theme(&user_theme, expected.as_deref(), force)
             .await
     });
     let editor = editor.clone();
@@ -2237,26 +2332,42 @@ fn save(
             }
             editor.update(cx, |e, _| {
                 e.busy = false;
-                if saves_draft && !matches!(&result, Ok(Ok(_))) {
+                if saves_draft && !matches!(&result, Ok(Ok(ThemeSave::Saved(_)))) {
                     e.studio_open = true;
                 }
             });
             match result {
-                Ok(Ok(themes)) => {
+                Ok(Ok(ThemeSave::Saved(themes))) => {
                     appearance::set_library(themes, cx);
                     if saves_draft {
                         hide_studio(&editor, true, cx);
                     }
-                    editor.update(cx, |e, _| {
-                        e.notice = done.map(|text| (text.into(), false));
-                    });
+                    if let SaveTheme::Import(text) = reason {
+                        say(&editor, text, false, cx);
+                    }
                     if then_use && let Some(id) = id {
                         appearance::trial::choose(&id, cx);
                     }
                     appearance::apply(cx);
                 }
-                Ok(Err(ircord_client::api::ApiError::Http { status: 412, .. })) => {
-                    say(&editor, t!("appearance-themes-conflict"), true, cx);
+                Ok(Ok(ThemeSave::Conflict(theirs))) => {
+                    if saves_draft {
+                        editor.update(cx, |e, _| e.conflict = Some(theirs));
+                    } else {
+                        say(&editor, t!("appearance-themes-conflict-import"), true, cx);
+                    }
+                    client.watch_document(&ircord_client::documents::THEMES);
+                }
+                Ok(Err(ApiError::Http {
+                    status: 412,
+                    detail,
+                })) => {
+                    say(
+                        &editor,
+                        t!("appearance-themes-failed", error = detail),
+                        true,
+                        cx,
+                    );
                     client.watch_document(&ircord_client::documents::THEMES);
                 }
                 Ok(Err(e)) => say(&editor, t!("appearance-themes-failed", error = e), true, cx),
@@ -2285,7 +2396,7 @@ fn import(editor: &Entity<Editor>, text: &str, cx: &mut App) {
         Ok(user_theme) => {
             let name = user_theme.name.clone().unwrap_or_default();
             let note = t!("appearance-themes-imported", name = name);
-            save(editor, user_theme, None, false, Some(note), cx);
+            save(editor, user_theme, SaveTheme::Import(note), cx);
             let input = editor.read(cx).import.clone();
             if let Some(window) = cx.windows().first() {
                 let _ = window.update(cx, |_, window, cx| {

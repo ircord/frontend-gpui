@@ -23,6 +23,7 @@ use crate::config::ConfigDir;
 
 pub mod admin;
 mod app_data;
+pub use app_data::ThemeSave;
 pub mod auth;
 pub mod channels;
 mod conversations;
@@ -170,6 +171,10 @@ impl Api {
         request: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, ApiError> {
         let response = request.send().await.map_err(ApiError::network)?;
+        Self::check_response(response).await
+    }
+
+    async fn check_response(response: reqwest::Response) -> Result<reqwest::Response, ApiError> {
         let status = response.status();
         if status == StatusCode::UNAUTHORIZED {
             return Err(ApiError::Unauthorized);
@@ -193,7 +198,10 @@ impl Api {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<T, ApiError> {
-        let response = self.send(request).await?;
+        Self::read_json(self.send(request).await?).await
+    }
+
+    async fn read_json<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, ApiError> {
         let bytes = response.bytes().await.map_err(ApiError::network)?;
         serde_json::from_slice(&bytes).map_err(|e| ApiError::Decode(e.to_string()))
     }

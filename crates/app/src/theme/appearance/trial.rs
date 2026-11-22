@@ -112,6 +112,7 @@ pub(crate) fn choose(id: &str, cx: &mut App) -> bool {
 /// the editor's normal save path lets the server report the conflict.
 pub(crate) fn preview_edit(
     edited: &UserTheme,
+    current: Option<&UserTheme>,
     on_keep: impl FnOnce(&mut App) + 'static,
     cx: &mut App,
 ) -> bool {
@@ -120,10 +121,11 @@ pub(crate) fn preview_edit(
     {
         return false;
     }
-    let Some(saved) = themes(cx)
-        .into_iter()
-        .find(|theme| theme.id == kept_id && theme.updated_at == edited.updated_at)
-    else {
+    let Some(saved) = current.cloned().or_else(|| {
+        themes(cx)
+            .into_iter()
+            .find(|theme| theme.id == kept_id && theme.updated_at == edited.updated_at)
+    }) else {
         return false;
     };
     if edited.css.as_deref().unwrap_or_default() == saved.css.as_deref().unwrap_or_default() {
