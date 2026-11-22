@@ -18,10 +18,13 @@ use std::time::Duration;
 
 use chrono::{Local, NaiveDate};
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::IndexPath;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::combobox::{Combobox, ComboboxState};
 use gpui_kit::component::input::{
     Backspace, Escape, Input, InputEvent, InputState, MoveDown, MoveUp,
 };
+use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::{Selectable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -2253,8 +2256,8 @@ enum When {
 
 struct FiltersDialog {
     model: Entity<SearchModel>,
-    scoped: bool,
     draft: Filters,
+    menus: Vec<FilterMenu>,
     when: When,
     on: Entity<InputState>,
     after: Entity<InputState>,
@@ -2262,21 +2265,201 @@ struct FiltersDialog {
     error: Option<String>,
 }
 
+#[derive(Clone)]
+struct FilterChoice {
+    chip: Chip,
+    title: SharedString,
+    detail: Option<SharedString>,
+}
+
+impl SearchableListItem for FilterChoice {
+    type Value = Chip;
+
+    fn title(&self) -> SharedString {
+        self.title.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.chip
+    }
+
+    fn matches(&self, query: &str) -> bool {
+        let query = query.to_lowercase();
+        self.title.to_lowercase().contains(&query)
+            || self
+                .detail
+                .as_ref()
+                .is_some_and(|detail| detail.to_lowercase().contains(&query))
+    }
+
+    fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        div()
+            .id(ElementId::Name(
+                format!(
+                    "search-filter-{}-{}",
+                    self.chip.key().as_str(),
+                    self.chip.value()
+                )
+                .into(),
+            ))
+            .test_support()
+            .flex()
+            .w_full()
+            .items_center()
+            .gap_2()
+            .child(div().min_w_0().truncate().child(self.title.clone()))
+            .children(self.detail.as_ref().map(|detail| {
+                div()
+                    .text_xs()
+                    .text_color(theme::get(cx).muted)
+                    .child(detail.clone())
+            }))
+    }
+}
+
+struct FilterMenu {
+    key: Key,
+    state: Entity<ComboboxState<SearchableVec<FilterChoice>>>,
+}
+
+impl FilterMenu {
+    fn new(
+        key: Key,
+        workspace: Option<&Workspace>,
+        draft: &[Chip],
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
+        let simple = |chip, title: String| FilterChoice {
+            chip,
+            title: title.into(),
+            detail: None,
+        };
+        let mut choices: Vec<_> = match key {
+            Key::From | Key::Mentions => workspace
+                .into_iter()
+                .flat_map(people)
+                .map(|member| {
+                    let chip = if key == Key::From {
+                        Chip::From(member.id.clone())
+                    } else {
+                        Chip::Mentions(member.id.clone())
+                    };
+                    FilterChoice {
+                        chip,
+                        title: member_name(member).into(),
+                        detail: Some(format!("@{}", member.nick).into()),
+                    }
+                })
+                .collect(),
+            Key::In => workspace
+                .into_iter()
+                .flat_map(|w| &w.conversations)
+                .map(|c| simple(Chip::In(c.id.clone()), conversation_label(c)))
+                .collect(),
+            Key::Has => Has::ALL
+                .into_iter()
+                .map(|kind| simple(Chip::Has(kind), kind_label(kind).to_string()))
+                .collect(),
+            _ => Vec::new(),
+        };
+        // Keep a previously chosen value if its person or conversation is
+        // temporarily absent from the current workspace.
+        for chip in draft.iter().filter(|chip| chip.key() == key) {
+            if !choices.iter().any(|choice| &choice.chip == chip) {
+                let title =
+                    workspace.map_or_else(|| chip.value().to_string(), |w| chip_label(w, chip));
+                choices.push(simple(chip.clone(), title));
+            }
+        }
+        let selected = choices
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| draft.contains(&item.chip))
+            .map(|(index, _)| IndexPath::new(index))
+            .collect();
+        let state = cx.new(|cx| {
+            ComboboxState::new(SearchableVec::new(choices), selected, window, cx)
+                .multiple(true)
+                .searchable(key != Key::Has)
+        });
+        Self { key, state }
+    }
+
+    fn render(&self, theme: &Theme) -> impl IntoElement {
+        let (title, hint, placeholder, search) = match self.key {
+            Key::From => (
+                t!("search-filters-from"),
+                t!("search-filters-from-help"),
+                t!("search-filters-anyone"),
+                t!("search-filters-find-person"),
+            ),
+            Key::Mentions => (
+                t!("search-filters-mentions"),
+                t!("search-filters-mentions-help"),
+                t!("search-filters-any-mentions"),
+                t!("search-filters-find-person"),
+            ),
+            Key::In => (
+                t!("search-filters-in"),
+                t!("search-filters-in-help"),
+                t!("search-filters-everywhere"),
+                t!("search-filters-find-conversation"),
+            ),
+            Key::Has => (
+                t!("search-filters-has"),
+                t!("search-filters-has-help"),
+                t!("search-filters-any-content"),
+                "",
+            ),
+            _ => unreachable!("a multiselect filter has one of four keys"),
+        };
+        field(title, Some(hint), theme).child(
+            div()
+                .id(ElementId::Name(
+                    format!("search-filter-menu-{}", self.key.as_str()).into(),
+                ))
+                .test_support()
+                .role(Role::Group)
+                .aria_label(title)
+                .h(px(32.))
+                .child(
+                    Combobox::new(&self.state)
+                        .w_full()
+                        .small()
+                        .placeholder(placeholder)
+                        .search_placeholder(search)
+                        .menu_max_h(px(220.))
+                        .cleanable(true),
+                ),
+        )
+    }
+}
+
 /// Choose every filter at once. Apply changes them together; closing the
 /// dialog leaves the search as it was.
 fn open_filters(model: &Entity<SearchModel>, scoped: bool, window: &mut Window, cx: &mut App) {
     let draft = model.read(cx).filters.clone();
-    let day_input = |value: &Option<String>, window: &mut Window, cx: &mut App| {
+    let chips = draft.chips();
+    let client = model.read(cx).session.read(cx).client().cloned();
+    let workspace = client.as_ref().map(|client| client.read());
+    let menus = [Key::From, Key::Has, Key::Mentions, Key::In]
+        .into_iter()
+        .filter(|key| !scoped || *key != Key::In)
+        .map(|key| FilterMenu::new(key, workspace.as_deref(), &chips, window, cx))
+        .collect();
+    drop(workspace);
+    let day_input = |value: &Option<String>, placeholder, window: &mut Window, cx: &mut App| {
         let value = value.clone().unwrap_or_default();
         cx.new(|cx| {
-            let mut state = InputState::new(window, cx).placeholder("YYYY-MM-DD");
+            let mut state = InputState::new(window, cx).placeholder(placeholder);
             state.set_value(value, window, cx);
             state
         })
     };
-    let on = day_input(&draft.on, window, cx);
-    let after = day_input(&draft.after, window, cx);
-    let before = day_input(&draft.before, window, cx);
+    let on = day_input(&draft.on, t!("search-filters-sent-on"), window, cx);
+    let after = day_input(&draft.after, t!("search-filters-sent-after"), window, cx);
+    let before = day_input(&draft.before, t!("search-filters-sent-before"), window, cx);
     let when = if draft.on.is_some() {
         When::On
     } else if draft.before.is_some() || draft.after.is_some() {
@@ -2286,8 +2469,8 @@ fn open_filters(model: &Entity<SearchModel>, scoped: bool, window: &mut Window, 
     };
     let view = cx.new(|_| FiltersDialog {
         model: model.clone(),
-        scoped,
         draft,
+        menus,
         when,
         on,
         after,
@@ -2305,6 +2488,15 @@ fn open_filters(model: &Entity<SearchModel>, scoped: bool, window: &mut Window, 
 impl FiltersDialog {
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut result = self.draft.clone();
+        let existing = result.chips();
+        for menu in &self.menus {
+            for chip in existing.iter().filter(|chip| chip.key() == menu.key) {
+                result = result.without(chip);
+            }
+            for chip in menu.state.read(cx).selected_values() {
+                result = result.with(chip);
+            }
+        }
         let day = |input: &Entity<InputState>, cx: &App| {
             let v = input.read(cx).value().trim().to_string();
             (!v.is_empty()).then_some(v)
@@ -2314,30 +2506,41 @@ impl FiltersDialog {
             day(&self.after, cx),
             day(&self.before, cx),
         );
-        let bad = [&on, &after, &before]
-            .iter()
-            .any(|d| d.as_deref().is_some_and(|d| !sf::is_day(d)));
         result.on = None;
         result.after = None;
         result.before = None;
         match self.when {
             When::Any => {}
-            When::On => result.on = on.clone(),
+            When::On => result.on = on,
             When::Between => {
-                result.after = after.clone();
-                result.before = before.clone();
+                result.after = after;
+                result.before = before;
             }
         }
-        let used_bad = match self.when {
-            When::Any => false,
-            When::On => on.as_deref().is_some_and(|d| !sf::is_day(d)),
-            When::Between => bad && (after.iter().chain(before.iter())).any(|d| !sf::is_day(d)),
-        };
-        if used_bad {
-            self.error = Some(t!(
+        let dates = [&result.on, &result.after, &result.before];
+        let today = today();
+        self.error = if dates
+            .iter()
+            .any(|day| day.as_deref().is_some_and(|day| !sf::is_day(day)))
+        {
+            Some(t!(
                 "search-filters-bad-day",
-                example = today().format("%Y-%m-%d").to_string()
-            ));
+                example = today.format("%Y-%m-%d").to_string()
+            ))
+        } else if dates.iter().any(|day| {
+            day.as_deref()
+                .and_then(sf::parse_day)
+                .is_some_and(|day| day > today)
+        }) {
+            Some(t!("search-filters-future-day").to_string())
+        } else if let (Some(after), Some(before)) = (&result.after, &result.before)
+            && after > before
+        {
+            Some(t!("search-filters-date-order").to_string())
+        } else {
+            None
+        };
+        if self.error.is_some() {
             cx.notify();
             return;
         }
@@ -2348,20 +2551,14 @@ impl FiltersDialog {
     fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.draft = Filters::default();
         self.when = When::Any;
+        self.error = None;
+        for menu in &self.menus {
+            menu.state
+                .update(cx, |state, cx| state.set_selected_values(&[], window, cx));
+        }
         for input in [&self.on, &self.after, &self.before] {
             input.update(cx, |i, cx| i.set_value("", window, cx));
         }
-        cx.notify();
-    }
-
-    /// A toggle for one value of a multi-choice filter.
-    fn toggle(&mut self, chip: Chip, cx: &mut Context<Self>) {
-        let on = self.draft.chips().contains(&chip);
-        self.draft = if on {
-            self.draft.without(&chip)
-        } else {
-            self.draft.with(chip)
-        };
         cx.notify();
     }
 }
@@ -2384,10 +2581,8 @@ fn field(title: &'static str, help: Option<&'static str>, theme: &Theme) -> Div 
 }
 
 impl Render for FiltersDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
-        let session = self.model.read(cx).session.clone();
-        let client = session.read(cx).client().cloned();
         let mut body = div()
             .id("search-filters-dialog")
             .test_support()
@@ -2396,110 +2591,10 @@ impl Render for FiltersDialog {
             .flex()
             .flex_col()
             .gap_3()
-            .max_h(px(560.))
-            .overflow_y_scroll();
-        let chips = self.draft.chips();
-        if let Some(client) = client {
-            let w = client.read();
-            let everyone = people(&w);
-            let person_section =
-                |key: Key, title: &'static str, help: &'static str, cx: &mut Context<Self>| {
-                    let mut pills = div().flex().flex_wrap().gap_1();
-                    if everyone.is_empty() {
-                        pills = pills.child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.faint)
-                                .child(t!("search-filters-nobody-here")),
-                        );
-                    }
-                    for p in &everyone {
-                        let chip = if key == Key::From {
-                            Chip::From(p.id.clone())
-                        } else {
-                            Chip::Mentions(p.id.clone())
-                        };
-                        let on = chips.contains(&chip);
-                        pills = pills.child(
-                            toggle_pill(
-                                ElementId::Name(
-                                    format!("search-filter-{}-{}", key.as_str(), p.id).into(),
-                                ),
-                                format!("{} (@{})", member_name(p), p.nick),
-                                on,
-                                &theme,
-                                cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
-                            )
-                            .test_support()
-                            .reachable(&theme),
-                        );
-                    }
-                    field(title, Some(help), &theme).child(pills)
-                };
-            let from = person_section(
-                Key::From,
-                t!("search-filters-from"),
-                t!("search-filters-from-help"),
-                cx,
-            );
-            let mentions = person_section(
-                Key::Mentions,
-                t!("search-filters-mentions"),
-                t!("search-filters-mentions-help"),
-                cx,
-            );
-            let mut kinds = div().flex().flex_wrap().gap_1();
-            for kind in Has::ALL {
-                let chip = Chip::Has(kind);
-                let on = chips.contains(&chip);
-                kinds = kinds.child(
-                    toggle_pill(
-                        ElementId::Name(format!("search-filter-has-{}", kind.as_str()).into()),
-                        kind_label(kind),
-                        on,
-                        &theme,
-                        cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
-                    )
-                    .test_support()
-                    .reachable(&theme),
-                );
-            }
-            body = body.child(from).child(
-                field(
-                    t!("search-filters-has"),
-                    Some(t!("search-filters-has-help")),
-                    &theme,
-                )
-                .child(kinds),
-            );
-            body = body.child(mentions);
-            if !self.scoped {
-                let mut places = div().flex().flex_wrap().gap_1();
-                for c in &w.conversations {
-                    let chip = Chip::In(c.id.clone());
-                    let on = chips.contains(&chip);
-                    places = places.child(
-                        toggle_pill(
-                            ElementId::Name(format!("search-filter-in-{}", c.id).into()),
-                            conversation_label(c),
-                            on,
-                            &theme,
-                            cx.listener(move |this, _, _, cx| this.toggle(chip.clone(), cx)),
-                        )
-                        .test_support()
-                        .reachable(&theme),
-                    );
-                }
-                body = body.child(
-                    field(
-                        t!("search-filters-in"),
-                        Some(t!("search-filters-in-help")),
-                        &theme,
-                    )
-                    .child(places),
-                );
-            }
-        }
+            .max_h((window.viewport_size().height * 0.70).min(px(560.)))
+            .pb_3()
+            .overflow_y_scroll()
+            .children(self.menus.iter().map(|menu| menu.render(&theme)));
         let mut when = div().flex().gap_1();
         for (value, id, label) in [
             (When::Any, "any", t!("search-filters-any-time")),
@@ -2533,17 +2628,25 @@ impl Render for FiltersDialog {
                 )
             }
             When::Between => {
-                date = date
-                    .child(
-                        Input::new(&self.after)
-                            .id("search-filter-after")
-                            .aria_label(t!("search-filters-sent-after")),
-                    )
-                    .child(
-                        Input::new(&self.before)
-                            .id("search-filter-before")
-                            .aria_label(t!("search-filters-sent-before")),
-                    )
+                date = date.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            div().flex_1().min_w_0().child(
+                                Input::new(&self.after)
+                                    .id("search-filter-after")
+                                    .aria_label(t!("search-filters-sent-after")),
+                            ),
+                        )
+                        .child(
+                            div().flex_1().min_w_0().child(
+                                Input::new(&self.before)
+                                    .id("search-filter-before")
+                                    .aria_label(t!("search-filters-sent-before")),
+                            ),
+                        ),
+                )
             }
         }
         let mut authors = div().flex().gap_1();
@@ -2583,11 +2686,15 @@ impl Render for FiltersDialog {
                     .child(error.clone()),
             );
         }
-        body.child(
+        div().flex().flex_col().child(body).child(
             div()
                 .flex()
                 .justify_end()
+                .items_center()
                 .gap_2()
+                .border_t_1()
+                .border_color(theme.border)
+                .pt_3()
                 .child(
                     text_button(
                         "search-filters-clear",
@@ -2596,7 +2703,8 @@ impl Render for FiltersDialog {
                         cx.listener(|this, _, window, cx| this.clear(window, cx)),
                     )
                     .test_support()
-                    .reachable(&theme),
+                    .reachable(&theme)
+                    .mr_auto(),
                 )
                 .child(
                     text_button(

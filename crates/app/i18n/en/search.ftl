@@ -111,9 +111,15 @@ search-filters-sent-on = Sent on (YYYY-MM-DD)
 search-filters-sent-after = Sent after (YYYY-MM-DD)
 search-filters-sent-before = Sent before (YYYY-MM-DD)
 search-filters-bad-day = Enter dates as YYYY-MM-DD, such as { $example }.
+search-filters-future-day = Choose a date on or before today.
+search-filters-date-order = The start date must be on or before the end date.
 search-filters-author-type = Author type
 search-filters-anyone = Anyone
-search-filters-nobody-here = Nobody to choose yet.
+search-filters-any-mentions = Anyone or no one
+search-filters-any-content = Any content
+search-filters-everywhere = Everywhere
+search-filters-find-person = Find a person
+search-filters-find-conversation = Find a channel or person
 search-filters-clear = Clear filters
 search-filters-apply = Apply filters
 

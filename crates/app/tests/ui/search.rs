@@ -4,6 +4,8 @@
 //! once, and a conversation's own search beside the chat asks the server's
 //! history and opens its results there.
 
+use std::time::Duration;
+
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, TestAppContext};
 use ircord_app::features::search;
@@ -349,9 +351,27 @@ fn the_filters_dialog_applies_several_at_once(cx: &mut TestAppContext) {
     open_page(&f, cx, None);
     click(&f, cx, "search-filters-button");
     shows(&f, cx, "search-filters-dialog");
+    click(&f, cx, "search-filter-menu-from");
+    frame(&f, cx, |window, cx| window.input("bob", cx));
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    shows(&f, cx, "search-filter-from-m-bob");
+    frame(&f, cx, |window, _| {
+        assert!(
+            window
+                .try_find("search-filter-from-m-eve")
+                .is_none_or(|item| !item.visible())
+        );
+    });
     click(&f, cx, "search-filter-from-m-bob");
+    frame(&f, cx, |window, cx| window.press("escape", cx));
+    click(&f, cx, "search-filter-menu-has");
     click(&f, cx, "search-filter-has-link");
+    click(&f, cx, "search-filter-has-image");
+    frame(&f, cx, |window, cx| window.press("escape", cx));
+    click(&f, cx, "search-filter-menu-in");
     click(&f, cx, "search-filter-in-c-random");
+    frame(&f, cx, |window, cx| window.press("escape", cx));
     click(&f, cx, "search-filter-author-bot");
     click(&f, cx, "search-filter-when-on");
     frame(&f, cx, |window, cx| {
@@ -362,8 +382,10 @@ fn the_filters_dialog_applies_several_at_once(cx: &mut TestAppContext) {
     assert!(f.server.requests_to("GET", "/api/v1/search").is_empty());
     click(&f, cx, "search-filters-apply");
     searched(&f, cx, "the dialog's filters", |r| {
+        let mut kinds = param(r, "has");
+        kinds.sort_unstable();
         param(r, "from") == ["m-bob"]
-            && param(r, "has") == ["link"]
+            && kinds == ["image", "link"]
             && param(r, "conversationId") == ["c-random"]
             && param(r, "author") == ["bot"]
             && param(r, "after").len() == 1
@@ -372,13 +394,44 @@ fn the_filters_dialog_applies_several_at_once(cx: &mut TestAppContext) {
     });
     assert_eq!(
         label(&f, cx, "search-filters-button").as_deref(),
-        Some("Filters, 5 on")
+        Some("Filters, 6 on")
     );
     // One conversation chosen: server history can be asked now.
     click(&f, cx, "search-server-history");
     searched(&f, cx, "server history", |r| {
         param(r, "source") == ["upstream"]
     });
+}
+
+#[gpui_kit::test]
+fn the_filters_dialog_rejects_future_dates_and_reversed_ranges(cx: &mut TestAppContext) {
+    let f = open(cx);
+    open_page(&f, cx, None);
+    click(&f, cx, "search-filters-button");
+    click(&f, cx, "search-filter-when-on");
+    frame(&f, cx, |window, cx| {
+        window.click("search-filter-on", cx);
+        window.input("2999-01-01", cx);
+    });
+    click(&f, cx, "search-filters-apply");
+    assert_eq!(
+        label(&f, cx, "search-filters-error").as_deref(),
+        Some("Choose a date on or before today.")
+    );
+
+    click(&f, cx, "search-filter-when-between");
+    frame(&f, cx, |window, cx| {
+        window.click("search-filter-after", cx);
+        window.input("2020-03-01", cx);
+        window.click("search-filter-before", cx);
+        window.input("2020-02-01", cx);
+    });
+    click(&f, cx, "search-filters-apply");
+    assert_eq!(
+        label(&f, cx, "search-filters-error").as_deref(),
+        Some("The start date must be on or before the end date.")
+    );
+    assert!(f.server.requests_to("GET", "/api/v1/search").is_empty());
 }
 
 #[gpui_kit::test]
