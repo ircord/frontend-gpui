@@ -7,7 +7,7 @@
 //! assembles and signs the bundle, and this packs it as a disk image and as the
 //! `.app.tar.gz` the updater installs.
 
-use crate::{container, macos};
+use crate::{container, macos, run};
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -167,16 +167,6 @@ fn collect(root: &Path, out: &Path, suffix: &str, name: &str) -> Result<()> {
 fn report(path: &Path) -> Result<()> {
     let size = std::fs::metadata(path)?.len();
     println!("built {} ({:.1} MB)", path.display(), size as f64 / 1e6);
-    Ok(())
-}
-
-fn run(cmd: &mut Command) -> Result<()> {
-    let status = cmd
-        .status()
-        .with_context(|| format!("run {:?}", cmd.get_program()))?;
-    if !status.success() {
-        bail!("{:?} failed", cmd.get_program());
-    }
     Ok(())
 }
 

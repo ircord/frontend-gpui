@@ -5,6 +5,7 @@
 //! Gatekeeper asks once; see README.md. `cargo xtask package macos` packs it.
 
 use crate::package::PRODUCT_NAME;
+use crate::run;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -53,14 +54,4 @@ pub fn build(root: &Path) -> Result<PathBuf> {
         .arg(&app))?;
     println!("built {}", app.display());
     Ok(app)
-}
-
-fn run(cmd: &mut Command) -> Result<()> {
-    let status = cmd
-        .status()
-        .with_context(|| format!("run {:?}", cmd.get_program()))?;
-    if !status.success() {
-        bail!("{:?} failed", cmd.get_program());
-    }
-    Ok(())
 }

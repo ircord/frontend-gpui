@@ -14,8 +14,9 @@ mod macos;
 mod package;
 mod release;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
+use std::process::Command;
 
 const USAGE: &str = "\
 usage: cargo xtask <command>
@@ -135,6 +136,17 @@ fn check(root: &std::path::Path) -> Result<()> {
     step("cargo test --workspace");
     container::run(root, &["cargo", "test", "--workspace"])?;
     println!("\ncheck passed");
+    Ok(())
+}
+
+/// Runs a host command and fails when it does.
+pub(crate) fn run(cmd: &mut Command) -> Result<()> {
+    let status = cmd
+        .status()
+        .with_context(|| format!("run {:?}", cmd.get_program()))?;
+    if !status.success() {
+        bail!("{:?} failed", cmd.get_program());
+    }
     Ok(())
 }
 
