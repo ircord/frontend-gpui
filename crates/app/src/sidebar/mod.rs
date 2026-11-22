@@ -837,17 +837,136 @@ impl SidebarView {
             }))
     }
 
-    /// The folded tools above the conversations that would show.
+    fn folded_conversation(
+        &self,
+        w: &Workspace,
+        c: &Conversation,
+        number: Option<usize>,
+        active: bool,
+        server: Option<&url::Url>,
+        theme: &Theme,
+    ) -> AnyElement {
+        let id = format!("folded-{}", c.id);
+        let partner = (number.is_none() && c.party.is_none())
+            .then(|| people::direct_partner(w, &c.id))
+            .flatten();
+        let name = partner.map_or_else(|| parties::title(w, c), |p| people::name(p).to_string());
+        let size = px(ui::avatar::TINY);
+        let body = match (number, partner) {
+            (Some(number), _) => div().child(number.to_string()).into_any_element(),
+            (_, Some(member)) => ui::avatar::person(
+                ui::avatar::Person {
+                    member,
+                    name: &name,
+                    server,
+                    presence: true,
+                    key: &id,
+                },
+                size,
+                theme,
+            )
+            .into_any_element(),
+            _ if c.party.is_some() => {
+                ui::icon::icon(ui::icon::LucideIcon::Users, theme.muted).into_any_element()
+            }
+            _ => ui::avatar::avatar(&name, None, size, theme).into_any_element(),
+        };
+        let label = if number.is_some() {
+            format!("{}{}", prefix(c), name)
+        } else if c.party.is_some() {
+            name
+        } else {
+            t!("sidebar-folded-direct", name = name)
+        };
+        let mention = c.mention_count > 0;
+        let unread = c.unread_count > 0 && !order::muted(w, c);
+        let ctx = ConversationCtx {
+            session: self.session.clone(),
+            conversation: c.id.clone(),
+        };
+        let target = ctx.clone();
+        let mut details = Vec::new();
+        if let Some(number) = number.filter(|n| *n <= order::NUMBERED) {
+            details.push(number_label(number));
+        }
+        if c.mention_count == 1 {
+            details.push(t!("sidebar-folded-one-mention").into());
+        } else if mention {
+            details.push(t!("sidebar-folded-mentions", count = c.mention_count));
+        } else if unread {
+            details.push(t!("sidebar-folded-unread").into());
+        }
+        div()
+            .id(ElementId::Name(id.into()))
+            .test_support()
+            .role(Role::Button)
+            .aria_label(SharedString::from(label.clone()))
+            .aria_selected(active)
+            .when(!details.is_empty(), |d| {
+                d.aria_description(details.join(", "))
+            })
+            .reachable(theme)
+            .tooltip(ui::tooltip::text(label))
+            .size(px(32.))
+            .flex_none()
+            .rounded(theme.radius)
+            .relative()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_sm()
+            .cursor_pointer()
+            .text_color(if active { theme.accent } else { theme.muted })
+            .border_1()
+            .border_color(if active {
+                theme.accent.opacity(0.35)
+            } else {
+                transparent_black()
+            })
+            .when(active, |d| d.bg(theme.selected))
+            .when(!active, |d| d.hover(|d| d.bg(theme.hover)))
+            .child(body)
+            .when(mention || unread, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top(px(2.))
+                        .right(px(2.))
+                        .size(px(6.))
+                        .rounded_full()
+                        .bg(if mention { theme.danger } else { theme.text }),
+                )
+            })
+            .on_click(move |_, _, cx| {
+                target
+                    .session
+                    .update(cx, |s, cx| s.select_conversation(&target.conversation, cx));
+            })
+            .context_menu(move |menu, window, cx| {
+                let client = ctx.session.read(cx).client().cloned();
+                layout::watch_notification_settings(client, cx);
+                let items = registry::get(cx).conversation_menu.to_vec();
+                let items = ui::context_menu::visible(&items, &ctx, cx);
+                ui::context_menu::fill(menu, items, ctx.clone(), window, cx)
+            })
+            .into_any_element()
+    }
+
+    /// The folded tools above numbered channels and direct conversations.
     fn folded(
         &self,
         w: &Workspace,
         network: &str,
-        selected: Option<&str>,
-        layout: &order::Layout,
+        server: Option<&url::Url>,
         theme: &Theme,
         route: Option<&Route>,
     ) -> Div {
-        let mut column = div()
+        let selected = route.and_then(Route::conversation);
+        let (channels, directs): (Vec<_>, Vec<_>) = order::ordered(w, network)
+            .into_iter()
+            .partition(|c| order::channel_wide(c));
+        let active = |conversation: &Conversation| selected == Some(conversation.id.as_str());
+        let column = div()
             .id("folded-list")
             .test_support()
             .role(Role::List)
@@ -859,60 +978,29 @@ impl SidebarView {
             .gap_1()
             .py_2()
             .overflow_y_scroll()
-            .child(self.folded_tools(network, route, w.inbox.unread.unwrap_or(0), theme));
-        let filter = Filter {
-            active: selected,
-            unread_only: layout.unread_only,
-        };
-        for view in order::sections(w, network, &layout.collapsed, filter) {
-            for c in &view.shown {
-                let active = selected == Some(c.id.as_str());
-                let id = c.id.clone();
-                let session = self.session.clone();
-                let name = parties::title(w, c);
-                let initial: String = name.chars().take(2).collect();
-                let unread = c.unread_count > 0 && !order::muted(w, c);
-                column = column.child(
+            .child(self.folded_tools(network, route, w.inbox.unread.unwrap_or(0), theme))
+            .children(channels.into_iter().enumerate().map(|(i, c)| {
+                self.folded_conversation(w, c, Some(i + 1), active(c), server, theme)
+            }))
+            .when(!directs.is_empty(), |d| {
+                d.child(
                     div()
-                        .id(ElementId::Name(format!("folded-{}", c.id).into()))
-                        .test_support()
-                        .role(Role::Button)
-                        .reachable(theme)
-                        .aria_label(SharedString::from(name.clone()))
-                        .tooltip(ui::tooltip::text(format!("{}{}", prefix(c), name)))
-                        .size(px(38.))
-                        .flex_none()
-                        .rounded_md()
-                        .relative()
+                        .id("folded-directs")
+                        .role(Role::Group)
+                        .aria_label(t!("sidebar-direct-messages"))
                         .flex()
+                        .flex_col()
                         .items_center()
-                        .justify_center()
-                        .text_sm()
-                        .cursor_pointer()
-                        .text_color(if active || unread {
-                            theme.text
-                        } else {
-                            theme.muted
-                        })
-                        .when(active, |d| d.bg(theme.selected))
-                        .when(!active, |d| d.bg(theme.main).hover(|d| d.bg(theme.hover)))
-                        .when(unread, |d| d.font_weight(FontWeight::BOLD))
-                        .child(format!("{}{}", prefix(c), initial))
-                        .when(c.mention_count > 0, |d| {
-                            d.child(
-                                div()
-                                    .absolute()
-                                    .top(px(-4.))
-                                    .right(px(-4.))
-                                    .child(badge(c.mention_count, theme)),
-                            )
-                        })
-                        .on_click(move |_, _, cx| {
-                            session.update(cx, |s, cx| s.select_conversation(&id, cx))
-                        }),
-                );
-            }
-        }
+                        .gap_1()
+                        .mt_1()
+                        .pt_2()
+                        .border_t_1()
+                        .border_color(theme.border.opacity(0.5))
+                        .children(directs.into_iter().map(|c| {
+                            self.folded_conversation(w, c, None, active(c), server, theme)
+                        })),
+                )
+            });
         let restore = ui::icon::button(
             "sidebar-restore",
             IconName::PanelLeftOpen,
@@ -972,16 +1060,7 @@ impl Render for SidebarView {
 
         if !layout.show_list {
             let folded = network
-                .map(|n| {
-                    self.folded(
-                        &w,
-                        &n.id,
-                        selected.as_deref(),
-                        &layout,
-                        &theme,
-                        route.as_ref(),
-                    )
-                })
+                .map(|n| self.folded(&w, &n.id, pictures_from.as_ref(), &theme, route.as_ref()))
                 .unwrap_or_else(|| div().w(px(FOLDED)).h_full().bg(theme.sidebar));
             return div()
                 .id("sidebar")

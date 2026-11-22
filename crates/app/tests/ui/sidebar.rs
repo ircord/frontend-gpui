@@ -196,6 +196,11 @@ fn sections_collapse_and_the_list_folds_and_resizes(cx: &mut TestAppContext) {
         assert!(window.find("folded-c-quiet").visible());
         assert!(window.find("folded-inbox").visible());
         assert!(window.find("folded-saved").visible());
+        assert!(y(window, "folded-c-quiet") < y(window, "folded-d-bob"));
+        assert_eq!(
+            window.find("folded-d-bob").label(),
+            Some("Direct message with bob")
+        );
     });
     click(&f, cx, "folded-search");
     cx.update(|cx| assert_eq!(f.session.read(cx).route(), Some(Route::Search)));
