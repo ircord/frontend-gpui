@@ -212,6 +212,12 @@ pub fn render(
     for (i, file) in files.iter().enumerate() {
         out.push(draw.file_card(i, file, window, cx));
     }
+    if m.attachments.iter().any(|attachment| {
+        url::Url::parse(&attachment.url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+    }) && let Some(control) = super::offline_pin::control(ctx, window, cx)
+    {
+        out.push(control);
+    }
     for (i, _) in inline.iter().enumerate() {
         out.push(draw.single("image", &inline, i));
     }

@@ -105,15 +105,12 @@ impl Archive {
 
     fn next_media(&self) -> Result<Option<Candidate>> {
         self.read(|db, _| {
-            if db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))? < 2 {
-                return Ok(None);
-            }
             let files = self.open_files()?;
             files.execute("ATTACH DATABASE ?1 AS history", [self.0.path.to_string_lossy().as_ref()])?;
             files.execute(
                 "DELETE FROM files WHERE NOT EXISTS (
                     SELECT 1 FROM history.media_refs r JOIN history.messages m ON (m.conversation,m.id)=(r.conversation,r.message)
-                    WHERE r.key=files.key AND m.at>=?1)",
+                    WHERE r.key=files.key AND (m.at>=?1 OR m.pinned=1))",
                 [retention_start()],
             )?;
             drop(files);
@@ -122,8 +119,8 @@ impl Archive {
                 "SELECT r.key,r.conversation,r.message,r.payload,m.at FROM media_refs r
                  JOIN messages m ON (m.conversation,m.id)=(r.conversation,r.message)
                  LEFT JOIN media.files f ON f.key=r.key
-                 WHERE m.at>=?1 AND (f.key IS NULL OR (f.payload IS NULL AND f.retry<=?2))
-                 ORDER BY m.at DESC LIMIT 1",
+                 WHERE (m.at>=?1 OR m.pinned=1) AND (f.key IS NULL OR (f.payload IS NULL AND f.retry<=?2))
+                 ORDER BY m.pinned DESC,m.at DESC LIMIT 1",
                 params![retention_start(), now_ns()],
                 |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             ).optional()?;
@@ -150,22 +147,48 @@ impl Archive {
         Ok(db)
     }
 
+    pub(super) fn attach_files(&self, db: &Connection) -> Result<()> {
+        let attached: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_database_list WHERE name='media')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !attached {
+            drop(self.open_files()?);
+            db.execute(
+                "ATTACH DATABASE ?1 AS media",
+                [self.media_path().to_string_lossy().as_ref()],
+            )?;
+        }
+        Ok(())
+    }
+
     fn record(&self, candidate: Candidate, download: Option<Download>, budget: i64) -> Result<()> {
         self.read(|db, _| {
             if !has_ref(db, &candidate.key)? {
                 return Ok(());
             }
             let mut files = self.open_files()?;
+            files.execute("ATTACH DATABASE ?1 AS history", [self.0.path.to_string_lossy().as_ref()])?;
             let tx = files.transaction()?;
             if let Some((content_type, bytes)) = download {
                 let size = i64::try_from(bytes.len())?;
                 let mut used: i64 = tx.query_row("SELECT coalesce(sum(size),0) FROM files", [], |row| row.get(0))?;
-                let reclaimable: i64 = tx.query_row("SELECT coalesce(sum(size),0) FROM files WHERE stored<=?1", [candidate.at], |row| row.get(0))?;
+                let pinned: bool = db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM media_refs r JOIN messages m ON (m.conversation,m.id)=(r.conversation,r.message) WHERE r.key=?1 AND m.pinned=1)",
+                    [&candidate.key], |row| row.get(0),
+                )?;
+                let evictable = "FROM files WHERE payload IS NOT NULL AND (stored<=?1 OR ?2) AND NOT EXISTS(
+                    SELECT 1 FROM history.media_refs r JOIN history.messages m ON (m.conversation,m.id)=(r.conversation,r.message)
+                    WHERE r.key=files.key AND m.pinned=1)";
+                let reclaimable: i64 = tx.query_row(
+                    &format!("SELECT coalesce(sum(size),0) {evictable}"), params![candidate.at, pinned], |row| row.get(0),
+                )?;
                 let fits = used - reclaimable + size <= budget;
                 while fits && used + size > budget {
                     let (key, removed): (Vec<u8>, i64) = tx.query_row(
-                        "SELECT key,size FROM files WHERE payload IS NOT NULL ORDER BY stored,key LIMIT 1",
-                        [], |row| Ok((row.get(0)?, row.get(1)?)),
+                        &format!("SELECT key,size {evictable} ORDER BY stored,key LIMIT 1"),
+                        params![candidate.at, pinned], |row| Ok((row.get(0)?, row.get(1)?)),
                     )?;
                     // Suppress automatically evicted files so the queue cannot download them again in a loop.
                     tx.execute("UPDATE files SET payload=NULL,size=0,retry=?2 WHERE key=?1", params![key, i64::MAX])?;
@@ -199,7 +222,12 @@ pub(super) fn create_refs(db: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn store_refs(db: &Connection, archive: &Archive, message: &Message) -> Result<()> {
+pub(super) fn store_refs(
+    db: &Connection,
+    archive: &Archive,
+    message: &Message,
+    pinned: bool,
+) -> Result<()> {
     db.prepare_cached("DELETE FROM media_refs WHERE conversation=?1 AND message=?2")?
         .execute(params![message.conversation_id, message.id])?;
     if message.deleted == Some(true) {
@@ -222,10 +250,11 @@ pub(super) fn store_refs(db: &Connection, archive: &Archive, message: &Message) 
         .as_deref()
         .unwrap_or_else(|| message.attachment.as_slice())
     {
-        if attachment
-            .content_type
-            .as_deref()
-            .is_some_and(|mime| mime.starts_with("image/"))
+        if pinned
+            || attachment
+                .content_type
+                .as_deref()
+                .is_some_and(|mime| mime.starts_with("image/"))
             || image_path(&attachment.name)
         {
             insert(&attachment.url)?;
@@ -260,7 +289,7 @@ fn image_path(raw: &str) -> bool {
 fn has_ref(db: &Connection, key: &[u8]) -> rusqlite::Result<bool> {
     db.query_row(
         "SELECT EXISTS(SELECT 1 FROM media_refs r JOIN messages m ON (m.conversation,m.id)=(r.conversation,r.message)
-         WHERE r.key=?1 AND m.at>=?2)",
+         WHERE r.key=?1 AND (m.at>=?2 OR m.pinned=1))",
         params![key, retention_start()], |row| row.get(0),
     )
 }
@@ -464,5 +493,143 @@ mod tests {
         assert!(runtime.block_on(archive.media(old, 8)).is_none());
         runtime.block_on(archive.forget());
         assert!(!archive.media_path().exists());
+    }
+
+    #[test]
+    fn opening_the_previous_archive_format_keeps_downloaded_media() {
+        let runtime = runtime().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let archive = Archive::new(temp.path(), "https://example.test", CANNED_COOKIE);
+        let snapshot = SnapshotBuilder::new()
+            .channel("c", "general")
+            .cursor(7)
+            .build();
+        let url = "https://example.test/saved.png";
+        let mut stage = Staging::begin(archive.clone(), snapshot, retention_start()).unwrap();
+        stage.append(vec![picture("saved", url, 1)], 7).unwrap();
+        stage.finish(&[], 7).unwrap();
+        stage.publish().unwrap();
+        let image = archive.next_media().unwrap().unwrap();
+        archive
+            .record(image, Some((None, vec![1, 2, 3, 4])), 4)
+            .unwrap();
+        let db = Connection::open(&archive.0.path).unwrap();
+        db.execute_batch("ALTER TABLE messages DROP COLUMN pinned; PRAGMA user_version=2;")
+            .unwrap();
+        drop(db);
+
+        let status = runtime.block_on(archive.pin_status("c", "saved"));
+        assert!(status.available && status.saved && !status.pinned);
+        assert_eq!(
+            runtime.block_on(archive.media(url, 8)).unwrap().1,
+            [1, 2, 3, 4]
+        );
+        let db = archive.open_database().unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            super::super::SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn pinning_old_files_protects_them_from_eviction_and_refresh_without_resurrecting_revocations()
+    {
+        let runtime = runtime().unwrap();
+        let server = CannedServer::start(&runtime);
+        let snapshot = SnapshotBuilder::new()
+            .channel("c", "general")
+            .cursor(7)
+            .build();
+        let owner = snapshot.user.id.clone();
+        let temp = tempfile::tempdir().unwrap();
+        let api = server
+            .api()
+            .with_offline_archive(&ConfigDir::at(temp.path()));
+        let archive = api.archive.clone().unwrap();
+        let new = "https://example.test/new.png";
+        let old = "https://example.test/old.pdf";
+        let doc = Message {
+            attachment: Some(Attachment {
+                name: "old.pdf".into(),
+                url: old.into(),
+                content_type: Some("application/pdf".into()),
+                ..Default::default()
+            }),
+            ..picture("old", old, 192)
+        };
+        let recent = picture("new", new, 1);
+        let mut stage =
+            Staging::begin(archive.clone(), snapshot.clone(), retention_start()).unwrap();
+        stage.append(vec![recent.clone()], 7).unwrap();
+        stage.finish(&[], 7).unwrap();
+        stage.publish().unwrap();
+        // Open a refresh before pinning, to verify that it cannot replace the new preference.
+        let before_pin = runtime.block_on(archive.pinned_refs()).unwrap().0;
+        let mut stale =
+            Staging::begin(archive.clone(), snapshot.clone(), retention_start()).unwrap();
+        stale.finish(&[], 7).unwrap();
+        server.route(
+            "POST",
+            "/api/v1/offline/pinned",
+            200,
+            json!({"items": [doc], "cursor": 7}),
+        );
+        server.route(
+            "GET",
+            "/api/v1/offline/snapshot",
+            200,
+            json!({
+                "state": snapshot, "cursor": 7,
+                "since": (chrono::Utc::now() - RETENTION).to_rfc3339(), "items": [recent]
+            }),
+        );
+        server.route(
+            "GET",
+            "/api/v1/events/replay",
+            200,
+            json!({"items": [], "valid": true}),
+        );
+
+        let status = runtime
+            .block_on(api.set_offline_pin("c", "old", true))
+            .unwrap();
+        assert!(status.pinned);
+        assert!(!status.saved);
+        assert!(stale.publish_at(before_pin).is_err());
+        for url in [old, new] {
+            let candidate = archive.next_media().unwrap().unwrap();
+            assert_eq!(candidate.url, url);
+            archive
+                .record(candidate, Some((None, vec![1, 2, 3, 4])), 4)
+                .unwrap();
+        }
+        runtime.block_on(async {
+            assert!(api.offline_pin_status("c", "old").await.saved);
+            assert!(archive.media(new, 8).await.is_none());
+            assert_eq!(
+                archive.history_around("c", "old", 1).await.unwrap().items,
+                vec![doc.clone()]
+            );
+            archive.download(&api, &owner).await.unwrap();
+            assert!(api.offline_pin_status("c", "old").await.saved);
+
+            let status = api.set_offline_pin("c", "old", false).await.unwrap();
+            assert!(!status.pinned);
+            assert!(archive.history_around("c", "old", 1).await.is_none());
+            api.set_offline_pin("c", "old", true).await.unwrap();
+            server.route(
+                "POST",
+                "/api/v1/offline/pinned",
+                200,
+                json!({"items": [], "cursor": 7}),
+            );
+            archive.download(&api, &owner).await.unwrap();
+            assert!(archive.history_around("c", "old", 1).await.is_none());
+            assert!(archive.media(old, 8).await.is_none());
+        });
+        let requests = server.requests_to("POST", "/api/v1/offline/pinned");
+        assert!(requests.iter().all(|request| request.json()["items"]
+            == json!([{"conversationId": "c", "messageId": "old"}])));
     }
 }

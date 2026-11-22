@@ -91,10 +91,12 @@ impl Archive {
                 };
                 let sql = format!(
                     "SELECT at,id,conversation,payload FROM messages
-                 WHERE at>=? AND at<? AND (at,id,conversation)<(?,?,?){scope}
+                 WHERE (at>=? OR pinned=1) AND at>=? AND at<? AND (at,id,conversation)<(?,?,?){scope}
                  ORDER BY at DESC,id DESC,conversation DESC"
                 );
-                let remaining: [&dyn rusqlite::ToSql; 5] = [
+                let cutoff = retention_start();
+                let remaining: [&dyn rusqlite::ToSql; 6] = [
+                    &cutoff,
                     &matcher.after,
                     &matcher.before,
                     &boundary.at,
@@ -241,7 +243,7 @@ impl<'a> Matcher<'a> {
             terms: tokens(&query.text),
             names,
             members,
-            after: bound("after").unwrap_or(i64::MIN).max(retention_start()),
+            after: bound("after").unwrap_or(i64::MIN),
             before: bound("before").unwrap_or(i64::MAX),
         }
     }

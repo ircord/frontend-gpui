@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -20,8 +21,10 @@ use crate::api::{Api, ApiError};
 
 mod history;
 mod media;
+mod pins;
 mod replay;
 mod search;
+pub use pins::OfflinePin;
 pub(crate) use replay::{EVENT_BUFFER, Signal};
 use replay::{Projection, SCHEMA_VERSION, read_replay};
 pub(crate) use search::SEARCH_CURSOR;
@@ -39,6 +42,7 @@ struct Cache {
     key: aead::LessSafeKey,
     media_key: hmac::Key,
     media_changed: tokio::sync::Notify,
+    pin_revision: AtomicU64,
     /// Serialize access to the final file and fence a sync after sign-out.
     revoked: Mutex<bool>,
 }
@@ -71,6 +75,7 @@ impl Archive {
             key: aead::LessSafeKey::new(key),
             media_key: hmac::Key::new(hmac::HMAC_SHA256, media.as_ref()),
             media_changed: tokio::sync::Notify::new(),
+            pin_revision: AtomicU64::new(0),
             revoked: Mutex::new(false),
         }))
     }
@@ -118,12 +123,28 @@ impl Archive {
             }
             page = snapshot_page(api, Some(&next)).await?;
         }
+        let (pin_revision, pinned) = match self.pinned_refs().await {
+            Ok(saved) => saved,
+            Err(error) => {
+                log::debug!("recover offline archive: {error}");
+                (self.0.pin_revision.load(Ordering::Relaxed), Vec::new())
+            }
+        };
+        for batch in pinned.chunks(100) {
+            let page = pins::reconcile(api, batch).await?;
+            latest_page = latest_page.max(page.cursor);
+            stage = blocking(move || {
+                stage.retain_pins(page)?;
+                Ok(stage)
+            })
+            .await?;
+        }
         let Some(events) = read_replay(api, base).await? else {
             bail!("the server could not replay changes made during the download");
         };
         blocking(move || {
             let changed = stage.finish(&events, latest_page)?;
-            stage.publish()?;
+            stage.publish_at(pin_revision)?;
             Ok(changed)
         })
         .await
@@ -166,7 +187,7 @@ impl Archive {
         if *revoked || !self.0.path.is_file() {
             return Ok(None);
         }
-        let db = Connection::open_with_flags(&self.0.path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let db = self.open_database()?;
         let Some(projection) = self.load(&db)? else {
             return Ok(None);
         };
@@ -176,7 +197,7 @@ impl Archive {
     fn load(&self, db: &Connection) -> Result<Option<Projection>> {
         let payload: Option<Vec<u8>> = db
             .query_row(
-                "SELECT payload FROM workspace WHERE downloaded>=?1",
+                "SELECT payload FROM workspace WHERE downloaded>=?1 OR EXISTS(SELECT 1 FROM messages WHERE pinned=1)",
                 [retention_start()],
                 |row| row.get(0),
             )
@@ -260,6 +281,7 @@ impl Staging {
              CREATE TABLE workspace(downloaded INTEGER NOT NULL, payload BLOB NOT NULL);
              CREATE TABLE messages(conversation TEXT NOT NULL, id TEXT NOT NULL,
                  at INTEGER NOT NULL, position INTEGER NOT NULL, payload BLOB NOT NULL, seq INTEGER NOT NULL,
+                 pinned INTEGER NOT NULL DEFAULT 0,
                  PRIMARY KEY(conversation,id));
              CREATE INDEX messages_history ON messages(conversation,at,position,id);
              CREATE INDEX messages_retention ON messages(at);",
@@ -278,7 +300,7 @@ impl Staging {
     fn append(&mut self, items: Vec<Message>, seq: i64) -> Result<()> {
         let tx = self.db.transaction()?;
         for message in items {
-            replay::put_message(&tx, &self.archive, &message, seq, self.cutoff)?;
+            replay::put_message(&tx, &self.archive, &message, seq, self.cutoff, None)?;
         }
         tx.commit()?;
         Ok(())
@@ -299,7 +321,31 @@ impl Staging {
         Ok(changed)
     }
 
+    fn retain_pins(&mut self, page: ircord_contract::OfflinePinned) -> Result<()> {
+        let tx = self.db.transaction()?;
+        for message in page.items {
+            if message.deleted != Some(true) {
+                replay::put_message(
+                    &tx,
+                    &self.archive,
+                    &message,
+                    page.cursor,
+                    self.cutoff,
+                    Some(true),
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn publish(self) -> Result<()> {
+        let revision = self.archive.0.pin_revision.load(Ordering::Relaxed);
+        self.publish_at(revision)
+    }
+
+    fn publish_at(self, pin_revision: u64) -> Result<()> {
         let Self {
             db, path, archive, ..
         } = self;
@@ -307,6 +353,9 @@ impl Staging {
         fs::OpenOptions::new().write(true).open(&path)?.sync_all()?;
         let revoked = archive.0.revoked.lock().unwrap();
         if !*revoked {
+            if pin_revision != archive.0.pin_revision.load(Ordering::Relaxed) {
+                bail!("offline pins changed during the refresh");
+            }
             path.persist(&archive.0.path)?;
             archive.0.media_changed.notify_one();
         }

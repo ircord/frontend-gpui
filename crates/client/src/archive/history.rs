@@ -47,7 +47,7 @@ impl Archive {
                 let anchor = match id.as_deref() {
                     Some(id) => {
                         let Some(anchor) = db.query_row(
-                            "SELECT at, position, payload FROM messages WHERE conversation=?1 AND id=?2 AND at>=?3",
+                            "SELECT at, position, payload FROM messages WHERE conversation=?1 AND id=?2 AND (at>=?3 OR pinned=1)",
                             params![conversation, id, cutoff],
                             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, Vec<u8>>(2)?)),
                         ).optional()? else { return Ok(None) };
@@ -100,10 +100,10 @@ fn history_rows(
     newer: bool,
 ) -> Result<Vec<Vec<u8>>> {
     let sql = if newer {
-        "SELECT payload FROM messages WHERE conversation=?1 AND at>=?2 AND (at,position,id)>(?3,?4,?5)
+        "SELECT payload FROM messages WHERE conversation=?1 AND (at>=?2 OR pinned=1) AND (at,position,id)>(?3,?4,?5)
          ORDER BY at,position,id LIMIT ?6"
     } else {
-        "SELECT payload FROM messages WHERE conversation=?1 AND at>=?2 AND (at,position,id)<(?3,?4,?5)
+        "SELECT payload FROM messages WHERE conversation=?1 AND (at>=?2 OR pinned=1) AND (at,position,id)<(?3,?4,?5)
          ORDER BY at DESC,position DESC,id DESC LIMIT ?6"
     };
     let mut query = db.prepare_cached(sql)?;

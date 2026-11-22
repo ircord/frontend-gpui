@@ -8,6 +8,7 @@ pub mod body;
 pub mod emoji;
 pub mod layout;
 pub mod links;
+mod offline_pin;
 pub mod reactions;
 
 use std::rc::Rc;

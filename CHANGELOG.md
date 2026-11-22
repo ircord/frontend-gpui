@@ -9,6 +9,7 @@
 - Open your workspace and read saved messages while the server is unavailable, after IRCord has downloaded your recent history.
 - Search and filter saved messages when the server is unavailable, then open a match in its conversation.
 - Recent message images and GIFs are downloaded for offline viewing, including in the image viewer.
+- Keep message attachments offline beyond the normal seven-day archive window.
 
 ### Improved
 

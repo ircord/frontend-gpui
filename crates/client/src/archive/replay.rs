@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use ircord_contract::event::{Durable, ServerEvent};
 use ircord_contract::{Message, Snapshot};
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::{self, error::RecvError, error::TryRecvError};
 use tokio::time::{Instant, sleep, sleep_until};
@@ -18,7 +18,7 @@ use crate::api::Api;
 use crate::events::now_ms;
 use crate::store::{Workspace, parties};
 
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 3;
 pub(crate) const EVENT_BUFFER: usize = 512;
 const BATCH_SIZE: usize = 100;
 const BATCH_WAIT: Duration = Duration::from_millis(50);
@@ -97,14 +97,9 @@ impl Archive {
     ) -> Result<SyncResult> {
         if !full {
             let archive = self.clone();
-            let cursor = blocking(move || {
-                archive
-                    .read(|db, projection| {
-                        Ok(current_schema(db)?.then_some(projection.snapshot.cursor))
-                    })
-                    .map(Option::flatten)
-            })
-            .await;
+            let cursor =
+                blocking(move || archive.read(|_, projection| Ok(projection.snapshot.cursor)))
+                    .await;
             if let Ok(Some(cursor)) = cursor
                 && let Some(events) = read_replay(api, cursor).await?
                 && let Some(false) = self.apply(owner, events).await?
@@ -126,11 +121,7 @@ impl Archive {
             if *revoked || !archive.0.path.is_file() {
                 return Ok(None);
             }
-            let mut db =
-                Connection::open_with_flags(&archive.0.path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-            if !current_schema(&db)? {
-                return Ok(None);
-            }
+            let mut db = archive.open_database()?;
             db.pragma_update(None, "secure_delete", true)?;
             let tx = db.transaction()?;
             let Some(mut projection) = archive.load(&tx)? else {
@@ -143,7 +134,10 @@ impl Archive {
             let Some(history_changed) = projection.apply(&tx, &archive, &events)? else {
                 return Ok(None);
             };
-            tx.execute("DELETE FROM messages WHERE at<?1", [retention_start()])?;
+            tx.execute(
+                "DELETE FROM messages WHERE at<?1 AND pinned=0",
+                [retention_start()],
+            )?;
             if projection.snapshot.cursor != previous {
                 projection.save(&tx, &archive)?;
             } else {
@@ -214,12 +208,6 @@ impl SyncState {
     }
 }
 
-fn current_schema(db: &Connection) -> rusqlite::Result<bool> {
-    db.pragma_query_value(None, "user_version", |row| {
-        Ok(row.get::<_, i64>(0)? == SCHEMA_VERSION)
-    })
-}
-
 /// The original workspace fields stay readable from older archive files.
 #[derive(Serialize, Deserialize)]
 pub(super) struct Projection {
@@ -278,7 +266,7 @@ impl Projection {
                     Durable::MessageCreated(message) | Durable::MessageUpdated(message)
                         if workspace.conversation(&message.conversation_id).is_some() =>
                     {
-                        put_message(db, archive, message, seq, cutoff)?;
+                        put_message(db, archive, message, seq, cutoff, None)?;
                     }
                     Durable::HistorySynced(_) => history_changed = true,
                     _ => {}
@@ -335,18 +323,36 @@ pub(super) fn put_message(
     message: &Message,
     seq: i64,
     cutoff: i64,
+    pin: Option<bool>,
 ) -> Result<()> {
     if message.id.is_empty() || message.conversation_id.is_empty() {
         return Ok(());
     }
-    let Some(at) = time_ns(&message.created_at).filter(|at| *at >= cutoff) else {
+    let previous: bool = db
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation=?1 AND id=?2 AND pinned=1)",
+        )?
+        .query_row(params![message.conversation_id, message.id], |row| {
+            row.get(0)
+        })?;
+    let pinned = pin.unwrap_or(previous) && message.deleted != Some(true);
+    let Some(at) = time_ns(&message.created_at) else {
         return Ok(());
     };
+    if at < cutoff && !pinned {
+        if previous {
+            db.execute(
+                "DELETE FROM messages WHERE conversation=?1 AND id=?2 AND seq<=?3",
+                params![message.conversation_id, message.id, seq],
+            )?;
+        }
+        return Ok(());
+    }
     let changed = db
         .prepare_cached(
-            "INSERT INTO messages VALUES (?1,?2,?3,?4,?5,?6)
+            "INSERT INTO messages(conversation,id,at,position,payload,seq,pinned) VALUES (?1,?2,?3,?4,?5,?6,?7)
          ON CONFLICT(conversation,id) DO UPDATE SET at=excluded.at,position=excluded.position,
-            payload=excluded.payload,seq=excluded.seq WHERE excluded.seq>=messages.seq",
+            payload=excluded.payload,seq=excluded.seq,pinned=excluded.pinned WHERE excluded.seq>=messages.seq",
         )?
         .execute(params![
             message.conversation_id,
@@ -354,10 +360,11 @@ pub(super) fn put_message(
             at,
             message.position.unwrap_or_default(),
             archive.seal(b"message", message)?,
-            seq
+            seq,
+            pinned,
         ])?;
     if changed != 0 {
-        super::media::store_refs(db, archive, message)?;
+        super::media::store_refs(db, archive, message, pinned)?;
     }
     Ok(())
 }

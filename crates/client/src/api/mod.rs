@@ -18,6 +18,7 @@ use serde::de::DeserializeOwned;
 
 use crate::address::ServerAddress;
 use crate::archive::Archive;
+pub use crate::archive::OfflinePin;
 use crate::config::ConfigDir;
 
 pub mod admin;
@@ -54,6 +55,8 @@ pub fn user_agent() -> String {
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ApiError {
+    #[error("This message’s files are unavailable offline.")]
+    OfflineFilesUnavailable,
     #[error("Saved search results are unavailable. Search again.")]
     ArchivedSearchUnavailable,
     /// The session is missing or expired.
