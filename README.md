@@ -22,6 +22,7 @@ crates/video-gst  `ircord-video`, the Linux video helper: GStreamer in its own p
 xtask/            contract refresh, the build container, builds, integration test, capture
 vendor/           GPUI's Windows backend with the cross-build patch
 tools/            the build container's Dockerfile
+bin/dev.sh        cargo in the build container
 packaging/        icons, the Linux desktop entry and installer, the macOS Info.plist,
                   the installer config (Packager.toml) and the update key (updater.pub)
 .github/          CI: checks on pull requests, the installers, the release
@@ -48,6 +49,7 @@ Everything that compiles runs in a Docker image built from
 | `cargo xtask integration` | the client against a real backend and IRC server in containers |
 | `cargo xtask capture` | screenshot the Linux app against a disposable backend, in `target/capture/` |
 | `cargo xtask shell -- <cmd>` | run any command in the build container |
+| `bin/dev.sh <cargo args>` | run cargo in the build container (`bin/dev.sh clippy --all-targets`) |
 
 The backend checkout is `../ircord-backend` unless `IRCORD_BACKEND` names
 another. The first Windows build downloads Microsoft's C runtime and Windows
