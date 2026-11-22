@@ -109,6 +109,7 @@ pub struct ComposerView {
 
 /// The tallest the suggestion list grows before it scrolls.
 const SUGGESTIONS_HEIGHT: f32 = 280.;
+const DRAFT_WARNING: isize = 400;
 
 impl ComposerView {
     pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -569,7 +570,12 @@ impl Render for ComposerView {
         if !suggestions.is_empty() {
             root = root.child(self.suggestion_list(suggestions, selected, &theme, cx));
         }
-        let has_text = !self.text(cx).trim().is_empty();
+        let draft = self.text(cx);
+        let sendable =
+            !draft.trim().is_empty() || uploads::Uploads::has_pending(cx, &ctx.conversation);
+        // Count the draft the way the web composer counts its input.
+        let remaining = ircord_client::store::drafts::TEXT_LIMIT as isize
+            - draft.encode_utf16().count() as isize;
         let message_look = crate::message::layout::settings(cx);
         let font = crate::message::layout::message_font(&message_look, &theme);
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
@@ -616,8 +622,25 @@ impl Render for ComposerView {
                         .flex()
                         .items_center()
                         .gap_1()
+                        .when(remaining < DRAFT_WARNING, |row| {
+                            row.child(
+                                div()
+                                    .id("composer-remaining")
+                                    .test_support()
+                                    .role(Role::Status)
+                                    .aria_label(SharedString::from(if remaining < 0 {
+                                        t!("composer-characters-over", count = -remaining)
+                                    } else {
+                                        t!("composer-characters-left", count = remaining)
+                                    }))
+                                    .px_1()
+                                    .text_xs()
+                                    .text_color(theme.warning)
+                                    .child(remaining.to_string()),
+                            )
+                        })
                         .children(buttons)
-                        .child(self.send_button(has_text, &theme, cx)),
+                        .when(sendable, |row| row.child(self.send_button(&theme, cx))),
                 ),
         )
     }
@@ -767,21 +790,15 @@ impl ComposerView {
         list
     }
 
-    /// The send arrow: quiet while the box is empty, filled once there is
-    /// something to send.
-    fn send_button(
-        &self,
-        has_text: bool,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    /// The send arrow, shown when there is a message or an attachment to send.
+    fn send_button(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let label = SharedString::from(t!("composer-send"));
-        let (fill, ink) = if has_text {
-            (theme.accent, theme.on_accent)
-        } else {
-            (gpui_kit::transparent_black(), theme.faint)
-        };
-        let hover = if has_text { theme.accent } else { theme.hover };
+        let fill = linear_gradient(
+            135.,
+            linear_color_stop(theme.accent, 0.),
+            linear_color_stop(theme.accent.blend(theme.danger.opacity(0.22)), 1.),
+        );
+        let hover = theme.accent;
         div()
             .id("composer-send")
             .test_support()
@@ -798,16 +815,7 @@ impl ComposerView {
             .cursor_pointer()
             .bg(fill)
             .hover(move |d| d.bg(hover))
-            .child(if has_text {
-                div()
-                    .id("composer-send-filled")
-                    .test_support()
-                    .flex()
-                    .child(ui::icon::icon(LucideIcon::Send, ink))
-                    .into_any_element()
-            } else {
-                ui::icon::icon(LucideIcon::Send, ink).into_any_element()
-            })
+            .child(ui::icon::icon(LucideIcon::Send, theme.on_accent))
             .on_click(cx.listener(|this, _, window, cx| {
                 let text = this.text(cx);
                 this.submit(text, window, cx);

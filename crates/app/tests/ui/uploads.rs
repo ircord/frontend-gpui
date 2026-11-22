@@ -199,9 +199,9 @@ fn a_batch_uploads_and_sends_as_one_message(cx: &mut TestAppContext) {
         assert!(window.find("upload-item-1").visible());
         assert_eq!(window.find("upload-status-2").label(), Some("4 B"));
         assert!(window.find("composer-attach").visible());
-        // Enter with an empty box sends the files.
-        window.click("composer-input", cx);
-        window.press("enter", cx);
+        // The Send button appears for queued files even with an empty message.
+        assert!(window.find("composer-send").visible());
+        window.click("composer-send", cx);
     })
     .unwrap();
     wait(cx, "the message with the files", |_| {

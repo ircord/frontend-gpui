@@ -90,6 +90,12 @@ impl Uploads {
             .unwrap_or_default()
     }
 
+    pub(super) fn has_pending(cx: &App, conversation: &str) -> bool {
+        cx.try_global::<Uploads>()
+            .and_then(|u| u.queues.get(conversation))
+            .is_some_and(|queue| !queue.is_empty())
+    }
+
     /// Whether any conversation has files waiting (quitting would lose them).
     pub fn any_queued(cx: &App) -> bool {
         cx.try_global::<Uploads>()
