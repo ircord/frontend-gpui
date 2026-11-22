@@ -32,6 +32,7 @@ windows = { version = "0.62.2", features = [
     "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common",
     "Win32_System_WinRT_Direct3D11",
+    "Win32_System_DataExchange", "Win32_System_Memory",
     "Data_Xml_Dom", "UI_Notifications",
     "Win32_UI_WindowsAndMessaging",
 ] }
@@ -40,6 +41,7 @@ windows-registry = "0.6"
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
 objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSPasteboard"] }
 objc2-foundation = { version = "0.3.2", features = ["NSString", "NSURL", "NSDictionary", "NSValue", "NSArray", "NSError"] }
 objc2-av-foundation = { version = "0.3.2", features = ["AVPlayer", "AVPlayerItem", "AVPlayerItemOutput", "AVAsset", "objc2-core-media", "objc2-core-video"] }
 objc2-core-media = { version = "0.3.2", features = ["CMTime"] }

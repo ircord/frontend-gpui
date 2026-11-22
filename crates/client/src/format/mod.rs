@@ -9,6 +9,7 @@
 //! code highlighting ([`highlight`]).
 
 pub mod blocks;
+pub mod clipboard;
 pub mod highlight;
 pub mod inline;
 pub mod links;

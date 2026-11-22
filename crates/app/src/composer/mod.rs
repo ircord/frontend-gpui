@@ -872,10 +872,14 @@ fn paste(ctx: &ComposerCtx, item: &ClipboardItem, window: &mut Window, cx: &mut 
     if uploads::paste(ctx, item, window, cx) {
         return true;
     }
-    let Some(text) = item
-        .text()
-        .and_then(|text| ircord_client::format::blocks::pasted_bullets(&text))
-    else {
+    use ircord_client::format::{blocks, clipboard};
+    let html = (!cx.is_test())
+        .then(ircord_platform::clipboard::html)
+        .flatten();
+    let text = html
+        .and_then(|html| clipboard::list(&html.source, html.selection))
+        .or_else(|| item.text().and_then(|text| blocks::pasted_bullets(&text)));
+    let Some(text) = text else {
         return false;
     };
     let input = ctx.composer.read(cx).input.clone();

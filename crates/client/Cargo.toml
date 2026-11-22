@@ -21,12 +21,14 @@ cssparser = "0.38"
 csscolorparser = { version = "0.9", default-features = false, features = ["std", "named-colors"] }
 dirs = "6"
 futures = "0.3"
+html5ever = "0.27"
 http = "1"
 iana-time-zone = "0.1"
 icu_locale = { version = "~2.4.0", features = ["unstable"] }
 jiff = "1"
 keyring = "=4.2.0"
 log = "0.4"
+markup5ever_rcdom = "0.3"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 ring = "0.17"

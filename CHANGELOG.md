@@ -28,7 +28,7 @@
 - Search time zones in Profile settings and choose the one shown on your profile card.
 - The composer’s attachment menu opens the file picker, GIF picker, or slash command suggestions.
 - Run slash commands from a form with separate arguments, suggestions, and a masked field for channel keys.
-- Bulleted text pasted into the composer keeps its list formatting.
+- Bulleted text pasted into the composer keeps its list formatting. On macOS and Windows, copied webpage and document lists also retain nesting and numbering.
 - The composer shows Send when there’s text or a file to send, counts down near the text limit, and keeps drafts that exceed it.
 - In Profile settings, the server name stays visible and you can upload a picture by clicking the avatar next to your display name.
 - The Profile settings preview shows the name people will see when you leave your display name blank.
