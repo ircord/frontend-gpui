@@ -1,6 +1,14 @@
 //! The build container: an image from `tools/build.Dockerfile`, tagged by the
 //! file's hash, with the host's cargo registry and the cargo-xwin download
 //! cache mounted so repeated builds reuse them.
+//!
+//! Only the Microsoft CRT and SDK cargo-xwin downloads are shared between
+//! containers. Its cache root also holds a `clang-cl` link to the image's own
+//! clang (and `lld-link`, `llvm-lib`, CMake toolchain files), and cargo-xwin
+//! 0.23 fails with "File exists" on a link left dangling by an image whose
+//! clang lives elsewhere. So the root is a tmpfs of each container's own, with
+//! only the download mounted into it: lanes on different build images never
+//! see each other's links.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -42,11 +50,11 @@ pub fn base_args(root: &Path) -> Result<Vec<String>> {
     let cargo_home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".cargo"));
-    let xwin_cache = home().join(".cache/cargo-xwin");
+    let xwin_download = home().join(".cache/cargo-xwin").join("xwin");
     for dir in [
         cargo_home.join("registry"),
         cargo_home.join("git"),
-        xwin_cache.clone(),
+        xwin_download.clone(),
     ] {
         std::fs::create_dir_all(&dir)?;
     }
@@ -65,8 +73,6 @@ pub fn base_args(root: &Path) -> Result<Vec<String>> {
         "-e".into(),
         "CARGO_TERM_COLOR=always".into(),
         "-e".into(),
-        "XWIN_CACHE_DIR=/xwin-cache".into(),
-        "-e".into(),
         "XWIN_ACCEPT_LICENSE=1".into(),
         "-v".into(),
         format!("{}:/work", root.display()),
@@ -77,16 +83,32 @@ pub fn base_args(root: &Path) -> Result<Vec<String>> {
         ),
         "-v".into(),
         format!("{}:/cargo-home/git", cargo_home.join("git").display()),
-        "-v".into(),
-        format!("{}:/xwin-cache", xwin_cache.display()),
         "-w".into(),
         "/work".into(),
     ];
+    args.extend(xwin_cache_args(&xwin_download));
     if let Ok(filter) = std::env::var("RUST_LOG") {
         args.push("-e".into());
         args.push(format!("RUST_LOG={filter}"));
     }
     Ok(args)
+}
+
+/// Where cargo-xwin keeps its cache in the container.
+const XWIN_CACHE_DIR: &str = "/xwin-cache";
+
+/// cargo-xwin's cache: a fresh tmpfs per container for the links it makes
+/// to the image's tools, with the host's shared CRT/SDK download mounted at
+/// its `xwin` subdirectory, the one place cargo-xwin looks for it.
+fn xwin_cache_args(download: &Path) -> Vec<String> {
+    vec![
+        "-e".into(),
+        format!("XWIN_CACHE_DIR={XWIN_CACHE_DIR}"),
+        "--mount".into(),
+        format!("type=tmpfs,destination={XWIN_CACHE_DIR},tmpfs-mode=1777"),
+        "-v".into(),
+        format!("{}:{XWIN_CACHE_DIR}/xwin", download.display()),
+    ]
 }
 
 /// Run `cmd` in the build container with the repository at `/work`.
@@ -221,4 +243,32 @@ fn fnv1a(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No host directory is mounted at the cache root, where cargo-xwin puts
+    /// its `clang-cl` link: only the download below it is shared.
+    #[test]
+    fn xwin_links_stay_in_the_container() {
+        let args = xwin_cache_args(Path::new("/home/me/.cache/cargo-xwin/xwin"));
+        assert!(args.contains(&format!("XWIN_CACHE_DIR={XWIN_CACHE_DIR}")));
+        assert!(args.contains(&format!(
+            "type=tmpfs,destination={XWIN_CACHE_DIR},tmpfs-mode=1777"
+        )));
+        let binds: Vec<&String> = args
+            .iter()
+            .zip(args.iter().skip(1))
+            .filter(|(flag, _)| *flag == "-v")
+            .map(|(_, bind)| bind)
+            .collect();
+        assert_eq!(
+            binds,
+            [&format!(
+                "/home/me/.cache/cargo-xwin/xwin:{XWIN_CACHE_DIR}/xwin"
+            )]
+        );
+    }
 }
