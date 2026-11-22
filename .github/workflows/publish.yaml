@@ -33,6 +33,10 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "Releases are published from main, not $GITHUB_REF." >&2
+            exit 1
+          fi
           if [[ ! "v$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "$VERSION is not a release version such as 0.1.0." >&2
             exit 1
@@ -80,6 +84,10 @@ jobs:
         with:
           pattern: ircord-gpui-*
           path: installers
+      # Build scripts would inherit the signing key, so xtask is compiled in
+      # a step that does not have it.
+      - name: Build xtask
+        run: cargo build --locked --package xtask
       - name: Sign the installers and write the update manifest
         env:
           VERSION: ${{ inputs.version }}
@@ -90,7 +98,7 @@ jobs:
             echo 'The update signing key is missing.' >&2
             exit 1
           fi
-          cargo xtask release-assets "$VERSION" installers release "$GITHUB_REPOSITORY"
+          target/debug/xtask release-assets "$VERSION" installers release "$GITHUB_REPOSITORY"
       - name: Check the release with minisign
         env:
           SHA: ${{ needs.prepare.outputs.sha }}
