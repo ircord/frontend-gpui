@@ -47,29 +47,16 @@ pub fn run(root: &Path, version: &str, installers: &Path, out: &Path, repo: &str
         "release {version} but Cargo.toml says {}: set the workspace version first",
         env!("CARGO_PKG_VERSION")
     );
+    // Compare first, so a mismatch leaves nothing behind in `out`.
+    let build_info = common_build_info(installers)?;
     std::fs::create_dir_all(out)?;
-
-    let mut build_info: Option<String> = None;
     for (artifact, assets) in ARTIFACTS {
-        let dir = installers.join(artifact);
-        let info = std::fs::read_to_string(dir.join("build-info.txt"))
-            .with_context(|| format!("read {artifact}/build-info.txt"))?;
-        match &build_info {
-            None => build_info = Some(info),
-            Some(first) if *first == info => {}
-            Some(first) => {
-                bail!("{artifact} was built from\n{info}\nbut another job from\n{first}")
-            }
-        }
         for asset in assets {
-            std::fs::copy(dir.join(asset), out.join(asset))
+            std::fs::copy(installers.join(artifact).join(asset), out.join(asset))
                 .with_context(|| format!("copy {artifact}/{asset}"))?;
         }
     }
-    std::fs::write(
-        out.join("build-info.txt"),
-        build_info.expect("three artifacts"),
-    )?;
+    std::fs::write(out.join("build-info.txt"), build_info)?;
 
     let key = std::env::var("CARGO_PACKAGER_SIGN_PRIVATE_KEY")
         .context("CARGO_PACKAGER_SIGN_PRIVATE_KEY is not set")?;
@@ -98,6 +85,24 @@ pub fn run(root: &Path, version: &str, installers: &Path, out: &Path, repo: &str
     std::fs::write(out.join("SHA256SUMS"), checksums(out)?)?;
     println!("release assets for v{version} are in {}", out.display());
     Ok(())
+}
+
+/// The `build-info.txt` every build job wrote, which must be the same: a
+/// release is one commit built for every platform.
+fn common_build_info(installers: &Path) -> Result<String> {
+    let mut common: Option<String> = None;
+    for (artifact, _) in ARTIFACTS {
+        let info = std::fs::read_to_string(installers.join(artifact).join("build-info.txt"))
+            .with_context(|| format!("read {artifact}/build-info.txt"))?;
+        match &common {
+            None => common = Some(info),
+            Some(first) if *first == info => {}
+            Some(first) => {
+                bail!("{artifact} was built from\n{info}\nbut another job from\n{first}")
+            }
+        }
+    }
+    Ok(common.expect("three artifacts"))
 }
 
 fn is_stable_version(version: &str) -> bool {
@@ -243,7 +248,74 @@ mod tests {
 
     #[test]
     fn a_key_that_is_not_base64_is_refused() {
-        assert!(secret_key("not base64!", "").is_err());
+        assert_eq!(
+            secret_key("not base64!", "").unwrap_err().to_string(),
+            "the key is not base64"
+        );
+    }
+
+    /// A directory under the system's temp folder, removed when dropped.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("xtask-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write_build_info(installers: &Path, infos: [&str; 3]) {
+        for ((artifact, _), info) in ARTIFACTS.iter().zip(infos) {
+            let dir = installers.join(artifact);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("build-info.txt"), info).unwrap();
+        }
+    }
+
+    #[test]
+    fn every_build_job_must_have_built_the_same_commit() {
+        let scratch = Scratch::new("build-info");
+        let same = "frontend-gpui=aaa\nbackend-contract=bbb\n";
+        write_build_info(&scratch.0, [same, same, same]);
+        assert_eq!(common_build_info(&scratch.0).unwrap(), same);
+
+        write_build_info(&scratch.0, [same, same, "frontend-gpui=ccc\n"]);
+        let error = common_build_info(&scratch.0).unwrap_err().to_string();
+        assert!(
+            error.starts_with("ircord-gpui-macos-arm64 was built from"),
+            "{error}"
+        );
+
+        std::fs::remove_file(scratch.0.join("ircord-gpui-windows-x64/build-info.txt")).unwrap();
+        let error = common_build_info(&scratch.0).unwrap_err().to_string();
+        assert_eq!(error, "read ircord-gpui-windows-x64/build-info.txt");
+    }
+
+    #[test]
+    fn a_mismatch_leaves_the_output_empty() {
+        let scratch = Scratch::new("mismatch");
+        let installers = scratch.0.join("installers");
+        write_build_info(&installers, ["a\n", "a\n", "b\n"]);
+        let out = scratch.0.join("release");
+        assert!(
+            run(
+                &scratch.0,
+                env!("CARGO_PKG_VERSION"),
+                &installers,
+                &out,
+                "o/r"
+            )
+            .is_err()
+        );
+        assert!(!out.exists());
     }
 
     #[test]
@@ -267,13 +339,12 @@ mod tests {
 
     #[test]
     fn checksums_cover_the_assets_in_sha256sum_format() {
-        let dir = std::env::temp_dir().join(format!("xtask-sums-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = Scratch::new("sums");
+        let dir = &scratch.0;
         std::fs::write(dir.join("IRCord-GPUI-b.deb"), b"").unwrap();
         std::fs::write(dir.join("IRCord-GPUI-a.exe"), b"abc").unwrap();
         std::fs::write(dir.join("latest.json"), b"{}").unwrap();
-        let sums = checksums(&dir).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
+        let sums = checksums(dir).unwrap();
         assert_eq!(
             sums,
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  IRCord-GPUI-a.exe\n\

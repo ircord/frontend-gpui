@@ -185,6 +185,30 @@ mod tests {
     }
 
     #[test]
+    fn collect_copies_the_one_installer_and_refuses_none_or_two() {
+        let root = std::env::temp_dir().join(format!("xtask-collect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let out = root.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("ircord_0.1.0_amd64.deb"), b"deb").unwrap();
+        std::fs::write(out.join("notes.txt"), b"").unwrap();
+
+        collect(&root, &out, ".deb", LINUX_DEB).unwrap();
+        assert_eq!(
+            std::fs::read(root.join("dist").join(LINUX_DEB)).unwrap(),
+            b"deb"
+        );
+
+        let none = collect(&root, &out, "-setup.exe", WINDOWS_SETUP).unwrap_err();
+        assert!(none.to_string().contains("found 0"), "{none}");
+
+        std::fs::write(out.join("ircord_0.1.1_amd64.deb"), b"other").unwrap();
+        let two = collect(&root, &out, ".deb", LINUX_DEB).unwrap_err();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(two.to_string().contains("found 2"), "{two}");
+    }
+
+    #[test]
     fn asset_names_carry_the_product_name() {
         for name in [LINUX_DEB, WINDOWS_SETUP, MACOS_DMG, MACOS_UPDATE] {
             assert!(name.starts_with("IRCord-GPUI-"), "{name}");
