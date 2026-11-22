@@ -14,6 +14,7 @@
 
 - Nickname arguments of commands such as `/kick` and `/invite` suggest people with their picture, presence and name, as the @ list does; `/invite` and the channel's Invite someone leave out the people already in the channel.
 - Message text size, the space between groups and the interface scale are sliders, as on the web, and Settings → About shows the IRCord server you are signed in to.
+- Typed emoticons such as :) :D :P and <3 turn into emoji when you finish the word. Press Backspace right away to keep the text.
 - Notifications behave as on the web: an alert while IRCord is in the background shows a notification with the app's icon, a sound-only alert plays the chime, and the settings' test button plays it too.
 - Play a sound attached to a message in place, with a bar to pause, seek and mute it; one sound plays at a time, and `.opus` files still open in the browser.
 - Use a personal theme's custom CSS for the colours, fonts, corners, scale, message size and gap it sets on the root, when you switch on "Use custom CSS" in Appearance; the rules that restyle parts of the page are counted and not used.

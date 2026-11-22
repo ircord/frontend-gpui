@@ -26,6 +26,7 @@ pub mod commands;
 pub mod config;
 pub mod credentials;
 pub mod documents;
+pub mod emoticons;
 pub mod events;
 pub mod features;
 pub mod format;

@@ -51,7 +51,7 @@ fn first() -> Message {
 /// Everything E1 reads: the server's emote `party`, a 7TV `pog`, an empty
 /// library, Klipy on the canned server, and messages from bob, the first
 /// with custom emoji in it.
-fn serve(server: &CannedServer) {
+pub(crate) fn serve(server: &CannedServer) {
     server.snapshot(&capable());
     let history = serde_json::to_value(MessagePage {
         items: vec![first(), message("2", "c-general", "second line")],

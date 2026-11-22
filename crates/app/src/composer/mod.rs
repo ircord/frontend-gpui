@@ -16,6 +16,7 @@
 //! emoji, attach), then a send arrow that fills once there is text.
 
 pub mod drafts;
+pub mod emoticons;
 pub mod expressions;
 pub mod reply;
 pub mod suggest;
@@ -95,6 +96,10 @@ pub struct ComposerView {
     /// until either changes.
     dismissed: Option<(String, usize)>,
     tab: Option<TabCycle>,
+    /// The last emoticon turned into emoji, which Backspace can undo.
+    emoticon: Option<emoticons::Converted>,
+    /// The text and caret after the last change, so a typed space can be told from a render.
+    seen: (String, usize),
     /// Keeps the highlighted suggestion in view.
     scroll: ScrollHandle,
     /// The placeholder given to the box, which names the conversation.
@@ -123,6 +128,7 @@ impl ComposerView {
                         this.submit(text, window, cx);
                     }
                     InputEvent::Change => {
+                        this.convert_typed(window, cx);
                         state.update(cx, tokenize);
                         this.selected = 0;
                         this.picked = false;
@@ -158,6 +164,8 @@ impl ComposerView {
             picked: false,
             dismissed: None,
             tab: None,
+            emoticon: None,
+            seen: (String::new(), 0),
             scroll: ScrollHandle::new(),
             placeholder: SharedString::default(),
             _subscriptions: subscriptions,
@@ -256,6 +264,7 @@ impl ComposerView {
             }
             tokenize(s, cx);
         });
+        self.seen = (self.text(cx), self.caret(cx));
     }
 
     /// Replace the text and put the caret at `caret` (a byte offset).
@@ -353,6 +362,13 @@ impl ComposerView {
             return;
         };
         self.remember(cx);
+        if key.key == "backspace" && !m.modified() && self.restore_typed(window, cx) {
+            cx.stop_propagation();
+            return;
+        }
+        if key.key != "shift" {
+            self.emoticon = None;
+        }
         let suggestions = self.suggestions(&ctx, cx);
         let plain = !m.modified();
         if !suggestions.is_empty() {

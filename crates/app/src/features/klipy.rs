@@ -702,6 +702,10 @@ fn suggest(ctx: &ComposerCtx, text: &str, cx: &App) -> Vec<Suggestion> {
     let Some((range, query)) = emoji::typed_shortcode(text, caret) else {
         return Vec::new();
     };
+    // ":-D" and ":-P" are emoticons being typed, not an emoji search (":-1" still searches).
+    if ircord_client::emoticons::is_emoticon(&format!(":{query}")) {
+        return Vec::new();
+    }
     let session = ctx.session.read(cx);
     let Some(client) = session.client() else {
         return Vec::new();

@@ -21,6 +21,9 @@ use crate::ui;
 
 pub fn init(cx: &mut App) {
     registry::register(cx, |r| {
+        r.composer
+            .send_filters
+            .add(crate::composer::emoticons::send_filter());
         r.composer.send_filters.add(SendFilter {
             id: "text-markdown".into(),
             // After commands (which see what was typed), before length checks.
