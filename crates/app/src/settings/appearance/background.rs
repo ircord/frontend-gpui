@@ -97,7 +97,7 @@ pub(super) fn render(
                                     draft.background = None;
                                 }
                             });
-                            cx.refresh_windows();
+                            super::refresh_studio(&remove, cx);
                         }),
                 )
             }),
@@ -402,7 +402,7 @@ fn edit(editor: &Entity<Editor>, cx: &mut App, change: impl FnOnce(&mut ThemeBac
             change(bg);
         }
     });
-    cx.refresh_windows();
+    super::refresh_studio(editor, cx);
 }
 
 fn upload(editor: &Entity<Editor>, cx: &mut App) {
@@ -484,7 +484,7 @@ fn upload(editor: &Entity<Editor>, cx: &mut App) {
                 Ok(None) => (),
                 Err(err) => say(&editor, err, true, cx),
             }
-            cx.refresh_windows();
+            super::refresh_studio(&editor, cx);
         });
     })
     .detach();

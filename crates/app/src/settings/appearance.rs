@@ -32,7 +32,6 @@ use ircord_client::store::appearance::{
 use ircord_client::store::theme_css::CssVariables;
 
 use crate::registry::{self, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection};
-use crate::route::Route;
 use crate::session::{Session, SessionEvent};
 use crate::settings::messages;
 use crate::settings::{block, row};
@@ -146,13 +145,18 @@ struct Editor {
     /// The unsaved theme and its editing mode.
     editing: Option<(UserTheme, Mode)>,
     tab: ThemeTab,
+    studio_open: bool,
+    collapsed: bool,
+    compare: bool,
+    new_theme: bool,
+    focus: FocusHandle,
     background_preview: Entity<crate::theme::background::Wallpaper>,
     edit_generation: u64,
     /// What the last action said, and whether it was a problem.
     notice: Option<(SharedString, bool)>,
     busy: bool,
     _session: Subscription,
-    _css: Subscription,
+    _inputs: Vec<Subscription>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -178,7 +182,7 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
     let name = input(t!("appearance-themes-new-name"), window, cx);
     let import = input(t!("appearance-themes-import-paste"), window, cx);
     let css = cx.new(|cx| TextareaState::new(window, cx).rows(6));
-    let seeds = Seed::ALL
+    let seeds: Vec<_> = Seed::ALL
         .iter()
         .map(|s| {
             (
@@ -188,43 +192,55 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
         })
         .collect();
     let background_preview = cx.new(|_| crate::theme::background::Wallpaper::default());
-    let e = cx.new(|cx: &mut Context<Editor>| Editor {
-        session: ctx.session.clone(),
-        accent,
-        name,
-        import,
-        css: css.clone(),
-        seeds,
-        editing: None,
-        tab: ThemeTab::Colors,
-        background_preview,
-        edit_generation: 0,
-        notice: None,
-        busy: false,
-        _session: cx.subscribe(&ctx.session, |editor, session, event: &SessionEvent, cx| {
-            if matches!(event, SessionEvent::Phase)
-                || (matches!(event, SessionEvent::Route)
-                    && session.read(cx).route() != Some(Route::Settings))
-            {
-                editor
-                    .background_preview
-                    .update(cx, |preview, cx| preview.clear(None, cx));
-            }
-            if matches!(event, SessionEvent::Phase) {
-                editor.editing = None;
-                editor.edit_generation = editor.edit_generation.wrapping_add(1);
-                editor.notice = None;
-                editor.busy = false;
-            }
-        }),
-        _css: cx.subscribe(&css, |editor, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) && editor.editing.is_some() {
-                cx.refresh_windows();
-            }
-        }),
+    let e = cx.new(|cx: &mut Context<Editor>| {
+        let mut inputs: Vec<_> = seeds
+            .iter()
+            .map(|(_, field)| cx.subscribe(field, |_, _, event, cx| draft_input_changed(event, cx)))
+            .collect();
+        inputs.push(cx.subscribe(&name, |_, _, event, cx| draft_input_changed(event, cx)));
+        inputs.push(cx.subscribe(&css, |_, _, event, cx| draft_input_changed(event, cx)));
+        Editor {
+            session: ctx.session.clone(),
+            accent,
+            name,
+            import,
+            css,
+            seeds,
+            editing: None,
+            tab: ThemeTab::Colors,
+            studio_open: false,
+            collapsed: false,
+            compare: false,
+            new_theme: false,
+            focus: cx.focus_handle(),
+            background_preview,
+            edit_generation: 0,
+            notice: None,
+            busy: false,
+            _session: cx.subscribe(&ctx.session, |editor, _, event: &SessionEvent, cx| {
+                if matches!(event, SessionEvent::Phase) {
+                    editor
+                        .background_preview
+                        .update(cx, |preview, cx| preview.clear(None, cx));
+                    editor.studio_open = false;
+                    editor.editing = None;
+                    editor.edit_generation = editor.edit_generation.wrapping_add(1);
+                    editor.notice = None;
+                    editor.busy = false;
+                }
+            }),
+            _inputs: inputs,
+        }
     });
     cx.set_global(Editors(e.clone()));
     e
+}
+
+fn draft_input_changed(event: &InputEvent, cx: &mut Context<Editor>) {
+    if matches!(event, InputEvent::Change) {
+        let editor = cx.entity();
+        cx.defer(move |cx| refresh_studio(&editor, cx));
+    }
 }
 
 fn say(editor: &Entity<Editor>, text: impl Into<SharedString>, problem: bool, cx: &mut App) {
@@ -484,7 +500,7 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
             ctx,
             "appearance-themes",
             t!("appearance-themes"),
-            themes_block(&current, mode, &editor, &theme, window, cx),
+            themes_block(&current, mode, &editor, &theme, cx),
             &theme,
         ))
         .child(row(
@@ -1326,19 +1342,15 @@ fn themes_block(
     mode: Mode,
     editor: &Entity<Editor>,
     theme: &Theme,
-    window: &mut Window,
-    cx: &mut App,
+    cx: &App,
 ) -> impl IntoElement + use<> {
     let signed_in = editor.read(cx).session.read(cx).client().is_some();
     let library = appearance::library(cx);
     let compiled = appearance::compiled(cx);
     let e = editor.read(cx);
     let notice = e.notice.clone();
-    let editing = e.editing.clone();
     let busy = e.busy;
-    let name_input = e.name.clone();
     let import_input = e.import.clone();
-    let seeds = e.seeds.clone();
     let mut body = div()
         .id("appearance-theme-library")
         .test_support()
@@ -1353,7 +1365,7 @@ fn themes_block(
                 .text_color(theme.muted)
                 .child(t!("appearance-themes-help")),
         );
-    if let Some((text, problem)) = notice.filter(|_| editing.is_none()) {
+    if let Some((text, problem)) = notice.filter(|_| !e.studio_open) {
         body = body.child(
             div()
                 .id("appearance-themes-notice")
@@ -1432,20 +1444,6 @@ fn themes_block(
             body = body.child(css_report("appearance-themes-css", &name, css, theme));
         }
     }
-    if let Some((user_theme, editing_mode)) = editing {
-        body = body.child(theme_editor(
-            &user_theme,
-            editing_mode,
-            &seeds,
-            editor,
-            theme,
-            window,
-            cx,
-        ));
-    } else {
-        let preview = editor.read(cx).background_preview.clone();
-        preview.update(cx, |view, cx| view.clear(Some(window), cx));
-    }
     let full = library.themes.len() >= look::MAX_THEMES;
     if full {
         body = body.child(
@@ -1465,27 +1463,19 @@ fn themes_block(
             .flex_wrap()
             .items_center()
             .gap_2()
-            .child(
-                div().w(px(180.)).child(
-                    Input::new(&name_input)
-                        .id("appearance-themes-name")
-                        .aria_label(t!("appearance-themes-name")),
-                ),
-            )
             .when(!full && !busy, |d| {
                 d.child(
                     button("appearance-themes-new", t!("appearance-themes-new"), theme)
                         .test_support()
                         .reachable(theme)
-                        .on_click(move |_, _, cx| {
-                            let name = name_input.read(cx).value().to_string();
-                            let name = if name.trim().is_empty() {
-                                t!("appearance-themes-new-name").to_string()
-                            } else {
-                                name
-                            };
-                            let made = look::new_theme(&current, &name, made_with(), &now());
-                            save(&new_editor, made, None, true, None, cx);
+                        .on_click(move |_, window, cx| {
+                            let made = look::new_theme(
+                                &current,
+                                t!("appearance-themes-new-name"),
+                                made_with(),
+                                &now(),
+                            );
+                            open_studio(&new_editor, &made, mode, true, window, cx);
                         }),
                 )
             }),
@@ -1646,7 +1636,7 @@ fn theme_row(
                     )))
                     .test_support()
                     .on_click(move |_, window, cx| {
-                        start_editing(&edit_editor, &edit_theme, mode, window, cx)
+                        open_studio(&edit_editor, &edit_theme, mode, false, window, cx)
                     }),
             )
         })
@@ -1715,34 +1705,255 @@ fn seed_key(seed: Seed) -> &'static str {
     }
 }
 
-fn start_editing(
+fn open_studio(
     editor: &Entity<Editor>,
     user_theme: &UserTheme,
     mode: Mode,
+    new_theme: bool,
     window: &mut Window,
     cx: &mut App,
 ) {
     if editor.read(cx).busy {
         return;
     }
-    let seeds = look::drawn_seeds(user_theme, mode);
     let state = editor.read(cx);
-    let inputs = state.seeds.clone();
-    let css = state.css.clone();
-    for (seed, input) in inputs {
-        let value = look::to_hex(seed.get(&seeds));
-        input.update(cx, |s, cx| s.set_value(value, window, cx));
+    let resume = !new_theme
+        && state
+            .editing
+            .as_ref()
+            .is_some_and(|(draft, _)| draft.id == user_theme.id);
+    let session = state.session.clone();
+    let focus = state.focus.clone();
+    if !resume {
+        let css = state.css.clone();
+        let name = state.name.clone();
+        fill_seeds(editor, user_theme, mode, window, cx);
+        css.update(cx, |s, cx| {
+            s.set_value(user_theme.css.clone().unwrap_or_default(), window, cx)
+        });
+        name.update(cx, |s, cx| {
+            s.set_value(user_theme.name.clone().unwrap_or_default(), window, cx)
+        });
     }
-    css.update(cx, |s, cx| {
-        s.set_value(user_theme.css.clone().unwrap_or_default(), window, cx)
-    });
     editor.update(cx, |e, _| {
-        e.editing = Some((user_theme.clone(), mode));
-        e.tab = ThemeTab::Colors;
-        e.edit_generation = e.edit_generation.wrapping_add(1);
-        e.notice = None;
+        if !resume {
+            e.editing = Some((user_theme.clone(), mode));
+            e.tab = ThemeTab::Colors;
+            e.new_theme = new_theme;
+            e.edit_generation = e.edit_generation.wrapping_add(1);
+            e.notice = None;
+        }
+        e.studio_open = true;
+        e.collapsed = false;
+        e.compare = false;
     });
-    cx.refresh_windows();
+    crate::settings::close(&session, cx);
+    refresh_studio(editor, cx);
+    window.on_next_frame(move |window, cx| focus.focus(window, cx));
+}
+
+fn fill_seeds(
+    editor: &Entity<Editor>,
+    theme: &UserTheme,
+    mode: Mode,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let seeds = look::drawn_seeds(theme, mode);
+    for (seed, input) in editor.read(cx).seeds.clone() {
+        input.update(cx, |s, cx| {
+            s.set_value(look::to_hex(seed.get(&seeds)), window, cx)
+        });
+    }
+}
+
+fn draft_fields(
+    editor: &Editor,
+    base: &UserTheme,
+    mode: Mode,
+    cx: &App,
+) -> Result<UserTheme, &'static str> {
+    let mut draft = base.clone();
+    let shown = look::drawn_seeds(base, mode);
+    for (seed, input) in &editor.seeds {
+        let text = input.read(cx).value();
+        let text = text.trim();
+        let color = if text.starts_with('#') {
+            look::parse_hex(text)
+        } else {
+            look::parse_hex(&format!("#{text}"))
+        };
+        let color = color.ok_or_else(|| t!("appearance-accent-custom-invalid"))?;
+        if color != seed.get(&shown) {
+            look::set_seed(&mut draft, mode, *seed, color);
+        }
+    }
+    let css = editor.css.read(cx).value();
+    if css.len() > look::MAX_THEME_CSS {
+        return Err(t!("appearance-themes-import-css-too-long"));
+    }
+    if &*css != base.css.as_deref().unwrap_or_default() {
+        draft.css = Some(css.to_string());
+    }
+    let name = editor.name.read(cx).value();
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > look::MAX_THEME_NAME {
+        return Err(t!("appearance-studio-name-error"));
+    }
+    draft.name = Some(name.to_owned());
+    Ok(draft)
+}
+
+fn refresh_studio(editor: &Entity<Editor>, cx: &mut App) {
+    let state = editor.read(cx);
+    if state.studio_open
+        && let Some((base, mode)) = &state.editing
+    {
+        let theme = draft_fields(state, base, *mode, cx).unwrap_or_else(|_| base.clone());
+        appearance::set_studio(
+            Some(appearance::StudioPreview {
+                theme,
+                mode: *mode,
+                compare: state.compare,
+            }),
+            cx,
+        );
+    }
+}
+
+fn hide_studio(editor: &Entity<Editor>, discard: bool, cx: &mut App) {
+    editor.update(cx, |editor, cx| {
+        editor.studio_open = false;
+        editor
+            .background_preview
+            .update(cx, |preview, cx| preview.clear(None, cx));
+        if discard {
+            editor.editing = None;
+            editor.notice = None;
+            editor.edit_generation = editor.edit_generation.wrapping_add(1);
+        }
+    });
+    appearance::set_studio(None, cx);
+}
+
+fn switch_preview_mode(editor: &Entity<Editor>, mode: Mode, window: &mut Window, cx: &mut App) {
+    let state = editor.read(cx);
+    let Some((base, current)) = &state.editing else {
+        return;
+    };
+    if *current == mode {
+        return;
+    }
+    match draft_fields(state, base, *current, cx) {
+        Ok(draft) => {
+            fill_seeds(editor, &draft, mode, window, cx);
+            editor.update(cx, |editor, _| {
+                editor.editing = Some((draft, mode));
+                editor.notice = None;
+            });
+            refresh_studio(editor, cx);
+        }
+        Err(message) => say(editor, message, true, cx),
+    }
+}
+
+pub(crate) const STUDIO_WIDTH: f32 = 360.;
+
+pub(crate) fn studio_view(
+    session: &Entity<Session>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<(AnyElement, bool)> {
+    let editor = cx.try_global::<Editors>()?.0.clone();
+    let state = editor.read(cx);
+    if state.session != *session || !state.studio_open {
+        return None;
+    }
+    let (draft, mode) = state.editing.clone()?;
+    let docked = window.viewport_size().width > px(700.);
+    let collapsed = !docked && state.collapsed;
+    let focus = state.focus.clone();
+    let busy = state.busy;
+    let seeds = state.seeds.clone();
+    let safe = Theme::from_compiled(&look::compile(&appearance::look(cx), mode, &[], false));
+    let collapse = editor.clone();
+    let dismiss = editor.clone();
+    let panel = div()
+        .id("theme-studio")
+        .test_support()
+        .role(Role::Group)
+        .aria_label(t!("appearance-studio-title"))
+        .track_focus(&focus)
+        .flex()
+        .flex_col()
+        .min_h_0()
+        .occlude()
+        .bg(safe.panel)
+        .text_color(safe.text)
+        .when(docked, |panel| {
+            panel
+                .w(px(STUDIO_WIDTH))
+                .h_full()
+                .flex_none()
+                .border_l_1()
+                .border_color(safe.border)
+        })
+        .when(!docked, |panel| {
+            panel
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .rounded_t(safe.radius_large)
+                .overflow_hidden()
+                .border_t_1()
+                .border_color(safe.border)
+        })
+        .when(!docked && !collapsed, |panel| panel.h(relative(0.58)))
+        .on_action(move |_: &crate::features::shortcuts::MarkRead, _, cx| {
+            cx.stop_propagation();
+            if !dismiss.read(cx).busy {
+                hide_studio(&dismiss, true, cx);
+            }
+        })
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .border_b_1()
+                .border_color(safe.border)
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(t!("appearance-studio-title")),
+                )
+                .when(!docked, |header| {
+                    header.child(
+                        Button::new("theme-studio-collapse")
+                            .ghost()
+                            .disabled(busy)
+                            .label(if collapsed {
+                                t!("appearance-studio-expand")
+                            } else {
+                                t!("appearance-studio-collapse")
+                            })
+                            .on_click(move |_, _, cx| {
+                                collapse.update(cx, |editor, _| editor.collapsed = !collapsed);
+                                cx.refresh_windows();
+                            }),
+                    )
+                }),
+        )
+        .when(!collapsed, |panel| {
+            panel.child(theme_editor(
+                &draft, mode, &seeds, &editor, &safe, window, cx,
+            ))
+        });
+    Some((panel.into_any_element(), docked))
 }
 
 fn theme_editor(
@@ -1754,37 +1965,28 @@ fn theme_editor(
     window: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement + use<> {
-    let name = user_theme.name.clone().unwrap_or_default();
-    let mode_name = match mode {
-        Mode::Dark => t!("appearance-themes-editing-dark"),
-        Mode::Light => t!("appearance-themes-editing-light"),
-    };
-    let tab = editor.read(cx).tab;
-    let busy = editor.read(cx).busy;
+    let state = editor.read(cx);
+    let tab = state.tab;
+    let busy = state.busy;
+    let compare = state.compare;
+    let name = state.name.clone();
     let mut form = div()
-        .id("appearance-theme-editor")
+        .id("theme-studio-content")
         .test_support()
         .role(Role::Form)
-        .aria_label(SharedString::from(t!(
-            "appearance-themes-editing",
-            name = name,
-            mode = mode_name
-        )))
+        .aria_label(t!("appearance-studio-title"))
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
         .flex()
         .flex_col()
         .gap_2()
         .p_3()
-        .rounded(theme.radius_large)
-        .bg(theme.panel)
+        .child(div().text_sm().child(t!("appearance-themes-name")))
         .child(
-            div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.text)
-                .child(t!(
-                    "appearance-themes-editing",
-                    name = name,
-                    mode = mode_name
-                )),
+            Input::new(&name)
+                .id("appearance-themes-name")
+                .aria_label(t!("appearance-themes-name")),
         );
     let tabs = div()
         .id("appearance-theme-tabs")
@@ -1832,6 +2034,41 @@ fn theme_editor(
     if tab == ThemeTab::Css {
         form = form.child(css_editor(editor, user_theme, mode, theme, cx));
     } else if tab == ThemeTab::Colors {
+        form = form.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().text_sm().child(t!("appearance-studio-preview-mode")))
+                .child(
+                    div()
+                        .id("theme-studio-mode")
+                        .test_support()
+                        .role(Role::RadioGroup)
+                        .aria_label(t!("appearance-studio-preview-mode"))
+                        .flex()
+                        .gap_1()
+                        .children(
+                            [
+                                (Mode::Dark, "theme-studio-dark", t!("appearance-mode-dark")),
+                                (
+                                    Mode::Light,
+                                    "theme-studio-light",
+                                    t!("appearance-mode-light"),
+                                ),
+                            ]
+                            .map(|(choice, id, label)| {
+                                let editor = editor.clone();
+                                option(id, label, mode == choice, theme)
+                                    .test_support()
+                                    .reachable(theme)
+                                    .on_click(move |_, window, cx| {
+                                        switch_preview_mode(&editor, choice, window, cx)
+                                    })
+                            }),
+                        ),
+                ),
+        );
         for (seed, input) in inputs {
             form = form.child(
                 div()
@@ -1872,71 +2109,71 @@ fn theme_editor(
     }
     let save_editor = editor.clone();
     let cancel_editor = editor.clone();
+    let compare_editor = editor.clone();
     let edited = user_theme.clone();
-    let inputs: Vec<_> = inputs.to_vec();
-    form.child(
-        div()
-            .flex()
-            .gap_2()
-            .child(
-                Button::new("appearance-theme-save")
-                    .label(t!("appearance-themes-save"))
-                    .primary()
-                    .disabled(busy)
+    div()
+        .id("appearance-theme-editor")
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h_0()
+        .child(form)
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .justify_between()
+                .items_center()
+                .gap_2()
+                .p_3()
+                .border_t_1()
+                .border_color(theme.border)
+                .child(
+                    option(
+                        "theme-studio-compare",
+                        t!("appearance-studio-compare"),
+                        compare,
+                        theme,
+                    )
+                    .role(Role::Button)
+                    .test_support()
+                    .reachable(theme)
                     .on_click(move |_, _, cx| {
-                        let mut next = edited.clone();
-                        let shown = look::drawn_seeds(&edited, mode);
-                        for (seed, input) in &inputs {
-                            let text = input.read(cx).value().trim().to_string();
-                            let text = if text.starts_with('#') {
-                                text
-                            } else {
-                                format!("#{text}")
-                            };
-                            let Some(color) = look::parse_hex(&text) else {
-                                say(
-                                    &save_editor,
-                                    t!("appearance-accent-custom-invalid"),
-                                    true,
-                                    cx,
-                                );
-                                return;
-                            };
-                            if color != seed.get(&shown) {
-                                look::set_seed(&mut next, mode, *seed, color);
-                            }
-                        }
-                        let css = save_editor.read(cx).css.read(cx).value().to_string();
-                        if css.len() > look::MAX_THEME_CSS {
-                            say(
-                                &save_editor,
-                                t!("appearance-themes-import-css-too-long"),
-                                true,
-                                cx,
-                            );
-                            return;
-                        }
-                        if css != edited.css.as_deref().unwrap_or_default() {
-                            next.css = Some(css);
-                        }
-                        next.made_with = Some(made_with().into());
-                        save_edit(&save_editor, next, cx);
+                        compare_editor.update(cx, |editor, _| editor.compare = !compare);
+                        refresh_studio(&compare_editor, cx);
                     }),
-            )
-            .child(
-                Button::new("appearance-theme-cancel")
-                    .label(t!("appearance-themes-cancel"))
-                    .ghost()
-                    .disabled(busy)
-                    .on_click(move |_, _, cx| {
-                        cancel_editor.update(cx, |e, _| {
-                            e.editing = None;
-                            e.edit_generation = e.edit_generation.wrapping_add(1);
-                        });
-                        cx.refresh_windows();
-                    }),
-            ),
-    )
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Button::new("appearance-theme-save")
+                                .label(t!("appearance-themes-save"))
+                                .primary()
+                                .disabled(busy)
+                                .on_click(move |_, _, cx| {
+                                    match draft_fields(save_editor.read(cx), &edited, mode, cx) {
+                                        Ok(mut draft) => {
+                                            draft.made_with = Some(made_with().into());
+                                            save_edit(&save_editor, draft, cx);
+                                        }
+                                        Err(message) => say(&save_editor, message, true, cx),
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("appearance-theme-cancel")
+                                .label(t!("appearance-themes-cancel"))
+                                .ghost()
+                                .disabled(busy)
+                                .on_click(move |_, _, cx| {
+                                    hide_studio(&cancel_editor, true, cx);
+                                }),
+                        ),
+                ),
+        )
 }
 
 fn css_editor(
@@ -2019,6 +2256,10 @@ fn save_edit(editor: &Entity<Editor>, draft: UserTheme, cx: &mut App) {
     if editor.read(cx).busy {
         return;
     }
+    if editor.read(cx).new_theme {
+        save(editor, draft, None, true, None, cx);
+        return;
+    }
     let expected = draft.updated_at.clone();
     let preview = draft.clone();
     let keep_editor = editor.clone();
@@ -2030,8 +2271,7 @@ fn save_edit(editor: &Entity<Editor>, draft: UserTheme, cx: &mut App) {
         },
         cx,
     ) {
-        let session = editor.read(cx).session.clone();
-        crate::settings::close(&session, cx);
+        hide_studio(editor, false, cx);
     } else {
         save(editor, draft, expected, false, None, cx);
     }
@@ -2062,6 +2302,11 @@ fn save(
     }
     editor.update(cx, |e, _| e.busy = true);
     let id = user_theme.id.clone();
+    let saves_draft = editor
+        .read(cx)
+        .editing
+        .as_ref()
+        .is_some_and(|(draft, _)| draft.id == id);
     let task = client.request(move |api| async move {
         api.save_theme(&user_theme, expected.as_deref(), false)
             .await
@@ -2079,27 +2324,34 @@ fn save(
             {
                 return;
             }
-            editor.update(cx, |e, _| e.busy = false);
+            editor.update(cx, |e, _| {
+                e.busy = false;
+                if saves_draft && !matches!(&result, Ok(Ok(_))) {
+                    e.studio_open = true;
+                }
+            });
             match result {
                 Ok(Ok(themes)) => {
                     appearance::set_library(themes, cx);
+                    if saves_draft {
+                        hide_studio(&editor, true, cx);
+                    }
                     editor.update(cx, |e, _| {
-                        e.editing = None;
                         e.notice = done.map(|text| (text.into(), false));
                     });
-                    if then_use {
-                        appearance::edit(cx, |a| a.theme = id);
+                    if then_use && let Some(id) = id {
+                        appearance::trial::choose(&id, cx);
                     }
                     appearance::apply(cx);
                 }
                 Ok(Err(ircord_client::api::ApiError::Http { status: 412, .. })) => {
-                    editor.update(cx, |e, _| e.editing = None);
                     say(&editor, t!("appearance-themes-conflict"), true, cx);
                     client.watch_document(&ircord_client::documents::THEMES);
                 }
                 Ok(Err(e)) => say(&editor, t!("appearance-themes-failed", error = e), true, cx),
                 Err(e) => say(&editor, t!("appearance-themes-failed", error = e), true, cx),
             }
+            refresh_studio(&editor, cx);
             cx.refresh_windows();
         });
     })

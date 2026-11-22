@@ -155,8 +155,18 @@ fn background_changes_stay_in_the_preview_until_the_theme_is_saved(cx: &mut Test
     cx.update(|cx| {
         assert_eq!(
             theme::get(cx).background.as_ref().unwrap().fit,
-            ThemeBackgroundFit::Cover
+            ThemeBackgroundFit::Tile
         )
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            theme::appearance::themes(cx)[0]
+                .background
+                .as_ref()
+                .unwrap()
+                .fit,
+            Some(ThemeBackgroundFit::Cover)
+        );
     });
     assert!(
         f.server
@@ -166,10 +176,12 @@ fn background_changes_stay_in_the_preview_until_the_theme_is_saved(cx: &mut Test
 
     click(&f, cx, "appearance-theme-save");
     wait(cx, "the saved background is active", |cx| {
-        theme::get(cx)
+        theme::appearance::themes(cx)[0]
             .background
             .as_ref()
-            .is_some_and(|bg| bg.fit == ThemeBackgroundFit::Tile)
+            .unwrap()
+            .fit
+            == Some(ThemeBackgroundFit::Tile)
     });
     let body = f.server.requests_to("PUT", "/api/v1/app/themes/t-bg")[0].json();
     assert_eq!(body["theme"]["background"]["position"], "right");
@@ -245,34 +257,58 @@ fn light_and_dark_variants_can_be_chosen_independently(cx: &mut TestAppContext) 
     });
 }
 
-/// Click `id`, scrolling the settings page down until it is wholly in view.
+/// Click `id`, scrolling the active settings or studio form into view.
 fn click(f: &Fixture, cx: &mut TestAppContext, id: &str) {
+    let footer = matches!(
+        id,
+        "appearance-theme-save"
+            | "appearance-theme-cancel"
+            | "theme-studio-compare"
+            | "theme-studio-collapse"
+    );
     let id = gpui_kit::ElementId::Name(id.to_string().into());
     for _ in 0..40 {
         let shown = cx
             .update_window(f.window, |_, window, cx| {
                 window.render_frame(cx);
-                let pane = window.find("settings-content").bounds();
-                window.try_find(id.clone()).is_some_and(|e| {
+                let zone = if window.try_find("settings-content").is_some() {
+                    "settings-content"
+                } else {
+                    "theme-studio-content"
+                };
+                let pane = window.try_find(zone);
+                let target = window.try_find(id.clone());
+                if target.as_ref().is_some_and(|e| {
                     let b = e.bounds();
-                    e.visible() && b.top() >= pane.top() && b.bottom() <= pane.bottom()
-                })
+                    e.visible()
+                        && (footer
+                            || pane.as_ref().is_some_and(|pane| {
+                                b.top() >= pane.bounds().top()
+                                    && b.bottom() <= pane.bounds().bottom()
+                            }))
+                }) {
+                    return true;
+                }
+                if let Some(pane) = pane {
+                    let direction = if target
+                        .is_some_and(|target| target.bounds().top() < pane.bounds().top())
+                    {
+                        120.
+                    } else {
+                        -120.
+                    };
+                    window.scroll(
+                        zone,
+                        gpui_kit::ScrollDelta::Pixels(point(px(0.), px(direction))),
+                        cx,
+                    );
+                }
+                false
             })
             .unwrap();
         if shown {
             break;
         }
-        cx.update_window(f.window, |_, window, cx| {
-            window.scroll(
-                "settings-content",
-                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
-                    gpui_kit::px(0.),
-                    gpui_kit::px(-120.),
-                )),
-                cx,
-            )
-        })
-        .unwrap();
     }
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
@@ -637,6 +673,19 @@ fn editing_the_active_themes_css_saves_only_after_keep(cx: &mut TestAppContext) 
             })
             .unwrap()
     });
+    wait(cx, "the workspace shows the edit before saving", |cx| {
+        theme::get(cx).accent == theme::hex(0xff0000)
+    });
+    assert!(
+        f.server
+            .requests_to("PUT", "/api/v1/app/themes/t-custom")
+            .is_empty()
+    );
+    click(&f, cx, "theme-studio-compare");
+    wait(cx, "Compare shows the built-in scheme", |cx| {
+        theme::get(cx).accent == original
+    });
+    click(&f, cx, "theme-studio-compare");
     click(&f, cx, "appearance-theme-save");
     wait(cx, "the edit appears in a trial", |cx| {
         theme::get(cx).accent == theme::hex(0xff0000)
@@ -657,6 +706,7 @@ fn editing_the_active_themes_css_saves_only_after_keep(cx: &mut TestAppContext) 
     );
 
     open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-theme-edit-t-custom");
     click(&f, cx, "appearance-theme-save");
     trial_action(&f, cx, "theme-trial-keep");
     wait(cx, "the kept edit is active", |cx| {
@@ -665,6 +715,42 @@ fn editing_the_active_themes_css_saves_only_after_keep(cx: &mut TestAppContext) 
     let body = f.server.requests_to("PUT", "/api/v1/app/themes/t-custom")[0].json();
     assert_eq!(body["expected"], "revision-1");
     assert_eq!(body["theme"]["css"], css);
+}
+
+#[gpui_kit::test]
+fn theme_studio_docks_and_preview_mode_does_not_change_the_account(cx: &mut TestAppContext) {
+    let f = signed_in(cx, json!({"mode": "dark"}), json!([]));
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-themes-new");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let studio = window.find("theme-studio").bounds();
+        let timeline = window.find("timeline").bounds();
+        assert!(timeline.right() <= studio.left());
+        assert!(window.try_find("settings-content").is_none());
+    })
+    .unwrap();
+    click(&f, cx, "theme-studio-light");
+    wait(cx, "the live workspace previews light mode", |cx| {
+        !theme::get(cx).dark
+    });
+    assert!(saved_appearances(&f).is_empty());
+    assert!(
+        f.server
+            .requests_to("PUT", "/api/v1/app/themes/*")
+            .is_empty()
+    );
+    cx.simulate_window_resize(f.window, gpui_kit::size(px(640.), px(800.)));
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let studio = window.find("theme-studio").bounds();
+        assert_eq!(studio.size.width, px(640.));
+        assert_eq!(studio.bottom(), px(800.));
+    })
+    .unwrap();
+    click(&f, cx, "appearance-theme-cancel");
+    wait(cx, "discard restores dark mode", |cx| theme::get(cx).dark);
+    assert!(saved_appearances(&f).is_empty());
 }
 
 #[gpui_kit::test]

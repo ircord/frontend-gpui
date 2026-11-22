@@ -40,7 +40,15 @@ struct State {
     watched: HashSet<usize>,
     compiled: Option<Compiled>,
     preview: trial::State,
+    studio: Option<StudioPreview>,
     _session: Option<Subscription>,
+}
+
+#[derive(PartialEq)]
+pub(crate) struct StudioPreview {
+    pub theme: UserTheme,
+    pub mode: Mode,
+    pub compare: bool,
 }
 
 impl Global for State {}
@@ -106,7 +114,9 @@ fn attach(session: Entity<Session>, cx: &mut App) {
 fn on_session(session: &Entity<Session>, event: &SessionEvent, cx: &mut App) {
     match event {
         SessionEvent::Phase => {
-            cx.global_mut::<State>().preview.cancel();
+            let state = cx.global_mut::<State>();
+            state.preview.cancel();
+            state.studio = None;
             watch(session, cx);
             apply(cx);
         }
@@ -126,6 +136,17 @@ fn on_session(session: &Entity<Session>, event: &SessionEvent, cx: &mut App) {
         }
         _ => {}
     }
+}
+
+/// Apply an unsaved studio draft to this window's workspace without writing
+/// either the appearance preferences or the theme library.
+pub(crate) fn set_studio(studio: Option<StudioPreview>, cx: &mut App) {
+    let state = cx.global_mut::<State>();
+    if state.studio != studio {
+        state.studio = studio;
+        apply(cx);
+    }
+    cx.refresh_windows();
 }
 
 /// Read the appearance and the theme library, once per client.
@@ -313,12 +334,21 @@ pub fn set_custom_css(cx: &mut App, on: bool) {
 /// Recompile and, when anything changed, apply to every window.
 pub fn apply(cx: &mut App) {
     let mut look = look(cx);
-    let mode = look.resolve_mode(system_mode(cx));
+    let mut mode = look.resolve_mode(system_mode(cx));
     let mut themes = themes(cx);
     let css = css_allowed(cx);
-    let preview = &mut cx.global_mut::<State>().preview;
-    let invalidated = preview.validate(&look, &themes, css);
-    preview.select(&mut look, &mut themes);
+    let state = cx.global_mut::<State>();
+    let invalidated = state.preview.validate(&look, &themes, css);
+    state.preview.select(&mut look, &mut themes);
+    if let Some(studio) = &state.studio {
+        mode = studio.mode;
+        look.theme = if studio.compare {
+            None
+        } else {
+            studio.theme.id.clone()
+        };
+        themes = vec![studio.theme.clone()];
+    }
     let compiled = look::compile_with_css(&look, mode, &themes, false, css);
     let state = cx.global_mut::<State>();
     if state.compiled.as_ref() == Some(&compiled) {

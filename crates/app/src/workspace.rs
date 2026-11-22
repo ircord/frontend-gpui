@@ -582,6 +582,12 @@ impl WorkspaceView {
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
+        let studio = crate::settings::appearance::studio_view(&self.session, window, cx);
+        let studio_width = if studio.as_ref().is_some_and(|(_, docked)| *docked) {
+            px(crate::settings::appearance::STUDIO_WIDTH)
+        } else {
+            px(0.)
+        };
         let session = self.session.read(cx);
         let settings_open = session.route() == Some(Route::Settings);
         let route = session.workspace_route();
@@ -589,7 +595,7 @@ impl Render for WorkspaceView {
         self.wallpaper.update(cx, |wallpaper, cx| {
             wallpaper.select(client.as_ref().zip(theme.background.as_ref()), window, cx);
         });
-        let compact = window.viewport_size().width < members::DRAWER_BREAKPOINT;
+        let compact = window.viewport_size().width - studio_width < members::DRAWER_BREAKPOINT;
         let drawer = window.use_keyed_state("member-drawer", cx, |_, cx| MembersDrawer {
             conversation: None,
             scope: cx.focus_handle(),
@@ -730,10 +736,12 @@ impl Render for WorkspaceView {
             )
             .children(header)
             .child(div().flex_1().min_h_0().flex().child(main).children(panel));
-        div()
+        let workspace = div()
             .id("workspace")
             .relative()
-            .size_full()
+            .flex_1()
+            .min_w_0()
+            .h_full()
             .flex()
             .flex_col()
             .bg(theme.sidebar)
@@ -825,7 +833,13 @@ impl Render for WorkspaceView {
                         ),
                 )
             })
-            .children(theme::appearance::trial::banner(window, cx))
+            .children(theme::appearance::trial::banner(window, cx));
+        div()
+            .relative()
+            .size_full()
+            .flex()
+            .child(workspace)
+            .children(studio.map(|(view, _)| view))
     }
 }
 
