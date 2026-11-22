@@ -504,7 +504,8 @@ impl Client {
 
     /// Send what the user typed. `/me text` sends an action.
     pub fn send(&self, conversation: &str, text: &str) {
-        let text = text.trim_end_matches(['\n', '\r']);
+        let text = crate::features::plain_line_breaks(text);
+        let text = text.trim_end_matches('\n');
         if text.trim().is_empty() {
             return;
         }
@@ -522,6 +523,8 @@ impl Client {
             text,
             action,
             state: SendState::Sending,
+            created_ms: crate::events::now_ms(),
+            ..Default::default()
         };
         self.stop_typing();
         self.change(|w| w.queue_send(pending.clone()));
@@ -680,6 +683,9 @@ async fn send_fresh(api: &Api, pending: &PendingSend) -> Result<c::CommandRespon
         } else {
             c::MessageInputBodyKind::Message
         }),
+        reply_to_id: pending.reply_to_id.clone(),
+        gif: pending.gif.clone(),
+        attachments: (!pending.attachments.is_empty()).then(|| pending.attachments.clone()),
         ..Default::default()
     };
     api.send_message(&pending.conversation_id, &body).await

@@ -15,6 +15,8 @@ use crate::menu_order;
 use crate::ui::focus::Reachable;
 use std::collections::HashMap;
 
+use gpui_kit::component::Sizable;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::client::random_id;
@@ -563,6 +565,9 @@ fn send_reply(client: &ircord_client::Client, conversation: &str, text: &str, re
         text: text.clone(),
         action,
         state: SendState::Sending,
+        created_ms: ircord_client::events::now_ms(),
+        reply_to_id: Some(reply_to.to_string()),
+        ..Default::default()
     };
     client.typing(conversation, false);
     client.change(|w| w.queue_send(pending.clone()));
@@ -884,22 +889,67 @@ fn confirm_delete(ctx: MessageCtx, window: &mut Window, cx: &mut App) {
 
 // ---- Failed sends and the outbox ----
 
-/// The failed sends in a conversation, for the bar above the box.
-pub fn failed_sends(conversation: &str, cx: &App) -> Vec<PendingSend> {
-    let Some(session) = session(cx) else {
-        return Vec::new();
+/// The buttons under a failed send in the timeline, as the web client's
+/// delivery actions draw them: Retry, Move to draft (only for text the box
+/// can hold: not a reply, a GIF or uploads), Copy text and Remove from
+/// outbox (after asking).
+pub fn failed_send_actions(p: &PendingSend) -> Vec<AnyElement> {
+    let id = p.client_id.clone();
+    let retry = {
+        let id = id.clone();
+        Button::new(ElementId::Name(format!("retry-{id}").into()))
+            .small()
+            .label(t!("message-actions-retry"))
+            .on_click(move |_, _, cx| {
+                if let Some(client) = session(cx).and_then(|s| s.read(cx).client().cloned()) {
+                    client.retry(&id);
+                }
+            })
     };
-    let s = session.read(cx);
-    let Some(client) = s.client() else {
-        return Vec::new();
+    let to_draft = {
+        let id = id.clone();
+        Button::new(ElementId::Name(format!("failed-send-to-box-{id}").into()))
+            .small()
+            .ghost()
+            .label(t!("message-actions-to-draft"))
+            .on_click(move |_, window, cx| discard(&id, true, window, cx))
     };
-    client
-        .read()
-        .pending_in(conversation)
-        .into_iter()
-        .filter(|p| matches!(p.state, SendState::Failed(_)))
-        .cloned()
-        .collect()
+    let copy = {
+        let text = format::markdown::irc_to_markdown(&p.text);
+        Button::new(ElementId::Name(format!("failed-send-copy-{id}").into()))
+            .small()
+            .ghost()
+            .label(t!("message-actions-copy-send"))
+            .on_click(move |_, window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                ui::toast::success(window, cx, t!("message-actions-send-copied"));
+            })
+    };
+    let remove = Button::new(ElementId::Name(format!("failed-send-discard-{id}").into()))
+        .small()
+        .ghost()
+        .label(t!("message-actions-remove-send"))
+        .on_click(move |_, window, cx| {
+            let id = id.clone();
+            ui::confirm::confirm(
+                window,
+                cx,
+                ui::confirm::Confirm {
+                    title: t!("message-actions-remove-send-title").into(),
+                    body: t!("message-actions-remove-send-body").into(),
+                    ok: t!("message-actions-remove-send").into(),
+                    danger: true,
+                },
+                move |window, cx| discard(&id, false, window, cx),
+            );
+        });
+    let mut buttons = vec![retry.into_any_element()];
+    if p.movable() {
+        buttons.push(to_draft.into_any_element());
+    }
+    buttons.push(copy.into_any_element());
+    buttons.push(remove.into_any_element());
+    buttons
 }
 
 /// Give up on a failed send; with `to_box`, put its text back in the box.
@@ -912,12 +962,14 @@ pub fn discard(client_id: &str, to_box: bool, window: &mut Window, cx: &mut App)
         return;
     };
     if to_box {
+        // Back as typed, the way the web moves a failed send to the draft.
+        let body = format::markdown::irc_to_markdown(&pending.text);
         let text = if pending.action {
-            format!("/me {}", pending.text)
-        } else if pending.text.starts_with('/') {
-            format!("/{}", pending.text)
+            format!("/me {body}")
+        } else if body.starts_with('/') {
+            format!("/{body}")
         } else {
-            pending.text.clone()
+            body
         };
         let current = box_text(cx);
         let next = if current.is_empty() {

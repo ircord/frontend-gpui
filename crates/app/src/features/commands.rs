@@ -449,7 +449,9 @@ fn render_guide(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option
                 .child(why),
         );
     }
-    if let Some(reason) = text_reason(ctx, &text, cx) {
+    // Measured as it will be sent: a Windows paste's `\r\n` goes out as `\n`.
+    let sent = ircord_client::features::plain_line_breaks(&text);
+    if let Some(reason) = text_reason(ctx, &sent, cx) {
         any = true;
         let why = reason_text(&reason);
         column = column.child(

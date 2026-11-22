@@ -398,6 +398,10 @@ pub fn send_gif(
         text: gif.url.clone(),
         action: false,
         state: SendState::Sending,
+        created_ms: ircord_client::events::now_ms(),
+        reply_to_id: reply.clone(),
+        gif: Some(gif.clone()),
+        ..Default::default()
     };
     client.typing(conversation, false);
     client.change(|w| w.queue_send(pending.clone()));

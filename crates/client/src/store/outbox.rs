@@ -10,19 +10,37 @@ use ircord_contract::*;
 
 use super::{Changes, Workspace};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SendState {
+    #[default]
     Sending,
     Failed(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct PendingSend {
     pub client_id: String,
     pub conversation_id: String,
     pub text: String,
     pub action: bool,
     pub state: SendState,
+    /// When it was sent, in milliseconds since the epoch: the time on its
+    /// row in the timeline.
+    pub created_ms: i64,
+    /// The message it replies to, kept for a retry.
+    pub reply_to_id: Option<String>,
+    /// The GIF it carries; its `text` is the GIF's URL.
+    pub gif: Option<GIF>,
+    /// The uploads it carries, by ID.
+    pub attachments: Vec<String>,
+}
+
+impl PendingSend {
+    /// Whether its text can go back into the message box: not a reply, a GIF
+    /// or uploads, which the box cannot carry (the web client's `movable`).
+    pub fn movable(&self) -> bool {
+        self.reply_to_id.is_none() && self.gif.is_none() && self.attachments.is_empty()
+    }
 }
 
 /// The topic this sub-state reports in [`Changes`] (timeline content itself
@@ -154,6 +172,10 @@ impl Workspace {
                 text: e.payload.text,
                 action: e.payload.kind == Some(SendInputKind::Action),
                 state,
+                created_ms: super::parse_time(&e.created_at),
+                reply_to_id: e.payload.reply_to_id.filter(|r| !r.is_empty()),
+                gif: e.payload.gif,
+                attachments: e.payload.attachments.unwrap_or_default(),
             });
         }
         if !changes.is_empty() {

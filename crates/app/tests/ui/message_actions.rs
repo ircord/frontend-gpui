@@ -1,6 +1,6 @@
 //! Tests for package A1: message actions against the canned server — reply,
 //! edit with Up, react, delete, unavailable actions with their reason, and
-//! failed sends restored from the outbox and put back in the box.
+//! failed sends restored from the outbox and moved back to the box.
 
 use std::time::Duration;
 
@@ -414,7 +414,7 @@ fn a_failed_send_from_the_outbox_goes_back_into_the_box(cx: &mut TestAppContext)
     });
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find("failed-send-lost-1").visible());
+        assert!(window.find("pending-lost-1").visible());
         window.click("failed-send-to-box-lost-1", cx);
     })
     .unwrap();
@@ -427,7 +427,7 @@ fn a_failed_send_from_the_outbox_goes_back_into_the_box(cx: &mut TestAppContext)
     });
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find("failed-send-lost-1").is_none());
+        assert!(window.try_find("pending-lost-1").is_none());
     })
     .unwrap();
 }
@@ -598,4 +598,126 @@ fn every_menu_row_has_an_icon_and_groups_are_separated(cx: &mut TestAppContext) 
         }
     });
     drop(f);
+}
+
+/// [`capable`] with Ergo's multiline limits, so line breaks can be sent.
+fn multiline(server: &CannedServer) {
+    let mut s = capable();
+    s.networks[0].features.multiline = Some(MultilineLimits {
+        max_bytes: 4096,
+        max_lines: 100,
+    });
+    serve(server, s, history());
+}
+
+#[gpui_kit::test]
+fn a_reply_pasted_on_windows_goes_out_with_plain_line_breaks(cx: &mut TestAppContext) {
+    let f = open(cx, |server| {
+        multiline(server);
+        server.route_fn("POST", "/api/v1/conversations/*/messages", |r| {
+            let body = r.json();
+            Reply::json(
+                202,
+                json!({"clientId": body["clientId"], "conversationId": "c-general",
+                       "state": "queued"}),
+            )
+        });
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.hover("message-1", cx);
+        window.click("message-toolbar-reply", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.input("right\r\nback", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let body = answered(
+        &f.server,
+        "POST",
+        "/api/v1/conversations/c-general/messages",
+    );
+    assert_eq!(body["replyToId"], "1");
+    assert_eq!(body["text"], "right\nback");
+}
+
+#[gpui_kit::test]
+fn an_edit_pasted_on_windows_goes_out_with_plain_line_breaks(cx: &mut TestAppContext) {
+    let f = open(cx, |server| {
+        multiline(server);
+        server.route_fn("PATCH", "/api/v1/conversations/*/messages/*", |r| {
+            let mut edited = history()[2].clone();
+            edited.text = r.json()["text"].as_str().unwrap().to_string();
+            Reply::json(200, json!({"message": edited}))
+        });
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("composer-input", cx);
+        window.press("up", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.input("\r\nfixed", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let body = answered(
+        &f.server,
+        "PATCH",
+        "/api/v1/conversations/c-general/messages/3",
+    );
+    assert_eq!(body["text"], "my words\nfixed");
+}
+
+#[gpui_kit::test]
+fn a_failed_reply_or_gif_cannot_move_to_the_draft(cx: &mut TestAppContext) {
+    let f = open(cx, |server| {
+        server.route(
+            "GET",
+            "/api/v1/outbox",
+            200,
+            json!({"more": false, "items": [
+                {"clientId": "reply-1", "conversationId": "c-general",
+                 "createdAt": "2026-11-21T09:00:00Z", "state": "failed", "error": "No.",
+                 "payload": {"clientId": "reply-1", "conversationId": "c-general",
+                             "text": "a reply", "kind": "message", "replyToId": "1"}},
+                {"clientId": "plain-1", "conversationId": "c-general",
+                 "createdAt": "2026-11-21T09:01:00Z", "state": "failed", "error": "No.",
+                 "payload": {"clientId": "plain-1", "conversationId": "c-general",
+                             "text": "plain words", "kind": "message"}}
+            ]}),
+        );
+    });
+    wait(cx, "both failed sends restored", |cx| {
+        let session = f.session.read(cx);
+        let w = session.client().unwrap().read();
+        w.pending("reply-1").is_some() && w.pending("plain-1").is_some()
+    });
+    cx.update(|cx| {
+        let session = f.session.read(cx);
+        let w = session.client().unwrap().read();
+        assert_eq!(
+            w.pending("reply-1").unwrap().reply_to_id.as_deref(),
+            Some("1")
+        );
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("retry-reply-1").visible());
+        assert!(
+            window.try_find("failed-send-to-box-reply-1").is_none(),
+            "the box cannot carry the reply, as on the web"
+        );
+        assert!(window.find("failed-send-to-box-plain-1").visible());
+    })
+    .unwrap();
 }

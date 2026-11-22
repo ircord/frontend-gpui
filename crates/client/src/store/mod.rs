@@ -830,6 +830,8 @@ mod tests {
                 text: "hello".into(),
                 action: false,
                 state: SendState::Sending,
+                created_ms: 0,
+                ..Default::default()
             });
         }
         let mut echo = message("m1", "2026-11-21T10:00:00Z", "hello");

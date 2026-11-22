@@ -24,10 +24,14 @@ message-actions-editing = Editing your message
 message-actions-cancel = Cancel
 message-actions-escape-hint = Escape to cancel
 
-# Failed sends
-message-actions-not-sent = Not sent: { $text }
-message-actions-to-box = Edit in box
-message-actions-discard = Discard
+# A failed send in the timeline
+message-actions-retry = Retry
+message-actions-to-draft = Move to draft
+message-actions-copy-send = Copy text
+message-actions-send-copied = Message text copied.
+message-actions-remove-send = Remove from outbox
+message-actions-remove-send-title = Remove this message from the outbox?
+message-actions-remove-send-body = This removes your saved send. Copy the text first if you want to keep it.
 
 # Deleting
 message-actions-delete-title = Delete message?
