@@ -209,6 +209,11 @@ impl ComposerView {
         for filter in filters {
             match (filter.filter)(&ctx, text, window, cx) {
                 SendOutcome::Continue(next) => text = next,
+                SendOutcome::Sent(sent) => {
+                    self.set_text("", window, cx);
+                    self.after_submit(&ctx, &sent, window, cx);
+                    return;
+                }
                 SendOutcome::Handled => {
                     self.set_text("", window, cx);
                     return;

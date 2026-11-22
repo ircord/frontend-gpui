@@ -27,7 +27,7 @@ use ircord_client::api::uploads::{self, FileData, Progress, Rejection, UploadErr
 use ircord_client::contract as c;
 
 use crate::composer::{ComposerView, expressions::Tab};
-use crate::features::{klipy, shortcuts::Gifs};
+use crate::features::{klipy, message_actions, shortcuts::Gifs};
 use crate::registry::{self, ComposerCtx, Slot, SubmitHook};
 use crate::session::Session;
 use crate::theme::{self, Theme};
@@ -122,8 +122,8 @@ pub fn init(cx: &mut App) {
             .add(Slot::new("upload", attach_button).order(40));
         r.composer
             .on_submit
-            .add(SubmitHook::new("uploads", |ctx, _sent, window, cx| {
-                send_all(ctx.session.clone(), ctx.conversation.clone(), window, cx);
+            .add(SubmitHook::new("uploads", |ctx, sent, window, cx| {
+                send_all(ctx, sent.is_empty(), window, cx);
             }));
     });
     cx.intercept_keystrokes(paste).detach();
@@ -260,7 +260,15 @@ fn update_item(cx: &mut App, conversation: &str, key: u64, f: impl FnOnce(&mut P
 }
 
 /// Upload everything waiting in `conversation`, then send it as one message.
-pub fn send_all(session: Entity<Session>, conversation: String, window: &mut Window, cx: &mut App) {
+fn send_all(ctx: &ComposerCtx, files_only: bool, window: &mut Window, cx: &mut App) {
+    let session = ctx.session.clone();
+    let conversation = ctx.conversation.clone();
+    if matches!(
+        message_actions::mode(&conversation, cx),
+        Some(message_actions::Mode::Edit { .. })
+    ) {
+        return;
+    }
     let Some(client) = client(&session, cx) else {
         return;
     };
@@ -282,6 +290,11 @@ pub fn send_all(session: Entity<Session>, conversation: String, window: &mut Win
         }
         state.sending.insert(conversation.clone());
         keys
+    };
+    let reply = if files_only {
+        message_actions::take_reply(&conversation, cx)
+    } else {
+        None
     };
     let network = client
         .read()
@@ -378,7 +391,7 @@ pub fn send_all(session: Entity<Session>, conversation: String, window: &mut Win
                 cx.update(|_, cx| finish(cx, &conversation)).ok();
                 return;
             }
-            let body = uploads::batch_message(ircord_client::client::random_id(), &uploaded, None);
+            let body = uploads::batch_message(ircord_client::client::random_id(), &uploaded, reply);
             let target = conversation.clone();
             let answer = client
                 .request(move |api| async move { api.send_message(&target, &body).await })

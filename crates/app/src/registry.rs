@@ -504,6 +504,8 @@ pub struct TokenProvider {
 pub enum SendOutcome {
     /// Pass the (possibly changed) text on to the next filter, then send.
     Continue(String),
+    /// The filter sent a message with its own metadata. Clear the box and run the submit hooks.
+    Sent(String),
     /// The filter took care of it (a command ran): clear the box.
     Handled,
     /// Do not send and keep the text, for the person to fix.
@@ -522,8 +524,8 @@ pub struct SendFilter {
 
 /// Runs after every submit (Enter, or a send button), once the text went
 /// through the send filters. `sent` is the text that was sent, empty when
-/// there was none; the upload tray sends its files here. Not run when a
-/// filter handled the text (a command) or kept it.
+/// there was none; the upload tray sends its files here. Runs after a plain
+/// message or a reply, and skips commands, edits, and text kept in the box.
 #[derive(Clone)]
 pub struct SubmitHook {
     pub id: SharedString,

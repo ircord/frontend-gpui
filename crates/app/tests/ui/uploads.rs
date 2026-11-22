@@ -8,7 +8,7 @@ use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
 use gpui_kit::{AppContext, ClipboardItem, Image, ImageFormat, MouseButton, TestAppContext};
 use ircord_app::composer::expressions::Tab;
 use ircord_app::composer::uploads::{self as tray, Status, Uploads};
-use ircord_app::features::klipy;
+use ircord_app::features::{klipy, message_actions};
 use ircord_client::api::uploads::FileData;
 use ircord_client::contract::*;
 use ircord_client::testing::{CannedServer, Reply};
@@ -18,7 +18,7 @@ use crate::fixture::{Fixture, bootstrap, message, open_with, snapshot, wait};
 
 /// The server accepts pictures and PDFs up to 1 MB; `#general` is not
 /// sensitive, unless `nsfw`.
-fn server(server: &CannedServer, nsfw: Option<bool>) {
+fn upload_snapshot(nsfw: Option<bool>) -> Snapshot {
     let mut s = snapshot();
     s.capabilities.upload = Some(UploadCapability {
         max_bytes: 1_000_000,
@@ -30,7 +30,11 @@ fn server(server: &CannedServer, nsfw: Option<bool>) {
             ..Default::default()
         });
     }
-    server.snapshot(&s);
+    s
+}
+
+fn server(server: &CannedServer, nsfw: Option<bool>) {
+    server.snapshot(&upload_snapshot(nsfw));
 }
 
 /// Each upload answers with a new ID, after `delay`.
@@ -84,6 +88,90 @@ fn add(f: &Fixture, cx: &mut TestAppContext, files: Vec<FileData>) {
 
 fn pending(cx: &mut TestAppContext) -> Vec<tray::Pending> {
     cx.update(|cx| Uploads::pending(cx, "c-general"))
+}
+
+fn attach_in_a_reply(cx: &mut TestAppContext) -> Fixture {
+    let f = open_with(cx, true, |server| {
+        let mut snapshot = upload_snapshot(Some(false));
+        snapshot.networks[0].account = Some("me".into());
+        snapshot.networks[0].features.replies = true;
+        server.snapshot(&snapshot);
+        let mut first = message("1", "c-general", "Can you share the picture?");
+        first.upstream_id = Some("up-1".into());
+        server.route(
+            "GET",
+            "/api/v1/conversations/*/messages",
+            200,
+            json!({
+                "items": [first, message("2", "c-general", "Thanks")]
+            }),
+        );
+        uploads_answer(server, Duration::ZERO);
+    });
+    bootstrap(&f, cx);
+    add(&f, cx, vec![png("picture.png")]);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.hover("message-1", cx);
+        window.click("message-toolbar-reply", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(matches!(message_actions::mode("c-general", cx),
+        Some(message_actions::Mode::Reply { message, .. }) if message == "1"))
+    });
+    f
+}
+
+#[gpui_kit::test]
+fn attachments_without_text_are_sent_as_the_reply(cx: &mut TestAppContext) {
+    let f = attach_in_a_reply(cx);
+    cx.update_window(f.window, |_, window, cx| window.click("composer-send", cx))
+        .unwrap();
+    const PATH: &str = "/api/v1/conversations/c-general/messages";
+    wait(cx, "the attachment reply", |_| {
+        !f.server.requests_to("POST", PATH).is_empty()
+    });
+    let messages = f.server.requests_to("POST", PATH);
+    assert_eq!(messages.len(), 1);
+    let body = messages[0].json();
+    assert_eq!(body["replyToId"], "1");
+    assert_eq!(body["attachments"], json!(["u1"]));
+    cx.update(|cx| assert_eq!(message_actions::mode("c-general", cx), None));
+}
+
+#[gpui_kit::test]
+fn a_text_reply_also_sends_queued_files_as_a_separate_message(cx: &mut TestAppContext) {
+    let f = attach_in_a_reply(cx);
+    cx.update_window(f.window, |_, window, cx| {
+        window.input("Here it is", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    const PATH: &str = "/api/v1/conversations/c-general/messages";
+    wait(cx, "the reply and the file message", |_| {
+        f.server.requests_to("POST", PATH).len() >= 2
+    });
+    let sent: Vec<_> = f
+        .server
+        .requests_to("POST", PATH)
+        .iter()
+        .map(|request| request.json())
+        .collect();
+    assert_eq!(sent.len(), 2);
+    let reply = sent
+        .iter()
+        .find(|body| body["text"] == "Here it is")
+        .unwrap();
+    assert_eq!(reply["replyToId"], "1");
+    assert!(reply["attachments"].is_null());
+    let files = sent
+        .iter()
+        .find(|body| body["attachments"] == json!(["u1"]))
+        .unwrap();
+    assert!(files["replyToId"].is_null());
+    cx.update(|cx| assert_eq!(message_actions::mode("c-general", cx), None));
 }
 
 fn choose_attachment_action(f: &Fixture, cx: &mut TestAppContext, label: &str) {
