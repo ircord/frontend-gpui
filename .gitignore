@@ -1,2 +1,5 @@
 /target
 /dist
+
+# Crash dumps from test runs
+core.*
