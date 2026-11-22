@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=IRCord
+Name=IRCord GPUI
 GenericName=Chat client
 Comment=Chat on IRC networks through your IRCord server
 Exec=ircord %u
