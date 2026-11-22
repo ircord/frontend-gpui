@@ -562,21 +562,15 @@ impl Render for SavedView {
         };
         drop(w);
 
-        let page_body = div()
-            .px_4()
-            .pb_4()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
+        let page_body = div().px_4().pb_4().child(body);
+        let session = self.session.clone();
+        let mut page = ui::page::Page::new("saved-page", t!("inbox-saved-saved"), page_body)
+            .description(t!("inbox-saved-saved-description"))
+            .toolbar(
                 Input::new(&self.filter)
                     .id("saved-filter")
                     .aria_label(t!("inbox-saved-filter")),
             )
-            .child(body);
-        let session = self.session.clone();
-        let mut page = ui::page::Page::new("saved-page", t!("inbox-saved-saved"), page_body)
-            .description(t!("inbox-saved-saved-description"))
             .close(t!("inbox-saved-return-label"), move |_, _, cx| {
                 ui::page::leave(&session, cx)
             })

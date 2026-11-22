@@ -13,6 +13,7 @@
 - Profile cards display the chosen card background, use a taller banner, and open the Profile settings directly from Edit profile.
 - In Profile settings, the server name stays visible and you can upload a picture by clicking the avatar next to your display name.
 - The Profile settings preview shows the name people will see when you leave your display name blank.
+- The Inbox tabs and Saved messages filter stay visible while you scroll.
 
 - The desktop workspace, message list and composer follow the web layout and use your chosen theme, fonts and density.
 - On narrow windows, members open over the conversation. Resize the sidebars from their edges or with the arrow keys, and double-click an edge to reset its width.

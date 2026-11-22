@@ -42,6 +42,7 @@ pub struct Page {
     pub actions: Vec<AnyElement>,
     pub close: Option<(SharedString, OnClose)>,
     pub hints: Vec<Hint>,
+    toolbar: Option<AnyElement>,
     pub body: AnyElement,
 }
 
@@ -59,6 +60,7 @@ impl Page {
             actions: Vec::new(),
             close: None,
             hints: Vec::new(),
+            toolbar: None,
             body: body.into_any_element(),
         }
     }
@@ -94,6 +96,12 @@ impl Page {
     /// The key hints along the bottom. Name only keys the page handles.
     pub fn hints(mut self, hints: Vec<Hint>) -> Self {
         self.hints = hints;
+        self
+    }
+
+    /// Controls that stay in view above the scrolling results.
+    pub fn toolbar(mut self, toolbar: impl IntoElement) -> Self {
+        self.toolbar = Some(toolbar.into_any_element());
         self
     }
 
@@ -221,6 +229,10 @@ impl Page {
             .flex_col()
             .bg(theme.main)
             .child(header)
+            .children(
+                self.toolbar
+                    .map(|toolbar| div().flex_none().px_4().pt_1().pb_3().child(toolbar)),
+            )
             .child(
                 div()
                     .id(ElementId::Name(format!("{}-body", self.id).into()))
