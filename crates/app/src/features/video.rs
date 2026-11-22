@@ -92,12 +92,21 @@ pub fn init(cx: &mut App) {
     cx.default_global::<Failed>();
     // Asking runs the helper once (GStreamer can take seconds the first
     // time), so it runs on a thread of its own, outside GPUI.
+    let (answered, probed) = futures::channel::oneshot::channel::<()>();
     std::thread::Builder::new()
         .name("video-probe".into())
-        .spawn(|| {
+        .spawn(move || {
             let _ = PROBED.set(video::available());
+            let _ = answered.send(());
         })
         .ok();
+    // A first draw before the answer showed the card; draw again once it is in.
+    cx.spawn(async move |cx| {
+        if probed.await.is_ok() {
+            cx.update(|cx| cx.refresh_windows());
+        }
+    })
+    .detach();
     registry::register(cx, |r| {
         r.playables.add(Slot::new("video", render));
     });
