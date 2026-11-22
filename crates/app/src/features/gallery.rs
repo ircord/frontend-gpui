@@ -319,7 +319,7 @@ impl Render for GalleryView {
                     (Some(why), _) => {
                         cover_view(id.clone(), *why, &source, &tile.card.url, true, &theme)
                     }
-                    (None, Some(m)) => still(m),
+                    (None, Some(m)) => still(m, cx),
                     (None, None) => div()
                         .size_full()
                         .p_1()
