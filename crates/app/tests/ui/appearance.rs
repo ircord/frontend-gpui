@@ -131,6 +131,29 @@ fn dark_tokens(scheme: &str, accent: Option<u32>) -> look::Tokens {
 }
 
 #[gpui_kit::test]
+fn hibiki_effects_follow_the_selected_scheme(cx: &mut TestAppContext) {
+    let f = signed_in(
+        cx,
+        json!({"mode": "dark", "schemeDark": "hibiki-dark"}),
+        json!([]),
+    );
+    assert!(colour(cx).hibiki);
+    cx.update(|cx| {
+        theme::appearance::edit(cx, |appearance| {
+            appearance.scheme_dark = Some("github-dark".into());
+        });
+    });
+    let t = colour(cx);
+    assert!(!t.hibiki);
+    assert_eq!(t.main, theme::hex(dark_tokens("github-dark", None).main));
+    wait(cx, "GitHub Dark saved", |_| {
+        saved_appearances(&f)
+            .last()
+            .is_some_and(|s| s["schemeDark"] == "github-dark")
+    });
+}
+
+#[gpui_kit::test]
 fn the_accounts_appearance_applies_when_it_arrives(cx: &mut TestAppContext) {
     let f = signed_in(
         cx,

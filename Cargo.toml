@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/contract", "crates/client", "crates/app", "crates/platform", "crates/video-gst", "xtask"]
+members = ["crates/contract", "crates/client", "crates/app", "crates/dev", "crates/platform", "crates/video-gst", "xtask"]
 default-members = ["crates/contract", "crates/client", "crates/app"]
 
 [workspace.package]

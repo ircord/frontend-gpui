@@ -12,6 +12,8 @@
 //! ```
 
 mod server;
+#[cfg(test)]
+mod tests;
 
 use std::time::{Duration, Instant};
 

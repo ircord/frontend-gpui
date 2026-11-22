@@ -1,11 +1,13 @@
 # Text for package D1. IDs start with `drafts-`.
-drafts-title = Drafts
-drafts-description = Continue messages you started in IRCord.
+drafts-title = Drafts and outbox
+drafts-description = Continue your drafts and check messages waiting to send.
 drafts-meta-one = 1 unsent draft
 drafts-meta = { $count } unsent drafts
 drafts-return = Return to conversation
 drafts-key = Open drafts
-drafts-sidebar = Drafts, { $count } unsent
+drafts-sidebar = Drafts and outbox, { $count } unsent
+drafts-outbox = Outbox
+drafts-outbox-discard = Discard message
 drafts-scope = Drafts are kept on this device only.
 drafts-not-saved = Drafts could not be saved on this device. They are kept until the app closes.
 drafts-loading = Loading drafts…

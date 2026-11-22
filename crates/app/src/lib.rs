@@ -44,6 +44,8 @@ use session::{Phase, Session, SessionEvent};
 use signin::SignInView;
 use workspace::WorkspaceView;
 
+const MAC_TITLEBAR_HEIGHT: f32 = 28.;
+
 /// Set up everything the views draw from: the theme, the registry and the
 /// features that fill it, and the default keys. Call once, after
 /// `gpui_kit::init`.
@@ -150,7 +152,7 @@ impl MainView {
 }
 
 impl Render for MainView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx);
         let content = match &self.screen {
             Screen::SignIn(view) => view.clone().into_any_element(),
@@ -159,10 +161,25 @@ impl Render for MainView {
         };
         div()
             .size_full()
-            .bg(theme.main)
+            .flex()
+            .flex_col()
+            .bg(theme.sidebar)
             .text_color(theme.text)
             .font_family(theme.font.clone())
-            .child(content)
+            .when(
+                cfg!(target_os = "macos")
+                    && !window.is_fullscreen()
+                    && !matches!(self.screen, Screen::Workspace(_)),
+                |d| {
+                    d.child(
+                        gpui_kit::component::TitleBar::new()
+                            .h(px(MAC_TITLEBAR_HEIGHT))
+                            .border_b_0()
+                            .bg(theme.sidebar),
+                    )
+                },
+            )
+            .child(div().flex_1().min_h_0().bg(theme.main).child(content))
     }
 }
 
@@ -191,8 +208,10 @@ pub fn window_options(session: &Session, cx: &App) -> WindowOptions {
         window_bounds: Some(bounds),
         titlebar: Some(TitlebarOptions {
             title: Some(t!("core-app-name").into()),
-            ..Default::default()
+            appears_transparent: cfg!(target_os = "macos"),
+            traffic_light_position: cfg!(target_os = "macos").then(|| point(px(14.), px(8.))),
         }),
+        app_owns_titlebar_drag: cfg!(target_os = "macos"),
         window_min_size: Some(size(px(640.), px(480.))),
         app_id: Some(ircord_client::config::APP_ID.into()),
         ..Default::default()
@@ -253,13 +272,14 @@ pub fn run() {
     };
     init_logging(&config);
     let credentials: Arc<dyn CredentialStore> = Arc::new(SystemStore);
-    let quit_mode = if tray::keeps_running() {
+    let use_tray = !cfg!(all(feature = "hot-reload", debug_assertions));
+    let quit_mode = if use_tray && tray::keeps_running() {
         QuitMode::Explicit
     } else {
         QuitMode::Default
     };
     let app = gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(ui::icon::Assets)
         .with_quit_mode(quit_mode);
     // Links the system hands a running app (macOS), and a click on the Dock
     // icon with no window open (DK1).
@@ -269,16 +289,30 @@ pub fn run() {
         notify::identify(cx);
         gpui_kit::init(cx);
         init(cx);
+        #[cfg(target_os = "macos")]
+        install_app_menu(cx);
         cx.set_http_client(Arc::new(images::ImageClient::new(runtime.clone())));
         let session = cx.new(|cx| Session::new(runtime, config, credentials, cx));
         notify::install(session.clone(), cx);
-        if let Err(e) = tray::install(session.clone(), cx) {
+        if use_tray && let Err(e) = tray::install(session.clone(), cx) {
             log::error!("no tray icon: {e}");
             cx.set_quit_mode(QuitMode::Default);
         }
         open_main_window(session, cx);
         cx.activate(true);
     });
+}
+
+#[cfg(target_os = "macos")]
+gpui_kit::actions!(ircord, [Quit]);
+
+#[cfg(target_os = "macos")]
+fn install_app_menu(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.set_menus([
+        Menu::new(t!("core-app-name")).items([MenuItem::action(t!("core-tray-quit"), Quit)])
+    ]);
 }
 
 /// Log to stderr, and to `ircord.log` in the settings folder (a Windows

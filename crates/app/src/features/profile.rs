@@ -58,7 +58,7 @@ pub fn init(cx: &mut App) {
     cx.observe_new::<Session>(|session: &mut Session, _, cx| {
         let weak = cx.weak_entity();
         cx.global_mut::<People>().session = Some(weak);
-        if session.config.section::<Device>(SECTION).members_hidden {
+        if saved_members_hidden(session) {
             session.panel = Some(NO_PANEL.into());
         }
         if let Some(client) = session.client().cloned() {
@@ -324,6 +324,11 @@ pub fn init(cx: &mut App) {
         r.timeline_start
             .add(Slot::new("people-direct-intro", direct_intro));
     });
+}
+
+/// Read whether the docked member list was hidden.
+pub fn saved_members_hidden(session: &Session) -> bool {
+    session.config.section::<Device>(SECTION).members_hidden
 }
 
 /// Save whether the member list is hidden, for the next start.

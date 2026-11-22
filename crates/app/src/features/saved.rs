@@ -47,7 +47,7 @@ pub fn init(cx: &mut App) {
                 Some(crate::sidebar::page_row(
                     "open-saved",
                     IconName::BookOpen,
-                    t!("inbox-saved-saved"),
+                    t!("inbox-saved-sidebar"),
                     t!("inbox-saved-saved"),
                     None,
                     active,

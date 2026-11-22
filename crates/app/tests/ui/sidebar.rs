@@ -203,24 +203,48 @@ fn sections_collapse_and_the_list_folds_and_resizes(cx: &mut TestAppContext) {
     });
 
     // Drag the list's edge 60 px wider, and the panel's 40 px wider.
+    let (sidebar_width, panel_width) = cx.update(|cx| {
+        let layout = layout::get(cx);
+        (layout.sidebar_width, layout.panel_width)
+    });
     frame(&f, cx, |window, cx| {
-        let from = window.find("resize-sidebar").bounds().center();
+        let handle = window.find("resize-sidebar").bounds();
+        assert_eq!(handle.size.width, px(8.));
+        let from = point(handle.left() + px(1.), handle.center().y);
         window.drag(from, point(from.x + px(60.), from.y), cx);
         let from = window.find("resize-panel").bounds().center();
         window.drag(from, point(from.x - px(40.), from.y), cx);
     });
     cx.update(|cx| {
         let l = layout::get(cx);
-        assert!((l.sidebar_width - 300.).abs() <= 3., "{}", l.sidebar_width);
-        assert!((l.panel_width - 280.).abs() <= 3., "{}", l.panel_width);
+        assert!(
+            (l.sidebar_width - sidebar_width - 60.).abs() < 0.5,
+            "{}",
+            l.sidebar_width
+        );
+        assert!(
+            (l.panel_width - panel_width - 40.).abs() < 0.5,
+            "{}",
+            l.panel_width
+        );
     });
     cx.executor().advance_clock(Duration::from_secs(1));
     cx.run_until_parked();
     cx.update(|cx| {
         let saved: Layout = f.session.read(cx).config.section("sidebar");
         assert!(saved.show_list);
-        assert!((saved.sidebar_width - 300.).abs() <= 3.);
+        assert!((saved.sidebar_width - sidebar_width - 60.).abs() <= 3.);
+        assert!((saved.panel_width - panel_width - 40.).abs() <= 3.);
     });
+    frame(&f, cx, |window, cx| {
+        window.click("resize-sidebar", cx);
+        window.press("left", cx);
+    });
+    cx.update(|cx| assert_eq!(layout::get(cx).sidebar_width, sidebar_width + 44.));
+    frame(&f, cx, |window, cx| {
+        window.double_click("resize-sidebar", cx)
+    });
+    cx.update(|cx| assert_eq!(layout::get(cx).sidebar_width, sidebar_width));
 }
 
 #[gpui_kit::test]

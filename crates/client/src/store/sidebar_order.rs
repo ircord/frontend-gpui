@@ -70,8 +70,8 @@ pub struct Layout {
 }
 
 /// (smallest, largest, default) widths in pixels.
-pub const SIDEBAR_WIDTH: (f32, f32, f32) = (170., 360., 240.);
-pub const PANEL_WIDTH: (f32, f32, f32) = (180., 340., 240.);
+pub const SIDEBAR_WIDTH: (f32, f32, f32) = (170., 360., 200.);
+pub const PANEL_WIDTH: (f32, f32, f32) = (180., 340., 208.);
 
 impl Default for Layout {
     fn default() -> Self {
@@ -1060,7 +1060,7 @@ mod tests {
         }
         .sanitized();
         assert_eq!(l.sidebar_width, 360.);
-        assert_eq!(l.panel_width, 240.);
+        assert_eq!(l.panel_width, 208.);
         assert_eq!(l.collapsed, ["a"]);
         let json = serde_json::to_value(&l).unwrap();
         assert_eq!(json["showList"], true);

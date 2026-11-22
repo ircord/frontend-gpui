@@ -535,14 +535,14 @@ pub fn member_groups(w: &Workspace, conversation: &str, filter: &str) -> Vec<Gro
         .collect()
 }
 
-/// How many in the conversation are online or away.
+/// How many in the conversation are online, as shown in the web header.
 pub fn online_count(w: &Workspace, conversation: &str) -> usize {
     w.conversation(conversation)
         .map(|c| {
             c.member_ids
                 .iter()
                 .filter_map(|id| w.members.get(id))
-                .filter(|m| m.status != MemberStatus::Offline)
+                .filter(|m| m.status == MemberStatus::Online)
                 .count()
         })
         .unwrap_or(0)
@@ -916,7 +916,7 @@ mod tests {
         let filtered = member_groups(&w, "c-general", "EV");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].members[0].0, "m-eve");
-        assert_eq!(online_count(&w, "c-general"), 3);
+        assert_eq!(online_count(&w, "c-general"), 2);
     }
 
     #[test]

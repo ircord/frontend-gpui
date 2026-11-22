@@ -71,10 +71,11 @@ pub(crate) fn toolbar(
         .flex()
         .gap_0p5()
         .p_0p5()
-        .rounded_md()
+        .rounded_full()
         .border_1()
-        .border_color(theme.rail)
-        .bg(theme.sidebar);
+        .border_color(theme.border.opacity(0.6))
+        .bg(theme.raised)
+        .shadow_sm();
     for item in items {
         let (run, ctx) = (item.run.clone(), ctx.clone());
         let icon = item.icon.clone().unwrap_or(ui::icon::IconName::Ellipsis);

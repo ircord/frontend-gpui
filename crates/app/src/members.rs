@@ -28,6 +28,7 @@ use crate::registry::{self, MemberCtx};
 use crate::session::{NO_PANEL, Session, SessionEvent};
 use crate::theme::{self, Theme};
 use crate::ui;
+use crate::ui::focus::Reachable;
 use crate::ui::icon::IconName;
 
 /// Lists longer than this get a filter field, as on the web.
@@ -35,6 +36,9 @@ pub const FILTER_FROM: usize = 12;
 
 /// Lists with this many lines or more are drawn as a virtual list.
 pub const VIRTUAL_FROM: usize = 60;
+
+/// Below this viewport width members open over the conversation.
+pub const DRAWER_BREAKPOINT: Pixels = px(1100.);
 
 /// One line of the list: a group's heading with its count, or a member with
 /// the highest prefix shown before the name.
@@ -166,9 +170,7 @@ pub fn hidden(session: &Session) -> bool {
 pub fn set_hidden(session: &Entity<Session>, hide: bool, cx: &mut App) {
     session.update(cx, |s, cx| {
         let panel = hide.then(|| SharedString::from(NO_PANEL));
-        if hidden(s) || hide {
-            s.set_panel(panel, cx);
-        }
+        s.set_panel(panel, cx);
     });
     crate::features::profile::remember_members_hidden(hide, cx);
 }
@@ -211,31 +213,7 @@ impl Render for MembersView {
             (total, people::online_count(&w, &id), lines, frame)
         };
 
-        let session_entity = self.session.clone();
-        let header = div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .px_2()
-            .pb_1()
-            .child(
-                div()
-                    .id("member-count")
-                    .test_support()
-                    .role(Role::Status)
-                    .aria_label(t!("people-members-count", online = online, total = total))
-                    .flex_1()
-                    .text_xs()
-                    .text_color(theme.muted)
-                    .child(t!("people-members-count", online = online, total = total)),
-            )
-            .child(ui::icon::button(
-                "hide-members",
-                IconName::PanelRightClose,
-                t!("people-members-hide"),
-                &theme,
-                move |_, _, cx| set_hidden(&session_entity, true, cx),
-            ));
+        let count = t!("people-members-count", online = online, total = total);
 
         let virtual_list = lines.len() >= VIRTUAL_FROM;
         let mut panel = div()
@@ -243,18 +221,19 @@ impl Render for MembersView {
             .test_support()
             .role(Role::List)
             .aria_label(t!("people-members"))
+            .aria_description(count)
             .size_full()
-            .bg(theme.sidebar)
+            .bg(theme.panel.opacity(0.45))
             .flex()
             .flex_col()
             .px_2()
-            .py_3()
+            .pt_1()
+            .pb_4()
             .gap_0p5()
-            .when(!virtual_list, |d| d.overflow_y_scroll())
-            .child(header);
+            .when(!virtual_list, |d| d.overflow_y_scroll());
         if total > FILTER_FROM {
             panel = panel.child(
-                div().px_1().pb_1().child(
+                div().mt_1().pb_1().child(
                     Input::new(&filter)
                         .id("member-filter")
                         .aria_label(t!("people-members-filter")),
@@ -312,20 +291,21 @@ fn member_line(frame: &Frame, line: &Line) -> AnyElement {
                 GroupKey::Offline => t!("people-offline").to_string(),
             };
             div()
-                .pt_2()
+                .pt_3p5()
+                .pb_1()
                 .px_2()
                 .flex()
                 .items_center()
                 .justify_between()
                 .text_xs()
-                .font_weight(FontWeight::BOLD)
+                .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.muted)
                 .child(label.to_uppercase())
                 .child(
                     div()
                         .px_1p5()
                         .rounded_full()
-                        .bg(theme.selected.opacity(0.6))
+                        .bg(theme.raised.opacity(0.6))
                         .text_size(px(10.))
                         .font_weight(FontWeight::NORMAL)
                         .text_color(theme.faint)
@@ -397,6 +377,7 @@ fn member_line(frame: &Frame, line: &Line) -> AnyElement {
                 .role(Role::ListItem)
                 .aria_label(SharedString::from(name.clone()))
                 .aria_description(SharedString::from(states.join(", ")))
+                .reachable(theme)
                 .px_2()
                 .py_1()
                 .rounded_md()

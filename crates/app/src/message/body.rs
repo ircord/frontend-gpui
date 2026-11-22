@@ -96,7 +96,7 @@ pub fn render(
                 .child(t!("core-message-edited")),
         );
     }
-    let color = if m.notice { theme.muted } else { theme.text };
+    let color = if m.notice { theme.muted } else { theme.body };
     div()
         .text_color(color)
         .when(m.action, |d| d.italic())
