@@ -10,8 +10,10 @@ client; it never speaks IRC itself. Layout and commands are in
 - This machine has no C toolchain or GPUI system libraries. Every compile,
   clippy and test run goes through the build container:
   `cargo xtask shell -- cargo test -p ircord-client`. Only `cargo fmt` and
-  `cargo xtask contract` run on the host. macOS cannot be built here at all;
-  `cargo xtask build macos` is for a person on a Mac.
+  `cargo xtask contract` run on the host. macOS cannot be built here at all:
+  `cargo xtask build macos` and `package macos` run on a Mac, and CI's
+  `macos-arm64` job (`.github/workflows/build-installers.yaml`) is the only
+  Mac build anyone sees on a pull request.
 - To look at the app without a screen, `cargo xtask capture` runs the Linux
   build against a disposable backend and leaves screenshots in
   `target/capture/`. Your own Xvfb must run with `-extension COMPOSITE`, or
@@ -86,16 +88,19 @@ client; it never speaks IRC itself. Layout and commands are in
 
 Changes are delivered by pull request on `ircord/frontend-gpui`. Pass this
 ladder locally before pushing, push the branch once, and open the pull request
-as a draft. The ladder is the gate: the repository has no CI on pull requests
-yet, so a draft runs nothing. Keep the pull request a draft until the maintainer
-marks it ready for review. `cargo xtask ladder` runs steps 1 to 4.
+as a draft. The ladder is the gate: a draft runs no CI. Marking it ready runs
+`check.yaml` (steps 1 to 3), and `build-installers.yaml` as well when it
+touches `.github/`, `crates/platform/`, `packaging/`, `tools/`, `vendor/`,
+`xtask/` or `Cargo.lock`. Keep the pull request a draft until the maintainer
+marks it ready for review. `cargo xtask ladder` runs steps 1 to 4,
+`cargo xtask check` steps 1 to 3.
 
 1. `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings`.
 2. `cargo xtask contract --check`: the committed contract matches the backend
    checkout it names (`IRCORD_BACKEND`, default `../ircord-backend`).
 3. `cargo test --workspace`: contract, client and headless UI tests.
-4. `cargo xtask build windows` and `cargo xtask build linux`: `dist/ircord.exe`
-   and the Linux tarball exist.
+4. `cargo xtask package windows` and `cargo xtask package linux`: the setup
+   `.exe` and the `.deb` exist in `dist/`.
 5. For changes to the client's networking, `cargo xtask integration`: the
    client against a real backend and IRC server in disposable containers.
 6. For a change a user can see: run it against a disposable local backend
@@ -109,6 +114,9 @@ marks it ready for review. `cargo xtask ladder` runs steps 1 to 4.
    under review without a reason; each new commit restarts review.
 9. Bumping `gpui-kit` is its own change: re-apply the Windows patch, run the
    whole ladder, and have the result run once on Windows before it lands.
+
+A release is `publish.yaml`, started by hand (README.md, "Publishing a
+release"); it is the only job that sees the update signing key.
 
 ## Maintaining this file
 

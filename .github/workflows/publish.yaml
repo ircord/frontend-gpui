@@ -1,0 +1,135 @@
+name: Publish GPUI release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, such as 0.1.0. Cargo.toml and CHANGELOG.md must already name it.
+        required: true
+        type: string
+      verify_only:
+        description: Build, sign and verify the release assets without publishing them.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpui-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: source
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "Releases are published from main, not $GITHUB_REF." >&2
+            exit 1
+          fi
+          if [[ ! "v$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "$VERSION is not a release version such as 0.1.0." >&2
+            exit 1
+          fi
+          workspace=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          if [[ "$workspace" != "$VERSION" ]]; then
+            echo "Cargo.toml's workspace version is $workspace, not $VERSION." >&2
+            exit 1
+          fi
+          if git show-ref --verify --quiet "refs/tags/v$VERSION"; then
+            echo "Tag v$VERSION already exists." >&2
+            exit 1
+          fi
+          awk -v tag="v$VERSION" '/^## / { if (found) exit; found = ($2 == tag); next } found' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "CHANGELOG.md has no entries under ## v$VERSION." >&2
+            exit 1
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  check:
+    needs: prepare
+    uses: ./.github/workflows/check.yaml
+
+  build:
+    needs: prepare
+    uses: ./.github/workflows/build-installers.yaml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
+      updates: true
+
+  # The only job that sees the signing key.
+  publish:
+    needs: [prepare, check, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: ircord-gpui-*
+          path: installers
+      # Build scripts would inherit the signing key, so xtask is compiled in
+      # a step that does not have it.
+      - name: Build xtask
+        run: cargo build --locked --package xtask
+      - name: Sign the installers and write the update manifest
+        env:
+          VERSION: ${{ inputs.version }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.CARGO_PACKAGER_SIGN_PRIVATE_KEY }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [[ -z "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" ]]; then
+            echo 'The update signing key is missing.' >&2
+            exit 1
+          fi
+          target/debug/xtask release-assets "$VERSION" installers release "$GITHUB_REPOSITORY"
+      - name: Check the release with minisign
+        env:
+          SHA: ${{ needs.prepare.outputs.sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          grep -qx "frontend-gpui=$SHA" release/build-info.txt
+          grep -qx "backend-contract=$(cat crates/contract/backend-commit)" release/build-info.txt
+          sudo apt-get update -q
+          sudo apt-get install -y -q minisign
+          base64 -d packaging/updater.pub > updater.pub
+          for asset in IRCord-GPUI-macOS-Apple-Silicon.app.tar.gz IRCord-GPUI-Windows-x64-setup.exe; do
+            base64 -d "release/$asset.sig" > updater.sig
+            minisign -Vm "release/$asset" -p updater.pub -x updater.sig
+            grep -Eq "^trusted comment:.*[[:space:]]file:${asset//./\\.}$" updater.sig
+          done
+          (cd release && sha256sum -c SHA256SUMS)
+          jq -e --arg v "$VERSION" '.version == $v' release/latest.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ircord-gpui-release
+          path: release/
+          if-no-files-found: error
+      - name: Publish the release
+        if: ${{ !inputs.verify_only }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          TAG: v${{ inputs.version }}
+        run: |
+          awk -v tag="$TAG" '/^## / { if (found) exit; found = ($2 == tag); next } found' CHANGELOG.md > notes.md
+          test -s notes.md
+          gh release create "$TAG" --target "$SHA" --latest \
+            --title "IRCord GPUI $TAG" --notes-file notes.md release/*

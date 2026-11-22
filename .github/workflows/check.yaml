@@ -1,0 +1,56 @@
+name: GPUI client checks
+on:
+  workflow_call:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+# A newer push to a pull request replaces its running checks. The event is in
+# the group, so a release's own run (workflow_dispatch) is never cancelled.
+concurrency:
+  group: gpui-check-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    # Draft pull requests run nothing; marking one ready runs the check.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: backend
+        name: Read the pinned backend commit
+        run: echo "commit=$(cat crates/contract/backend-commit)" >> "$GITHUB_OUTPUT"
+      # The contract check compares crates/contract with this checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ircord/backend
+          ref: ${{ steps.backend.outputs.commit }}
+          path: target/ircord-backend
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-
+      # Microsoft's C runtime and SDK libraries, about 1 GB, for linking.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/cargo-xwin/xwin
+          key: cargo-xwin-${{ hashFiles('tools/build.Dockerfile') }}
+          restore-keys: cargo-xwin-
+      - uses: ./.github/actions/build-image
+      - name: cargo xtask check
+        env:
+          IRCORD_BACKEND: ${{ github.workspace }}/target/ircord-backend
+        run: cargo xtask check

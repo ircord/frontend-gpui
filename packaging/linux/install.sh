@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install IRCord for the current user: the binary and its video helper in
+# Install IRCord GPUI for the current user: the binary and its video helper in
 # ~/.local/bin, the desktop entry and icon under ~/.local/share.
 # `./install.sh --uninstall` removes them.
 set -eu
@@ -12,7 +12,7 @@ icons="$data/icons/hicolor"
 if [ "${1:-}" = "--uninstall" ]; then
     rm -f "$bin/ircord" "$bin/ircord-video" "$apps/com.ircord.gpui.desktop" \
         "$icons/scalable/apps/com.ircord.gpui.svg" "$icons/256x256/apps/com.ircord.gpui.png"
-    echo "IRCord removed. Its settings stay in ${XDG_CONFIG_HOME:-$HOME/.config}/com.ircord.gpui."
+    echo "IRCord GPUI removed. Its settings stay in ${XDG_CONFIG_HOME:-$HOME/.config}/com.ircord.gpui."
     exit 0
 fi
 
@@ -24,4 +24,4 @@ install -m 644 "$here/ircord.png" "$icons/256x256/apps/com.ircord.gpui.png"
 sed "s|^Exec=ircord|Exec=$bin/ircord|" "$here/com.ircord.gpui.desktop" >"$apps/com.ircord.gpui.desktop"
 command -v update-desktop-database >/dev/null && update-desktop-database "$apps" || true
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q "$icons" 2>/dev/null || true
-echo "IRCord installed: $bin/ircord, with a menu entry."
+echo "IRCord GPUI installed: $bin/ircord, with a menu entry."
