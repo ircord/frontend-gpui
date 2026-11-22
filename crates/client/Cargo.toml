@@ -23,6 +23,7 @@ dirs = "6"
 futures = "0.3"
 http = "1"
 iana-time-zone = "0.1"
+icu_locale = { version = "~2.4.0", features = ["unstable"] }
 jiff = "1"
 keyring = "=4.2.0"
 log = "0.4"

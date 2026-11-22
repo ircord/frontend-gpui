@@ -1411,7 +1411,8 @@ impl Render for ProfileCard {
             details.push((t!("people-profile-local-time").to_string(), time));
         }
         if let Some(langs) = m.languages.as_ref().filter(|l| !l.is_empty()) {
-            details.push((t!("people-profile-languages").to_string(), langs.join(", ")));
+            let names: Vec<_> = langs.iter().map(|tag| people::language_name(tag)).collect();
+            details.push((t!("people-profile-languages").to_string(), names.join(", ")));
         }
         if !details.is_empty() {
             card = card.child(info_rows(

@@ -557,9 +557,14 @@ enum Field {
     Location,
     Timezone,
     Homepage,
+    List(ProfileList),
+    Accent,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ProfileList {
     Languages,
     Interests,
-    Accent,
 }
 
 impl Field {
@@ -574,8 +579,8 @@ impl Field {
         Field::Location,
         Field::Timezone,
         Field::Homepage,
-        Field::Languages,
-        Field::Interests,
+        Field::List(ProfileList::Languages),
+        Field::List(ProfileList::Interests),
         Field::Accent,
     ];
 
@@ -591,8 +596,8 @@ impl Field {
             Field::Location => "profile-location",
             Field::Timezone => "profile-timezone",
             Field::Homepage => "profile-homepage",
-            Field::Languages => "profile-languages",
-            Field::Interests => "profile-interests-input",
+            Field::List(ProfileList::Languages) => "profile-languages",
+            Field::List(ProfileList::Interests) => "profile-interests-input",
             Field::Accent => "profile-accent-input",
         }
     }
@@ -609,8 +614,8 @@ impl Field {
             Field::Location => t!("profile-location").into(),
             Field::Timezone => t!("profile-timezone").into(),
             Field::Homepage => t!("profile-homepage").into(),
-            Field::Languages => t!("profile-languages").into(),
-            Field::Interests => t!("profile-interests").into(),
+            Field::List(ProfileList::Languages) => t!("profile-languages").into(),
+            Field::List(ProfileList::Interests) => t!("profile-interests").into(),
             Field::Accent => t!("profile-accent").into(),
         }
     }
@@ -627,15 +632,14 @@ impl Field {
             Field::Location => t!("profile-location-placeholder").into(),
             Field::Timezone => t!("profile-timezone-placeholder").into(),
             Field::Homepage => t!("profile-homepage-placeholder").into(),
-            Field::Languages => t!("profile-languages-placeholder").into(),
-            Field::Interests => t!("profile-interests-placeholder").into(),
+            Field::List(ProfileList::Languages) => t!("profile-languages-placeholder").into(),
+            Field::List(ProfileList::Interests) => t!("profile-interests-placeholder").into(),
         }
     }
 
     /// What `m` has saved in this field, as typed.
     fn saved(self, m: &Member) -> String {
         let text = |v: &Option<String>| v.clone().unwrap_or_default();
-        let list = |v: &Option<Vec<String>>| v.clone().unwrap_or_default().join(", ");
         match self {
             Field::Name => explicit_name(m),
             Field::Bio => m.bio.clone(),
@@ -647,22 +651,10 @@ impl Field {
             Field::Location => text(&m.location),
             Field::Timezone => text(&m.timezone),
             Field::Homepage => text(&m.homepage_url),
-            Field::Languages => list(&m.languages),
-            Field::Interests => list(&m.interests),
+            Field::List(_) => String::new(),
             Field::Accent => text(&m.profile_accent_color),
         }
     }
-}
-
-/// Items typed with commas between them.
-pub fn split_list(text: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for item in text.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        if !out.iter().any(|o| o.eq_ignore_ascii_case(item)) {
-            out.push(item.to_string());
-        }
-    }
-    out
 }
 
 /// Whether `text` is a `#RRGGBB` colour.
@@ -672,12 +664,13 @@ pub fn is_color(text: &str) -> bool {
 
 /// Why the typed profile cannot be saved, if it cannot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Problem {
+enum Problem {
     Color,
     Accent,
     Homepage,
-    TooManyLanguages,
-    TooManyInterests,
+    TooMany(ProfileList),
+    Duplicate(ProfileList),
+    LanguageTag,
     LongInterest,
 }
 
@@ -686,9 +679,9 @@ impl Problem {
         match self {
             Problem::Color | Problem::Accent => t!("profile-problem-color").into(),
             Problem::Homepage => t!("profile-problem-homepage").into(),
-            Problem::TooManyLanguages | Problem::TooManyInterests => {
-                t!("profile-problem-too-many").into()
-            }
+            Problem::TooMany(_) => t!("profile-problem-too-many").into(),
+            Problem::Duplicate(_) => t!("profile-problem-duplicate").into(),
+            Problem::LanguageTag => t!("profile-problem-language-tag").into(),
             Problem::LongInterest => t!("profile-problem-long-interest").into(),
         }
     }
@@ -698,10 +691,29 @@ impl Problem {
             Problem::Color => Field::Color,
             Problem::Accent => Field::Accent,
             Problem::Homepage => Field::Homepage,
-            Problem::TooManyLanguages => Field::Languages,
-            Problem::TooManyInterests | Problem::LongInterest => Field::Interests,
+            Problem::TooMany(list) | Problem::Duplicate(list) => Field::List(list),
+            Problem::LanguageTag => Field::List(ProfileList::Languages),
+            Problem::LongInterest => Field::List(ProfileList::Interests),
         }
     }
+}
+
+fn validated_tag(list: ProfileList, text: &str, tags: &[String]) -> Result<String, Problem> {
+    let tag = match list {
+        ProfileList::Languages => people::language_tag(text).ok_or(Problem::LanguageTag)?,
+        ProfileList::Interests if text.len() <= 32 && !text.chars().any(char::is_control) => {
+            text.to_string()
+        }
+        ProfileList::Interests => return Err(Problem::LongInterest),
+    };
+    let key = tag.to_lowercase();
+    if tags.iter().any(|item| item.to_lowercase() == key) {
+        return Err(Problem::Duplicate(list));
+    }
+    if tags.len() >= 10 {
+        return Err(Problem::TooMany(list));
+    }
+    Ok(tag)
 }
 
 pub struct ProfileView {
@@ -714,6 +726,8 @@ pub struct ProfileView {
     loading: bool,
     load_error: Option<String>,
     inputs: Vec<(Field, Entity<InputState>)>,
+    languages: Vec<String>,
+    interests: Vec<String>,
     name_color: Entity<ColorPickerState>,
     custom_color: bool,
     custom_accent: bool,
@@ -772,7 +786,13 @@ impl ProfileView {
                         this.problem = None;
                         cx.notify();
                     }
-                    InputEvent::PressEnter { .. } => this.save(window, cx),
+                    InputEvent::PressEnter { .. } => match field {
+                        Field::List(list) => this.add_tag(list, window, cx),
+                        _ => this.save(window, cx),
+                    },
+                    InputEvent::Focus | InputEvent::Blur if matches!(field, Field::List(_)) => {
+                        cx.notify()
+                    }
                     _ => {}
                 },
             ));
@@ -785,7 +805,7 @@ impl ProfileView {
             window,
             |this: &mut Self, _, event: &SessionEvent, window, cx| match event {
                 SessionEvent::Changed(changes) if changes.members || changes.reset => {
-                    if !this.dirty(cx) && !this.saving {
+                    if !this.dirty(cx) && !this.saving && !this.has_pending_tag(cx) {
                         this.reload(window, cx);
                     }
                 }
@@ -801,6 +821,8 @@ impl ProfileView {
             loading: false,
             load_error: None,
             inputs,
+            languages: Vec::new(),
+            interests: Vec::new(),
             name_color,
             custom_color: false,
             custom_accent: false,
@@ -826,6 +848,50 @@ impl ProfileView {
 
     fn text(&self, field: Field, cx: &App) -> String {
         self.input(field).read(cx).value().to_string()
+    }
+
+    fn has_pending_tag(&self, cx: &App) -> bool {
+        [ProfileList::Languages, ProfileList::Interests]
+            .iter()
+            .any(|list| {
+                !self
+                    .input(Field::List(*list))
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .is_empty()
+            })
+    }
+
+    fn tags_mut(&mut self, list: ProfileList) -> &mut Vec<String> {
+        match list {
+            ProfileList::Languages => &mut self.languages,
+            ProfileList::Interests => &mut self.interests,
+        }
+    }
+
+    fn add_tag(&mut self, list: ProfileList, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.saved.is_none() {
+            return;
+        }
+        let field = Field::List(list);
+        let text = self.text(field, cx);
+        let raw = text.trim();
+        if raw.is_empty() {
+            return;
+        }
+        let tags = self.tags_mut(list);
+        match validated_tag(list, raw, tags) {
+            Ok(tag) => {
+                tags.push(tag);
+                self.input(field)
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                self.problem = None;
+                self.done = false;
+            }
+            Err(problem) => self.problem = Some(problem),
+        }
+        cx.notify();
     }
 
     fn fallback_name(&self, member: &Member, cx: &App) -> SharedString {
@@ -963,13 +1029,15 @@ impl ProfileView {
             .filter(|u| !u.is_empty());
         self.frame = member.avatar_frame.clone().unwrap_or_default();
         self.clear_after = ClearAfter::Keep;
+        self.languages = member.languages.clone().unwrap_or_default();
+        self.interests = member.interests.clone().unwrap_or_default();
         self.problem = None;
         self.saved = Some(member);
         cx.notify();
     }
 
     /// The typed changes, as the request that saves them, or what is wrong.
-    pub fn update(&self, cx: &App) -> Result<ProfileUpdate, Problem> {
+    fn update(&self, cx: &App) -> Result<ProfileUpdate, Problem> {
         let mut u = ProfileUpdate::default();
         let Some(saved) = &self.saved else {
             return Ok(u);
@@ -1018,22 +1086,11 @@ impl ProfileView {
         {
             return Err(Problem::Homepage);
         }
-        let languages = split_list(&self.text(Field::Languages, cx));
-        if languages.len() > 10 {
-            return Err(Problem::TooManyLanguages);
+        if self.languages != saved.languages.as_deref().unwrap_or_default() {
+            u.languages = Some(self.languages.clone());
         }
-        if languages != saved.languages.clone().unwrap_or_default() {
-            u.languages = Some(languages);
-        }
-        let interests = split_list(&self.text(Field::Interests, cx));
-        if interests.len() > 10 {
-            return Err(Problem::TooManyInterests);
-        }
-        if interests.iter().any(|i| i.len() > 32) {
-            return Err(Problem::LongInterest);
-        }
-        if interests != saved.interests.clone().unwrap_or_default() {
-            u.interests = Some(interests);
+        if self.interests != saved.interests.as_deref().unwrap_or_default() {
+            u.interests = Some(self.interests.clone());
         }
         if self.banner != saved.banner_url.clone().filter(|u| !u.is_empty()) {
             u.banner_url = Some(self.banner.clone().unwrap_or_default());
@@ -1221,19 +1278,115 @@ impl ProfileView {
                 .aria_label(field.label()),
             theme,
         )
-        .when(self.problem.is_some_and(|p| p.field() == field), |d| {
-            d.child(
-                div()
-                    .id(ElementId::Name(format!("{}-problem", field.id()).into()))
-                    .test_support()
-                    .role(Role::Alert)
-                    .aria_label(self.problem.unwrap().text())
-                    .text_sm()
-                    .text_color(theme.danger)
-                    .child(self.problem.unwrap().text()),
-            )
-        })
+        .children(self.field_problem(field, theme))
         .into_any_element()
+    }
+
+    fn field_problem(&self, field: Field, theme: &Theme) -> Option<AnyElement> {
+        let text = self
+            .problem
+            .filter(|problem| problem.field() == field)?
+            .text();
+        Some(
+            div()
+                .id(ElementId::Name(format!("{}-problem", field.id()).into()))
+                .test_support()
+                .role(Role::Alert)
+                .aria_label(text.clone())
+                .text_sm()
+                .text_color(theme.danger)
+                .child(text)
+                .into_any_element(),
+        )
+    }
+
+    fn tag_field(
+        &self,
+        list: ProfileList,
+        theme: &Theme,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Div {
+        let field = Field::List(list);
+        let tags = match list {
+            ProfileList::Languages => &self.languages,
+            ProfileList::Interests => &self.interests,
+        };
+        let input = self.input(field);
+        let focused = input.focus_handle(cx).is_focused(window);
+        let mut editor = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_1p5()
+            .p_1p5()
+            .border_1()
+            .border_color(if focused { theme.accent } else { theme.border })
+            .rounded(theme.radius)
+            .bg(theme.input);
+        let mut language_names = Vec::new();
+        for (index, tag) in tags.iter().enumerate() {
+            let name = match list {
+                ProfileList::Languages => {
+                    let name = people::language_name(tag);
+                    language_names.push(name.clone());
+                    name
+                }
+                ProfileList::Interests => tag.clone(),
+            };
+            let value = tag.clone();
+            let view = cx.entity();
+            editor = editor.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .pl_2p5()
+                    .pr_1()
+                    .rounded_full()
+                    .bg(theme.raised)
+                    .text_sm()
+                    .child(tag.clone())
+                    .child(
+                        Button::new(SharedString::from(format!("{}-remove-{index}", field.id())))
+                            .icon(ui::icon::IconName::Close)
+                            .accessibility_label(t!("profile-tag-remove", item = name))
+                            .small()
+                            .size(px(24.))
+                            .ghost()
+                            .disabled(self.saving)
+                            .on_click(move |_, window, cx| {
+                                view.update(cx, |view, cx| {
+                                    view.tags_mut(list).retain(|tag| *tag != value);
+                                    view.input(field).focus_handle(cx).focus(window, cx);
+                                    view.problem = None;
+                                    view.done = false;
+                                    cx.notify();
+                                });
+                            }),
+                    ),
+            );
+        }
+        let editor = editor.child(
+            div().flex_1().min_w(px(148.)).child(
+                Input::new(input)
+                    .id(field.id())
+                    .aria_label(field.label())
+                    .appearance(false)
+                    .small()
+                    .disabled(self.saving),
+            ),
+        );
+        ui::field::field(field.label(), editor, theme)
+            .when(!language_names.is_empty(), |row| {
+                row.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted)
+                        .child(language_names.join(", ")),
+                )
+            })
+            .children(self.field_problem(field, theme))
     }
 }
 
@@ -1761,8 +1914,8 @@ impl Render for ProfileView {
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(self.field(Field::Languages, &theme))
-                .child(self.field(Field::Interests, &theme))
+                .child(self.tag_field(ProfileList::Languages, &theme, window, cx))
+                .child(self.tag_field(ProfileList::Interests, &theme, window, cx))
                 .child(
                     div()
                         .text_xs()
@@ -2017,7 +2170,10 @@ impl Render for ProfileView {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClearAfter, Cursor, MAX_DATA_URL, base64, is_color, prepare_avatar, split_list};
+    use super::{
+        ClearAfter, Cursor, MAX_DATA_URL, Problem, ProfileList, base64, is_color, prepare_avatar,
+        validated_tag,
+    };
 
     #[test]
     fn base64_matches_the_standard_alphabet() {
@@ -2044,9 +2200,40 @@ mod tests {
     }
 
     #[test]
-    fn lists_split_on_commas_without_repeats() {
-        assert_eq!(split_list(" en, da ,EN,, de-AT"), ["en", "da", "de-AT"]);
+    fn colors_require_six_hex_digits() {
         assert!(is_color("#3366cc") && !is_color("3366cc") && !is_color("#33g6cc"));
+    }
+
+    #[test]
+    fn profile_lists_preserve_punctuation_and_reject_repeats() {
+        let langs = ProfileList::Languages;
+        let interests = ProfileList::Interests;
+        assert_eq!(validated_tag(langs, "en-gb", &[]), Ok("en-GB".into()));
+        assert_eq!(
+            validated_tag(langs, "EN-gb", &["en-GB".into()]),
+            Err(Problem::Duplicate(langs))
+        );
+        assert_eq!(
+            validated_tag(langs, "en_US", &[]),
+            Err(Problem::LanguageTag)
+        );
+        assert_eq!(
+            validated_tag(interests, "Tea, coffee", &[]),
+            Ok("Tea, coffee".into())
+        );
+        assert_eq!(
+            validated_tag(interests, "Æble", &["æble".into()]),
+            Err(Problem::Duplicate(interests))
+        );
+        assert_eq!(
+            validated_tag(interests, "🚀🚀🚀🚀🚀🚀🚀🚀🚀", &[]),
+            Err(Problem::LongInterest)
+        );
+        let full = (0..10).map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            validated_tag(interests, "Hiking", &full),
+            Err(Problem::TooMany(interests))
+        );
     }
 
     #[test]

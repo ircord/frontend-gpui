@@ -263,6 +263,62 @@ fn edits_the_profile_in_settings(cx: &mut TestAppContext) {
     assert!(body.get("displayName").is_none());
 }
 
+#[gpui_kit::test]
+fn profile_chips_add_validate_remove_and_save_individual_entries(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, serve_profile);
+    bootstrap(&f, cx);
+    land(&f, cx, "profile-interests", "profile-languages");
+
+    type_into(&f, cx, "profile-languages", "en_US");
+    enter(&f, cx, "profile-languages");
+    shows(&f, cx, "profile-languages-problem");
+    type_into(&f, cx, "profile-languages", "en-gb");
+    enter(&f, cx, "profile-languages");
+    reads(
+        &f,
+        cx,
+        "profile-languages-remove-0",
+        "Remove British English",
+    );
+    type_into(&f, cx, "profile-languages", "EN-GB");
+    enter(&f, cx, "profile-languages");
+    reads(
+        &f,
+        cx,
+        "profile-languages-problem",
+        "This item is already in the list.",
+    );
+    type_into(&f, cx, "profile-languages", "da");
+    enter(&f, cx, "profile-languages");
+    reads(&f, cx, "profile-languages-remove-1", "Remove Danish");
+    click(&f, cx, "profile-languages-remove-0");
+    reads(&f, cx, "profile-languages-remove-0", "Remove Danish");
+
+    type_into(&f, cx, "profile-interests-input", "Tea, coffee");
+    enter(&f, cx, "profile-interests-input");
+    reads(
+        &f,
+        cx,
+        "profile-interests-input-remove-0",
+        "Remove Tea, coffee",
+    );
+    assert!(
+        f.server
+            .requests_to("PATCH", "/api/v1/networks/n1/profile")
+            .is_empty()
+    );
+
+    land(&f, cx, "profile-about", "profile-pronouns");
+    enter(&f, cx, "profile-pronouns");
+    let body = f
+        .server
+        .wait_for("PATCH", "/api/v1/networks/n1/profile", WAIT)
+        .json();
+    assert_eq!(body["languages"], json!(["da"]));
+    assert_eq!(body["interests"], json!(["Tea, coffee"]));
+    assert!(body.get("pronouns").is_none());
+}
+
 /// The server's sign-in check, the registration policy, the username check
 /// (`taken` is taken) and a sign-up that starts a session. The account it
 /// creates has its setup to do on `n1`.

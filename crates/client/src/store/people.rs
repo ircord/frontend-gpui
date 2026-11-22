@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, Duration, TimeZone};
+use icu_locale::{Locale, LocaleCanonicalizer, locale, names::LanguageIdentifierDisplayName};
 use ircord_contract::event::ServerEvent;
 use ircord_contract::{
     CTCPReply, Conversation, ConversationKind, Member, MemberStatus, Network, ProfileUpdate,
@@ -300,6 +301,40 @@ pub fn local_time(zone: &str, now_ms: i64, clock_12h: bool) -> Option<String> {
     let time = at.to_zoned_datetime(zone).time();
     let format = if clock_12h { "%I:%M %p" } else { "%H:%M" };
     Some(time.strftime(format).to_string())
+}
+
+fn canonical_language(tag: &str) -> Option<Locale> {
+    let tag = tag.trim();
+    if tag.len() > 32
+        || !tag
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return None;
+    }
+    let mut locale: Locale = tag.parse().ok()?;
+    LocaleCanonicalizer::new_extended().canonicalize(&mut locale);
+    Some(locale)
+}
+
+/// Canonicalize a language tag before adding it to a profile.
+pub fn language_tag(tag: &str) -> Option<String> {
+    let tag = canonical_language(tag)?.to_string();
+    (tag.len() <= 32).then_some(tag)
+}
+
+/// The display name in the app's English catalog, with the original tag as a fallback.
+pub fn language_name(tag: &str) -> String {
+    canonical_language(tag)
+        .and_then(|language| {
+            LanguageIdentifierDisplayName::try_new_heavy(
+                locale!("en").into(),
+                language.id,
+                Default::default(),
+            )
+            .ok()
+        })
+        .map_or_else(|| tag.to_string(), |name| name.as_borrowed().to_string())
 }
 
 /// When a status set now clears.
@@ -786,6 +821,18 @@ mod tests {
         assert_eq!(local(after, true), "03:00 AM");
         assert!(local_time("Not/AZone", after, false).is_none());
         assert!(local_time("", after, false).is_none());
+    }
+
+    #[test]
+    fn profile_language_tags_are_normalized_and_have_readable_names() {
+        assert_eq!(language_tag(" en-gb ").as_deref(), Some("en-GB"));
+        assert_eq!(language_tag("iw").as_deref(), Some("he"));
+        assert!(language_tag("en_US").is_none());
+        assert!(language_tag("not a tag").is_none());
+        assert!(language_tag("").is_none());
+        assert_eq!(language_name("da"), "Danish");
+        assert_eq!(language_name("en-GB"), "British English");
+        assert_eq!(language_name("not a tag"), "not a tag");
     }
 
     fn workspace() -> Workspace {

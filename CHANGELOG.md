@@ -24,6 +24,7 @@
 - The Settings header provides quick access to appearance sync on wider windows.
 - Profile cards display the chosen card background, use a taller banner, and open the Profile settings directly from Edit profile.
 - Profile cards show the person’s current local time and present profile details as label and value rows.
+- Add and remove languages and interests individually in Profile settings. Profile cards show readable language names.
 - In Profile settings, the server name stays visible and you can upload a picture by clicking the avatar next to your display name.
 - The Profile settings preview shows the name people will see when you leave your display name blank.
 - Choose a custom name color with the Profile color picker and see it in the name preview.
