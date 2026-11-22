@@ -150,6 +150,70 @@ fn type_enter(f: &Fixture, cx: &mut TestAppContext, id: &'static str, text: &str
 }
 
 #[gpui_kit::test]
+fn read_aloud_plays_a_sample_with_only_its_device_key(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |server| {
+        serve(server, true);
+        server.route(
+            "GET",
+            "/api/v1/app/preferences",
+            200,
+            json!({
+                "preferences": {
+                    "speech": {
+                        "baseUrl": format!("{}/v1", server.address().origin()),
+                        "model": "speech-model",
+                        "voice": "my-voice",
+                    }
+                }
+            }),
+        );
+        server.route_reply(
+            "POST",
+            "/v1/audio/speech",
+            Reply::bytes(200, "audio/wav", super::audio_card::wav(2)),
+        );
+    });
+    bootstrap(&f, cx);
+    cx.update(sound::use_null);
+    wait(cx, "the saved speech service", |cx| {
+        f.session
+            .read(cx)
+            .client()
+            .unwrap()
+            .read()
+            .documents
+            .preferences
+            .is_loaded()
+    });
+    land(&f, cx, "read-aloud", "speech-key");
+    type_enter(&f, cx, "speech-key", "fixture-speech-key");
+    click(&f, cx, "speech-save-key");
+    shows(&f, cx, "speech-status");
+    assert_eq!(
+        label(&f, cx, "speech-status").as_deref(),
+        Some("Speech API key saved on this device.")
+    );
+    click(&f, cx, "speech-play-sample");
+    let request = f.server.wait_for("POST", "/v1/audio/speech", WAIT);
+    assert_eq!(request.header("cookie"), None);
+    assert_eq!(
+        request.header("authorization"),
+        Some("Bearer fixture-speech-key")
+    );
+    assert_eq!(request.json()["voice"], "my-voice");
+    shows(&f, cx, "speech-status");
+    assert!(matches!(
+        label(&f, cx, "speech-status").as_deref(),
+        Some("Playing sample" | "Sample played")
+    ));
+    assert!(
+        f.server
+            .requests_to("PUT", "/api/v1/app/preferences")
+            .is_empty()
+    );
+}
+
+#[gpui_kit::test]
 fn account_wide_settings_round_trip(cx: &mut TestAppContext) {
     let f = signed_in(cx, true);
     land(

@@ -26,6 +26,7 @@ pub mod networks;
 pub mod notifications;
 pub mod privacy;
 pub mod profile;
+mod read_aloud;
 pub mod shortcuts;
 
 use crate::ui::focus::Reachable;

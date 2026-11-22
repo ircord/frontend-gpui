@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New
+
+- Configure a speech service and play a Read Aloud sample in Notifications settings. The speech key stays in this device’s credential store.
+
 ### Improved
 
 - Search in the sidebar opens the workspace search page directly.
