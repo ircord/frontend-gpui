@@ -675,7 +675,9 @@ fn mode_control(current: AppearanceMode, theme: &Theme) -> impl IntoElement + us
                     if selected { theme.accent } else { theme.muted },
                 ))
                 .child(text)
-                .on_click(move |_, _, cx| appearance::edit(cx, |a| a.mode = Some(value)))
+                .on_click(move |_, _, cx| {
+                    appearance::edit(cx, |a| a.mode = Some(value));
+                })
         }))
 }
 
@@ -1221,7 +1223,9 @@ fn fonts(
                 )
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
                 .child(div().text_xs().text_color(theme.muted).child(description))
-                .on_click(move |_, _, cx| appearance::edit(cx, |a| a.font = Some(font)))
+                .on_click(move |_, _, cx| {
+                    appearance::edit(cx, |a| a.font = Some(font));
+                })
                 .into_any_element(),
         );
     }
