@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.1.0 — 2026-11-22
+
 ### Fixed
 
 - Starting IRCord while it already runs, for example from the tray, no longer opens a second copy: it says "You already have an instance of IRCord running.", brings the running window to the front and hands it any link it was started with. A copy that crashed no longer stops the next start.
