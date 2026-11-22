@@ -866,7 +866,7 @@ pub fn open(ctx: &MemberCtx, window: &mut Window, cx: &mut App) {
     let card = cx.new(|cx| ProfileCard::new(session, member, network, cx));
     let title = card.read(cx).title(cx);
     ui::dialog::open(window, cx, title, move |dialog, _, _| {
-        dialog.w(px(440.)).child(card.clone())
+        dialog.w(px(484.)).centered().child(card.clone())
     });
 }
 
@@ -1069,7 +1069,7 @@ fn presence(m: &Member) -> &'static str {
 }
 
 impl Render for ProfileCard {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
         let session = self.session.read(cx);
         let Some(client) = session.client().cloned() else {
@@ -1107,7 +1107,7 @@ impl Render for ProfileCard {
             .flex()
             .flex_col()
             .gap_3()
-            .max_h(px(500.))
+            .max_h((window.viewport_size().height - px(160.)).clamp(px(240.), px(760.)))
             .overflow_y_scroll();
 
         // Who they are.
@@ -1152,16 +1152,21 @@ impl Render for ProfileCard {
             .map(theme::hex)
             .unwrap_or(theme.text);
         let server = self.session.read(cx).server().map(|s| s.url().clone());
-        let banner_url = server
-            .as_ref()
-            .and_then(|s| people::picture_url(m.banner_url.as_deref(), s));
+        let picture = |url: Option<&str>| people::picture_url(url, server.as_ref()?);
+        let banner_url = picture(m.banner_url.as_deref());
+        let backdrop = picture(m.profile_background_url.as_deref());
+        let fallback_banner = banner_url
+            .is_none()
+            .then(|| picture(m.avatar_url.as_deref()))
+            .flatten();
         // Their accent, else their name colour, tints the card and colours
         // their picture's frame, as on the web.
         let accent = ui::avatar::tint(&m, colored, &theme).unwrap_or(theme.accent);
         let banner = div()
             .id("profile-banner")
             .test_support()
-            .h(px(96.))
+            .relative()
+            .h(px(128.))
             .w_full()
             .flex_none()
             .overflow_hidden()
@@ -1169,9 +1174,28 @@ impl Render for ProfileCard {
             .bg(accent.opacity(0.3))
             .children(banner_url.map(|url| {
                 img(crate::images::still(url.to_string().into()))
+                    .absolute()
+                    .inset_0()
                     .size_full()
                     .object_fit(ObjectFit::Cover)
-            }));
+            }))
+            .children(fallback_banner.map(|url| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(
+                        img(crate::images::avatar_backdrop(url.to_string().into()))
+                            .size_full()
+                            .opacity(0.8)
+                            .object_fit(ObjectFit::Cover),
+                    )
+                    .child(div().absolute().inset_0().bg(accent.opacity(0.45)))
+            }))
+            .child(div().absolute().inset_0().bg(linear_gradient(
+                180.,
+                linear_color_stop(theme.main.opacity(0.), 0.3),
+                linear_color_stop(theme.main, 1.),
+            )));
         let face = div().self_start().mt(px(-56.)).ml_3().flex_none().child(
             ui::avatar::framed(
                 ui::avatar::person(
@@ -1264,10 +1288,13 @@ impl Render for ProfileCard {
                     .id("profile-status")
                     .test_support()
                     .aria_label(SharedString::from(status.clone()))
-                    .px_2()
+                    .self_start()
+                    .px_3()
                     .py_1()
-                    .rounded_md()
-                    .bg(theme.accent.opacity(0.15))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(theme.border.opacity(0.55))
+                    .bg(theme.raised.opacity(0.45))
                     .text_sm()
                     .child(status),
             );
@@ -1544,19 +1571,32 @@ impl Render for ProfileCard {
         }
 
         // What you can do.
-        let mut actions = div().flex().gap_2().justify_end();
+        let mut actions = div().flex().flex_col().gap_2().w_full();
         if me {
             let session = self.session.clone();
             actions = actions.child(
                 Button::new("profile-edit")
-                    .ghost()
+                    .primary()
+                    .rounded(px(18.))
+                    .w_full()
                     .label(t!("people-profile-edit"))
                     .on_click(move |_, window, cx| {
                         ui::dialog::close(window, cx);
-                        session.update(cx, |s, cx| s.navigate(Route::Settings, cx));
+                        crate::settings::open(&session, Some("profile"), cx);
                     }),
             );
         } else {
+            let (network, member, nick) = (self.network.clone(), m.id.clone(), m.nick.clone());
+            actions = actions.child(
+                Button::new("profile-message")
+                    .primary()
+                    .w_full()
+                    .rounded(px(18.))
+                    .label(t!("people-menu-message"))
+                    .on_click(move |_, window, cx| {
+                        message(&network, Some(member.clone()), &nick, window, cx)
+                    }),
+            );
             if owner {
                 // Any conversation on the card's network names that network.
                 let conversation = client
@@ -1574,6 +1614,8 @@ impl Render for ProfileCard {
                 actions = actions.child(
                     Button::new("profile-bot")
                         .ghost()
+                        .w_full()
+                        .rounded(px(18.))
                         .label(if bot {
                             t!("people-menu-mark-bot")
                         } else {
@@ -1582,22 +1624,22 @@ impl Render for ProfileCard {
                         .on_click(move |_, window, cx| set_bot(&ctx, bot, window, cx)),
                 );
             }
-            let (network, member, nick) = (self.network.clone(), m.id.clone(), m.nick.clone());
-            actions = actions.w_full().flex_col().child(
-                Button::new("profile-message")
-                    .primary()
-                    .w_full()
-                    .label(t!("people-menu-message"))
-                    .on_click(move |_, window, cx| {
-                        message(&network, Some(member.clone()), &nick, window, cx)
-                    }),
-            );
         }
         // The actions stay in view below the part that scrolls.
         div()
+            .relative()
             .flex()
             .flex_col()
             .gap_3()
+            .children(backdrop.map(|url| {
+                img(crate::images::still(url.to_string().into()))
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    .rounded(theme.radius_large)
+                    .opacity(0.20)
+                    .object_fit(ObjectFit::Cover)
+            }))
             .child(card)
             .child(actions)
             .into_any_element()
