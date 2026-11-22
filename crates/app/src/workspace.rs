@@ -531,9 +531,10 @@ impl WorkspaceView {
             .label(t!("sidebar-find"))
             .on_click({
                 let state = state.clone();
+                let session = self.session.clone();
                 move |_, window, cx| {
                     state.update(cx, |drawer, cx| drawer.close(window, cx));
-                    crate::features::switcher::open(window, cx);
+                    crate::features::search::open(&session, None, cx);
                 }
             });
         let close_button = Button::new("hide-members")
@@ -713,9 +714,10 @@ impl Render for WorkspaceView {
             .border_color(theme.border.opacity(0.65))
             .bg(theme.main)
             .shadow(frame_shadows(&theme))
-            .when(theme.hibiki && header.is_some(), |d| {
-                d.child(ambient_light(&theme, window, cx))
-            })
+            .when(
+                theme.hibiki && (header.is_some() || route == Some(Route::Search)),
+                |d| d.child(ambient_light(&theme, window, cx)),
+            )
             .children(header)
             .child(div().flex_1().min_h_0().flex().child(main).children(panel));
         div()

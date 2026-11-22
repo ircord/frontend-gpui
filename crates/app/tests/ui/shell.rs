@@ -284,7 +284,9 @@ fn the_sidebar_opens_with_search_and_its_pages(cx: &mut TestAppContext) {
     draw(&f, cx, |window, cx| window.press("escape", cx));
     click(&f, cx, "sidebar-find");
     draw(&f, cx, |window, _| {
-        assert!(window.find("switcher").visible());
+        assert!(window.find("search-page").visible());
+        assert_eq!(window.find("search-input").focused(), Some(true));
+        assert_eq!(window.find("sidebar-find").selected(), Some(true));
     });
 }
 

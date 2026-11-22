@@ -876,7 +876,9 @@ impl Render for SidebarView {
                 .into_any_element();
         }
 
-        // Search (the quick switcher) and folding the list.
+        // Search and folding the list.
+        let searching = route == Some(crate::route::Route::Search);
+        let session = self.session.clone();
         let search = div()
             .px_2()
             .pt_1()
@@ -891,6 +893,7 @@ impl Render for SidebarView {
                     .role(Role::Button)
                     .reachable(&theme)
                     .aria_label(t!("sidebar-find"))
+                    .aria_selected(searching)
                     .flex_1()
                     .px_2()
                     .py_1()
@@ -904,10 +907,16 @@ impl Render for SidebarView {
                     .bg(theme.main)
                     .text_sm()
                     .text_color(theme.muted)
-                    .hover(|d| d.bg(theme.hover))
+                    .when(searching, |d| {
+                        d.bg(theme.selected)
+                            .border_color(theme.accent.opacity(0.58))
+                            .text_color(theme.text)
+                            .font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .when(!searching, |d| d.hover(|d| d.bg(theme.hover)))
                     .child(ui::icon::icon(IconName::Search, theme.muted))
                     .child(t!("sidebar-find"))
-                    .on_click(|_, window, cx| crate::features::switcher::open(window, cx)),
+                    .on_click(move |_, _, cx| crate::features::search::open(&session, None, cx)),
             )
             .child(ui::icon::button(
                 "sidebar-hide",

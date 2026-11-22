@@ -303,7 +303,10 @@ fn tab_reaches_every_control_in_the_dialogs(cx: &mut TestAppContext) {
     let dialogs: Vec<(&str, Opener)> = vec![
         ("join a channel", click("section-channels-join")),
         ("message someone", click("section-directs-new")),
-        ("find a conversation", click("sidebar-find")),
+        (
+            "quick switcher",
+            Box::new(ircord_app::features::switcher::open),
+        ),
         (
             "keyboard shortcuts",
             Box::new(ircord_app::features::shortcuts::open_help),

@@ -4,6 +4,8 @@
 
 ### Improved
 
+- Search in the sidebar opens the workspace search page directly.
+
 - The desktop workspace, message list and composer follow the web layout and use your chosen theme, fonts and density.
 - On narrow windows, members open over the conversation. Resize the sidebars from their edges or with the arrow keys, and double-click an edge to reset its width.
 - On macOS, drag the window from the top bar and press Command-Q to quit.
