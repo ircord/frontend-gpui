@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
+use gpui_kit::base::FocusTrapElement;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::DropdownMenu;
@@ -515,8 +516,6 @@ impl WorkspaceView {
         window: &Window,
         cx: &App,
     ) -> impl IntoElement + use<> {
-        use gpui_kit::base::FocusTrapElement;
-
         let focus = state.read(cx);
         let search = Button::new("members-drawer-search")
             .ghost()
@@ -548,30 +547,10 @@ impl WorkspaceView {
                 let state = state.clone();
                 move |_, window, cx| state.update(cx, |drawer, cx| drawer.close(window, cx))
             });
-        let panel = div()
-            .id("members-drawer")
-            .test_support()
-            .role(Role::Dialog)
-            .aria_label(t!("people-members"))
-            .absolute()
-            .right_0()
-            .top_0()
-            .bottom_0()
-            .w(px(300.).min(window.viewport_size().width * 0.85))
+        let contents = div()
+            .size_full()
             .flex()
             .flex_col()
-            .occlude()
-            .bg(theme.main)
-            .border_l_1()
-            .border_color(theme.border.opacity(0.65))
-            .shadow(frame_shadows(theme))
-            .on_action({
-                let state = state.clone();
-                move |_: &MarkRead, window, cx| {
-                    cx.stop_propagation();
-                    state.update(cx, |drawer, cx| drawer.close(window, cx));
-                }
-            })
             .child(
                 div()
                     .h(rems(3.))
@@ -584,24 +563,16 @@ impl WorkspaceView {
                     .child(close_button),
             )
             .child(div().flex_1().min_h_0().child(self.members.clone()))
-            .focus_trap("members-drawer", &focus.scope);
+            .into_any_element();
         let state = state.clone();
-        div()
-            .absolute()
-            .inset_0()
-            .child(
-                div()
-                    .id("members-scrim")
-                    .test_support()
-                    .absolute()
-                    .inset_0()
-                    .bg(black().opacity(0.5))
-                    .occlude()
-                    .on_click(move |_, window, cx| {
-                        state.update(cx, |drawer, cx| drawer.close(window, cx));
-                    }),
-            )
-            .child(panel)
+        right_drawer(
+            ("members-drawer", "members-scrim", t!("people-members")),
+            contents,
+            &focus.scope,
+            theme,
+            window,
+            move |window, cx| state.update(cx, |drawer, cx| drawer.close(window, cx)),
+        )
     }
 }
 
@@ -698,12 +669,19 @@ impl Render for WorkspaceView {
             Some(route) => main.child(self.route_pane(route, &theme, window, cx)),
             None => main,
         };
-        let fixed_panel_width = (!compact
-            && self.session.read(cx).panel.as_deref() == Some(crate::features::search::PANEL))
-        .then_some(340.);
-        let panel = self
-            .panel(&route, !compact, window, cx)
-            .map(|panel| crate::sidebar::side_panel(panel, fixed_panel_width, window, cx));
+        let searching = conversation.is_some()
+            && self.session.read(cx).panel.as_deref() == Some(crate::features::search::PANEL);
+        let panel = self.panel(&route, !compact, window, cx);
+        let (panel, search_drawer) = if compact && searching {
+            (None, panel)
+        } else {
+            (
+                panel.map(|panel| {
+                    crate::sidebar::side_panel(panel, searching.then_some(340.), window, cx)
+                }),
+                None,
+            )
+        };
         let card = div()
             .id("workspace-card")
             .relative()
@@ -747,6 +725,23 @@ impl Render for WorkspaceView {
                     .child(card)
                     .when(show_drawer, |body| {
                         body.child(self.members_drawer(&drawer, &theme, window, cx))
+                    })
+                    .when_some(search_drawer, |body, search| {
+                        let session = self.session.clone();
+                        body.child(right_drawer(
+                            (
+                                "conversation-search-drawer",
+                                "conversation-search-scrim",
+                                t!("search-in-conversation"),
+                            ),
+                            search,
+                            &drawer.read(cx).scope,
+                            &theme,
+                            window,
+                            move |window, cx| {
+                                crate::features::search::toggle_panel(&session, false, window, cx)
+                            },
+                        ))
                     }),
             )
             .when(settings_open, |workspace| {
@@ -796,6 +791,58 @@ impl Render for WorkspaceView {
                 )
             })
     }
+}
+
+fn right_drawer<D>(
+    (id, scrim, label): (&'static str, &'static str, &'static str),
+    contents: AnyElement,
+    focus: &FocusHandle,
+    theme: &Theme,
+    window: &Window,
+    dismiss: D,
+) -> impl IntoElement + use<D>
+where
+    D: Fn(&mut Window, &mut App) + Clone + 'static,
+{
+    let escape = dismiss.clone();
+    let panel = div()
+        .id(id)
+        .test_support()
+        .role(Role::Dialog)
+        .aria_label(label)
+        .a11y_synthetic_children(|tree| tree.parent_node().set_modal())
+        .absolute()
+        .right_0()
+        .top_0()
+        .bottom_0()
+        .w(px(300.).min(window.viewport_size().width * 0.85))
+        .flex()
+        .flex_col()
+        .occlude()
+        .bg(theme.main)
+        .border_l_1()
+        .border_color(theme.border.opacity(0.65))
+        .shadow(frame_shadows(theme))
+        .on_action(move |_: &MarkRead, window, cx| {
+            cx.stop_propagation();
+            escape(window, cx);
+        })
+        .child(contents)
+        .focus_trap(id, focus);
+    div()
+        .absolute()
+        .inset_0()
+        .child(
+            div()
+                .id(scrim)
+                .test_support()
+                .absolute()
+                .inset_0()
+                .bg(black().opacity(0.5))
+                .occlude()
+                .on_click(move |_, window, cx| dismiss(window, cx)),
+        )
+        .child(panel)
 }
 
 fn header_divider(theme: &Theme) -> Div {

@@ -392,6 +392,37 @@ fn escape_closes_the_conversation_search(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn conversation_search_uses_a_drawer_in_narrow_windows(cx: &mut TestAppContext) {
+    let f = open(cx);
+    cx.simulate_window_resize(
+        f.window,
+        gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(720.)),
+    );
+    let mut timeline_width = gpui_kit::px(0.);
+    frame(&f, cx, |window, _| {
+        timeline_width = window.find("timeline").bounds().size.width;
+    });
+    click(&f, cx, "search-conversation-toggle");
+    frame(&f, cx, |window, _| {
+        assert!(window.find("conversation-search-drawer").visible());
+        assert_eq!(
+            window.find("conversation-search-input").focused(),
+            Some(true)
+        );
+        assert_eq!(window.find("timeline").bounds().size.width, timeline_width);
+        assert!(window.try_find("resize-panel").is_none());
+    });
+    click(&f, cx, "conversation-search-scrim");
+    frame(&f, cx, |window, _| {
+        assert!(window.try_find("conversation-search-drawer").is_none());
+        assert_eq!(
+            window.find("search-conversation-toggle").focused(),
+            Some(true)
+        );
+    });
+}
+
+#[gpui_kit::test]
 fn results_carry_the_senders_picture_and_the_page_closes(cx: &mut TestAppContext) {
     let f = open_with(cx, true, |server| {
         let mut s = crate::fixture::snapshot();

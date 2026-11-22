@@ -152,18 +152,34 @@ pub fn open(session: &Entity<Session>, query: Option<&str>, cx: &mut App) {
 
 /// Open (or close) the search beside the open conversation.
 pub fn toggle_panel(session: &Entity<Session>, show: bool, window: &mut Window, cx: &mut App) {
-    let showing_conversation = matches!(session.read(cx).route(), Some(Route::Conversation(_)));
+    let state = session.read(cx);
+    let showing_conversation = matches!(state.route(), Some(Route::Conversation(_)));
     if show && !showing_conversation {
         return;
     }
-    session.update(cx, |s, cx| {
-        s.set_panel(show.then(|| SharedString::from(PANEL)), cx)
-    });
-    if show {
-        // Focus the field once the panel exists.
-        cx.set_global(FocusPanel(true));
-        window.refresh();
+    let was_open = state.panel.as_deref() == Some(PANEL);
+    let opener = window.focused(cx).map(|focus| focus.downgrade());
+    let focus = cx.default_global::<FocusPanel>();
+    focus.pending = show;
+    if show && !was_open {
+        focus.opener = opener;
     }
+    let restore = (!show && was_open)
+        .then(|| focus.opener.take().and_then(|focus| focus.upgrade()))
+        .flatten();
+    session.update(cx, |s, cx| {
+        let panel = if show {
+            Some(SharedString::from(PANEL))
+        } else {
+            crate::features::profile::saved_members_hidden(s)
+                .then(|| SharedString::from(crate::session::NO_PANEL))
+        };
+        s.set_panel(panel, cx);
+    });
+    if let Some(restore) = restore {
+        restore.focus(window, cx);
+    }
+    window.refresh();
 }
 
 // ---- What a search finds and how it is running ----
@@ -2425,7 +2441,11 @@ impl Render for FiltersDialog {
 // ---- Searching inside a conversation ----
 
 /// Focus the panel's field on its next draw.
-struct FocusPanel(bool);
+#[derive(Default)]
+struct FocusPanel {
+    pending: bool,
+    opener: Option<WeakFocusHandle>,
+}
 impl Global for FocusPanel {}
 
 #[derive(Clone)]
@@ -2457,8 +2477,7 @@ fn panel_view(ctx: &PanelCtx, window: &mut Window, cx: &mut App) -> AnyElement {
             view
         }
     };
-    if cx.try_global::<FocusPanel>().is_some_and(|f| f.0) {
-        cx.set_global(FocusPanel(false));
+    if std::mem::take(&mut cx.default_global::<FocusPanel>().pending) {
         let input = view.read(cx).input.clone();
         input.focus_handle(cx).focus(window, cx);
     }
