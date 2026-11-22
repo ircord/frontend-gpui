@@ -35,6 +35,7 @@
 - Personal themes can show a synced background image behind the conversation or the whole workspace.
 - Upload and preview a personal theme’s background, then adjust its placement, fit, dimming, and blur before saving.
 - Try a theme with custom CSS for 20 seconds before keeping it. Press Shift+F8 to pause or resume your personal theme.
+- Edit a personal theme’s custom CSS in Appearance and see which rules GPUI can use before saving.
 - Direct messages use the same sidebar order as the web client.
 - Switching networks returns to the last channel you viewed on that network, even after restarting IRCord.
 - The collapsed sidebar still gives you access to Search, Inbox, Saved messages, Drafts, Links and Server.

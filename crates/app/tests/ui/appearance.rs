@@ -609,6 +609,65 @@ fn a_theme_trial_reverts_on_request_and_when_the_timer_expires(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
+fn editing_the_active_themes_css_saves_only_after_keep(cx: &mut TestAppContext) {
+    let f = signed_in(
+        cx,
+        json!({"mode": "dark", "theme": "t-custom"}),
+        json!([{
+            "format": 1, "id": "t-custom", "name": "Custom", "updatedAt": "revision-1",
+            "css": ""
+        }]),
+    );
+    wait(cx, "the old theme is active", |cx| {
+        theme::appearance::compiled(cx).theme.as_deref() == Some("t-custom")
+    });
+    let original = colour(cx).accent;
+    let css = ":root { --accent: #ff0000 }\n.message { color: red }";
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-theme-edit-t-custom");
+    click(&f, cx, "appearance-theme-tab-css");
+    click(&f, cx, "appearance-theme-css-editor");
+    cx.update_window(f.window, |_, window, cx| window.input(css, cx))
+        .unwrap();
+    wait(cx, "the draft reports unsupported style rules", |cx| {
+        f.window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find("appearance-draft-css-skipped").is_some()
+            })
+            .unwrap()
+    });
+    click(&f, cx, "appearance-theme-save");
+    wait(cx, "the edit appears in a trial", |cx| {
+        theme::get(cx).accent == theme::hex(0xff0000)
+    });
+    assert!(
+        f.server
+            .requests_to("PUT", "/api/v1/app/themes/t-custom")
+            .is_empty()
+    );
+    trial_action(&f, cx, "theme-trial-revert");
+    wait(cx, "the saved theme is restored", |cx| {
+        theme::get(cx).accent == original
+    });
+    assert!(
+        f.server
+            .requests_to("PUT", "/api/v1/app/themes/t-custom")
+            .is_empty()
+    );
+
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-theme-save");
+    trial_action(&f, cx, "theme-trial-keep");
+    wait(cx, "the kept edit is active", |cx| {
+        theme::get(cx).accent == theme::hex(0xff0000)
+    });
+    let body = f.server.requests_to("PUT", "/api/v1/app/themes/t-custom")[0].json();
+    assert_eq!(body["expected"], "revision-1");
+    assert_eq!(body["theme"]["css"], css);
+}
+
+#[gpui_kit::test]
 fn every_scheme_can_be_picked_and_reads_clearly(cx: &mut TestAppContext) {
     let f = signed_in(cx, json!({"mode": "dark"}), json!([]));
     open_at(&f, cx, "appearance-scheme");

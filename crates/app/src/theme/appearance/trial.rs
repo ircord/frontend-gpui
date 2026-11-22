@@ -22,10 +22,20 @@ pub(super) struct State {
 }
 
 struct Running {
-    theme: UserTheme,
+    saved: UserTheme,
+    edited: Option<UserTheme>,
     kept_id: Option<String>,
     deadline: Instant,
+    on_keep: Keep,
     _ticker: Task<()>,
+}
+
+type Keep = Box<dyn FnOnce(&mut App)>;
+
+impl Running {
+    fn valid_for(&self, kept: &Option<String>, themes: &[UserTheme], css: bool) -> bool {
+        css && &self.kept_id == kept && themes.contains(&self.saved)
+    }
 }
 
 impl State {
@@ -35,20 +45,26 @@ impl State {
 
     /// Discard a trial when the account choice, library entry or CSS policy changes.
     pub(super) fn validate(&mut self, look: &Look, themes: &[UserTheme], css: bool) -> bool {
-        let invalid = self.running.as_ref().is_some_and(|trial| {
-            !css || trial.kept_id != look.theme || !themes.contains(&trial.theme)
-        });
+        let invalid = self
+            .running
+            .as_ref()
+            .is_some_and(|trial| !trial.valid_for(&look.theme, themes, css));
         if invalid {
             self.cancel();
         }
         invalid
     }
 
-    pub(super) fn select(&self, look: &mut Look) {
-        if self.paused {
+    pub(super) fn select(&self, look: &mut Look, themes: &mut [UserTheme]) {
+        if let Some(trial) = &self.running {
+            look.theme.clone_from(&trial.saved.id);
+            if let Some(edited) = &trial.edited
+                && let Some(saved) = themes.iter_mut().find(|theme| theme.id == trial.saved.id)
+            {
+                saved.clone_from(edited);
+            }
+        } else if self.paused {
             look.theme = None;
-        } else if let Some(trial) = &self.running {
-            look.theme.clone_from(&trial.theme.id);
         }
     }
 }
@@ -75,7 +91,16 @@ pub(crate) fn choose(id: &str, cx: &mut App) -> bool {
         state.paused = false;
     }
     if use_trial {
-        start(theme, kept_id, cx);
+        let id = theme.id.clone();
+        start(
+            theme,
+            None,
+            kept_id,
+            Box::new(move |cx| {
+                edit(cx, |appearance| appearance.theme = id);
+            }),
+            cx,
+        );
     } else {
         edit(cx, |appearance| appearance.theme = theme.id);
         repaint(cx);
@@ -83,7 +108,51 @@ pub(crate) fn choose(id: &str, cx: &mut App) -> bool {
     use_trial
 }
 
-fn start(theme: UserTheme, kept_id: Option<String>, cx: &mut App) {
+/// Preview new CSS on the theme in use. If the saved revision has changed,
+/// the editor's normal save path lets the server report the conflict.
+pub(crate) fn preview_edit(
+    edited: &UserTheme,
+    on_keep: impl FnOnce(&mut App) + 'static,
+    cx: &mut App,
+) -> bool {
+    let kept_id = look(cx).theme;
+    if kept_id.is_none() || edited.id != kept_id || !theme_data::has_css(edited) || !css_allowed(cx)
+    {
+        return false;
+    }
+    let Some(saved) = themes(cx)
+        .into_iter()
+        .find(|theme| theme.id == kept_id && theme.updated_at == edited.updated_at)
+    else {
+        return false;
+    };
+    if edited.css.as_deref().unwrap_or_default() == saved.css.as_deref().unwrap_or_default() {
+        return false;
+    }
+    start(saved, Some(edited.clone()), kept_id, Box::new(on_keep), cx);
+    true
+}
+
+/// If Settings reopens during an edit preview, show the draft again.
+pub(super) fn return_to_editor(cx: &mut App) {
+    if cx
+        .global::<super::State>()
+        .preview
+        .running
+        .as_ref()
+        .is_some_and(|trial| trial.edited.is_some())
+    {
+        revert(cx);
+    }
+}
+
+fn start(
+    saved: UserTheme,
+    edited: Option<UserTheme>,
+    kept_id: Option<String>,
+    on_keep: Keep,
+    cx: &mut App,
+) {
     let executor = cx.background_executor().clone();
     let deadline = executor.now() + TRIAL_TIME;
     let state = &mut cx.global_mut::<super::State>().preview;
@@ -106,9 +175,11 @@ fn start(theme: UserTheme, kept_id: Option<String>, cx: &mut App) {
         }
     });
     cx.global_mut::<super::State>().preview.running = Some(Running {
-        theme,
+        saved,
+        edited,
         kept_id,
         deadline,
+        on_keep,
         _ticker: ticker,
     });
     repaint(cx);
@@ -127,11 +198,9 @@ fn keep(cx: &mut App) {
     let trial = cx.global_mut::<super::State>().preview.running.take();
     if let Some(trial) = trial
         && now < trial.deadline
-        && css
-        && kept == trial.kept_id
-        && library.contains(&trial.theme)
+        && trial.valid_for(&kept, &library, css)
     {
-        edit(cx, |appearance| appearance.theme = trial.theme.id);
+        (trial.on_keep)(cx);
     }
     repaint(cx);
 }

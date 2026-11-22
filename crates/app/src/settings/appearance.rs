@@ -17,7 +17,7 @@ use std::rc::Rc;
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
@@ -141,16 +141,25 @@ struct Editor {
     accent: Entity<InputState>,
     name: Entity<InputState>,
     import: Entity<InputState>,
+    css: Entity<TextareaState>,
     seeds: Vec<(Seed, Entity<InputState>)>,
     /// The unsaved theme and its editing mode.
     editing: Option<(UserTheme, Mode)>,
-    background_tab: bool,
+    tab: ThemeTab,
     background_preview: Entity<crate::theme::background::Wallpaper>,
     edit_generation: u64,
     /// What the last action said, and whether it was a problem.
     notice: Option<(SharedString, bool)>,
     busy: bool,
     _session: Subscription,
+    _css: Subscription,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ThemeTab {
+    Colors,
+    Background,
+    Css,
 }
 
 struct Editors(Entity<Editor>);
@@ -168,6 +177,7 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
     let accent = input(t!("appearance-accent-custom-placeholder"), window, cx);
     let name = input(t!("appearance-themes-new-name"), window, cx);
     let import = input(t!("appearance-themes-import-paste"), window, cx);
+    let css = cx.new(|cx| TextareaState::new(window, cx).rows(6));
     let seeds = Seed::ALL
         .iter()
         .map(|s| {
@@ -183,9 +193,10 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
         accent,
         name,
         import,
+        css: css.clone(),
         seeds,
         editing: None,
-        background_tab: false,
+        tab: ThemeTab::Colors,
         background_preview,
         edit_generation: 0,
         notice: None,
@@ -204,6 +215,11 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
                 editor.edit_generation = editor.edit_generation.wrapping_add(1);
                 editor.notice = None;
                 editor.busy = false;
+            }
+        }),
+        _css: cx.subscribe(&css, |editor, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) && editor.editing.is_some() {
+                cx.refresh_windows();
             }
         }),
     });
@@ -511,7 +527,7 @@ fn under(
 
 /// What the theme in use's CSS set and what this app left out, under the
 /// theme's row.
-fn css_report(name: &str, css: &CssVariables, theme: &Theme) -> Div {
+fn css_report(id: &str, name: &str, css: &CssVariables, theme: &Theme) -> Div {
     let mut report = div()
         .flex()
         .flex_col()
@@ -528,7 +544,7 @@ fn css_report(name: &str, css: &CssVariables, theme: &Theme) -> Div {
         .into();
         report = report.child(
             div()
-                .id("appearance-themes-css-applied")
+                .id(ElementId::Name(format!("{id}-applied").into()))
                 .test_support()
                 .role(Role::Status)
                 .aria_label(text.clone())
@@ -544,7 +560,7 @@ fn css_report(name: &str, css: &CssVariables, theme: &Theme) -> Div {
         .into();
         report = report.child(
             div()
-                .id("appearance-themes-css-skipped")
+                .id(ElementId::Name(format!("{id}-skipped").into()))
                 .test_support()
                 .role(Role::Status)
                 .aria_label(text.clone())
@@ -1413,7 +1429,7 @@ fn themes_block(
             .filter(|_| compiled.theme == user_theme.id)
         {
             let name = user_theme.name.clone().unwrap_or_default();
-            body = body.child(css_report(&name, css, theme));
+            body = body.child(css_report("appearance-themes-css", &name, css, theme));
         }
     }
     if let Some((user_theme, editing_mode)) = editing {
@@ -1629,7 +1645,9 @@ fn theme_row(
                         name = name
                     )))
                     .test_support()
-                    .on_click(move |_, _, cx| start_editing(&edit_editor, &edit_theme, mode, cx)),
+                    .on_click(move |_, window, cx| {
+                        start_editing(&edit_editor, &edit_theme, mode, window, cx)
+                    }),
             )
         })
         .child(
@@ -1697,25 +1715,30 @@ fn seed_key(seed: Seed) -> &'static str {
     }
 }
 
-fn start_editing(editor: &Entity<Editor>, user_theme: &UserTheme, mode: Mode, cx: &mut App) {
+fn start_editing(
+    editor: &Entity<Editor>,
+    user_theme: &UserTheme,
+    mode: Mode,
+    window: &mut Window,
+    cx: &mut App,
+) {
     if editor.read(cx).busy {
         return;
     }
     let seeds = look::drawn_seeds(user_theme, mode);
-    let inputs = editor.read(cx).seeds.clone();
-    let windows = cx.windows();
+    let state = editor.read(cx);
+    let inputs = state.seeds.clone();
+    let css = state.css.clone();
     for (seed, input) in inputs {
         let value = look::to_hex(seed.get(&seeds));
-        // Setting a field's text needs a window; any of the app's will do.
-        if let Some(window) = windows.first() {
-            let _ = window.update(cx, |_, window, cx| {
-                input.update(cx, |s, cx| s.set_value(value, window, cx));
-            });
-        }
+        input.update(cx, |s, cx| s.set_value(value, window, cx));
     }
+    css.update(cx, |s, cx| {
+        s.set_value(user_theme.css.clone().unwrap_or_default(), window, cx)
+    });
     editor.update(cx, |e, _| {
         e.editing = Some((user_theme.clone(), mode));
-        e.background_tab = false;
+        e.tab = ThemeTab::Colors;
         e.edit_generation = e.edit_generation.wrapping_add(1);
         e.notice = None;
     });
@@ -1736,7 +1759,7 @@ fn theme_editor(
         Mode::Dark => t!("appearance-themes-editing-dark"),
         Mode::Light => t!("appearance-themes-editing-light"),
     };
-    let background_tab = editor.read(cx).background_tab;
+    let tab = editor.read(cx).tab;
     let busy = editor.read(cx).busy;
     let mut form = div()
         .id("appearance-theme-editor")
@@ -1769,36 +1792,46 @@ fn theme_editor(
         .role(Role::RadioGroup)
         .aria_label(t!("appearance-themes-edit"))
         .flex()
+        .flex_wrap()
         .gap_2()
         .children(
             [
-                (false, "colors", t!("appearance-themes-colors")),
-                (true, "background", t!("appearance-themes-background")),
+                (ThemeTab::Colors, "colors", t!("appearance-themes-colors")),
+                (
+                    ThemeTab::Background,
+                    "background",
+                    t!("appearance-themes-background"),
+                ),
+                (ThemeTab::Css, "css", t!("appearance-themes-css-tab")),
             ]
-            .map(|(background, key, label)| {
+            .map(|(choice, key, label)| {
                 let editor = editor.clone();
                 option(
                     format!("appearance-theme-tab-{key}"),
                     label,
-                    background == background_tab,
+                    choice == tab,
                     theme,
                 )
                 .test_support()
                 .reachable(theme)
                 .on_click(move |_, _, cx| {
-                    editor.update(cx, |e, _| e.background_tab = background);
+                    editor.update(cx, |e, _| e.tab = choice);
                     cx.refresh_windows();
                 })
             }),
         );
     form = form.child(tabs);
-    if background_tab {
+    if tab == ThemeTab::Background {
         form = form.child(background::render(
             editor, user_theme, mode, theme, window, cx,
         ));
     } else {
         let preview = editor.read(cx).background_preview.clone();
         preview.update(cx, |view, cx| view.clear(Some(window), cx));
+    }
+    if tab == ThemeTab::Css {
+        form = form.child(css_editor(editor, user_theme, mode, theme, cx));
+    } else if tab == ThemeTab::Colors {
         for (seed, input) in inputs {
             form = form.child(
                 div()
@@ -1873,9 +1906,21 @@ fn theme_editor(
                                 look::set_seed(&mut next, mode, *seed, color);
                             }
                         }
-                        let expected = edited.updated_at.clone();
+                        let css = save_editor.read(cx).css.read(cx).value().to_string();
+                        if css.len() > look::MAX_THEME_CSS {
+                            say(
+                                &save_editor,
+                                t!("appearance-themes-import-css-too-long"),
+                                true,
+                                cx,
+                            );
+                            return;
+                        }
+                        if css != edited.css.as_deref().unwrap_or_default() {
+                            next.css = Some(css);
+                        }
                         next.made_with = Some(made_with().into());
-                        save(&save_editor, next, expected, false, None, cx);
+                        save_edit(&save_editor, next, cx);
                     }),
             )
             .child(
@@ -1892,6 +1937,104 @@ fn theme_editor(
                     }),
             ),
     )
+}
+
+fn css_editor(
+    editor: &Entity<Editor>,
+    draft: &UserTheme,
+    mode: Mode,
+    theme: &Theme,
+    cx: &App,
+) -> Div {
+    let input = &editor.read(cx).css;
+    let text = input.read(cx).value();
+    let size = text.len();
+    let mut form = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .id("appearance-theme-css-editor")
+                .test_support()
+                .child(
+                    Textarea::new(input)
+                        .aria_label(t!("appearance-themes-css-editor"))
+                        .font_family(theme.mono_font.clone()),
+                ),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(if size > look::MAX_THEME_CSS {
+                    theme.danger
+                } else {
+                    theme.muted
+                })
+                .child(t!(
+                    "appearance-themes-css-size",
+                    used = size,
+                    limit = look::MAX_THEME_CSS
+                )),
+        );
+    if !appearance::server_allows_css(cx) {
+        form = form.child(
+            div()
+                .text_sm()
+                .text_color(theme.warning)
+                .child(t!("appearance-themes-css-server-off")),
+        );
+    } else if !appearance::css_allowed(cx) {
+        form = form.child(
+            div()
+                .text_sm()
+                .text_color(theme.muted)
+                .child(t!("appearance-themes-css-account-off")),
+        );
+    }
+    if size <= look::MAX_THEME_CSS && !text.trim().is_empty() {
+        let mut base = appearance::look(cx);
+        base.theme.clone_from(&draft.id);
+        let mut preview = draft.clone();
+        preview.css = Some(text.to_string());
+        let compiled = look::compile_with_css(&base, mode, &[preview], false, true);
+        if let Some(css) = &compiled.css {
+            form = form.child(css_report(
+                "appearance-draft-css",
+                draft.name.as_deref().unwrap_or_default(),
+                css,
+                theme,
+            ));
+        }
+    }
+    form.child(
+        div()
+            .text_sm()
+            .text_color(theme.muted)
+            .child(t!("appearance-themes-css-switch-help")),
+    )
+}
+
+fn save_edit(editor: &Entity<Editor>, draft: UserTheme, cx: &mut App) {
+    if editor.read(cx).busy {
+        return;
+    }
+    let expected = draft.updated_at.clone();
+    let preview = draft.clone();
+    let keep_editor = editor.clone();
+    if appearance::trial::preview_edit(
+        &draft,
+        move |cx| {
+            let expected = preview.updated_at.clone();
+            save(&keep_editor, preview, expected, false, None, cx);
+        },
+        cx,
+    ) {
+        let session = editor.read(cx).session.clone();
+        crate::settings::close(&session, cx);
+    } else {
+        save(editor, draft, expected, false, None, cx);
+    }
 }
 
 fn made_with() -> &'static str {

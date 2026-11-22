@@ -24,6 +24,7 @@ use ircord_client::store::appearance::{self as look, Compiled, Device, Look, Mod
 use ircord_client::store::documents::document_id;
 use ircord_client::store::topic;
 
+use crate::route::Route;
 use crate::session::{Session, SessionEvent};
 
 /// The device state section this module keeps.
@@ -119,6 +120,9 @@ fn on_session(session: &Entity<Session>, event: &SessionEvent, cx: &mut App) {
                 follow(cx);
                 apply(cx);
             }
+        }
+        SessionEvent::Route if session.read(cx).route() == Some(Route::Settings) => {
+            trial::return_to_editor(cx);
         }
         _ => {}
     }
@@ -310,11 +314,11 @@ pub fn set_custom_css(cx: &mut App, on: bool) {
 pub fn apply(cx: &mut App) {
     let mut look = look(cx);
     let mode = look.resolve_mode(system_mode(cx));
-    let themes = themes(cx);
+    let mut themes = themes(cx);
     let css = css_allowed(cx);
     let preview = &mut cx.global_mut::<State>().preview;
     let invalidated = preview.validate(&look, &themes, css);
-    preview.select(&mut look);
+    preview.select(&mut look, &mut themes);
     let compiled = look::compile_with_css(&look, mode, &themes, false, css);
     let state = cx.global_mut::<State>();
     if state.compiled.as_ref() == Some(&compiled) {
