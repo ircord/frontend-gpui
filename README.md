@@ -1,4 +1,8 @@
-# IRCord desktop (GPUI)
+# IRCord GPUI
+
+> **Experimental.** This is a work-in-progress native client, not ready for
+> daily use. It is not the supported desktop client: for that, use
+> [ircord/desktop](https://github.com/ircord/desktop).
 
 A native IRCord client written in Rust with [GPUI](https://www.gpui.rs/),
 through [`gpui-kit`](https://crates.io/crates/gpui-kit). It replaces a web view
@@ -97,3 +101,7 @@ server and `RUST_LOG=info` turns on logging. `cargo xtask capture` runs the
 Linux build on a virtual display against a disposable backend, signs in through
 the form, types a server emoji into the message box and saves
 screenshots, so a change can be looked at without a screen.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

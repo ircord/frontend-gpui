@@ -44,7 +44,7 @@ pub trait Video {
 
 /// Whether this build can play video on this machine.
 ///
-/// Windows: always on, with no switch (the captain's ruling); a video that
+/// Windows: always on, with no switch (the project owner's decision); a video that
 /// fails shows its card and logs why. Elsewhere `IRCORD_VIDEO=0` turns video
 /// off, and `IRCORD_VIDEO=1` turns it on where the backend exists but nobody
 /// has watched it play yet (macOS `PROVEN` is false).
