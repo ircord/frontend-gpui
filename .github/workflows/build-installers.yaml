@@ -1,0 +1,209 @@
+name: Build GPUI installers
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Full commit SHA to build
+        required: true
+        type: string
+      updates:
+        description: Build copies that check for and install updates
+        required: true
+        type: boolean
+  # Pull requests that change how installers are made build them too, so the
+  # pipeline is proven before it reaches main. Drafts run nothing.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - .github/**
+      - packaging/**
+      - tools/**
+      - vendor/**
+      - xtask/**
+      - Cargo.lock
+
+permissions:
+  contents: read
+
+env:
+  IRCORD_UPDATES: ${{ inputs.updates && '1' || '' }}
+
+jobs:
+  linux-x64:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-
+      - uses: ./.github/actions/build-image
+      - run: cargo xtask package linux
+      - name: Install it on clean Debian and Ubuntu, and start it
+        run: |
+          for image in debian:bookworm ubuntu:24.04; do
+            echo "::group::$image"
+            docker run --rm -v "$PWD/dist:/dist:ro" -e DEBIAN_FRONTEND=noninteractive "$image" bash -euxc '
+              apt-get update -q
+              apt-get install -y -q /dist/IRCord-GPUI-Linux-x64.deb xvfb x11-utils
+              dpkg -s ircord-gpui | grep "^Version:"
+              ircord-video --probe
+              Xvfb :9 -screen 0 1280x800x24 &
+              export DISPLAY=:9
+              sleep 1
+              ircord &
+              app=$!
+              for _ in $(seq 60); do
+                xwininfo -root -tree | grep -q "\"IRCord\"" && break
+                kill -0 "$app"
+                sleep 0.5
+              done
+              xwininfo -root -tree | grep "\"IRCord\""
+              kill "$app"
+            '
+            echo "::endgroup::"
+          done
+      - name: Collect the installer and source revisions
+        run: |
+          mkdir installers
+          cp dist/IRCord-GPUI-Linux-x64.deb installers/
+          printf 'frontend-gpui=%s\nbackend-contract=%s\n' "$(git rev-parse HEAD)" "$(cat crates/contract/backend-commit)" \
+            > installers/build-info.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ircord-gpui-linux-x64
+          path: installers/
+          if-no-files-found: error
+
+  # Windows is cross-built on Linux, as the ladder does, and checked on
+  # Windows by windows-x64-check.
+  windows-x64:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-
+      # Microsoft's C runtime and SDK libraries, about 1 GB, for linking.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/cargo-xwin/xwin
+          key: cargo-xwin-${{ hashFiles('tools/build.Dockerfile') }}
+          restore-keys: cargo-xwin-
+      - uses: ./.github/actions/build-image
+      - run: cargo xtask package windows
+      - name: Collect the installer and source revisions
+        run: |
+          mkdir installers
+          cp dist/IRCord-GPUI-Windows-x64-setup.exe installers/
+          printf 'frontend-gpui=%s\nbackend-contract=%s\n' "$(git rev-parse HEAD)" "$(cat crates/contract/backend-commit)" \
+            > installers/build-info.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ircord-gpui-windows-x64
+          path: installers/
+          if-no-files-found: error
+
+  windows-x64-check:
+    needs: windows-x64
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ircord-gpui-windows-x64
+          path: installers
+      - name: Install and start IRCord GPUI
+        shell: pwsh
+        run: |
+          $installer = Get-Item installers/IRCord-GPUI-Windows-x64-setup.exe
+          $installPath = Join-Path $env:RUNNER_TEMP 'ircord-gpui-install-check'
+          $setup = Start-Process -FilePath $installer.FullName -ArgumentList "/S /D=$installPath" -Wait -PassThru
+          if ($setup.ExitCode -ne 0) {
+            throw "The installer exited with code $($setup.ExitCode)."
+          }
+          $app = Start-Process -FilePath (Join-Path $installPath 'ircord.exe') -PassThru
+          try {
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+              Start-Sleep -Milliseconds 250
+              $app.Refresh()
+              if ($app.HasExited) {
+                throw "IRCord exited with code $($app.ExitCode)."
+              }
+            } until ($app.MainWindowTitle -eq 'IRCord' -or (Get-Date) -ge $deadline)
+            if ($app.MainWindowTitle -ne 'IRCord') {
+              throw 'IRCord did not open its window.'
+            }
+          } finally {
+            Stop-Process -Id $app.Id -ErrorAction SilentlyContinue
+          }
+
+  # macOS builds natively: GPUI's Metal backend needs Apple's SDK.
+  macos-arm64:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-macos-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-macos-
+      - run: cargo xtask package macos
+      - name: Check the signature and the disk image, and start it
+        run: |
+          app="dist/IRCord GPUI.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          mount=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" dist/IRCord-GPUI-macOS-Apple-Silicon.dmg
+          test -x "$mount/IRCord GPUI.app/Contents/MacOS/ircord"
+          test -L "$mount/Applications"
+          hdiutil detach "$mount"
+          tar -tzf dist/IRCord-GPUI-macOS-Apple-Silicon.app.tar.gz | grep -qx 'IRCord GPUI.app/Contents/MacOS/ircord'
+          "$app/Contents/MacOS/ircord" &
+          pid=$!
+          sleep 20
+          if ! kill -0 "$pid"; then
+            wait "$pid" || echo "IRCord exited with code $?" >&2
+            exit 1
+          fi
+          kill "$pid"
+      - name: Collect the installer and source revisions
+        run: |
+          mkdir installers
+          cp dist/IRCord-GPUI-macOS-Apple-Silicon.dmg dist/IRCord-GPUI-macOS-Apple-Silicon.app.tar.gz installers/
+          printf 'frontend-gpui=%s\nbackend-contract=%s\n' "$(git rev-parse HEAD)" "$(cat crates/contract/backend-commit)" \
+            > installers/build-info.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ircord-gpui-macos-arm64
+          path: installers/
+          if-no-files-found: error
