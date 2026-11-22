@@ -7,10 +7,15 @@
 //! 5. On `session.resync` or a gap in sequence numbers, bootstrap again.
 //! 6. On any disconnect, wait and reconnect with the web client's back-off
 //!    (`realtime-recovery.ts`): `min(15 s, 0.8 s × 2^min(n, 5))` plus jitter.
+//! 7. A resync within 30 s of the last bootstrap waits that back-off too, and
+//!    the attempt count survives `session.synced` in that window, so a server
+//!    that keeps asking for a fresh copy is not hammered (web `baadcc8`).
 
 use std::future::Future;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+
+use tokio::time::Instant;
 
 use futures::channel::mpsc::UnboundedSender;
 use ircord_contract::event::{ServerEvent, resume_frame};
@@ -48,6 +53,9 @@ pub struct Timing {
     pub ready: Duration,
     pub backoff_base: Duration,
     pub backoff_max: Duration,
+    /// How long a fresh bootstrap counts as part of the same recovery: a
+    /// resync inside it backs off instead of fetching again at once.
+    pub snapshot_stability: Duration,
 }
 
 impl Default for Timing {
@@ -56,6 +64,7 @@ impl Default for Timing {
             ready: Duration::from_secs(10),
             backoff_base: Duration::from_millis(800),
             backoff_max: Duration::from_secs(15),
+            snapshot_stability: Duration::from_secs(30),
         }
     }
 }
@@ -98,6 +107,23 @@ pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// The reconnect loop's memory between sessions.
+struct Recovery {
+    need_bootstrap: bool,
+    attempts: u32,
+    /// When the last bootstrap was installed.
+    last_bootstrap: Option<Instant>,
+    /// Whether the session that just ended had reached `session.synced`.
+    live: bool,
+}
+
+impl Recovery {
+    fn recent_snapshot(&self, timing: &Timing) -> bool {
+        self.last_bootstrap
+            .is_some_and(|at| at.elapsed() < timing.snapshot_stability)
+    }
+}
+
 enum End {
     /// The socket dropped or failed: back off and reconnect.
     Lost(String),
@@ -117,44 +143,50 @@ pub async fn run<T: Transport>(
     mut outgoing: mpsc::UnboundedReceiver<String>,
     timing: Timing,
 ) {
-    let mut need_bootstrap = true;
-    let mut attempts: u32 = 0;
+    let mut recovery = Recovery {
+        need_bootstrap: true,
+        attempts: 0,
+        last_bootstrap: None,
+        live: false,
+    };
     loop {
-        let end = session(
-            &transport,
-            &shared,
-            &mut outgoing,
-            &timing,
-            &mut need_bootstrap,
-            &mut attempts,
-        )
-        .await;
-        match end {
+        recovery.live = false;
+        let end = session(&transport, &shared, &mut outgoing, &timing, &mut recovery).await;
+        let reason = match end {
             End::Stopped => return,
             End::SignedOut => {
                 shared.emit(Update::SignedOut);
                 return;
             }
             End::Resync => {
-                need_bootstrap = true;
+                recovery.need_bootstrap = true;
+                if !recovery.recent_snapshot(&timing) {
+                    recovery.attempts = 0;
+                    continue;
+                }
+                "the server asked for a fresh copy again".to_string()
             }
             End::Lost(reason) => {
-                let wait = timing.backoff(attempts);
-                attempts += 1;
-                log::info!("event socket lost ({reason}); retrying in {wait:?}");
-                shared.status(Connection::Offline {
-                    reason,
-                    retry_ms: wait.as_millis() as u64,
-                });
-                // Frames queued while offline (typing) are stale; drop them.
-                let deadline = tokio::time::sleep(wait);
-                tokio::pin!(deadline);
-                loop {
-                    tokio::select! {
-                        _ = &mut deadline => break,
-                        frame = outgoing.recv() => if frame.is_none() { return },
-                    }
+                if recovery.live && !recovery.recent_snapshot(&timing) {
+                    recovery.attempts = 0;
                 }
+                reason
+            }
+        };
+        let wait = timing.backoff(recovery.attempts);
+        recovery.attempts += 1;
+        log::info!("event socket lost ({reason}); retrying in {wait:?}");
+        shared.status(Connection::Offline {
+            reason,
+            retry_ms: wait.as_millis() as u64,
+        });
+        // Frames queued while offline (typing) are stale; drop them.
+        let deadline = tokio::time::sleep(wait);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                _ = &mut deadline => break,
+                frame = outgoing.recv() => if frame.is_none() { return },
             }
         }
     }
@@ -165,16 +197,16 @@ async fn session<T: Transport>(
     shared: &Shared,
     outgoing: &mut mpsc::UnboundedReceiver<String>,
     timing: &Timing,
-    need_bootstrap: &mut bool,
-    attempts: &mut u32,
+    recovery: &mut Recovery,
 ) -> End {
     shared.status(Connection::Connecting);
-    if *need_bootstrap {
+    if recovery.need_bootstrap {
         match transport.bootstrap().await {
             Ok(snapshot) => {
                 let changes = shared.store.write().unwrap().reset(snapshot);
                 shared.emit(Update::Changed(changes));
-                *need_bootstrap = false;
+                recovery.need_bootstrap = false;
+                recovery.last_bootstrap = Some(Instant::now());
             }
             Err(ApiError::Unauthorized) => return End::SignedOut,
             Err(e) => return End::Lost(e.to_string()),
@@ -217,7 +249,12 @@ async fn session<T: Transport>(
                 };
                 match &event {
                     ServerEvent::Synced(_) => {
-                        *attempts = 0;
+                        // A bad frame right after a fresh copy can still be
+                        // part of the same recovery loop.
+                        if !recovery.recent_snapshot(timing) {
+                            recovery.attempts = 0;
+                        }
+                        recovery.live = true;
                         shared.status(Connection::Live);
                     }
                     ServerEvent::Alert(alert) => shared.emit(Update::Alert(alert.clone())),
@@ -333,10 +370,15 @@ mod tests {
             ready: Duration::from_millis(200),
             backoff_base: Duration::from_millis(1),
             backoff_max: Duration::from_millis(5),
+            snapshot_stability: Duration::from_secs(30),
         }
     }
 
     async fn drive(fake: Fake) -> (Arc<Shared>, Vec<Update>) {
+        drive_with(fake, fast()).await
+    }
+
+    async fn drive_with(fake: Fake, timing: Timing) -> (Arc<Shared>, Vec<Update>) {
         let (tx, rx) = futures::channel::mpsc::unbounded();
         let shared = Arc::new(Shared {
             store: Arc::default(),
@@ -348,7 +390,7 @@ mod tests {
         });
         let (_out_tx, out_rx) = mpsc::unbounded_channel();
         // The fake answers Unauthorized once its scripted sockets run out, which ends the run.
-        run(fake, shared.clone(), out_rx, fast()).await;
+        run(fake, shared.clone(), out_rx, timing).await;
         let mut rx = rx;
         let mut updates = Vec::new();
         while let Ok(update) = rx.try_recv() {
@@ -438,6 +480,117 @@ mod tests {
             .collect();
         assert_eq!(after, [1, 40, 90]);
         assert_eq!(shared.store.read().unwrap().cursor, 90);
+    }
+
+    /// The waits announced before each retry, in order.
+    fn waits(updates: &[Update]) -> Vec<u64> {
+        updates
+            .iter()
+            .filter_map(|u| match u {
+                Update::Connection(Connection::Offline { retry_ms, .. }) => Some(*retry_ms),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn resync() -> String {
+        r#"{"v":1,"type":"session.resync","reason":"cursor is outside retained events"}"#.into()
+    }
+
+    /// Waits long enough to read: 10, 20, 40, 80 ms, capped at 1 s, plus up to
+    /// 10 ms of jitter.
+    fn readable() -> Timing {
+        Timing {
+            backoff_base: Duration::from_millis(10),
+            backoff_max: Duration::from_secs(1),
+            ..fast()
+        }
+    }
+
+    /// A server that answers every fresh copy with another resync, the loop
+    /// the web fixed in `baadcc8`.
+    fn resync_loop(rounds: i64) -> Fake {
+        let fake = Fake::default();
+        for n in 0..=rounds {
+            fake.snapshots.lock().unwrap().push_back(Ok(snapshot(n)));
+        }
+        for _ in 0..rounds {
+            fake.sockets
+                .lock()
+                .unwrap()
+                .push_back(vec![ready(), resync()]);
+        }
+        fake
+    }
+
+    #[tokio::test]
+    async fn repeated_resyncs_after_a_fresh_copy_wait_longer_each_time() {
+        let fake = resync_loop(4);
+        let started = Instant::now();
+        let (_, updates) = drive_with(fake.clone(), readable()).await;
+        let waits = waits(&updates);
+        assert_eq!(waits.len(), 4, "every resync waits: {waits:?}");
+        for (wait, floor) in waits.iter().zip([10, 20, 40, 80]) {
+            assert!((floor..=floor + 10).contains(wait), "{waits:?}");
+        }
+        assert!(started.elapsed() >= Duration::from_millis(150));
+        // Each wait still ends in a fresh copy: four resyncs, five bootstraps.
+        assert!(fake.snapshots.lock().unwrap().is_empty());
+        assert!(updates.iter().any(|u| matches!(
+            u,
+            Update::Connection(Connection::Offline { reason, .. }) if reason.contains("fresh copy")
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_resync_long_after_the_last_copy_fetches_again_at_once() {
+        let fake = resync_loop(4);
+        let timing = Timing {
+            snapshot_stability: Duration::ZERO,
+            ..readable()
+        };
+        let (_, updates) = drive_with(fake.clone(), timing).await;
+        assert_eq!(waits(&updates), Vec::<u64>::new());
+        assert!(fake.snapshots.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_attempt_count_survives_synced_right_after_a_fresh_copy() {
+        // Each socket syncs, then drops at once.
+        let fake = Fake::default();
+        fake.snapshots.lock().unwrap().push_back(Ok(snapshot(1)));
+        for _ in 0..3 {
+            fake.sockets
+                .lock()
+                .unwrap()
+                .push_back(vec![ready(), synced(1)]);
+        }
+        let (_, updates) = drive_with(fake, readable()).await;
+        let waits = waits(&updates);
+        assert_eq!(waits.len(), 3, "{waits:?}");
+        for (wait, floor) in waits.iter().zip([10, 20, 40]) {
+            assert!((floor..=floor + 10).contains(wait), "{waits:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn synced_resets_the_attempt_count_once_the_copy_is_settled() {
+        let fake = Fake::default();
+        fake.snapshots.lock().unwrap().push_back(Ok(snapshot(1)));
+        for _ in 0..3 {
+            fake.sockets
+                .lock()
+                .unwrap()
+                .push_back(vec![ready(), synced(1)]);
+        }
+        let timing = Timing {
+            snapshot_stability: Duration::ZERO,
+            ..readable()
+        };
+        let (_, updates) = drive_with(fake, timing).await;
+        let waits = waits(&updates);
+        assert_eq!(waits.len(), 3, "{waits:?}");
+        assert!(waits.iter().all(|w| (10..=20).contains(w)), "{waits:?}");
     }
 
     #[tokio::test]
