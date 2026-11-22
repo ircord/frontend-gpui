@@ -6,11 +6,14 @@
 
 use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::Sizable;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract as c;
 
 use super::block;
+use crate::features::updates::{self, Status, Updates};
 use crate::registry::{self, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection};
 use crate::session::Session;
 use crate::theme::{self, Theme};
@@ -90,10 +93,15 @@ fn view(session: &Entity<Session>, _window: &mut Window, cx: &mut App) -> Entity
         return view.clone();
     }
     let view = cx.new(|cx| {
+        let tracked = updates::tracked(cx);
+        if let Some(tracked) = &tracked {
+            cx.observe(tracked, |_, _, cx| cx.notify()).detach();
+        }
         let mut view = AboutView {
             session: session.clone(),
             ctx: None,
             server: Server::Loading,
+            updates: tracked,
         };
         view.load(cx);
         view
@@ -112,6 +120,66 @@ pub struct AboutView {
     session: Entity<Session>,
     ctx: Option<SettingsCtx>,
     server: Server,
+    /// The update check, in a build that makes one.
+    updates: Option<Entity<Updates>>,
+}
+
+/// The line under the versions: the check button, what it last found, and
+/// the install (or release page) button when a release is waiting.
+fn update_row(updates: &Entity<Updates>, theme: &Theme, cx: &App) -> AnyElement {
+    let status = updates.read(cx).status.clone();
+    let text = match &status {
+        Status::Idle => None,
+        Status::Checking => Some(t!("updates-checking").to_string()),
+        Status::UpToDate => Some(t!("updates-up-to-date").to_string()),
+        Status::Available(update) => {
+            Some(t!("updates-available", version = update.version.to_string()).to_string())
+        }
+        Status::Installing => Some(t!("updates-installing").to_string()),
+        Status::Failed(error) => Some(t!("updates-failed", error = error.clone()).to_string()),
+    };
+    let checker = updates.clone();
+    let check = Button::new("about-check-updates")
+        .small()
+        .label(t!("updates-check"))
+        .on_click(move |_, _, cx| updates::check(&checker, cx, false));
+    let install = match status {
+        Status::Available(update) => {
+            let installer = updates.clone();
+            let label = if ircord_platform::update::installs() {
+                t!("updates-install")
+            } else {
+                t!("updates-open-release")
+            };
+            Some(
+                Button::new("about-install-update")
+                    .small()
+                    .primary()
+                    .label(label)
+                    .on_click(move |_, _, cx| updates::install(&installer, &update, cx)),
+            )
+        }
+        _ => None,
+    };
+    div()
+        .id("about-updates")
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_2()
+        .children(text.map(|line| {
+            div()
+                .id("about-update-status")
+                .w_full()
+                .text_sm()
+                .text_color(theme.muted)
+                .aria_label(line.clone())
+                .child(line)
+                .test_support()
+        }))
+        .child(check)
+        .children(install)
+        .into_any_element()
 }
 
 impl AboutView {
@@ -313,6 +381,11 @@ impl Render for AboutView {
                         t!("settings-about-license-text").to_string(),
                         &theme,
                     )),
+            )
+            .children(
+                self.updates
+                    .clone()
+                    .map(|updates| update_row(&updates, &theme, cx)),
             )
             .children(address.map(|address| {
                 let line = t!("settings-about-server", address = address).to_string();

@@ -73,6 +73,7 @@ pub const CATALOGS: &[(&str, &str)] = &[
     ("media", include_str!("../../i18n/en/media.ftl")),
     ("audio_card", include_str!("../../i18n/en/audio_card.ftl")),
     ("video", include_str!("../../i18n/en/video.ftl")),
+    ("updates", include_str!("../../i18n/en/updates.ftl")),
 ];
 
 /// Look up text by ID, with `{ $name }` placeholders filled in:

@@ -35,6 +35,7 @@ pub mod shortcuts;
 pub mod status;
 pub mod switcher;
 pub mod text;
+pub mod updates;
 pub mod video;
 pub mod viewer;
 
@@ -73,4 +74,5 @@ pub fn init(cx: &mut App) {
     gallery::init(cx);
     audio_card::init(cx);
     video::init(cx);
+    updates::init(cx);
 }
