@@ -98,20 +98,14 @@ pub fn init(cx: &mut App) {
     cx.default_global::<Fullscreened>();
     cx.default_global::<Failed>();
     // Asking runs the helper once (GStreamer can take seconds the first
-    // time), so it runs on a thread of its own, outside GPUI.
-    let (answered, probed) = futures::channel::oneshot::channel::<()>();
-    std::thread::Builder::new()
-        .name("video-probe".into())
-        .spawn(move || {
-            let _ = PROBED.set(video::available());
-            let _ = answered.send(());
-        })
-        .ok();
-    // A first draw before the answer showed the card; draw again once it is in.
+    // time), so it runs on a background thread, not the UI's. A thread of our
+    // own would wake the UI from outside the executor, which the headless
+    // tests' scheduler aborts on. A first draw before the answer showed the
+    // card; draw again once it is in.
+    let probe = cx.background_spawn(async { video::available() });
     cx.spawn(async move |cx| {
-        if probed.await.is_ok() {
-            cx.update(|cx| cx.refresh_windows());
-        }
+        let _ = PROBED.set(probe.await);
+        cx.update(|cx| cx.refresh_windows());
     })
     .detach();
     registry::register(cx, |r| {
@@ -419,12 +413,16 @@ fn enlarge(ctx: &PlayableCtx, window: &mut Window, cx: &mut App) {
         _ => (Duration::ZERO, false),
     };
     stop(true, cx);
-    let viewport = window.viewport_size();
+    // Opened at the size it fills fullscreen: the screen's, else the window's.
+    let screen = window
+        .display(cx)
+        .map(|d| d.bounds().size)
+        .unwrap_or_else(|| window.viewport_size());
     let stage = fit(
         ctx.media.width,
         ctx.media.height,
-        f32::from(viewport.width) - 96.,
-        (f32::from(viewport.height) - 220.).max(200.),
+        f32::from(screen.width),
+        f32::from(screen.height),
     );
     let scale = window.scale_factor();
     let video = match open(
@@ -519,16 +517,59 @@ impl Render for Large {
         let theme = theme::get(cx).clone();
         let key = self.key.clone();
         let viewport = window.viewport_size();
-        let (w, h) = fit(
-            self.media.0,
-            self.media.1,
-            f32::from(viewport.width) - 96.,
-            (f32::from(viewport.height) - 220.).max(200.),
-        );
-        let ended = self.view.read(cx).video().state() == State::Ended;
         let fullscreen = window.is_fullscreen();
-        let exit = key.clone();
-        div()
+        // Fullscreen, the video itself fills the screen: drawn over the whole
+        // window, not inside the dialog, so neither the app nor the card shows.
+        let (w, h) = if fullscreen {
+            fit(
+                self.media.0,
+                self.media.1,
+                f32::from(viewport.width),
+                f32::from(viewport.height),
+            )
+        } else {
+            fit(
+                self.media.0,
+                self.media.1,
+                f32::from(viewport.width) - 96.,
+                (f32::from(viewport.height) - 220.).max(200.),
+            )
+        };
+        let ended = self.view.read(cx).video().state() == State::Ended;
+        let picture = div()
+            .id(ElementId::Name(format!("{key}-large-picture").into()))
+            .test_support()
+            .relative()
+            .w(px(w))
+            .h(px(h))
+            .child(self.view.clone())
+            // A click pauses or plays. A double-click (its second click)
+            // toggles back, so the pair leaves the play state as it was, and
+            // leaves fullscreen, closing the viewer, or enters it.
+            .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+                let key = this.key.clone();
+                if this.view.read(cx).video().state() != State::Ended {
+                    let k = key.clone();
+                    cx.defer(move |cx| toggle(&k, cx));
+                }
+                if e.click_count() >= 2 {
+                    if window.is_fullscreen() {
+                        cx.defer(move |cx| stop(true, cx));
+                    } else {
+                        window.toggle_fullscreen();
+                    }
+                }
+            }))
+            .when(ended, |d| {
+                let k = key.clone();
+                d.child(play_button(
+                    format!("{key}-large-again"),
+                    t!("video-play-again").to_string(),
+                    &theme,
+                    move |_, _, cx| toggle(&k, cx),
+                ))
+            });
+        let root = div()
             .id(ElementId::Name(format!("{key}-viewer").into()))
             .test_support()
             .track_focus(&self.focus)
@@ -539,60 +580,58 @@ impl Render for Large {
                     cx.stop_propagation();
                 }
             }))
-            // Escape is bound to Mark read, which here closes the viewer.
+            // Escape is bound to Mark read, which here closes the viewer
+            // (and so leaves fullscreen).
             .capture_action(cx.listener(|_, _: &MarkRead, _, cx| {
                 stop(true, cx);
                 cx.stop_propagation();
-            }))
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap_2()
-            .child(
-                div()
-                    .id(ElementId::Name(format!("{key}-large-picture").into()))
-                    .test_support()
+            }));
+        if !fullscreen {
+            return root
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_2()
+                .child(picture)
+                .child(div().w(px(w)).child(self.controls.clone()))
+                .into_any_element();
+        }
+        let exit = key.clone();
+        deferred(
+            anchored().position(point(px(0.), px(0.))).child(
+                root.occlude()
+                    .w(viewport.width)
+                    .h(viewport.height)
+                    .bg(gpui::black())
                     .relative()
-                    .w(px(w))
-                    .h(px(h))
-                    .child(self.view.clone())
-                    // A click pauses or plays; a double-click (its second
-                    // click) also toggles fullscreen. Each click toggles, so
-                    // the pair of clicks leaves the play state as it was.
-                    .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
-                        if this.view.read(cx).video().state() == State::Ended {
-                            return;
-                        }
-                        let key = this.key.clone();
-                        cx.defer(move |cx| toggle(&key, cx));
-                        if e.click_count() >= 2 {
-                            window.toggle_fullscreen();
-                        }
-                    }))
-                    .when(ended, |d| {
-                        let k = key.clone();
-                        d.child(play_button(
-                            format!("{key}-large-again"),
-                            t!("video-play-again").to_string(),
-                            &theme,
-                            move |_, _, cx| toggle(&k, cx),
-                        ))
-                    }),
-            )
-            .child(div().w(px(w)).child(self.controls.clone()))
-            .when(fullscreen, |d| {
-                // Leaves fullscreen and keeps the viewer open.
-                d.child(div().w(px(w)).flex().justify_end().child(ui::icon::button(
-                    ElementId::Name(format!("{exit}-large-exit").into()),
-                    IconName::Maximize,
-                    t!("video-exit-fullscreen"),
-                    &theme,
-                    move |_, window, cx| {
-                        cx.default_global::<Fullscreened>().0 = None;
-                        window.toggle_fullscreen();
-                    },
-                )))
-            })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(picture)
+                    // The controls over the foot of the picture.
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .px_4()
+                            .pb_2()
+                            .bg(gpui::black().opacity(0.6))
+                            .child(self.controls.clone()),
+                    )
+                    // Leaves fullscreen: the viewer closes, back to the card.
+                    .child(div().absolute().top_2().right_2().child(ui::icon::button(
+                        ElementId::Name(format!("{exit}-large-exit").into()),
+                        IconName::Maximize,
+                        t!("video-exit-fullscreen"),
+                        &theme,
+                        move |_, _, cx| stop(true, cx),
+                    ))),
+            ),
+        )
+        .with_priority(1)
+        .into_any_element()
     }
 }
 

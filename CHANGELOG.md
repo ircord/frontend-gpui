@@ -5,6 +5,7 @@
 ### Fixed
 
 - Starting IRCord while it already runs, for example from the tray, no longer opens a second copy: it says "You already have an instance of IRCord running.", brings the running window to the front and hands it any link it was started with. A copy that crashed no longer stops the next start.
+- Fullscreen video fills the whole screen on black with its controls over it, instead of putting the app fullscreen with the video still in its card; Escape, a double-click or Exit fullscreen go back to the card.
 - Wait between attempts when chat repeatedly fails to reconnect.
 - Every menu lists its entries in the web client's order with its separators, and the conversation menu's notification levels are a Notifications submenu with the chosen one checked. The message menu names its author and adds Mention and Profile; the conversation menu adds Invite someone for a channel and Profile for a direct message.
 - A settings change, such as switching off custom CSS, no longer reverts to the server's older copy when it is saved while that setting is being read, and a change from another device during a read is no longer missed.

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use gpui_kit::prelude::*;
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{Bounds, Point, TestAppContext, WindowBounds, WindowOptions, px, size};
+use gpui_kit::{Bounds, Point, TestAppContext, WindowBounds, WindowOptions, point, px, size};
 use ircord_app::features::video::{self, Available, Opener};
 use ircord_app::media::{self, video_view::VideoView};
 use ircord_client::contract::{Attachment, ChannelSettings, MessagePage};
@@ -499,7 +499,7 @@ fn a_double_click_on_the_picture_enlarges_it_and_keeps_it_playing(cx: &mut TestA
 }
 
 #[gpui_kit::test]
-fn in_the_viewer_a_click_pauses_and_a_double_click_leaves_it_playing(cx: &mut TestAppContext) {
+fn in_the_viewer_a_click_pauses_and_a_double_click_leaves_fullscreen(cx: &mut TestAppContext) {
     let (f, backend) = videos(cx, true);
     click(&f, cx, "file-a1-0-play-video");
     click(&f, cx, "file-a1-0-enlarge");
@@ -509,14 +509,60 @@ fn in_the_viewer_a_click_pauses_and_a_double_click_leaves_it_playing(cx: &mut Te
     click(&f, cx, "file-a1-0-large-picture");
     assert_eq!(backend.state(), State::Playing);
     // A double-click pauses with its first click and plays with its second,
-    // and toggles fullscreen on the second; the viewer stays open.
+    // and leaves fullscreen: the viewer closes, back to the card.
     double_click(&f, cx, "file-a1-0-large-picture");
+    wait(cx, "the viewer to close", |cx| {
+        cx.update_window(f.window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        video::playing(cx).is_none()
+    });
+    assert!(!shown(&f, cx, "file-a1-0-viewer"));
+    assert!(!fullscreen(&f, cx), "the window leaves fullscreen");
+}
+
+fn fullscreen(f: &Fixture, cx: &mut TestAppContext) -> bool {
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, _| window.is_fullscreen())
+        .unwrap()
+}
+
+#[gpui_kit::test]
+fn fullscreen_the_video_fills_the_window_and_covers_the_timeline(cx: &mut TestAppContext) {
+    let (f, backend) = videos(cx, true);
+    click(&f, cx, "file-a1-0-play-video");
+    click(&f, cx, "file-a1-0-enlarge");
+    assert!(fullscreen(&f, cx));
+    draw(&f, cx);
+    let (viewer, viewport) = cx
+        .update_window(f.window, |_, window, _| {
+            (
+                window.find("file-a1-0-viewer").bounds(),
+                window.viewport_size(),
+            )
+        })
+        .unwrap();
+    assert_eq!(viewer.origin, point(px(0.), px(0.)));
+    assert_eq!(viewer.size, viewport, "the video view fills the window");
+    // The timeline is not drawn over it or reached through it: a click
+    // where the second video's play button is lands on the video instead.
+    let opens = backend.opens.borrow().len();
+    click(&f, cx, "file-a1-1-play-video");
     assert_eq!(
-        backend.state(),
-        State::Playing,
-        "the pair leaves it playing"
+        backend.opens.borrow().len(),
+        opens,
+        "the timeline is covered"
     );
-    assert!(shown(&f, cx, "file-a1-0-viewer"));
+    assert_eq!(playing(cx).as_deref(), Some("file-a1-0"));
+    // The button leaves fullscreen and closes the viewer.
+    click(&f, cx, "file-a1-0-large-exit");
+    wait(cx, "the viewer to close", |cx| {
+        cx.update_window(f.window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        video::playing(cx).is_none()
+    });
+    assert!(!fullscreen(&f, cx));
+    assert!(!shown(&f, cx, "file-a1-0-viewer"));
+    assert!(shown(&f, cx, "file-a1-0-play-video"), "back to the card");
 }
 
 #[gpui_kit::test]
