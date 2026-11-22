@@ -4,6 +4,7 @@
 //! person on each platform.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -20,6 +21,8 @@ struct Fake {
     answer: Mutex<std::result::Result<Checked, String>>,
     installs: Mutex<Vec<String>>,
     checks: Mutex<usize>,
+    /// While set, a check waits before it answers: the Checking state shows.
+    held: AtomicBool,
 }
 
 impl Fake {
@@ -28,11 +31,16 @@ impl Fake {
             answer: Mutex::new(answer),
             installs: Mutex::new(Vec::new()),
             checks: Mutex::new(0),
+            held: AtomicBool::new(false),
         })
     }
 
     fn set(&self, answer: std::result::Result<Checked, String>) {
         *self.answer.lock().unwrap() = answer;
+    }
+
+    fn hold(&self, held: bool) {
+        self.held.store(held, Ordering::SeqCst);
     }
 
     fn checks(&self) -> usize {
@@ -47,6 +55,9 @@ impl Fake {
 impl Updater for Fake {
     fn check(&self) -> Result<Checked> {
         *self.checks.lock().unwrap() += 1;
+        while self.held.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         self.answer.lock().unwrap().clone().map_err(|e| anyhow!(e))
     }
 
@@ -187,4 +198,40 @@ fn the_start_up_check_offers_a_release_and_later_installs_nothing(cx: &mut TestA
         !label_shown(window, cx, "Later")
     });
     assert!(fake.installed().is_empty(), "Later installs nothing");
+}
+
+#[gpui_kit::test]
+fn about_shows_checking_while_the_check_runs(cx: &mut TestAppContext) {
+    let fake = Fake::answering(Ok(Checked::UpToDate));
+    fake.hold(true);
+    cx.update(|cx| use_updater(cx, fake.clone(), Duration::from_secs(3600)));
+    let f = open(cx, true);
+    bootstrap(&f, cx);
+    open_about(&f, cx);
+
+    click(&f, cx, "about-check-updates");
+    status_reads(&f, cx, "Checking for updates…");
+    fake.hold(false);
+    status_reads(&f, cx, "IRCord is up to date.");
+}
+
+/// On Linux the prompt's OK answer opens the release page, so it closes the
+/// dialog and installs nothing; Windows and macOS install instead.
+#[cfg(not(any(windows, target_os = "macos")))]
+#[gpui_kit::test]
+fn the_start_up_prompt_answered_yes_opens_the_release_page(cx: &mut TestAppContext) {
+    let fake = Fake::answering(Ok(release("9.9.9")));
+    cx.update(|cx| use_updater(cx, fake.clone(), Duration::ZERO));
+    let f = open(cx, true);
+    bootstrap(&f, cx);
+
+    let window = f.window;
+    wait(cx, "the update dialog", move |cx| {
+        label_shown(window, cx, "Open release page")
+    });
+    press_label(&f, cx, "Open release page");
+    wait(cx, "the dialog to close", move |cx| {
+        !label_shown(window, cx, "Open release page")
+    });
+    assert!(fake.installed().is_empty(), "Linux installs nothing");
 }

@@ -198,7 +198,8 @@ fn save_soon(cx: &mut App) {
     .detach();
 }
 
-fn save_now(cx: &mut App) {
+/// Write the drafts now, so an install that ends this process loses none.
+pub fn save_now(cx: &mut App) {
     let Some(session) = session(cx) else {
         return;
     };

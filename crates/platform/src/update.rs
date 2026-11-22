@@ -9,6 +9,8 @@
 //! Only builds with `IRCORD_UPDATES=1` (the publish workflow's builds, as
 //! desktop's) update at all; [`available`] says whether this is one.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use url::Url;
@@ -23,9 +25,11 @@ pub const RELEASES_URL: &str = "https://github.com/ircord/frontend-gpui/releases
 #[cfg(any(windows, target_os = "macos"))]
 const PUBLIC_KEY: &str = include_str!("../../../packaging/updater.pub");
 
-/// How long a check waits for the manifest.
-#[cfg(target_os = "linux")]
-const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// How long a check waits for the manifest, on every platform.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long an install waits: the whole download of an installer.
+#[cfg(any(windows, target_os = "macos"))]
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Whether this build checks for updates at all.
 pub fn available() -> bool {
@@ -104,7 +108,7 @@ fn newer(manifest: &str, current: &Version) -> Result<Checked> {
 impl Updater for System {
     fn check(&self) -> Result<Checked> {
         let client = reqwest::blocking::Client::builder()
-            .timeout(TIMEOUT)
+            .timeout(CHECK_TIMEOUT)
             .build()?;
         let body = client
             .get(self.endpoint.clone())
@@ -123,23 +127,25 @@ impl Updater for System {
 impl System {
     /// The packager's update for this platform, if the manifest announces a
     /// newer one.
-    fn found(&self) -> Result<Option<cargo_packager_updater::Update>> {
+    /// Requests are bounded by , so a stalled connection ends the
+    /// check or install instead of leaving it running for ever.
+    fn found(&self, timeout: Duration) -> Result<Option<cargo_packager_updater::Update>> {
         let config = cargo_packager_updater::Config {
             endpoints: vec![self.endpoint.clone()],
             pubkey: PUBLIC_KEY.to_string(),
             windows: None,
         };
-        Ok(cargo_packager_updater::check_update(
-            self.current.clone(),
-            config,
-        )?)
+        let updater = cargo_packager_updater::UpdaterBuilder::new(self.current.clone(), config)
+            .timeout(timeout)
+            .build()?;
+        Ok(updater.check()?)
     }
 }
 
 #[cfg(any(windows, target_os = "macos"))]
 impl Updater for System {
     fn check(&self) -> Result<Checked> {
-        let Some(found) = self.found()? else {
+        let Some(found) = self.found(CHECK_TIMEOUT)? else {
             return Ok(Checked::UpToDate);
         };
         let version = Version::parse(&found.version)
@@ -148,7 +154,7 @@ impl Updater for System {
     }
 
     fn install(&self, update: &Update) -> Result<()> {
-        let Some(found) = self.found()? else {
+        let Some(found) = self.found(INSTALL_TIMEOUT)? else {
             bail!("there is no newer release any more");
         };
         let version = Version::parse(&found.version)?;

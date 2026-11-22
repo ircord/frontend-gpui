@@ -44,6 +44,7 @@ pub enum Status {
 pub struct Updates {
     runtime: Arc<Runtime>,
     updater: Arc<dyn Updater>,
+    session: WeakEntity<Session>,
     pub status: Status,
 }
 
@@ -66,9 +67,11 @@ pub fn init(cx: &mut App) {
             return;
         };
         let runtime = session.runtime.clone();
+        let session_handle = cx.weak_entity();
         let updates = cx.new(|_| Updates {
             runtime: runtime.clone(),
             updater,
+            session: session_handle,
             status: Status::Idle,
         });
         cx.set_global(Tracked(updates.clone()));
@@ -208,12 +211,41 @@ fn prompt_install(updates: Entity<Updates>, update: Update, cx: &mut App) {
     });
 }
 
-/// Download and install `update`, or on Linux open the release page.
+/// Save what is unsaved before an install that may end this process: the
+/// drafts, and the main window's size.
+fn save_state(updates: &Entity<Updates>, cx: &mut App) {
+    crate::features::drafts::save_now(cx);
+    let session = updates.read(cx).session.upgrade();
+    let window = cx
+        .windows()
+        .into_iter()
+        .find(|handle| handle.downcast::<Root>().is_some());
+    if let (Some(session), Some(window)) = (session, window)
+        && let Ok(size) = window.update(cx, |_, window, _| window.bounds().size)
+    {
+        session.update(cx, |s, _| {
+            s.save_window_size(f32::from(size.width), f32::from(size.height));
+        });
+    }
+}
+
+/// Download and install the update, or on Linux open the release page.
 pub fn install(updates: &Entity<Updates>, update: &Update, cx: &mut App) {
     if !update::installs() {
         cx.open_url(update::RELEASES_URL);
         return;
     }
+    // Saved from a task of its own: the window must not be updated from the
+    // click that started the install.
+    let (saving, update) = (updates.clone(), update.clone());
+    cx.spawn(async move |cx| {
+        cx.update(|cx| save_state(&saving, cx));
+        cx.update(|cx| start_install(&saving, &update, cx));
+    })
+    .detach();
+}
+
+fn start_install(updates: &Entity<Updates>, update: &Update, cx: &mut App) {
     let (runtime, updater) = {
         let state = updates.read(cx);
         (state.runtime.clone(), state.updater.clone())
