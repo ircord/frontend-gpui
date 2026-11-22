@@ -1376,9 +1376,9 @@ impl Render for ProfileView {
         let name_now = {
             let typed = self.text(Field::Name, cx);
             if typed.trim().is_empty() {
-                self.fallback_name(&saved, cx).to_string()
+                self.fallback_name(&saved, cx)
             } else {
-                typed.trim().to_string()
+                SharedString::from(typed.trim().to_string())
             }
         };
         let mut preview_member = saved.clone();
@@ -1527,7 +1527,7 @@ impl Render for ProfileView {
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(preview_color)
-                        .child(name_now),
+                        .child(name_now.clone()),
                 )
                 .child(format!("· @{}", saved.nick)),
         )
