@@ -31,6 +31,10 @@
 - The collapsed sidebar still gives you access to Search, Inbox, Saved messages, Drafts, Links and Server.
 - In the collapsed sidebar, channels show numbers and direct messages show avatars and presence. Both keep their conversation menus.
 
+## v0.1.1 — 2026-11-22
+
+### Improved
+
 - The desktop workspace, message list and composer follow the web layout and use your chosen theme, fonts and density.
 - On narrow windows, members open over the conversation. Resize the sidebars from their edges or with the arrow keys, and double-click an edge to reset its width.
 - On macOS, drag the window from the top bar and press Command-Q to quit.
