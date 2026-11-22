@@ -275,6 +275,7 @@ fn click(f: &Fixture, cx: &mut TestAppContext, id: &str) {
             | "theme-studio-collapse"
             | "theme-studio-keep-mine"
             | "theme-studio-load-saved"
+            | "theme-studio-restore"
     );
     let id = gpui_kit::ElementId::Name(id.to_string().into());
     for _ in 0..40 {
@@ -860,6 +861,125 @@ fn pick_studio_base(f: &Fixture, cx: &mut TestAppContext, name: &str) {
         window.pointer_up(item, MouseButton::Left, cx);
     })
     .unwrap();
+}
+
+fn draft_store(f: &Fixture, cx: &mut TestAppContext) -> look::drafts::Store {
+    cx.update(|cx| {
+        let session = f.session.read(cx);
+        let client = session.client().unwrap();
+        look::drafts::Store::new(
+            &session.config,
+            client.api().server(),
+            &client.read().user.id,
+        )
+        .unwrap()
+    })
+}
+
+#[gpui_kit::test]
+fn a_new_theme_draft_survives_the_editor_reopening(cx: &mut TestAppContext) {
+    let f = signed_in(cx, json!({"mode": "dark"}), json!([]));
+    let store = draft_store(&f, cx);
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-themes-new");
+    click(&f, cx, "appearance-themes-name");
+    cx.update_window(f.window, |_, window, cx| {
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-a"
+            } else {
+                "ctrl-a"
+            },
+            cx,
+        );
+        window.input("Night sky", cx);
+    })
+    .unwrap();
+    wait(cx, "the new theme draft on this device", |_| {
+        store
+            .get()
+            .is_some_and(|draft| draft.theme.name.as_deref() == Some("Night sky"))
+    });
+    let draft = store.get().unwrap();
+    assert!(draft.new_theme);
+    let id = draft.theme.id.unwrap();
+
+    let server = f.server.address();
+    f.session.update(cx, move |session, cx| {
+        session.start(server, CANNED_COOKIE.into(), cx)
+    });
+    bootstrap(&f, cx);
+    wait(cx, "the reconnected theme library", |cx| {
+        theme::appearance::library(cx).is_some()
+    });
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-themes-new");
+    click(&f, cx, "theme-studio-restore");
+    click(&f, cx, "appearance-theme-save");
+    wait(
+        cx,
+        "the recovered theme is saved and the draft cleared",
+        |cx| {
+            theme::appearance::themes(cx)
+                .iter()
+                .any(|theme| theme.id.as_deref() == Some(&id))
+                && store.get().is_none()
+        },
+    );
+    let sent = f
+        .server
+        .requests_to("PUT", &format!("/api/v1/app/themes/{id}"));
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].json()["theme"]["name"], "Night sky");
+    assert!(sent[0].json()["expected"].is_null());
+}
+
+#[gpui_kit::test]
+fn restoring_an_existing_theme_keeps_the_drafts_original_revision(cx: &mut TestAppContext) {
+    let f = signed_in(
+        cx,
+        json!({"mode": "dark"}),
+        json!([{
+            "id": "t-restored", "format": 1, "name": "Saved elsewhere", "updatedAt": "r2"
+        }]),
+    );
+    let store = draft_store(&f, cx);
+    store
+        .put(look::drafts::Draft {
+            theme: serde_json::from_value(json!({
+                "id": "t-restored", "format": 1, "name": "Recovered", "updatedAt": "r1",
+                "base": {"light": "hibiki-light"}, "css": ":root { --accent: #aaccee }"
+            }))
+            .unwrap(),
+            mode: Mode::Light,
+            new_theme: false,
+        })
+        .unwrap();
+
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-theme-edit-t-restored");
+    click(&f, cx, "theme-studio-restore");
+    wait(cx, "the recovered light palette", |cx| {
+        theme::appearance::compiled(cx).scheme == "hibiki-light"
+    });
+    click(&f, cx, "appearance-theme-save");
+    wait(cx, "the stale draft is refused", |cx| {
+        f.window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find("theme-studio-conflict").is_some()
+            })
+            .unwrap()
+    });
+    let sent = f.server.requests_to("PUT", "/api/v1/app/themes/t-restored");
+    assert_eq!(sent.len(), 1);
+    let request = sent[0].json();
+    assert_eq!(request["expected"], "r1");
+    assert_eq!(request["theme"]["name"], "Recovered");
+    assert_eq!(request["theme"]["css"], ":root { --accent: #aaccee }");
+    assert!(request["force"].is_null());
+    click(&f, cx, "appearance-theme-cancel");
+    assert!(store.get().is_none());
 }
 
 fn conflicted_theme(cx: &mut TestAppContext) -> Fixture {

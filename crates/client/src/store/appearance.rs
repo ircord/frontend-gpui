@@ -25,6 +25,7 @@ use super::theme_css::{self, CssVariables};
 use super::{Changes, Workspace};
 
 pub mod background;
+pub mod drafts;
 
 /// The topic this sub-state reports in [`Changes`].
 pub const TOPIC: &str = "appearance";
@@ -45,7 +46,8 @@ pub(super) fn reset(_w: &mut Workspace, _snapshot: &Snapshot) -> Changes {
 // ---- Schemes -------------------------------------------------------------------------------
 
 /// Light or dark.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Mode {
     Dark,
     Light,

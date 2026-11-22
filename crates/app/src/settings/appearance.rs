@@ -9,6 +9,7 @@
 
 mod background;
 mod colors;
+mod drafts;
 
 use crate::ui::focus::Reachable;
 use std::cell::Cell;
@@ -145,6 +146,7 @@ struct Editor {
     /// The unsaved theme and its editing mode.
     editing: Option<(UserTheme, Mode)>,
     conflict: Option<Box<UserTheme>>,
+    recovery: Option<drafts::Recovery>,
     tab: ThemeTab,
     studio_open: bool,
     collapsed: bool,
@@ -157,6 +159,7 @@ struct Editor {
     notice: Option<(SharedString, bool)>,
     busy: bool,
     _session: Subscription,
+    _quit: Subscription,
     _inputs: Vec<Subscription>,
 }
 
@@ -201,6 +204,7 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
             seeds,
             editing: None,
             conflict: None,
+            recovery: None,
             tab: ThemeTab::Colors,
             studio_open: false,
             collapsed: false,
@@ -213,6 +217,9 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
             busy: false,
             _session: cx.subscribe(&ctx.session, |editor, _, event: &SessionEvent, cx| {
                 if matches!(event, SessionEvent::Phase) {
+                    if let Some(mut recovery) = editor.recovery.take() {
+                        recovery.flush();
+                    }
                     editor
                         .background_preview
                         .update(cx, |preview, cx| preview.clear(None, cx));
@@ -223,6 +230,12 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
                     editor.notice = None;
                     editor.busy = false;
                 }
+            }),
+            _quit: cx.on_app_quit(|editor, _| {
+                if let Some(recovery) = &mut editor.recovery {
+                    recovery.flush();
+                }
+                async {}
             }),
             _inputs: inputs,
         }
@@ -1745,15 +1758,24 @@ fn open_studio(
             .is_some_and(|(draft, _)| draft.id == user_theme.id);
     let session = state.session.clone();
     let focus = state.focus.clone();
-    if !resume {
+    let recovery = if resume {
+        None
+    } else {
+        editor.update(cx, |e, _| {
+            if let Some(mut recovery) = e.recovery.take() {
+                recovery.flush();
+            }
+        });
         fill_theme_fields(editor, user_theme, mode, window, cx);
-    }
+        drafts::Recovery::for_theme(editor.read(cx), user_theme, new_theme, cx)
+    };
     editor.update(cx, |e, _| {
         if !resume {
             e.editing = Some((user_theme.clone(), mode));
             e.tab = ThemeTab::Colors;
             e.new_theme = new_theme;
             e.conflict = None;
+            e.recovery = recovery;
             e.edit_generation = e.edit_generation.wrapping_add(1);
             e.notice = None;
         }
@@ -1803,15 +1825,27 @@ fn draft_fields(
     mode: Mode,
     cx: &App,
 ) -> Result<UserTheme, &'static str> {
+    let (draft, error) = snapshot_fields(editor, base, mode, cx);
+    error.map_or(Ok(draft), Err)
+}
+
+fn snapshot_fields(
+    editor: &Editor,
+    base: &UserTheme,
+    mode: Mode,
+    cx: &App,
+) -> (UserTheme, Option<&'static str>) {
     let mut draft = base.clone();
+    let mut error = None;
     let shown = look::drawn_seeds(base, mode);
     if look::theme_seeds(base, mode).is_some() {
         let mut colors = shown;
         for field in &editor.seeds {
-            let color = field
-                .value(cx)
-                .ok_or_else(|| t!("appearance-accent-custom-invalid"))?;
-            field.seed.set(&mut colors, color);
+            if let Some(color) = field.value(cx) {
+                field.seed.set(&mut colors, color);
+            } else {
+                error = Some(t!("appearance-accent-custom-invalid"));
+            }
         }
         if colors != shown {
             look::set_theme_seeds(&mut draft, mode, Some(colors));
@@ -1819,18 +1853,20 @@ fn draft_fields(
     }
     let css = editor.css.read(cx).value();
     if css.len() > look::MAX_THEME_CSS {
-        return Err(t!("appearance-themes-import-css-too-long"));
+        error.get_or_insert(t!("appearance-themes-import-css-too-long"));
     }
-    if &*css != base.css.as_deref().unwrap_or_default() {
+    if css.len() <= look::MAX_IMPORT && &*css != base.css.as_deref().unwrap_or_default() {
         draft.css = Some(css.to_string());
     }
     let name = editor.name.read(cx).value();
     let name = name.trim();
     if name.is_empty() || name.chars().count() > look::MAX_THEME_NAME {
-        return Err(t!("appearance-studio-name-error"));
+        error.get_or_insert(t!("appearance-studio-name-error"));
     }
-    draft.name = Some(name.to_owned());
-    Ok(draft)
+    if name != base.name.as_deref().unwrap_or_default() {
+        draft.name = Some(name.chars().take(look::MAX_THEME_NAME + 1).collect());
+    }
+    (draft, error)
 }
 
 fn refresh_studio(editor: &Entity<Editor>, cx: &mut App) {
@@ -1838,12 +1874,20 @@ fn refresh_studio(editor: &Entity<Editor>, cx: &mut App) {
     if state.studio_open
         && let Some((base, mode)) = &state.editing
     {
-        let theme = draft_fields(state, base, *mode, cx).unwrap_or_else(|_| base.clone());
+        let mode = *mode;
+        let compare = state.compare;
+        let (draft, error) = snapshot_fields(state, base, mode, cx);
+        let theme = if error.is_some() {
+            base.clone()
+        } else {
+            draft.clone()
+        };
+        drafts::remember(editor, &draft, mode, cx);
         appearance::set_studio(
             Some(appearance::StudioPreview {
                 theme,
-                mode: *mode,
-                compare: state.compare,
+                mode,
+                compare,
             }),
             cx,
         );
@@ -1857,6 +1901,14 @@ fn hide_studio(editor: &Entity<Editor>, discard: bool, cx: &mut App) {
             .background_preview
             .update(cx, |preview, cx| preview.clear(None, cx));
         if discard {
+            if let Some(mut recovery) = editor.recovery.take()
+                && let Some(id) = editor
+                    .editing
+                    .as_ref()
+                    .and_then(|(theme, _)| theme.id.as_deref())
+            {
+                recovery.discard(id);
+            }
             editor.editing = None;
             editor.conflict = None;
             editor.notice = None;
@@ -1996,6 +2048,10 @@ fn theme_editor(
     let busy = state.busy;
     let compare = state.compare;
     let conflict = state.conflict.is_some();
+    let can_restore = state
+        .recovery
+        .as_ref()
+        .is_some_and(|recovery| recovery.offer.is_some());
     let name = state.name.clone();
     let mut form = div()
         .id("theme-studio-content")
@@ -2045,6 +2101,46 @@ fn theme_editor(
                             .label(t!("appearance-studio-load-saved"))
                             .disabled(busy)
                             .on_click(move |_, window, cx| load_saved_theme(&load, window, cx)),
+                    ),
+            )
+    });
+    let restore_banner = (can_restore && !conflict).then(|| {
+        let restore = editor.clone();
+        let dismiss = editor.clone();
+        div()
+            .id("theme-studio-recovery")
+            .test_support()
+            .role(Role::Status)
+            .aria_label(t!("appearance-studio-recovery"))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.muted)
+                    .child(t!("appearance-studio-recovery")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        Button::new("theme-studio-restore")
+                            .label(t!("appearance-studio-restore"))
+                            .disabled(busy)
+                            .on_click(move |_, window, cx| drafts::restore(&restore, window, cx)),
+                    )
+                    .child(
+                        Button::new("theme-studio-dismiss-recovery")
+                            .label(t!("appearance-studio-dismiss-recovery"))
+                            .ghost()
+                            .disabled(busy)
+                            .on_click(move |_, _, cx| drafts::dismiss(&dismiss, cx)),
                     ),
             )
     });
@@ -2125,6 +2221,7 @@ fn theme_editor(
         .flex_1()
         .min_h_0()
         .children(conflict_banner)
+        .children(restore_banner)
         .child(form)
         .child(
             div()
@@ -2264,6 +2361,9 @@ fn load_saved_theme(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) 
     let mode = *mode;
     fill_theme_fields(editor, &theirs, mode, window, cx);
     editor.update(cx, |e, _| {
+        if let Some(recovery) = &mut e.recovery {
+            recovery.replace_original(&theirs);
+        }
         e.editing = Some((theirs, mode));
         e.new_theme = false;
         e.conflict = None;

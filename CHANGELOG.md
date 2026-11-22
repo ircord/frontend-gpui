@@ -40,6 +40,7 @@
 - Choose a base scheme and customize interface, status, and code colors independently for dark and light mode in Theme Studio.
 - If a theme changes on another device while you edit it, you can keep your edits or load the saved version in Theme Studio.
 - Duplicate a saved theme to keep a separate copy with the same colors, background, and custom CSS.
+- Restore an unsaved Theme Studio draft when you reopen the editor after restarting IRCord.
 - Direct messages use the same sidebar order as the web client.
 - Switching networks returns to the last channel you viewed on that network, even after restarting IRCord.
 - The collapsed sidebar still gives you access to Search, Inbox, Saved messages, Drafts, Links and Server.
