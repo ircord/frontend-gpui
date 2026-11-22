@@ -227,6 +227,7 @@ fn the_top_bar_holds_the_networks_settings_and_your_menu(cx: &mut TestAppContext
     click_label(&f, cx, "Preferences");
     assert_eq!(route(&f, cx), Some(Route::Settings));
 
+    click(&f, cx, "settings-close");
     click(&f, cx, "add-network");
     draw(&f, cx, |window, _| {
         assert!(window.find("network-form").visible())
@@ -282,6 +283,7 @@ fn the_sidebar_opens_with_search_and_its_pages(cx: &mut TestAppContext) {
         assert!(window.find_by_label("Mark all as read").visible());
     });
     draw(&f, cx, |window, cx| window.press("escape", cx));
+    click(&f, cx, "conversation-c-general");
     click(&f, cx, "search-conversation-toggle");
     draw(&f, cx, |window, _| {
         assert!(window.find("conversation-search").visible())

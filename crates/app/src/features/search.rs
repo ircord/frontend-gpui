@@ -67,9 +67,13 @@ pub fn init(cx: &mut App) {
             panel_view(ctx, window, cx)
         }));
         r.header_buttons.add(
-            Slot::new("search-conversation", |ctx: &HeaderCtx, _, cx| {
+            Slot::new("search-conversation", |ctx: &HeaderCtx, window, cx| {
                 let session = ctx.session.clone();
                 let open = session.read(cx).panel.as_deref() == Some(PANEL);
+                let trigger = window
+                    .use_keyed_state("conversation-search-trigger", cx, |_, cx| cx.focus_handle())
+                    .read(cx)
+                    .clone();
                 let theme = theme::get(cx);
                 Some(
                     Button::new("search-conversation-toggle")
@@ -90,9 +94,15 @@ pub fn init(cx: &mut App) {
                             theme.border.opacity(0.55)
                         })
                         .icon(IconName::Search)
+                        .track_focus(&trigger)
                         .accessibility_label(t!("search-in-conversation"))
                         .tooltip(t!("search-in-conversation"))
-                        .on_click(move |_, window, cx| toggle_panel(&session, !open, window, cx))
+                        .on_click(move |_, window, cx| {
+                            if !open {
+                                trigger.focus(window, cx);
+                            }
+                            toggle_panel(&session, !open, window, cx);
+                        })
                         .into_any_element(),
                 )
             })

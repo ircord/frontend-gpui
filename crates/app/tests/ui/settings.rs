@@ -123,12 +123,15 @@ fn the_gear_and_the_key_open_settings_with_sections_under_headings(cx: &mut Test
 #[gpui_kit::test]
 fn closing_settings_returns_focus_to_the_workspace(cx: &mut TestAppContext) {
     let f = signed_in(cx);
-    cx.update_window(f.window, |_, window, cx| {
-        window.render_frame(cx);
-        window.click("composer-input", cx);
-        ircord_app::settings::open(&f.session, None, cx);
-    })
-    .unwrap();
+    let opener = cx
+        .update_window(f.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("composer-input", cx);
+            let opener = window.focused(cx).expect("the composer takes focus");
+            ircord_app::settings::open(&f.session, None, cx);
+            opener
+        })
+        .unwrap();
     shows(&f, cx, "settings-dialog");
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
@@ -140,7 +143,7 @@ fn closing_settings_returns_focus_to_the_workspace(cx: &mut TestAppContext) {
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.try_find("settings-dialog").is_none());
-        assert_eq!(window.find("composer-input").focused(), Some(true));
+        assert!(opener.is_focused(window), "focus returns to the composer");
     })
     .unwrap();
 }
