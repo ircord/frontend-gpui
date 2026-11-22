@@ -20,6 +20,7 @@
 - Appearance groups the System, Dark and Light choices and shows when settings are saved only on this device.
 - Pick separate theme variants for dark and light mode, and open the palette source from Appearance.
 - Direct messages use the same sidebar order as the web client.
+- The collapsed sidebar still gives you access to Search, Inbox, Saved messages, Drafts, Links and Server.
 
 - The desktop workspace, message list and composer follow the web layout and use your chosen theme, fonts and density.
 - On narrow windows, members open over the conversation. Resize the sidebars from their edges or with the arrow keys, and double-click an edge to reset its width.

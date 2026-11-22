@@ -27,9 +27,9 @@ use std::{cell::Cell, rc::Rc};
 
 use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
-use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu};
+use gpui_kit::component::{Selectable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::{Conversation, ConversationKind, NetworkStatus};
@@ -40,6 +40,7 @@ use ircord_client::store::sidebar_order::{
 use ircord_client::store::{Workspace, parties, people, topic};
 
 use crate::registry::{self, ConversationCtx, NetworkCtx, SidebarCtx};
+use crate::route::Route;
 use crate::session::{Session, SessionEvent};
 use crate::theme::{self, Theme};
 use crate::ui;
@@ -737,7 +738,106 @@ impl SidebarView {
         list.into_any_element()
     }
 
-    /// The list folded to icons: one per conversation that would show.
+    fn folded_tools(
+        &self,
+        network: &str,
+        route: Option<&Route>,
+        unread: i64,
+        theme: &Theme,
+    ) -> impl IntoElement + use<> {
+        use ui::icon::LucideIcon as Icon;
+        let tools = [
+            (
+                "folded-search",
+                Icon::Search,
+                t!("sidebar-find"),
+                Route::Search,
+            ),
+            (
+                "folded-inbox",
+                Icon::Inbox,
+                t!("inbox-saved-inbox"),
+                Route::Inbox,
+            ),
+            (
+                "folded-saved",
+                Icon::Bookmark,
+                t!("inbox-saved-saved"),
+                Route::Saved,
+            ),
+            (
+                "folded-drafts",
+                Icon::Pencil,
+                t!("drafts-title"),
+                Route::Drafts,
+            ),
+            (
+                "folded-links",
+                Icon::Link,
+                t!("links-view-title"),
+                Route::Links(None),
+            ),
+            (
+                "folded-server",
+                Icon::SquareTerminal,
+                t!("sidebar-server"),
+                Route::ServerWindow(network.to_string()),
+            ),
+        ];
+        div()
+            .id("folded-pages")
+            .test_support()
+            .role(Role::Group)
+            .aria_label(t!("sidebar-pages"))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_1()
+            .pb_2()
+            .children(tools.map(|(id, icon, title, destination)| {
+                let active = match (&destination, route) {
+                    (Route::Links(_), Some(Route::Links(_))) => true,
+                    _ => route == Some(&destination),
+                };
+                let fresh_inbox = destination == Route::Inbox && unread > 0;
+                let label: SharedString = if fresh_inbox {
+                    t!("inbox-saved-inbox-unread", count = unread).into()
+                } else {
+                    title.into()
+                };
+                let session = self.session.clone();
+                Button::new(id)
+                    .ghost()
+                    .relative()
+                    .small()
+                    .size(px(32.))
+                    .icon(icon)
+                    .selected(active)
+                    .when(active, |b| b.bg(theme.selected))
+                    .accessibility_label(label.clone())
+                    .tooltip(label)
+                    .when(fresh_inbox, |b| {
+                        b.child(
+                            div()
+                                .absolute()
+                                .top_1()
+                                .right_1()
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(theme.accent),
+                        )
+                    })
+                    .on_click(move |_, _, cx| match &destination {
+                        Route::Search => crate::features::search::open(&session, None, cx),
+                        Route::ServerWindow(id) => {
+                            crate::features::server_window::open(&session, id, cx)
+                        }
+                        _ => session.update(cx, |s, cx| s.navigate(destination.clone(), cx)),
+                    })
+            }))
+    }
+
+    /// The folded tools above the conversations that would show.
     fn folded(
         &self,
         w: &Workspace,
@@ -745,6 +845,7 @@ impl SidebarView {
         selected: Option<&str>,
         layout: &order::Layout,
         theme: &Theme,
+        route: Option<&Route>,
     ) -> Div {
         let mut column = div()
             .id("folded-list")
@@ -757,7 +858,8 @@ impl SidebarView {
             .items_center()
             .gap_1()
             .py_2()
-            .overflow_y_scroll();
+            .overflow_y_scroll()
+            .child(self.folded_tools(network, route, w.inbox.unread.unwrap_or(0), theme));
         let filter = Filter {
             active: selected,
             unread_only: layout.unread_only,
@@ -870,7 +972,16 @@ impl Render for SidebarView {
 
         if !layout.show_list {
             let folded = network
-                .map(|n| self.folded(&w, &n.id, selected.as_deref(), &layout, &theme))
+                .map(|n| {
+                    self.folded(
+                        &w,
+                        &n.id,
+                        selected.as_deref(),
+                        &layout,
+                        &theme,
+                        route.as_ref(),
+                    )
+                })
                 .unwrap_or_else(|| div().w(px(FOLDED)).h_full().bg(theme.sidebar));
             return div()
                 .id("sidebar")

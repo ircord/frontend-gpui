@@ -9,10 +9,13 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     WorkspaceIcons,
     [
+        Bookmark,
         Cloud,
         CloudOff,
+        Link,
         Monitor,
         Paperclip,
+        Pencil,
         Send,
         ShieldCheck,
         Users
