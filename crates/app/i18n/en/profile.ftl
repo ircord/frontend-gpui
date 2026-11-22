@@ -22,6 +22,7 @@ profile-default-picture-suggested = Default picture { $number }, suggested for y
 profile-display-name = Display name
 profile-display-name-keywords = name, nickname, shown as
 profile-shown-as = Shown as { $name } · @{ $nick }
+profile-self-no-name = You
 profile-name-color = Name color
 profile-name-color-help = Adjusted for readability in every theme.
 profile-automatic = Automatic

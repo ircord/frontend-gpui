@@ -796,6 +796,18 @@ impl ProfileView {
         self.input(field).read(cx).value().to_string()
     }
 
+    fn fallback_name(&self, member: &Member, cx: &App) -> SharedString {
+        let client = self.session.read(cx).client();
+        let workspace = client.map(|client| client.read());
+        let network = workspace
+            .as_ref()
+            .and_then(|w| self.network.as_deref().and_then(|id| w.network(id)));
+        match people::fallback_self_name(network, &member.nick) {
+            Some(name) => SharedString::from(name.to_string()),
+            None => t!("profile-self-no-name").into(),
+        }
+    }
+
     /// Show the profile on `network`, or on the selected (else first) one.
     fn pick_network(
         &mut self,
@@ -889,6 +901,9 @@ impl ProfileView {
 
     /// Put `member`'s saved profile in the form.
     fn fill(&mut self, member: Member, window: &mut Window, cx: &mut Context<Self>) {
+        let fallback = self.fallback_name(&member, cx);
+        self.input(Field::Name)
+            .update(cx, |input, cx| input.set_placeholder(fallback, window, cx));
         for (field, input) in &self.inputs {
             let value = field.saved(&member);
             input.update(cx, |s, cx| s.set_value(value, window, cx));
@@ -1319,7 +1334,7 @@ impl Render for ProfileView {
         let name_now = {
             let typed = self.text(Field::Name, cx);
             if typed.trim().is_empty() {
-                saved.nick.clone()
+                self.fallback_name(&saved, cx).to_string()
             } else {
                 typed.trim().to_string()
             }

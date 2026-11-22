@@ -154,7 +154,12 @@ fn type_into(f: &Fixture, cx: &mut TestAppContext, id: &str, text: &str) {
 
 #[gpui_kit::test]
 fn edits_the_profile_in_settings(cx: &mut TestAppContext) {
-    let f = open_with(cx, true, serve_profile);
+    let f = open_with(cx, true, |server| {
+        let mut data = crate::fixture::snapshot();
+        data.networks[0].realname = Some("Peter".into());
+        server.snapshot(&data);
+        serve_profile(server);
+    });
     bootstrap(&f, cx);
     // The gear opens Settings on Profile, the first section.
     click(&f, cx, "open-settings");
@@ -168,7 +173,7 @@ fn edits_the_profile_in_settings(cx: &mut TestAppContext) {
     let name = find(&f, cx, "profile-name-input", |e| e.bounds()).unwrap();
     assert!(avatar.right() < name.origin.x);
     render(&f, cx);
-    reads(&f, cx, "profile-shown-as", "Shown as me · @me");
+    reads(&f, cx, "profile-shown-as", "Shown as Peter · @me");
 
     type_into(&f, cx, "profile-name-input", "Petra");
     reads(&f, cx, "profile-shown-as", "Shown as Petra · @me");
