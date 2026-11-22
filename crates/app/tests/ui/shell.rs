@@ -282,11 +282,16 @@ fn the_sidebar_opens_with_search_and_its_pages(cx: &mut TestAppContext) {
         assert!(window.find_by_label("Mark all as read").visible());
     });
     draw(&f, cx, |window, cx| window.press("escape", cx));
+    click(&f, cx, "search-conversation-toggle");
+    draw(&f, cx, |window, _| {
+        assert!(window.find("conversation-search").visible())
+    });
     click(&f, cx, "sidebar-find");
     draw(&f, cx, |window, _| {
         assert!(window.find("search-page").visible());
         assert_eq!(window.find("search-input").focused(), Some(true));
         assert_eq!(window.find("sidebar-find").selected(), Some(true));
+        assert!(window.try_find("resize-panel").is_none());
     });
 }
 

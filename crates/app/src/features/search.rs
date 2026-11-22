@@ -141,7 +141,13 @@ pub fn open(session: &Entity<Session>, query: Option<&str>, cx: &mut App) {
     if let Some(query) = query {
         cx.set_global(PendingQuery(Some(query.to_string())));
     }
-    session.update(cx, |s, cx| s.navigate(Route::Search, cx));
+    session.update(cx, |s, cx| {
+        if s.panel.as_deref() == Some(PANEL) {
+            let hidden = crate::features::profile::saved_members_hidden(s);
+            s.set_panel(hidden.then(|| crate::session::NO_PANEL.into()), cx);
+        }
+        s.navigate(Route::Search, cx);
+    });
 }
 
 /// Open (or close) the search beside the open conversation.
