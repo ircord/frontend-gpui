@@ -1,4 +1,4 @@
-//! The IRCord desktop app: GPUI views over `ircord-client`.
+//! The IRCord GPUI app: GPUI views over `ircord-client`.
 //!
 //! How the crate is laid out for many hands at once:
 //!

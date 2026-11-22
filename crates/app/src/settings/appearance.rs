@@ -1541,7 +1541,7 @@ fn seed_editor(
 }
 
 fn made_with() -> &'static str {
-    concat!("IRCord desktop ", env!("CARGO_PKG_VERSION"))
+    concat!("IRCord GPUI ", env!("CARGO_PKG_VERSION"))
 }
 
 fn now() -> String {
