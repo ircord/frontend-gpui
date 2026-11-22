@@ -94,13 +94,9 @@ pub fn base_args(root: &Path) -> Result<Vec<String>> {
         "/work".into(),
     ];
     args.extend(xwin_cache_args(&xwin_download));
-    // RUST_LOG for logging; IRCORD_UPDATES=1 is set only by the release
-    // builds, the ones allowed to update themselves.
-    for name in ["RUST_LOG", "IRCORD_UPDATES"] {
-        if let Ok(value) = std::env::var(name) {
-            args.push("-e".into());
-            args.push(format!("{name}={value}"));
-        }
+    if let Ok(filter) = std::env::var("RUST_LOG") {
+        args.push("-e".into());
+        args.push(format!("RUST_LOG={filter}"));
     }
     Ok(args)
 }
@@ -146,9 +142,24 @@ pub fn run_with(root: &Path, extra: &[String], cmd: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// `IRCORD_UPDATES=1` for the app's release build when the host sets it (only
+/// the publish workflow does): those copies check for and install updates.
+/// Only the builds get it, never clippy or the tests.
+fn updates_args(host: Option<&str>) -> Vec<String> {
+    match host {
+        Some("1") => vec!["-e".into(), "IRCORD_UPDATES=1".into()],
+        _ => Vec::new(),
+    }
+}
+
+fn host_updates() -> Vec<String> {
+    updates_args(std::env::var("IRCORD_UPDATES").ok().as_deref())
+}
+
 pub fn build_windows(root: &Path) -> Result<()> {
-    run(
+    run_with(
         root,
+        &host_updates(),
         &[
             "cargo",
             "xwin",
@@ -167,8 +178,9 @@ pub fn build_windows(root: &Path) -> Result<()> {
 }
 
 pub fn build_linux(root: &Path) -> Result<()> {
-    run(
+    run_with(
         root,
+        &host_updates(),
         &[
             "cargo",
             "build",
@@ -259,6 +271,21 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_updates_set_to_1_reach_the_build() {
+        assert_eq!(updates_args(Some("1")), ["-e", "IRCORD_UPDATES=1"]);
+        for host in [None, Some(""), Some("0"), Some("yes")] {
+            assert!(updates_args(host).is_empty(), "{host:?}");
+        }
+    }
+
+    #[test]
+    fn the_shared_arguments_never_carry_updates() {
+        let root = std::env::temp_dir();
+        let args = base_args(&root).unwrap();
+        assert!(!args.iter().any(|a| a.contains("IRCORD_UPDATES")));
+    }
 
     /// No host directory is mounted at the cache root, where cargo-xwin puts
     /// its `clang-cl` link: only the download below it is shared.
