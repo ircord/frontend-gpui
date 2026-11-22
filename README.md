@@ -145,6 +145,10 @@ Linux build on a virtual display against a disposable backend, signs in through
 the form, types a server emoji into the message box and saves
 screenshots, so a change can be looked at without a screen.
 
+Press Shift+F8 to pause or resume a personal theme. To start with personal
+themes paused, quit IRCord completely and pass `--safe-theme` to the app.
+On macOS, use `open -a 'IRCord GPUI' --args --safe-theme`.
+
 ## Publishing a release
 
 Pull requests run `.github/workflows/check.yaml` once they are marked ready

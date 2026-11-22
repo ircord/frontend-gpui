@@ -1542,6 +1542,7 @@ fn theme_row(
     let seeds = look::drawn_seeds(user_theme, mode);
     let key = |what: &str| format!("appearance-theme-{what}-{id}");
     let use_id = id.clone();
+    let use_editor = editor.clone();
     let edit_theme = user_theme.clone();
     let edit_editor = editor.clone();
     let export_theme = user_theme.clone();
@@ -1603,8 +1604,10 @@ fn theme_row(
                     )))
                     .test_support()
                     .on_click(move |_, _, cx| {
-                        let id = use_id.clone();
-                        appearance::edit(cx, |a| a.theme = Some(id));
+                        if appearance::trial::choose(&use_id, cx) {
+                            let session = use_editor.read(cx).session.clone();
+                            crate::settings::close(&session, cx);
+                        }
                     }),
             )
         })
@@ -1614,7 +1617,7 @@ fn theme_row(
                     .test_support()
                     .reachable(theme)
                     .on_click(|_, _, cx| {
-                        appearance::edit(cx, |a| a.theme = None);
+                        appearance::trial::use_built_in(cx);
                     }),
             )
         })

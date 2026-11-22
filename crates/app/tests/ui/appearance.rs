@@ -517,6 +517,14 @@ fn a_theme_css_sets_the_root_variables_until_the_switch_is_off(cx: &mut TestAppC
     wait(cx, "the theme's accent from its CSS", |cx| {
         theme::get(cx).accent == theme::hex(0xff0000)
     });
+    assert!(saved_appearances(&f).is_empty());
+    trial_action(&f, cx, "theme-trial-keep");
+    wait(cx, "the kept theme is saved", |_| {
+        saved_appearances(&f)
+            .last()
+            .is_some_and(|settings| settings["theme"] == "t-red")
+    });
+    open_at(&f, cx, "appearance-themes");
     // The rule that restyles an element is counted, not applied.
     let report = cx
         .update_window(f.window, |_, window, cx| {
@@ -531,6 +539,21 @@ fn a_theme_css_sets_the_root_variables_until_the_switch_is_off(cx: &mut TestAppC
     // The rail is drawn in borders and backdrops, not in the default view.
     assert_eq!(colour(cx).rail, theme::hex(0x00ff00));
 
+    let saves = saved_appearances(&f).len();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("shift-f8", cx);
+    })
+    .unwrap();
+    wait(cx, "Shift+F8 pauses the theme", |cx| {
+        theme::get(cx).accent != theme::hex(0xff0000)
+    });
+    trial_action(&f, cx, "theme-trial-resume");
+    wait(cx, "the paused theme resumes", |cx| {
+        theme::get(cx).accent == theme::hex(0xff0000)
+    });
+    assert_eq!(saved_appearances(&f).len(), saves);
+
     // Switched off: the account is saved with CSS off and the accent is the scheme's.
     // The switch itself is not reported visible to the harness, so the setter it calls runs here.
     cx.update(|cx| ircord_app::theme::appearance::set_custom_css(cx, false));
@@ -543,6 +566,46 @@ fn a_theme_css_sets_the_root_variables_until_the_switch_is_off(cx: &mut TestAppC
     wait(cx, "the scheme's accent without the CSS", |cx| {
         theme::get(cx).accent != theme::hex(0xff0000)
     });
+}
+
+fn trial_action(f: &Fixture, cx: &mut TestAppContext, id: &'static str) {
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(id, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn a_theme_trial_reverts_on_request_and_when_the_timer_expires(cx: &mut TestAppContext) {
+    let f = signed_in(
+        cx,
+        json!({"mode": "dark"}),
+        json!([{
+            "format": 1, "id": "t-red", "name": "Red", "updatedAt": "s1",
+            "css": ":root { --accent: #ff0000 }"
+        }]),
+    );
+    let original = colour(cx).accent;
+
+    for expire in [false, true] {
+        open_at(&f, cx, "appearance-themes");
+        click(&f, cx, "appearance-theme-use-t-red");
+        wait(cx, "the new theme is on trial", |cx| {
+            theme::get(cx).accent == theme::hex(0xff0000)
+        });
+        if expire {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(21));
+        } else {
+            trial_action(&f, cx, "theme-trial-revert");
+        }
+        wait(cx, "the previous appearance returns", |cx| {
+            theme::get(cx).accent == original
+        });
+        assert!(saved_appearances(&f).is_empty());
+    }
 }
 
 #[gpui_kit::test]

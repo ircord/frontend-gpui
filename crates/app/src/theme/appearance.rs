@@ -8,6 +8,8 @@
 //! (and so to every device), with it off it stays on this device. Package S2
 //! edits its message settings in the same document the same way.
 
+pub(crate) mod trial;
+
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -36,6 +38,7 @@ struct State {
     /// Clients whose documents are being watched.
     watched: HashSet<usize>,
     compiled: Option<Compiled>,
+    preview: trial::State,
     _session: Option<Subscription>,
 }
 
@@ -46,6 +49,7 @@ pub(super) fn init(cx: &mut App) {
         return;
     }
     cx.set_global(State::default());
+    cx.on_action(|_: &crate::features::shortcuts::PauseTheme, cx| trial::toggle_pause(cx));
     cx.observe_new::<Session>(|_, _, cx| {
         let session = cx.entity();
         cx.defer(move |cx| attach(session, cx));
@@ -101,6 +105,7 @@ fn attach(session: Entity<Session>, cx: &mut App) {
 fn on_session(session: &Entity<Session>, event: &SessionEvent, cx: &mut App) {
     match event {
         SessionEvent::Phase => {
+            cx.global_mut::<State>().preview.cancel();
             watch(session, cx);
             apply(cx);
         }
@@ -303,11 +308,19 @@ pub fn set_custom_css(cx: &mut App, on: bool) {
 
 /// Recompile and, when anything changed, apply to every window.
 pub fn apply(cx: &mut App) {
-    let look = look(cx);
+    let mut look = look(cx);
     let mode = look.resolve_mode(system_mode(cx));
-    let compiled = look::compile_with_css(&look, mode, &themes(cx), false, css_allowed(cx));
+    let themes = themes(cx);
+    let css = css_allowed(cx);
+    let preview = &mut cx.global_mut::<State>().preview;
+    let invalidated = preview.validate(&look, &themes, css);
+    preview.select(&mut look);
+    let compiled = look::compile_with_css(&look, mode, &themes, false, css);
     let state = cx.global_mut::<State>();
     if state.compiled.as_ref() == Some(&compiled) {
+        if invalidated {
+            cx.refresh_windows();
+        }
         return;
     }
     state.compiled = Some(compiled.clone());

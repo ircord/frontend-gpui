@@ -256,6 +256,7 @@ pub fn open_main_window(session: Entity<Session>, cx: &mut App) {
 
 /// Start the app.
 pub fn run() {
+    let safe_theme = std::env::args_os().skip(1).any(|arg| arg == "--safe-theme");
     let runtime = match ircord_client::client::runtime() {
         Ok(runtime) => runtime,
         Err(e) => {
@@ -289,6 +290,9 @@ pub fn run() {
         notify::identify(cx);
         gpui_kit::init(cx);
         init(cx);
+        if safe_theme {
+            theme::appearance::trial::safe_start(cx);
+        }
         #[cfg(target_os = "macos")]
         install_app_menu(cx);
         images::ImageClient::install(runtime.clone(), cx);

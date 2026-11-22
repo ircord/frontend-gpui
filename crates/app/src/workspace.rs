@@ -825,6 +825,7 @@ impl Render for WorkspaceView {
                         ),
                 )
             })
+            .children(theme::appearance::trial::banner(window, cx))
     }
 }
 
