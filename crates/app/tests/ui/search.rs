@@ -247,6 +247,28 @@ fn typed_filters_become_chips_and_backspace_removes_them(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
+fn arrow_keys_and_tab_accept_a_workspace_search_suggestion(cx: &mut TestAppContext) {
+    let f = open(cx);
+    open_page(&f, cx, None);
+    frame(&f, cx, |window, cx| window.input("cats has:", cx));
+    shows(&f, cx, "search-offers");
+    frame(&f, cx, |window, cx| {
+        assert_eq!(window.find("search-offer-0").selected(), Some(true));
+        window.press("down", cx);
+        assert_eq!(window.find("search-offer-1").selected(), Some(true));
+        window.press("tab", cx);
+    });
+    shows(&f, cx, "search-chip-0");
+    searched(&f, cx, "the selected suggestion", |request| {
+        param(request, "q") == ["cats"] && param(request, "has") == ["image"]
+    });
+    frame(&f, cx, |window, _| {
+        assert_eq!(window.find("search-input").focused(), Some(true));
+        assert!(window.try_find("search-offers").is_none());
+    });
+}
+
+#[gpui_kit::test]
 fn the_page_lists_conversations_and_people_by_name(cx: &mut TestAppContext) {
     let f = open(cx);
     open_page(&f, cx, None);
@@ -420,6 +442,33 @@ fn conversation_search_offers_filters_when_the_field_is_empty(cx: &mut TestAppCo
             window.find("conversation-search-input").focused(),
             Some(true)
         );
+    });
+}
+
+#[gpui_kit::test]
+fn conversation_search_dismisses_and_accepts_suggestions_from_the_keyboard(
+    cx: &mut TestAppContext,
+) {
+    let f = open(cx);
+    click(&f, cx, "search-conversation-toggle");
+    frame(&f, cx, |window, cx| window.input("has:", cx));
+    shows(&f, cx, "conversation-search-offers");
+    frame(&f, cx, |window, cx| {
+        window.press("escape", cx);
+        assert!(window.try_find("conversation-search-offers").is_none());
+        assert!(window.find("conversation-search").visible());
+        window.press("backspace", cx);
+        window.input(":", cx);
+        window.press("up", cx);
+        assert_eq!(
+            window.find("conversation-search-offer-4").selected(),
+            Some(true)
+        );
+        window.press("enter", cx);
+    });
+    shows(&f, cx, "conversation-search-chip-0");
+    searched(&f, cx, "the selected conversation suggestion", |request| {
+        param(request, "conversationId") == ["c-general"] && param(request, "has") == ["file"]
     });
 }
 

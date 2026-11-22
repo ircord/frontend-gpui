@@ -43,7 +43,10 @@ use crate::ui;
 use crate::ui::icon::IconName;
 use crate::ui::page::Hint;
 
-gpui_kit::actions!(ircord_search, [OpenSearch, SearchConversation]);
+gpui_kit::actions!(
+    ircord_search,
+    [OpenSearch, SearchConversation, AcceptFilter]
+);
 
 /// The right-hand panel's ID for searching the open conversation.
 pub const PANEL: &str = "conversation-search";
@@ -55,10 +58,12 @@ const CONVERSATIONS_MATCHED: usize = 5;
 const PEOPLE: usize = 4;
 const SERVERS: usize = 4;
 const OFFERS: usize = 6;
+const FILTER_CHOICES: &str = "IrcordSearchFilterChoices";
 
 const MAC: bool = cfg!(target_os = "macos");
 
 pub fn init(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("tab", AcceptFilter, Some(FILTER_CHOICES))]);
     registry::register(cx, |r| {
         r.panes.add(Pane::new(PaneKind::Search, |ctx, window, cx| {
             page_view(&ctx.session, window, cx).into_any_element()
@@ -629,6 +634,11 @@ fn offers(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Vec<Offer> 
                 .collect()
         }
     };
+    if let Some(exact) = resolve(w, key, value, today)
+        && let Some(index) = offers.iter().position(|offer| offer.chip == exact)
+    {
+        offers[..=index].rotate_right(1);
+    }
     offers.truncate(OFFERS);
     offers
 }
@@ -1133,27 +1143,70 @@ fn messages_part(
 pub struct Opened;
 impl EventEmitter<Opened> for SearchModel {}
 
+#[derive(Default)]
+struct FilterSelection {
+    index: usize,
+    dismissed: bool,
+}
+
+impl FilterSelection {
+    fn choices(
+        &self,
+        input: &Entity<InputState>,
+        model: &Entity<SearchModel>,
+        cx: &App,
+    ) -> Option<(sf::Token, Vec<Offer>)> {
+        if self.dismissed {
+            return None;
+        }
+        let token = sf::active_token(&input.read(cx).value())?;
+        let model = model.read(cx);
+        if model.scope.is_some() && token.key == Key::In {
+            return None;
+        }
+        let client = model.session.read(cx).client()?;
+        let choices = offers(&client.read(), token.key, &token.value, today());
+        Some((token, choices))
+    }
+
+    fn step(&mut self, count: usize, backward: bool) {
+        let offset = if backward { count - 1 } else { 1 };
+        self.index = (self.index.min(count - 1) + offset) % count;
+    }
+
+    fn accept(
+        &self,
+        input: &Entity<InputState>,
+        model: &Entity<SearchModel>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let Some((_, choices)) = self.choices(input, model, cx) else {
+            return false;
+        };
+        let Some(offer) = choices.get(self.index.min(choices.len().saturating_sub(1))) else {
+            return false;
+        };
+        apply_offer(input, model, offer.chip.clone(), window, cx);
+        true
+    }
+}
+
 /// Offers for the token being typed, as a row of buttons.
 fn offers_row(
     prefix: &'static str,
     input: &Entity<InputState>,
     model: &Entity<SearchModel>,
-    exclude_in: bool,
+    choices: Option<(sf::Token, Vec<Offer>)>,
+    selected: usize,
     theme: &Theme,
-    cx: &App,
 ) -> Option<AnyElement> {
-    let raw = input.read(cx).value().to_string();
-    let token = sf::active_token(&raw)?;
-    if exclude_in && token.key == Key::In {
-        return None;
-    }
-    let session = model.read(cx).session.read(cx);
-    let client = session.client()?.clone();
-    let offers = offers(&client.read(), token.key, &token.value, today());
+    let (token, offers) = choices?;
+    let selected = selected.min(offers.len().saturating_sub(1));
     let mut row = div()
         .id(ElementId::Name(format!("{prefix}-offers").into()))
         .test_support()
-        .role(Role::Group)
+        .role(Role::ListBox)
         .aria_label(SharedString::from(t!(
             "search-suggestions",
             filter = token.key.as_str()
@@ -1191,6 +1244,9 @@ fn offers_row(
                 theme,
                 move |_, window, cx| apply_offer(&input, &model, chip.clone(), window, cx),
             )
+            .role(Role::ListBoxOption)
+            .aria_selected(i == selected)
+            .when(i == selected, |button| button.bg(theme.selected))
             .test_support()
             .reachable(theme),
         );
@@ -1234,21 +1290,6 @@ fn apply_offer(
     });
     input.update(cx, |i, cx| i.set_value(rest, window, cx));
     input.focus_handle(cx).focus(window, cx);
-}
-
-/// The first offer for the token being typed, if one is being typed.
-fn first_offer(input: &Entity<InputState>, model: &Entity<SearchModel>, cx: &App) -> Option<Chip> {
-    let raw = input.read(cx).value().to_string();
-    let token = sf::active_token(&raw)?;
-    let session = model.read(cx).session.read(cx);
-    let client = session.client()?.clone();
-    let w = client.read();
-    resolve(&w, token.key, &token.value, today()).or_else(|| {
-        offers(&w, token.key, &token.value, today())
-            .into_iter()
-            .next()
-            .map(|o| o.chip)
-    })
 }
 
 /// Backspace in an empty field removes the last chip. Returns whether it did.
@@ -1344,6 +1385,7 @@ pub struct SearchPage {
     model: Entity<SearchModel>,
     input: Entity<InputState>,
     selected: usize,
+    filter_selection: FilterSelection,
     recent: Vec<RecentSearch>,
     focus: bool,
     error: Option<String>,
@@ -1361,6 +1403,7 @@ impl SearchPage {
                 InputEvent::Change => {
                     field_changed(input, &this.model, false, window, cx);
                     this.selected = 0;
+                    this.filter_selection = FilterSelection::default();
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => this.enter(window, cx),
@@ -1385,6 +1428,7 @@ impl SearchPage {
             model,
             input,
             selected: 0,
+            filter_selection: FilterSelection::default(),
             recent,
             focus: true,
             error: None,
@@ -1465,8 +1509,11 @@ impl SearchPage {
     }
 
     fn enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(chip) = first_offer(&self.input, &self.model, cx) {
-            return apply_offer(&self.input, &self.model, chip, window, cx);
+        if self
+            .filter_selection
+            .accept(&self.input, &self.model, window, cx)
+        {
+            return;
         }
         let items = self.items(cx);
         if let Some(item) = items.get(self.selected).cloned() {
@@ -1928,6 +1975,8 @@ impl Render for SearchPage {
             self.input.focus_handle(cx).focus(window, cx);
         }
         let count = self.items(cx).len();
+        let choices = self.filter_selection.choices(&self.input, &self.model, cx);
+        let choice_count = choices.as_ref().map_or(0, |(_, offers)| offers.len());
         let filters = self.model.read(cx).filters.count();
         let filters_label = if filters > 0 {
             t!("search-filters-on", count = filters)
@@ -1982,11 +2031,15 @@ impl Render for SearchPage {
                     .items_center()
                     .gap_2()
                     .child(
-                        div().flex_1().child(
-                            Input::new(&self.input)
-                                .id("search-input")
-                                .aria_label(t!("search-field")),
-                        ),
+                        div()
+                            .id("search-query")
+                            .flex_1()
+                            .when(choice_count > 0, |field| field.key_context(FILTER_CHOICES))
+                            .child(
+                                Input::new(&self.input)
+                                    .id("search-input")
+                                    .aria_label(t!("search-field")),
+                            ),
                     )
                     .child(
                         text_button(
@@ -2005,9 +2058,9 @@ impl Render for SearchPage {
                 "search",
                 &self.input,
                 &self.model,
-                false,
+                choices,
+                self.filter_selection.index,
                 &theme,
-                cx,
             ))
             .child(pills);
         let list = div()
@@ -2020,15 +2073,23 @@ impl Render for SearchPage {
             .id("search-page-root")
             .flex()
             .flex_col()
-            .capture_action(cx.listener(move |this, _: &MoveDown, _, cx| {
-                if count > 0 {
+            .capture_action(cx.listener(move |this, _: &MoveDown, window, cx| {
+                if choice_count > 0 && this.input.focus_handle(cx).is_focused(window) {
+                    this.filter_selection.step(choice_count, false);
+                    cx.stop_propagation();
+                    cx.notify();
+                } else if count > 0 {
                     this.selected = (this.selected + 1) % count;
                     cx.stop_propagation();
                     cx.notify();
                 }
             }))
-            .capture_action(cx.listener(move |this, _: &MoveUp, _, cx| {
-                if count > 0 {
+            .capture_action(cx.listener(move |this, _: &MoveUp, window, cx| {
+                if choice_count > 0 && this.input.focus_handle(cx).is_focused(window) {
+                    this.filter_selection.step(choice_count, true);
+                    cx.stop_propagation();
+                    cx.notify();
+                } else if count > 0 {
                     this.selected = (this.selected + count - 1) % count;
                     cx.stop_propagation();
                     cx.notify();
@@ -2039,9 +2100,23 @@ impl Render for SearchPage {
                     cx.stop_propagation();
                 }
             }))
-            .capture_action(cx.listener(|this, _: &Escape, window, cx| {
-                ui::page::leave(&this.session, cx);
-                window.refresh();
+            .capture_action(cx.listener(|this, _: &AcceptFilter, window, cx| {
+                if !this
+                    .filter_selection
+                    .accept(&this.input, &this.model, window, cx)
+                {
+                    window.focus_next(cx);
+                }
+                cx.stop_propagation();
+            }))
+            .capture_action(cx.listener(move |this, _: &Escape, window, cx| {
+                if choice_count > 0 && this.input.focus_handle(cx).is_focused(window) {
+                    this.filter_selection.dismissed = true;
+                    cx.notify();
+                } else {
+                    ui::page::leave(&this.session, cx);
+                    window.refresh();
+                }
                 cx.stop_propagation();
             }))
             .child(toolbar)
@@ -2504,6 +2579,7 @@ pub struct ConversationSearch {
     query_scope: FocusHandle,
     quick_dismissed: bool,
     selected: usize,
+    filter_selection: FilterSelection,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -2527,6 +2603,7 @@ impl ConversationSearch {
                     field_changed(input, &this.model, true, window, cx);
                     this.quick_dismissed = false;
                     this.selected = 0;
+                    this.filter_selection = FilterSelection::default();
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => this.enter(window, cx),
@@ -2553,16 +2630,17 @@ impl ConversationSearch {
             query_scope,
             quick_dismissed: false,
             selected: 0,
+            filter_selection: FilterSelection::default(),
             _subscriptions: vec![field, changed, focus_in, focus_out],
         }
     }
 
     fn enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let raw = self.input.read(cx).value().to_string();
-        if sf::active_token(&raw).is_some_and(|t| t.key != Key::In)
-            && let Some(chip) = first_offer(&self.input, &self.model, cx)
+        if self
+            .filter_selection
+            .accept(&self.input, &self.model, window, cx)
         {
-            return apply_offer(&self.input, &self.model, chip, window, cx);
+            return;
         }
         let result = self.model.read(cx).results.get(self.selected).cloned();
         if let Some(result) = result {
@@ -2657,6 +2735,8 @@ impl Render for ConversationSearch {
         let place = place_name(&self.session, &self.conversation, cx);
         let m = self.model.read(cx);
         let count = m.results.len();
+        let choices = self.filter_selection.choices(&self.input, &self.model, cx);
+        let choice_count = choices.as_ref().map_or(0, |(_, offers)| offers.len());
         let filters = m.filters.count();
         let text = m.text.clone();
         let quick = self.shows_quick_filters(window, cx);
@@ -2676,6 +2756,7 @@ impl Render for ConversationSearch {
                 div()
                     .id("conversation-search-query")
                     .track_focus(&self.query_scope)
+                    .when(choice_count > 0, |field| field.key_context(FILTER_CHOICES))
                     .relative()
                     .flex_1()
                     .min_w_0()
@@ -2756,15 +2837,23 @@ impl Render for ConversationSearch {
             .flex()
             .flex_col()
             .bg(theme.sidebar)
-            .capture_action(cx.listener(move |this, _: &MoveDown, _, cx| {
-                if count > 0 {
+            .capture_action(cx.listener(move |this, _: &MoveDown, window, cx| {
+                if choice_count > 0 && this.input.focus_handle(cx).is_focused(window) {
+                    this.filter_selection.step(choice_count, false);
+                    cx.stop_propagation();
+                    cx.notify();
+                } else if count > 0 {
                     this.selected = (this.selected + 1) % count;
                     cx.stop_propagation();
                     cx.notify();
                 }
             }))
-            .capture_action(cx.listener(move |this, _: &MoveUp, _, cx| {
-                if count > 0 {
+            .capture_action(cx.listener(move |this, _: &MoveUp, window, cx| {
+                if choice_count > 0 && this.input.focus_handle(cx).is_focused(window) {
+                    this.filter_selection.step(choice_count, true);
+                    cx.stop_propagation();
+                    cx.notify();
+                } else if count > 0 {
                     this.selected = (this.selected + count - 1) % count;
                     cx.stop_propagation();
                     cx.notify();
@@ -2775,8 +2864,20 @@ impl Render for ConversationSearch {
                     cx.stop_propagation();
                 }
             }))
-            .capture_action(cx.listener(|this, _: &Escape, window, cx| {
-                if this.shows_quick_filters(window, cx) {
+            .capture_action(cx.listener(|this, _: &AcceptFilter, window, cx| {
+                if !this
+                    .filter_selection
+                    .accept(&this.input, &this.model, window, cx)
+                {
+                    window.focus_next(cx);
+                }
+                cx.stop_propagation();
+            }))
+            .capture_action(cx.listener(move |this, _: &Escape, window, cx| {
+                if choice_count > 0 && this.input.focus_handle(cx).is_focused(window) {
+                    this.filter_selection.dismissed = true;
+                    cx.notify();
+                } else if this.shows_quick_filters(window, cx) {
                     this.quick_dismissed = true;
                     this.input.focus_handle(cx).focus(window, cx);
                     cx.notify();
@@ -2791,9 +2892,9 @@ impl Render for ConversationSearch {
                 "conversation-search",
                 &self.input,
                 &self.model,
-                true,
+                choices,
+                self.filter_selection.index,
                 &theme,
-                cx,
             ))
             .child(source_switch(
                 "conversation-search-server-history",
