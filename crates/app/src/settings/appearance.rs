@@ -1438,8 +1438,16 @@ fn themes_block(
                 .child(t!("appearance-themes-empty")),
         );
     }
+    let full = library.themes.len() >= look::MAX_THEMES;
     for user_theme in &library.themes {
-        body = body.child(theme_row(user_theme, current, mode, editor, theme));
+        body = body.child(theme_row(
+            user_theme,
+            current,
+            mode,
+            editor,
+            theme,
+            !full && !busy,
+        ));
         if let Some(css) = compiled
             .css
             .as_ref()
@@ -1449,7 +1457,6 @@ fn themes_block(
             body = body.child(css_report("appearance-themes-css", &name, css, theme));
         }
     }
-    let full = library.themes.len() >= look::MAX_THEMES;
     if full {
         body = body.child(
             div()
@@ -1553,6 +1560,7 @@ fn theme_row(
     mode: Mode,
     editor: &Entity<Editor>,
     theme: &Theme,
+    can_duplicate: bool,
 ) -> impl IntoElement + use<> {
     let id = user_theme.id.clone().unwrap_or_default();
     let name: SharedString = user_theme.name.clone().unwrap_or_default().into();
@@ -1564,6 +1572,9 @@ fn theme_row(
     let use_editor = editor.clone();
     let edit_theme = user_theme.clone();
     let edit_editor = editor.clone();
+    let duplicate_source = user_theme.clone();
+    let duplicate_editor = editor.clone();
+    let duplicate_name = t!("appearance-themes-duplicate-name", name = name);
     let export_theme = user_theme.clone();
     let copy_theme = user_theme.clone();
     let copy_editor = editor.clone();
@@ -1653,6 +1664,25 @@ fn theme_row(
                     }),
             )
         })
+        .child(
+            Button::new(key("duplicate"))
+                .label(t!("appearance-themes-duplicate"))
+                .accessibility_label(t!("appearance-themes-duplicate-named", name = name))
+                .small()
+                .ghost()
+                .disabled(!can_duplicate || !supported)
+                .on_click(move |_, _, cx| {
+                    let duplicate = look::duplicate_theme(
+                        &duplicate_source,
+                        &duplicate_name,
+                        made_with(),
+                        &now(),
+                    );
+                    let name = duplicate.name.as_deref().unwrap_or_default();
+                    let note = t!("appearance-themes-duplicated", name = name);
+                    save(&duplicate_editor, duplicate, SaveTheme::Add(note), cx);
+                }),
+        )
         .child(
             button(key("export"), t!("appearance-themes-export"), theme)
                 .aria_label(SharedString::from(t!(
@@ -2294,7 +2324,7 @@ fn now() -> String {
 
 enum SaveTheme {
     Studio { new_theme: bool, force: bool },
-    Import(String),
+    Add(String),
 }
 
 fn save(editor: &Entity<Editor>, user_theme: UserTheme, reason: SaveTheme, cx: &mut App) {
@@ -2352,7 +2382,7 @@ fn save(editor: &Entity<Editor>, user_theme: UserTheme, reason: SaveTheme, cx: &
                     if saves_draft {
                         hide_studio(&editor, true, cx);
                     }
-                    if let SaveTheme::Import(text) = reason {
+                    if let SaveTheme::Add(text) = reason {
                         say(&editor, text, false, cx);
                     }
                     if then_use && let Some(id) = id {
@@ -2364,7 +2394,7 @@ fn save(editor: &Entity<Editor>, user_theme: UserTheme, reason: SaveTheme, cx: &
                     if saves_draft {
                         editor.update(cx, |e, _| e.conflict = Some(theirs));
                     } else {
-                        say(&editor, t!("appearance-themes-conflict-import"), true, cx);
+                        say(&editor, t!("appearance-themes-conflict-add"), true, cx);
                     }
                     client.watch_document(&ircord_client::documents::THEMES);
                 }
@@ -2406,7 +2436,7 @@ fn import(editor: &Entity<Editor>, text: &str, cx: &mut App) {
         Ok(user_theme) => {
             let name = user_theme.name.clone().unwrap_or_default();
             let note = t!("appearance-themes-imported", name = name);
-            save(editor, user_theme, SaveTheme::Import(note), cx);
+            save(editor, user_theme, SaveTheme::Add(note), cx);
             let input = editor.read(cx).import.clone();
             if let Some(window) = cx.windows().first() {
                 let _ = window.update(cx, |_, window, cx| {

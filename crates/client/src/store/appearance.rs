@@ -1163,6 +1163,17 @@ pub fn new_theme(look: &Look, name: &str, made_with: &str, now: &str) -> Theme {
     }
 }
 
+/// Copy a theme within the account, retaining its background image and appearance.
+pub fn duplicate_theme(theme: &Theme, name: &str, made_with: &str, now: &str) -> Theme {
+    Theme {
+        id: Some(new_theme_id()),
+        name: Some(clean_name(name)),
+        made_with: Some(made_with.to_string()),
+        updated_at: Some(now.to_string()),
+        ..theme.clone()
+    }
+}
+
 fn clean_name(name: &str) -> String {
     let name: String = name.chars().take(MAX_THEME_NAME).collect();
     let name = name.trim();

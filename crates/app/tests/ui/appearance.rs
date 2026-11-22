@@ -550,6 +550,32 @@ fn a_personal_theme_is_used_and_another_imported(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn duplicating_a_theme_keeps_its_settings_without_applying_the_copy(cx: &mut TestAppContext) {
+    let original = json!({
+        "format": 1, "id": "t-original", "name": "Original", "updatedAt": "original-revision",
+        "base": {"dark": "github-dark", "light": "hibiki-light"},
+        "background": {"url": "/files/album/photo/sky.png", "placement": "app"},
+        "css": ":root { --accent: #759aff }"
+    });
+    let f = signed_in(cx, json!({"mode": "dark"}), json!([original.clone()]));
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-theme-duplicate-t-original");
+    wait(cx, "both themes exist in the library", |cx| {
+        theme::appearance::themes(cx).len() == 2
+    });
+    let request = f.server.requests_to("PUT", "/api/v1/app/themes/*");
+    let saved = request[0].json();
+    assert_eq!(saved["expected"], Value::Null);
+    assert_eq!(saved["theme"]["name"], "Copy of Original");
+    assert_ne!(saved["theme"]["id"], original["id"]);
+    for key in ["base", "background", "css"] {
+        assert_eq!(saved["theme"][key], original[key]);
+    }
+    assert!(saved_appearances(&f).is_empty());
+    cx.update(|cx| assert!(theme::appearance::compiled(cx).theme.is_none()));
+}
+
+#[gpui_kit::test]
 fn a_theme_css_sets_the_root_variables_until_the_switch_is_off(cx: &mut TestAppContext) {
     let red = json!({
         "format": 1, "id": "t-red", "name": "Red", "updatedAt": "s1",
