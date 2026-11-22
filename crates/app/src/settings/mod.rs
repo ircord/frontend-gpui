@@ -561,6 +561,13 @@ impl Render for SettingsView {
         if let Some(state) = self.save_state(cx) {
             page = page.action(save_indicator(&state, &theme));
         }
+        if appearance::sync_in_header(window) {
+            page = page.action(appearance::sync_header(
+                &theme,
+                crate::theme::appearance::sync(cx),
+                self.target.as_deref() == Some("appearance-sync"),
+            ));
+        }
         div()
             .id("settings-dialog")
             .test_support()

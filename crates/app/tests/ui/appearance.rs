@@ -242,7 +242,13 @@ fn switching_scheme_accent_and_font_redraws_and_saves_to_the_account(cx: &mut Te
 fn with_sync_off_a_change_stays_on_this_device(cx: &mut TestAppContext) {
     let f = signed_in(cx, json!({"mode": "dark"}), json!([]));
     open_at(&f, cx, "appearance-sync");
-    click(&f, cx, "appearance-sync-switch");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let sync = window.find("appearance-sync-switch");
+        assert!(sync.bounds().bottom() <= window.find("settings-content").bounds().top());
+        window.click("appearance-sync-switch", cx);
+    })
+    .unwrap();
     wait(cx, "sync off", |cx| {
         !ircord_app::theme::appearance::sync(cx)
     });

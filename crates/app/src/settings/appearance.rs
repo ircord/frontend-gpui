@@ -183,12 +183,69 @@ fn say(editor: &Entity<Editor>, text: impl Into<SharedString>, problem: bool, cx
 
 // ---- Rendering ----
 
+pub(super) fn sync_in_header(window: &Window) -> bool {
+    window.viewport_size().width > px(700.)
+}
+
+fn sync_switch(sync: bool) -> Switch {
+    Switch::new("appearance-sync-switch")
+        .checked(sync)
+        .accessibility_label(t!("appearance-sync"))
+        .on_click(|on, _, cx| appearance::set_sync(cx, *on))
+}
+
+fn sync_help(sync: bool) -> &'static str {
+    if sync {
+        t!("appearance-sync-help")
+    } else {
+        t!("appearance-sync-local")
+    }
+}
+
+pub(super) fn sync_header(
+    theme: &Theme,
+    sync: bool,
+    highlighted: bool,
+) -> impl IntoElement + use<> {
+    let icon = if sync {
+        ui::icon::LucideIcon::Cloud
+    } else {
+        ui::icon::LucideIcon::CloudOff
+    };
+    div()
+        .id("setting-appearance-sync")
+        .test_support()
+        .role(Role::Group)
+        .aria_label(t!("appearance-sync"))
+        .tooltip(ui::tooltip::text(sync_help(sync)))
+        .flex()
+        .items_center()
+        .gap_2()
+        .pl_3()
+        .pr_1p5()
+        .py_1()
+        .rounded_full()
+        .bg(theme.raised.opacity(0.45))
+        .border_1()
+        .border_color(if highlighted {
+            theme.accent
+        } else {
+            theme.border.opacity(0.55)
+        })
+        .text_xs()
+        .text_color(theme.muted)
+        .child(ui::icon::icon(icon, theme.muted))
+        .child(t!("appearance-sync-short"))
+        .child(sync_switch(sync))
+}
+
 fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElement {
     let theme = theme::get(cx).clone();
     let editor = editor(ctx, window, cx);
     let current = appearance::look(cx);
     let compiled = appearance::compiled(cx);
     let sync = appearance::sync(cx);
+    let compact = !sync_in_header(window);
     let mode = compiled.mode;
 
     div()
@@ -206,24 +263,16 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
                 ..Default::default()
             },
         ))
-        .child(row(
-            ctx,
-            "appearance-sync",
-            t!("appearance-sync"),
-            Some(
-                if sync {
-                    t!("appearance-sync-help")
-                } else {
-                    t!("appearance-sync-local")
-                }
-                .into(),
-            ),
-            Switch::new("appearance-sync-switch")
-                .checked(sync)
-                .accessibility_label(t!("appearance-sync"))
-                .on_click(|on, _, cx| appearance::set_sync(cx, *on)),
-            &theme,
-        ))
+        .when(compact, |d| {
+            d.child(row(
+                ctx,
+                "appearance-sync",
+                t!("appearance-sync"),
+                Some(sync_help(sync).into()),
+                sync_switch(sync),
+                &theme,
+            ))
+        })
         .child(row(
             ctx,
             "appearance-mode",

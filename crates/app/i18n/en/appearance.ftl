@@ -2,6 +2,7 @@
 appearance-title = Appearance
 appearance-keywords = theme, look, colour, color, dark, light, font, scale, density, corners, motion
 appearance-sync = Sync across devices
+appearance-sync-short = Sync
 appearance-sync-help = Use the same appearance on every device you sign in on.
 appearance-sync-local = Appearance is saved on this device only. Turn on Sync to use it on every device.
 appearance-sync-keywords = sync, devices, account
