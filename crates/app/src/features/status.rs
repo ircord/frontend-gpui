@@ -17,6 +17,7 @@ use ircord_client::contract::{MemberStatus, NetworkStatus, ProfileUpdate};
 use ircord_client::store::people::{self, Expiry, StatusError};
 
 use crate::features::commands::on_view;
+use crate::message::emoji;
 use crate::registry::{self, MemberCtx, MenuItem, SidebarCtx, Slot};
 use crate::session::Session;
 use crate::theme;
@@ -136,7 +137,7 @@ fn not_connected(ctx: &SidebarCtx, cx: &App) -> Option<SharedString> {
     (!up).then(|| t!("people-status-offline-reason").into())
 }
 
-/// The line under your name: presence, then your status.
+/// Show the current status in the profile chip, with presence as the fallback.
 fn self_line(ctx: &SidebarCtx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let theme = theme::get(cx).clone();
     let session = ctx.session.read(cx);
@@ -148,10 +149,37 @@ fn self_line(ctx: &SidebarCtx, _window: &mut Window, cx: &mut App) -> Option<Any
         Some(NetworkStatus::Connected) => t!("people-online"),
         _ => t!("people-offline"),
     };
-    let line = match people::status_label(me, chrono::Utc::now().timestamp_millis()) {
+    let status = people::status_label(me, chrono::Utc::now().timestamp_millis());
+    let line = match &status {
         Some(status) => t!("people-status-line", presence = presence, status = status),
         None => presence.to_string(),
     };
+    let detail = status.as_ref().map(|_| {
+        let glyph = me.status_emoji.as_deref().unwrap_or_default();
+        let shortcode = glyph.strip_prefix(':').and_then(|s| s.strip_suffix(':'));
+        let url =
+            shortcode.and_then(|name| cx.try_global::<emoji::Pictures>()?.0.get(name).cloned());
+        let icon = match url {
+            Some(url) => div()
+                .size(px(13.))
+                .flex_none()
+                .child(emoji::picture(url, theme.faint))
+                .into_any_element(),
+            None => div().flex_none().child(glyph.to_owned()).into_any_element(),
+        };
+        div()
+            .flex()
+            .min_w_0()
+            .items_center()
+            .gap(px(4.))
+            .when(!glyph.is_empty(), |d| d.child(icon))
+            .children(
+                me.status_text
+                    .as_ref()
+                    .map(|text| div().min_w_0().truncate().child(text.clone())),
+            )
+            .into_any_element()
+    });
     Some(
         div()
             .id("self-status")
@@ -159,8 +187,8 @@ fn self_line(ctx: &SidebarCtx, _window: &mut Window, cx: &mut App) -> Option<Any
             .aria_label(SharedString::from(line.clone()))
             .text_xs()
             .text_color(theme.muted)
-            .truncate()
-            .child(line)
+            .min_w_0()
+            .child(detail.unwrap_or_else(|| div().truncate().child(presence).into_any_element()))
             .into_any_element(),
     )
 }

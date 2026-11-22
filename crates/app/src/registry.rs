@@ -858,6 +858,8 @@ pub struct Registry {
     /// Under your name in that button (your status): the first slot that
     /// draws replaces the account name.
     pub self_line: List<Slot<SidebarCtx>>,
+    /// Extra actions before Settings in the network bar.
+    pub topbar_actions: List<Slot<SidebarCtx>>,
     /// Drawn at the start of a conversation's history, under "the start of
     /// the conversation" (an empty direct conversation shows the person).
     pub timeline_start: List<Slot<ConversationCtx>>,

@@ -805,9 +805,13 @@ fn event_line(m: &Message, name: &dyn Fn(&str) -> String) -> String {
         MembershipEventType::Kick => {
             with(t!("timeline-event-kick", actor = actor, target = target))
         }
-        MembershipEventType::Mode => t!("timeline-event-mode", actor = actor, modes = detail)
-            .trim_end()
-            .to_string(),
+        MembershipEventType::Mode => {
+            t!(
+                "timeline-event-mode",
+                actor = actor,
+                changes = mode_description(&detail)
+            )
+        }
         MembershipEventType::Topic => t!("timeline-event-topic", actor = actor, topic = detail),
         MembershipEventType::Invite => {
             t!("timeline-event-invite", actor = actor, target = target)
@@ -816,6 +820,80 @@ fn event_line(m: &Message, name: &dyn Fn(&str) -> String) -> String {
             let text = ircord_client::format::parse(&m.text).text;
             if text.is_empty() { with(actor) } else { text }
         }
+    }
+}
+
+fn mode_description(text: &str) -> String {
+    let mut words = text.split_whitespace();
+    let flags = words.next().unwrap_or_default();
+    let mut adding = true;
+    let mut phrases = Vec::new();
+    let mut raw = Vec::new();
+    for mode in flags.chars() {
+        if matches!(mode, '+' | '-') {
+            adding = mode == '+';
+            continue;
+        }
+        // In particular, consume a key as an argument without showing it.
+        let has_arg = if adding { "qaohvbeIklfj" } else { "qaohvbeIk" };
+        let arg = has_arg.contains(mode).then(|| words.next()).flatten();
+        let phrase = match (mode, adding, arg) {
+            ('q', true, Some(nick)) => t!("timeline-mode-founder-add", nick = nick),
+            ('q', false, Some(nick)) => t!("timeline-mode-founder-remove", nick = nick),
+            ('a', true, Some(nick)) => t!("timeline-mode-admin-add", nick = nick),
+            ('a', false, Some(nick)) => t!("timeline-mode-admin-remove", nick = nick),
+            ('o', true, Some(nick)) => t!("timeline-mode-operator-add", nick = nick),
+            ('o', false, Some(nick)) => t!("timeline-mode-operator-remove", nick = nick),
+            ('h', true, Some(nick)) => t!("timeline-mode-half-op-add", nick = nick),
+            ('h', false, Some(nick)) => t!("timeline-mode-half-op-remove", nick = nick),
+            ('v', true, Some(nick)) => t!("timeline-mode-voice-add", nick = nick),
+            ('v', false, Some(nick)) => t!("timeline-mode-voice-remove", nick = nick),
+            ('b', true, Some(mask)) => t!("timeline-mode-ban-add", mask = mask),
+            ('b', false, Some(mask)) => t!("timeline-mode-ban-remove", mask = mask),
+            ('e', true, Some(mask)) => t!("timeline-mode-ban-exception-add", mask = mask),
+            ('e', false, Some(mask)) => t!("timeline-mode-ban-exception-remove", mask = mask),
+            ('I', true, Some(mask)) => t!("timeline-mode-invite-exception-add", mask = mask),
+            ('I', false, Some(mask)) => t!("timeline-mode-invite-exception-remove", mask = mask),
+            ('l', true, Some(count)) => t!("timeline-mode-limit-add", count = count),
+            ('l', false, _) => t!("timeline-mode-limit-remove").into(),
+            ('k', true, _) => t!("timeline-mode-key-add").into(),
+            ('k', false, _) => t!("timeline-mode-key-remove").into(),
+            ('i', true, _) => t!("timeline-mode-invite-only-add").into(),
+            ('i', false, _) => t!("timeline-mode-invite-only-remove").into(),
+            ('m', true, _) => t!("timeline-mode-moderated-add").into(),
+            ('m', false, _) => t!("timeline-mode-moderated-remove").into(),
+            ('t', true, _) => t!("timeline-mode-topic-add").into(),
+            ('t', false, _) => t!("timeline-mode-topic-remove").into(),
+            ('n', true, _) => t!("timeline-mode-external-add").into(),
+            ('n', false, _) => t!("timeline-mode-external-remove").into(),
+            ('s', true, _) => t!("timeline-mode-secret-add").into(),
+            ('s', false, _) => t!("timeline-mode-secret-remove").into(),
+            ('p', true, _) => t!("timeline-mode-private-add").into(),
+            ('p', false, _) => t!("timeline-mode-private-remove").into(),
+            ('r', true, _) => t!("timeline-mode-registered-add").into(),
+            ('r', false, _) => t!("timeline-mode-registered-remove").into(),
+            _ => {
+                let sign = if adding { '+' } else { '-' };
+                raw.push(match arg {
+                    Some(arg) => format!("{sign}{mode} {arg}"),
+                    None => format!("{sign}{mode}"),
+                });
+                continue;
+            }
+        };
+        phrases.push(phrase);
+    }
+    if !raw.is_empty() {
+        phrases.push(t!("timeline-mode-raw", modes = raw.join(" ")));
+    }
+    match phrases.pop() {
+        None => t!("timeline-mode-unknown").into(),
+        Some(last) if phrases.is_empty() => last,
+        Some(last) => t!(
+            "timeline-mode-list",
+            previous = phrases.join(", "),
+            last = last
+        ),
     }
 }
 
@@ -1593,4 +1671,16 @@ mod tests {
         );
         assert_eq!(splice(&k(&["a", "a"]), &k(&["a"])), Some((1..2, 0)));
     }
+}
+#[test]
+fn mode_events_describe_changes_without_showing_channel_keys() {
+    assert_eq!(
+        mode_description("+q PeterPowers"),
+        "made PeterPowers a founder"
+    );
+    assert_eq!(
+        mode_description("+ko-v private-key Alice Bob"),
+        "set a channel key, made Alice an operator and took voice from Bob"
+    );
+    assert_eq!(mode_description("+X"), "set mode +X");
 }

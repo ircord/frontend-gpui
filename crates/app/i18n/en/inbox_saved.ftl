@@ -2,6 +2,7 @@
 
 # The inbox page
 inbox-saved-inbox = Inbox
+inbox-saved-sidebar = Saved
 inbox-saved-inbox-unread = Inbox, { $count } unread
 inbox-saved-inbox-description = Your mentions, replies, and direct messages across every network.
 inbox-saved-unread-count = { $count } unread

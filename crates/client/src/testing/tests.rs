@@ -4,15 +4,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::Client;
+use crate::api::{ApiError, Method};
+use crate::client::runtime;
+use crate::contract::event::Document;
+use crate::documents::PREFERENCES;
+use crate::events::Update;
+use crate::store::{Changes, SaveState, Workspace, topic};
+use crate::testing::*;
 use futures::StreamExt;
-use ircord_client::Client;
-use ircord_client::api::{ApiError, Method};
-use ircord_client::client::runtime;
-use ircord_client::contract::event::Document;
-use ircord_client::documents::PREFERENCES;
-use ircord_client::events::Update;
-use ircord_client::store::{Changes, SaveState, Workspace, topic};
-use ircord_client::testing::*;
 use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(10);

@@ -1,7 +1,7 @@
 //! Tests for package FD3: the links view and the channel gallery, against
 //! the canned server.
 
-use gpui_kit::test::TestWindowExt;
+use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
 use gpui_kit::{AppContext, TestAppContext};
 use ircord_app::features::{gallery, links};
 use ircord_app::route::Route;
@@ -305,7 +305,12 @@ fn a_channel_opens_its_own_links_and_its_gallery(cx: &mut TestAppContext) {
 
     // The gallery beside the channel lists its pictures and opens the viewer.
     cx.update(|cx| session.update(cx, |s, cx| s.select_conversation("c-general", cx)));
-    click(&f, cx, "gallery-toggle");
+    click(&f, cx, "conversation-menu");
+    frame(&f, cx, |window, cx| {
+        let at = window.find_by_label("Gallery").bounds().center();
+        window.pointer_down(at, gpui_kit::MouseButton::Left, cx);
+        window.pointer_up(at, gpui_kit::MouseButton::Left, cx);
+    });
     listed(&f, cx, "#general's pictures", |r| {
         param(r, "conversation") == ["c-general"] && param(r, "kind") == ["image", "gif"]
     });

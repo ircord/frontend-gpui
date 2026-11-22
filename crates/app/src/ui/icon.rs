@@ -1,12 +1,32 @@
 //! Icons from gpui-kit's set, sized and coloured for this app.
 
+pub use gpui_kit::assets::IconName as LucideIcon;
 pub use gpui_kit::component::IconName;
 use gpui_kit::component::{Icon, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+gpui_kit::assets::icon_assets!(WorkspaceIcons, [Paperclip, Send, ShieldCheck, Users]);
+
+pub(crate) struct Assets;
+
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        match WorkspaceIcons.load(path)? {
+            Some(bytes) => Ok(Some(bytes)),
+            None => gpui_kit::assets::Assets.load(path),
+        }
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        let mut paths = gpui_kit::assets::Assets.list(path)?;
+        paths.extend(WorkspaceIcons.list(path)?);
+        Ok(paths)
+    }
+}
+
 /// A small icon in `color`.
-pub fn icon(name: IconName, color: Hsla) -> Icon {
+pub fn icon(name: impl Into<Icon>, color: Hsla) -> Icon {
     Icon::new(name).small().text_color(color)
 }
 
@@ -14,7 +34,7 @@ pub fn icon(name: IconName, color: Hsla) -> Icon {
 /// accessible name and tooltip.
 pub fn button(
     id: impl Into<ElementId>,
-    name: IconName,
+    name: impl Into<Icon>,
     label: impl Into<SharedString>,
     theme: &crate::theme::Theme,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,

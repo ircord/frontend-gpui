@@ -58,6 +58,8 @@ pub struct Theme {
     pub body: Hsla,
     /// The drawn scheme is a dark one.
     pub dark: bool,
+    /// Hibiki uses ambient light and a brighter selection treatment.
+    pub hibiki: bool,
     /// The interface font family.
     pub font: SharedString,
     /// The monospace family for code.
@@ -94,7 +96,7 @@ impl Theme {
             main: hex(t.main),
             input: hex(t.input),
             hover: hex(t.hover),
-            row_hover: hex(t.raised),
+            row_hover: hex(t.main).blend(hex(t.hover).opacity(0.38)),
             selected: hex(t.selection),
             text: hex(t.text),
             muted: hex(t.muted),
@@ -116,12 +118,13 @@ impl Theme {
             control_border: hex(t.control_border),
             body: hex(t.body),
             dark: c.mode == Mode::Dark,
+            hibiki: matches!(c.scheme, "hibiki-dark" | "hibiki-light"),
             font: c.font.unwrap_or(".SystemUIFont").into(),
             mono_font: look::MONO_FAMILY.into(),
             message_font: None,
             message_size: None,
             group_gap: None,
-            row_padding: if c.compact { rems(0.0625) } else { rems(0.25) },
+            row_padding: if c.compact { rems(0.0625) } else { rems(0.125) },
             radius: px(c.radius),
             radius_large: px(c.radius_large),
             compact: c.compact,

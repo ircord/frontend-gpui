@@ -159,6 +159,47 @@ fn the_page_lists_a_draft_and_opens_it(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_outbox_can_be_opened_without_a_draft(cx: &mut TestAppContext) {
+    use ircord_client::store::{PendingSend, SendState};
+
+    let f = open(cx, true);
+    bootstrap(&f, cx);
+    cx.update(|cx| {
+        let client = f.session.read(cx).client().unwrap();
+        client.change(|w| {
+            w.queue_send(PendingSend {
+                client_id: "failed-1".into(),
+                conversation_id: "c-random".into(),
+                text: "Still on my device".into(),
+                action: false,
+                state: SendState::Failed("Could not send".into()),
+            })
+        });
+    });
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("sidebar-drafts").label(),
+            Some("Drafts and outbox, 1 unsent")
+        );
+        window.click("sidebar-drafts", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("outbox-heading").visible());
+        assert!(window.find("outbox-retry-failed-1").visible());
+        window.click("outbox-open-failed-1", cx);
+    })
+    .unwrap();
+    cx.update(|cx| {
+        assert_eq!(f.session.read(cx).conversation.as_deref(), Some("c-random"));
+    });
+}
+
+#[gpui_kit::test]
 fn discard_from_the_page_and_undo(cx: &mut TestAppContext) {
     let f = open(cx, true);
     bootstrap(&f, cx);

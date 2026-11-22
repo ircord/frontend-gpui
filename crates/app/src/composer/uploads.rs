@@ -621,7 +621,7 @@ fn attach_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Optio
     Some(
         ui::icon::button(
             "composer-attach",
-            IconName::Plus,
+            ui::icon::LucideIcon::Paperclip,
             label,
             &theme,
             move |_, window, cx| {

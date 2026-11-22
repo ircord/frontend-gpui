@@ -18,8 +18,8 @@ use std::time::Duration;
 use gpui_kit::TestSupportExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use ircord_client::store::Changes;
 use ircord_client::store::drafts::{self, Draft, Place, Restore, Row};
+use ircord_client::store::{Changes, PendingSend, SendState, outbox, parties};
 
 use crate::composer::ComposerView;
 use crate::composer::drafts::Shown;
@@ -97,9 +97,9 @@ pub fn init(cx: &mut App) {
             }));
         r.sidebar_footer.add(
             Slot::new("drafts", |ctx: &SidebarCtx, _, cx| {
-                (count(&ctx.session, cx) > 0).then(|| footer(&ctx.session, cx).into_any_element())
+                Some(footer(&ctx.session, cx).into_any_element())
             })
-            .order(-10),
+            .order(-25),
         );
         r.self_menu.add(
             MenuItem::new("drafts", t!("drafts-title"), |ctx: &SidebarCtx, _, cx| {
@@ -345,7 +345,11 @@ fn page(session: &Entity<Session>, cx: &mut App) -> Entity<DraftsView> {
 fn redraws(event: &SessionEvent) -> bool {
     match event {
         SessionEvent::Changed(changes) => {
-            changes.reset || changes.sidebar || changes.topics.contains_key(drafts::TOPIC)
+            changes.reset
+                || changes.sidebar
+                || changes.topics.contains_key(drafts::TOPIC)
+                || changes.topics.contains_key(outbox::TOPIC)
+                || !changes.timelines.is_empty()
         }
         SessionEvent::Phase | SessionEvent::Route => true,
         _ => false,
@@ -358,6 +362,75 @@ pub struct DraftsView {
 }
 
 impl DraftsView {
+    fn outbox_row(
+        &self,
+        pending: PendingSend,
+        title: Option<String>,
+        theme: &Theme,
+    ) -> impl IntoElement {
+        let row = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .py_2()
+            .border_b_1()
+            .border_color(theme.border.opacity(0.5))
+            .text_sm();
+        let row = if let Some(title) = title {
+            let session = self.session.clone();
+            let conversation = pending.conversation_id.clone();
+            row.child(text_button(
+                ElementId::Name(format!("outbox-open-{}", pending.client_id).into()),
+                title,
+                theme,
+                move |_, cx| session.update(cx, |s, cx| s.select_conversation(&conversation, cx)),
+            ))
+        } else {
+            row.child(div().text_color(theme.muted).child(t!("drafts-gone-title")))
+        };
+        let failed = matches!(pending.state, SendState::Failed(_));
+        let status = crate::timeline::rows::pending_label(&pending).to_string();
+        row.child(div().text_color(theme.body).child(pending.text))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(if failed { theme.danger } else { theme.muted })
+                    .child(status),
+            )
+            .when(failed, |row| {
+                let session = self.session.clone();
+                let id = pending.client_id.clone();
+                row.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(text_button(
+                            ElementId::Name(format!("outbox-retry-{id}").into()),
+                            t!("timeline-retry"),
+                            theme,
+                            move |_, cx| {
+                                if let Some(client) = session.read(cx).client() {
+                                    client.retry(&id);
+                                }
+                            },
+                        ))
+                        .child(text_button(
+                            ElementId::Name(format!("outbox-discard-{}", pending.client_id).into()),
+                            t!("drafts-outbox-discard"),
+                            theme,
+                            move |window, cx| {
+                                super::message_actions::discard(
+                                    &pending.client_id,
+                                    false,
+                                    window,
+                                    cx,
+                                );
+                            },
+                        )),
+                )
+            })
+    }
+
     fn new(session: Entity<Session>, cx: &mut Context<Self>) -> Self {
         let subscription = cx.subscribe(&session, |_, _, event: &SessionEvent, cx| {
             if redraws(event) {
@@ -529,16 +602,44 @@ impl DraftsView {
 impl Render for DraftsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
-        let (rows, loaded) = match self.session.read(cx).client() {
+        let (rows, loaded, pending) = match self.session.read(cx).client() {
             Some(client) => {
                 let w = client.read();
-                (drafts::rows(&w), w.drafts.loaded())
+                let pending = w
+                    .outbox
+                    .iter()
+                    .rev()
+                    .map(|message| {
+                        let title = w
+                            .conversation(&message.conversation_id)
+                            .map(|conversation| parties::title(&w, conversation));
+                        (message.clone(), title)
+                    })
+                    .collect::<Vec<_>>();
+                (drafts::rows(&w), w.drafts.loaded(), pending)
             }
-            None => (Vec::new(), false),
+            None => (Vec::new(), false, Vec::new()),
         };
         let d = cx.global::<Drafts>();
         let (failed, discarded) = (d.failed, d.discarded.clone());
         let mut body = div().flex().flex_col().pb_4();
+        if !pending.is_empty() {
+            let mut section = div().px_4().pb_3().flex().flex_col().child(
+                div()
+                    .id("outbox-heading")
+                    .test_support()
+                    .role(Role::Heading)
+                    .aria_level(2)
+                    .aria_label(t!("drafts-outbox"))
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(t!("drafts-outbox")),
+            );
+            for (message, title) in pending {
+                section = section.child(self.outbox_row(message, title, &theme));
+            }
+            body = body.child(section);
+        }
         body = body.child(
             div()
                 .px_4()
@@ -612,7 +713,7 @@ impl Render for DraftsView {
 }
 
 fn text_button(
-    id: &'static str,
+    id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     theme: &Theme,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
@@ -669,7 +770,12 @@ impl FooterView {
 impl Render for FooterView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
-        let total = count(&self.session, cx);
+        let pending = self
+            .session
+            .read(cx)
+            .client()
+            .map_or(0, |client| client.read().outbox.len());
+        let total = count(&self.session, cx) + pending;
         let active = self.session.read(cx).route() == Some(Route::Drafts);
         let label = t!("drafts-sidebar", count = total);
         let session = self.session.clone();
@@ -695,7 +801,9 @@ impl Render for FooterView {
             .hover(move |d| d.bg(hover))
             .child(ui::icon::icon(IconName::FileText, theme.muted))
             .child(div().flex_1().truncate().child(t!("drafts-title")))
-            .child(div().text_xs().child(total.to_string()))
+            .when(total > 0, |d| {
+                d.child(div().text_xs().child(total.to_string()))
+            })
             .on_click(move |_, _, cx| open(&session, cx))
     }
 }

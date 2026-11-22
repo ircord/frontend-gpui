@@ -354,7 +354,7 @@ fn the_self_menu_is_in_the_web_order(cx: &mut TestAppContext) {
     let f = open(cx);
     frame(&f, cx, |window, cx| window.click("self-menu", cx));
     // The web's status card, then you | settings | log out. Only this
-    // client: Drafts.
+    // client: Drafts and outbox.
     assert_eq!(
         rows(&f, cx, false),
         vec![
@@ -363,7 +363,7 @@ fn the_self_menu_is_in_the_web_order(cx: &mut TestAppContext) {
             "View your profile",
             "Edit profile",
             "Set yourself away",
-            "Drafts",
+            "Drafts and outbox",
             "-",
             "Preferences",
             "Notifications",

@@ -604,7 +604,7 @@ fn picker_slot(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<
 
 fn text_button(
     id: &'static str,
-    glyph: &'static str,
+    glyph: AnyElement,
     label: SharedString,
     expanded: bool,
     ctx: &ComposerCtx,
@@ -623,14 +623,14 @@ fn text_button(
         .aria_label(label.clone())
         .aria_expanded(expanded)
         .tooltip(ui::tooltip::text(label))
-        .px_1()
-        .h(px(24.))
+        .w(px(30.))
+        .h(px(30.))
+        .flex_none()
         .flex()
         .items_center()
-        .rounded_md()
+        .justify_center()
+        .rounded_full()
         .cursor_pointer()
-        .text_sm()
-        .font_weight(FontWeight::BOLD)
         .text_color(if expanded { theme.text } else { theme.muted })
         .when(expanded, |d| d.bg(theme.selected))
         .hover(move |d| d.bg(hover))
@@ -644,7 +644,16 @@ fn gif_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<A
     let expanded = is_open_on(ctx, Tab::Gifs, cx);
     Some(text_button(
         "composer-gif",
-        "GIF",
+        div()
+            .px_1()
+            .rounded(px(4.))
+            .border_1()
+            .border_color(theme::get(cx).muted)
+            .text_size(px(11.))
+            .line_height(px(14.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child("GIF")
+            .into_any_element(),
         t!("emoji-open-gifs").into(),
         expanded,
         ctx,
@@ -657,7 +666,11 @@ fn emoji_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option
     let expanded = is_open_on(ctx, Tab::Emoji, cx);
     Some(text_button(
         "composer-emoji",
-        "☺",
+        gpui_kit::component::Icon::default()
+            .data(br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14a4 4 0 0 0 8 0M9 9h.01M15 9h.01"/></svg>"#)
+            .size_4()
+            .text_color(theme::get(cx).muted)
+            .into_any_element(),
         t!("emoji-open-emoji").into(),
         expanded,
         ctx,

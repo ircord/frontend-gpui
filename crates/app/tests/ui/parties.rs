@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use gpui_kit::component::WindowExt;
 use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
-use gpui_kit::{AppContext, MouseButton, TestAppContext, Window};
+use gpui_kit::{AppContext, MouseButton, ScrollDelta, TestAppContext, Window, point, px};
 use ircord_client::contract::*;
 use ircord_client::store::Connection;
 use ircord_client::testing::{CannedServer, Reply, frame};
@@ -323,6 +323,13 @@ fn leaving_drops_the_group_and_moves_on(cx: &mut TestAppContext) {
     });
     select(&f, cx, "c-group");
     click(&f, cx, "party-details-toggle");
+    frame_do(&f, cx, |window, cx| {
+        window.scroll(
+            "party-details",
+            ScrollDelta::Pixels(point(px(0.), -window.viewport_size().height)),
+            cx,
+        );
+    });
     click(&f, cx, "party-leave");
     click_label(&f, cx, "Leave");
     f.server.wait_for("POST", "/api/v1/parties/p1/leave", WAIT);

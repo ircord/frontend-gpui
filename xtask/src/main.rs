@@ -9,6 +9,7 @@
 mod capture;
 mod container;
 mod contract;
+mod dev;
 mod integration;
 mod macos;
 mod package;
@@ -25,6 +26,7 @@ usage: cargo xtask <command>
   build windows        cross-build dist/ircord.exe in the build container
   build linux          build dist/ircord and dist/ircord-linux-x86_64.tar.gz in the build container
   build macos          build dist/IRCord GPUI.app (run on a Mac; needs Xcode, no Docker)
+  dev [--restart]      watch native code with hot-patching or full restarts (Dioxus CLI 0.7.10)
   package linux        build dist/IRCord-GPUI-Linux-x64.deb in the build container
   package windows      build dist/IRCord-GPUI-Windows-x64-setup.exe in the build container
   package macos        build the .dmg and the updater's .app.tar.gz in dist/ (on a Mac)
@@ -48,6 +50,8 @@ fn main() -> Result<()> {
         ["build", "windows"] => container::build_windows(&root),
         ["build", "linux"] => container::build_linux(&root),
         ["build", "macos"] => macos::build(&root).map(drop),
+        ["dev"] => dev::run(&root, true),
+        ["dev", "--restart"] => dev::run(&root, false),
         ["package", "linux"] => package::linux(&root),
         ["package", "windows"] => package::windows(&root),
         ["package", "macos"] => package::macos(&root),

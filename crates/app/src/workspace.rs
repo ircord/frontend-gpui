@@ -8,6 +8,8 @@
 //! registered for it. The right-hand panel is the registered panel the
 //! session names, or the member list beside a channel.
 
+use std::sync::Arc;
+
 use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::Sizable;
@@ -19,10 +21,11 @@ use ircord_client::contract::{ConversationKind, MemberStatus, NetworkStatus};
 use ircord_client::store::{Connection, parties, people};
 
 use crate::composer::ComposerView;
-use crate::members::MembersView;
+use crate::features::shortcuts::MarkRead;
+use crate::members::{self, MembersView};
 use crate::registry::{self, BannerCtx, ConversationCtx, HeaderCtx, PaneCtx, PanelCtx};
 use crate::route::Route;
-use crate::session::{Session, SessionEvent};
+use crate::session::{NO_PANEL, Session, SessionEvent};
 use crate::sidebar::SidebarView;
 use crate::theme::{self, Theme};
 use crate::timeline::TimelineView;
@@ -37,6 +40,27 @@ pub struct WorkspaceView {
     pub composer: Entity<ComposerView>,
     notice: Option<String>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// The narrow-window drawer is local to this window. Docking uses the saved
+/// member-list preference instead.
+struct MembersDrawer {
+    conversation: Option<String>,
+    scope: FocusHandle,
+    close_button: FocusHandle,
+    opener: Option<FocusHandle>,
+}
+
+impl MembersDrawer {
+    fn close(&mut self, window: &mut Window, cx: &mut App) {
+        self.conversation = None;
+        if let Some(opener) = self.opener.take()
+            && self.scope.contains_focused(window, cx)
+        {
+            opener.focus(window, cx);
+        }
+        window.refresh();
+    }
 }
 
 /// What a conversation's header shows.
@@ -144,11 +168,17 @@ impl WorkspaceView {
         &self,
         id: &str,
         theme: &Theme,
+        drawer: &Entity<MembersDrawer>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let session = self.session.read(cx);
-        let members_hidden = crate::members::hidden(session);
+        let compact = window.viewport_size().width < members::DRAWER_BREAKPOINT;
+        let members_visible = if compact {
+            drawer.read(cx).conversation.as_deref() == Some(id)
+        } else {
+            session.panel.is_none()
+        };
         let found = session.client().and_then(|client| {
             let w = client.read();
             w.conversation(id).map(|conv| {
@@ -235,7 +265,8 @@ impl WorkspaceView {
             .role(Role::Heading)
             .aria_level(1)
             .aria_label(SharedString::from(heading.clone()))
-            .flex_none()
+            .min_w_0()
+            .max_w(relative(0.55))
             .flex()
             .items_center()
             .gap_1()
@@ -267,17 +298,19 @@ impl WorkspaceView {
                                 }),
                         ),
                 )
-                .child(title),
+                .child(div().truncate().child(title)),
             None => title_row
-                .child(div().text_color(theme.faint).child(prefix))
-                .child(title),
+                .child(div().text_color(theme.accent).child(prefix))
+                .child(div().truncate().child(title)),
         };
         let members = channel.then(|| {
             let session = self.session.clone();
-            let label = if members_hidden {
-                t!("core-header-members-show", online = online)
-            } else {
+            let drawer = drawer.clone();
+            let id = id.to_string();
+            let label = if members_visible {
                 t!("core-header-members-hide", online = online)
+            } else {
+                t!("core-header-members-show", online = online)
             };
             div()
                 .id("members-toggle")
@@ -285,26 +318,70 @@ impl WorkspaceView {
                 .role(Role::Button)
                 .reachable(theme)
                 .aria_label(SharedString::from(label.clone()))
-                .aria_toggled(if members_hidden {
-                    Toggled::False
-                } else {
+                .aria_toggled(if members_visible {
                     Toggled::True
+                } else {
+                    Toggled::False
                 })
                 .tooltip(ui::tooltip::text(label))
-                .h(px(28.))
-                .px_2()
+                .h(px(32.))
+                .px_2p5()
                 .rounded_full()
                 .flex()
                 .items_center()
-                .gap_1()
+                .gap_1p5()
                 .cursor_pointer()
-                .text_sm()
-                .when(!members_hidden, |d| d.bg(theme.selected))
+                .text_xs()
+                .bg(theme.raised.opacity(0.45))
+                .when(members_visible, |d| {
+                    d.bg(linear_gradient(
+                        90.,
+                        linear_color_stop(theme.raised.blend(theme.accent.opacity(0.22)), 0.),
+                        linear_color_stop(theme.raised.blend(theme.accent.opacity(0.08)), 1.),
+                    ))
+                })
                 .hover(|d| d.bg(theme.hover))
-                .child(ui::icon::icon(IconName::User, theme.muted))
+                .border_1()
+                .border_color(if members_visible {
+                    theme.accent.opacity(0.35)
+                } else {
+                    theme.border.opacity(0.55)
+                })
+                .child(ui::icon::icon(
+                    ui::icon::LucideIcon::Users,
+                    if members_visible {
+                        theme.accent
+                    } else {
+                        theme.muted
+                    },
+                ))
                 .child(div().size(px(6.)).rounded_full().bg(theme.online))
                 .child(div().text_color(theme.text).child(online.to_string()))
-                .on_click(move |_, _, cx| crate::members::set_hidden(&session, !members_hidden, cx))
+                .on_click(move |_, window, cx| {
+                    if !compact {
+                        members::set_hidden(&session, members_visible, cx);
+                        return;
+                    }
+                    if !members_visible {
+                        session.update(cx, |session, cx| {
+                            if session.panel.as_deref().is_some_and(|id| id != NO_PANEL) {
+                                let hidden =
+                                    crate::features::profile::saved_members_hidden(session);
+                                session.set_panel(hidden.then(|| NO_PANEL.into()), cx);
+                            }
+                        });
+                    }
+                    drawer.update(cx, |drawer, cx| {
+                        if members_visible {
+                            drawer.close(window, cx);
+                        } else {
+                            drawer.conversation = Some(id.clone());
+                            drawer.opener = window.focused(cx);
+                            drawer.close_button.focus(window, cx);
+                            window.refresh();
+                        }
+                    });
+                })
         });
         let menu_ctx = ConversationCtx {
             session: self.session.clone(),
@@ -313,6 +390,11 @@ impl WorkspaceView {
         let more = Button::new("conversation-menu")
             .ghost()
             .small()
+            .rounded(px(16.))
+            .size(px(32.))
+            .bg(theme.raised.opacity(0.45))
+            .border_1()
+            .border_color(theme.border.opacity(0.55))
             .icon(IconName::Ellipsis)
             .accessibility_label(t!("core-header-more"))
             .tooltip(t!("core-header-more"))
@@ -328,15 +410,14 @@ impl WorkspaceView {
             .test_support()
             .role(Role::Banner)
             .aria_label(SharedString::from(heading))
-            .h(px(52.))
+            .relative()
+            .h(rems(3.))
             .flex_none()
-            .pl_3()
-            .pr_3()
+            .px_4()
             .flex()
             .items_center()
             .gap_2()
-            .border_b_1()
-            .border_color(theme.border)
+            .child(header_divider(theme))
             .when(!party, |d| d.child(star))
             .child(title_row)
             .child(
@@ -356,7 +437,7 @@ impl WorkspaceView {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap_1()
+                    .gap_1p5()
                     .children(buttons)
                     .children(members)
                     .child(more),
@@ -392,6 +473,7 @@ impl WorkspaceView {
     fn panel(
         &self,
         route: &Option<Route>,
+        dock_members: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -400,7 +482,7 @@ impl WorkspaceView {
             .as_ref()
             .and_then(|r| r.conversation())
             .map(str::to_string);
-        if session.panel.as_deref() == Some(crate::session::NO_PANEL) {
+        if members::hidden(session) {
             return None;
         }
         if let Some(id) = session.panel.clone()
@@ -412,13 +494,113 @@ impl WorkspaceView {
             };
             return Some((panel.render)(&ctx, window, cx));
         }
-        let is_channel = conversation.as_ref().is_some_and(|id| {
-            session
-                .client()
-                .and_then(|c| c.read().conversation(id).map(|c| c.kind))
-                .is_none_or(|kind| kind == ConversationKind::Channel)
-        });
+        let is_channel = dock_members
+            && conversation.as_ref().is_some_and(|id| {
+                session
+                    .client()
+                    .and_then(|c| {
+                        c.read()
+                            .conversation(id)
+                            .map(|c| c.kind == ConversationKind::Channel && c.party.is_none())
+                    })
+                    .unwrap_or(true)
+            });
         is_channel.then(|| self.members.clone().into_any_element())
+    }
+
+    fn members_drawer(
+        &self,
+        state: &Entity<MembersDrawer>,
+        theme: &Theme,
+        window: &Window,
+        cx: &App,
+    ) -> impl IntoElement + use<> {
+        use gpui_kit::base::FocusTrapElement;
+
+        let focus = state.read(cx);
+        let search = Button::new("members-drawer-search")
+            .ghost()
+            .small()
+            .h(px(32.))
+            .flex_1()
+            .justify_start()
+            .bg(theme.input)
+            .border_1()
+            .border_color(theme.border)
+            .icon(IconName::Search)
+            .label(t!("sidebar-find"))
+            .on_click({
+                let state = state.clone();
+                move |_, window, cx| {
+                    state.update(cx, |drawer, cx| drawer.close(window, cx));
+                    crate::features::switcher::open(window, cx);
+                }
+            });
+        let close_button = Button::new("hide-members")
+            .ghost()
+            .small()
+            .icon(IconName::PanelRightClose)
+            .track_focus(&focus.close_button)
+            .accessibility_label(t!("people-members-hide"))
+            .tooltip(t!("people-members-hide"))
+            .on_click({
+                let state = state.clone();
+                move |_, window, cx| state.update(cx, |drawer, cx| drawer.close(window, cx))
+            });
+        let panel = div()
+            .id("members-drawer")
+            .test_support()
+            .role(Role::Dialog)
+            .aria_label(t!("people-members"))
+            .absolute()
+            .right_0()
+            .top_0()
+            .bottom_0()
+            .w(px(300.).min(window.viewport_size().width * 0.85))
+            .flex()
+            .flex_col()
+            .occlude()
+            .bg(theme.main)
+            .border_l_1()
+            .border_color(theme.border.opacity(0.65))
+            .shadow(frame_shadows(theme))
+            .on_action({
+                let state = state.clone();
+                move |_: &MarkRead, window, cx| {
+                    cx.stop_propagation();
+                    state.update(cx, |drawer, cx| drawer.close(window, cx));
+                }
+            })
+            .child(
+                div()
+                    .h(rems(3.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .child(search)
+                    .child(close_button),
+            )
+            .child(div().flex_1().min_h_0().child(self.members.clone()))
+            .focus_trap("members-drawer", &focus.scope);
+        let state = state.clone();
+        div()
+            .absolute()
+            .inset_0()
+            .child(
+                div()
+                    .id("members-scrim")
+                    .test_support()
+                    .absolute()
+                    .inset_0()
+                    .bg(black().opacity(0.5))
+                    .occlude()
+                    .on_click(move |_, window, cx| {
+                        state.update(cx, |drawer, cx| drawer.close(window, cx));
+                    }),
+            )
+            .child(panel)
     }
 }
 
@@ -426,17 +608,40 @@ impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
         let route = self.session.read(cx).route();
+        let compact = window.viewport_size().width < members::DRAWER_BREAKPOINT;
+        let drawer = window.use_keyed_state("member-drawer", cx, |_, cx| MembersDrawer {
+            conversation: None,
+            scope: cx.focus_handle(),
+            close_button: cx.focus_handle().tab_stop(true),
+            opener: None,
+        });
+        let conversation = route.as_ref().and_then(Route::conversation);
+        let drawer_open = drawer.read(cx).conversation.is_some();
+        let show_drawer = compact
+            && drawer_open
+            && drawer.read(cx).conversation.as_deref() == conversation
+            && self
+                .session
+                .read(cx)
+                .panel
+                .as_deref()
+                .is_none_or(|id| id == NO_PANEL);
+        if drawer_open && !show_drawer {
+            drawer.update(cx, |drawer, cx| drawer.close(window, cx));
+        }
         let mut main = div()
             .id("main-pane")
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
-            .flex_col()
-            .bg(theme.main);
-        if let Some(Route::Conversation(id)) = &route {
-            main = main.child(self.conversation_header(id, &theme, window, cx));
-        }
+            .flex_col();
+        let header = match &route {
+            Some(Route::Conversation(id)) => {
+                Some(self.conversation_header(id, &theme, &drawer, window, cx))
+            }
+            _ => None,
+        };
         if let Some(banner) = self.banner(cx) {
             let (text, color) = match banner {
                 Banner::Warning(text) => (text, theme.warning),
@@ -491,22 +696,28 @@ impl Render for WorkspaceView {
             None => main,
         };
         let panel = self
-            .panel(&route, window, cx)
+            .panel(&route, !compact, window, cx)
             .map(|panel| crate::sidebar::side_panel(panel, window, cx));
         let card = div()
             .id("workspace-card")
+            .relative()
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
-            .flex_row()
+            .flex_col()
             .overflow_hidden()
-            .rounded(theme.radius_large)
+            .rounded_t(theme.radius_large)
             .border_1()
-            .border_color(theme.border)
+            .border_b_0()
+            .border_color(theme.border.opacity(0.65))
             .bg(theme.main)
-            .child(main)
-            .children(panel);
+            .shadow(frame_shadows(&theme))
+            .when(theme.hibiki && header.is_some(), |d| {
+                d.child(ambient_light(&theme, window, cx))
+            })
+            .children(header)
+            .child(div().flex_1().min_h_0().flex().child(main).children(panel));
         div()
             .id("workspace")
             .size_full()
@@ -514,17 +725,168 @@ impl Render for WorkspaceView {
             .flex_col()
             .bg(theme.sidebar)
             .text_color(theme.text)
-            .child(crate::sidebar::topbar::bar(&self.session, window, cx))
+            .child(crate::sidebar::topbar::frame(&self.session, window, cx))
             .child(
                 div()
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .pb_2()
+                    .pt(px(5.))
                     .pr_2()
                     .child(self.sidebar.clone())
-                    .child(card),
+                    .child(card)
+                    .when(show_drawer, |body| {
+                        body.child(self.members_drawer(&drawer, &theme, window, cx))
+                    }),
             )
     }
+}
+
+fn header_divider(theme: &Theme) -> Div {
+    let edge = linear_color_stop(theme.border.opacity(0.), 0.);
+    let line = theme.border.opacity(0.45);
+    let center = linear_color_stop(line, 1.);
+    div()
+        .absolute()
+        .left_4()
+        .right_4()
+        .bottom_0()
+        .h(px(1.))
+        .flex()
+        .child(
+            div()
+                .w(relative(0.2))
+                .bg(linear_gradient(90., edge, center)),
+        )
+        .child(div().flex_1().bg(line))
+        .child(
+            div()
+                .w(relative(0.2))
+                .bg(linear_gradient(270., edge, center)),
+        )
+}
+
+fn frame_shadows(theme: &Theme) -> Vec<BoxShadow> {
+    let light_shadow = theme::hex(0x1e1432);
+    let (shadow, outline) = if theme.dark {
+        (black().opacity(0.35), white().opacity(0.04))
+    } else {
+        (light_shadow.opacity(0.16), light_shadow.opacity(0.06))
+    };
+    vec![
+        BoxShadow {
+            color: shadow,
+            offset: point(px(0.), px(12.)),
+            blur_radius: px(40.),
+            spread_radius: px(0.),
+            inset: false,
+        },
+        BoxShadow {
+            color: outline,
+            offset: point(px(0.), px(0.)),
+            blur_radius: px(0.),
+            spread_radius: px(1.),
+            inset: false,
+        },
+    ]
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct AmbientColors {
+    main: Rgba,
+    warm: Rgba,
+    amber: Rgba,
+}
+
+const AMBIENT_BLEED: f32 = 8.;
+
+fn ambient_light(theme: &Theme, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    let colors = AmbientColors {
+        main: theme.main.into(),
+        warm: theme
+            .accent
+            .blend(theme.danger.opacity(0.35))
+            .opacity(if theme.dark { 0.18 } else { 0.10 })
+            .into(),
+        amber: theme
+            .warning
+            .opacity(if theme.dark { 0.11 } else { 0.06 })
+            .into(),
+    };
+    let corners = Corners {
+        top_left: theme.radius_large,
+        top_right: theme.radius_large,
+        ..Default::default()
+    };
+    let cached = window.use_keyed_state("workspace-ambient-light", cx, |_, _| {
+        None::<(Size<Pixels>, AmbientColors, Arc<RenderImage>)>
+    });
+    canvas(
+        move |bounds, window, cx| {
+            if let Some((size, tint, texture)) = cached.read(cx)
+                && *size == bounds.size
+                && *tint == colors
+            {
+                return texture.clone();
+            }
+            let texture = render_ambient_light(bounds.size, colors);
+            let old = cached.update(cx, |cache, _| {
+                cache.replace((bounds.size, colors, texture.clone()))
+            });
+            if let Some((_, _, old)) = old {
+                cx.drop_image(old, Some(window));
+            }
+            texture
+        },
+        move |bounds, image, window, _| {
+            let _ = window.paint_image(
+                bounds,
+                bounds.dilate(px(AMBIENT_BLEED)),
+                corners,
+                image,
+                0,
+                false,
+            );
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .w_full()
+    .h(px(216.))
+}
+
+fn render_ambient_light(size: Size<Pixels>, colors: AmbientColors) -> Arc<RenderImage> {
+    // Match the two ellipses in Nuxt's workspace-layout.css. Sampling every
+    // four logical pixels is enough for the soft falloff.
+    let (width, height) = (f32::from(size.width), f32::from(size.height));
+    // Keep the visible edge inside the tile so the sampler never sees an
+    // adjacent image in the atlas.
+    let padded_width = width + 2. * AMBIENT_BLEED;
+    let padded_height = height + 2. * AMBIENT_BLEED;
+    let columns = (padded_width / 4.).ceil() as u32;
+    let rows = (padded_height / 4.).ceil() as u32;
+    let buffer = image::RgbaImage::from_fn(columns, rows, |i, j| {
+        let x = padded_width * (i as f32 + 0.5) / columns as f32 - AMBIENT_BLEED;
+        let y = padded_height * (j as f32 + 0.5) / rows as f32 - AMBIENT_BLEED;
+        let warm = 1.
+            - ((x - width * 0.08) / 489.6)
+                .hypot((y + 30.) / 244.8)
+                .min(1.);
+        let amber = 1. - ((x - width * 0.36) / 378.).hypot((y + 20.) / 196.).min(1.);
+        let color = colors
+            .main
+            .blend(colors.amber.alpha(colors.amber.a * amber))
+            .blend(colors.warm.alpha(colors.warm.a * warm));
+        // GPUI's texture atlas expects BGRA.
+        image::Rgba([
+            (color.b * 255.).round() as u8,
+            (color.g * 255.).round() as u8,
+            (color.r * 255.).round() as u8,
+            255,
+        ])
+    });
+    Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]))
 }

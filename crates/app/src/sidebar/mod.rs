@@ -23,6 +23,8 @@ pub mod layout;
 pub mod menus;
 pub mod topbar;
 
+use std::{cell::Cell, rc::Rc};
+
 use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::Sizable;
@@ -79,11 +81,40 @@ impl Render for DragPreview {
     }
 }
 
-/// Dragging a panel's edge.
-#[derive(Clone, Copy)]
-struct ResizeList;
-#[derive(Clone, Copy)]
-struct ResizePanel;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ResizeEdge {
+    Sidebar,
+    Panel,
+}
+
+impl ResizeEdge {
+    fn limits(self) -> (f32, f32, f32) {
+        match self {
+            Self::Sidebar => SIDEBAR_WIDTH,
+            Self::Panel => PANEL_WIDTH,
+        }
+    }
+
+    fn direction(self) -> f32 {
+        match self {
+            Self::Sidebar => 1.,
+            Self::Panel => -1.,
+        }
+    }
+
+    fn set_width(self, width: f32, cx: &mut App) {
+        layout::update(cx, |layout| match self {
+            Self::Sidebar => layout.sidebar_width = width,
+            Self::Panel => layout.panel_width = width,
+        });
+    }
+}
+
+#[derive(Clone)]
+struct ResizeDrag {
+    edge: ResizeEdge,
+    start: Rc<Cell<(Pixels, f32)>>,
+}
 
 struct Nothing;
 impl Render for Nothing {
@@ -92,53 +123,101 @@ impl Render for Nothing {
     }
 }
 
-/// An edge to drag, `id` for tests.
-fn handle<T: Clone + 'static>(
-    id: &'static str,
-    label: SharedString,
-    theme: &Theme,
-    drag: T,
+/// The hitbox fills the gutter; only the center line lights up.
+fn resize_handle(
+    edge: ResizeEdge,
+    width: f32,
+    window: &mut Window,
+    cx: &mut App,
 ) -> impl IntoElement {
+    let (id, label, hit_width) = match edge {
+        ResizeEdge::Sidebar => ("resize-sidebar", t!("sidebar-resize-list"), px(8.)),
+        ResizeEdge::Panel => ("resize-panel", t!("sidebar-resize-panel"), px(6.)),
+    };
+    let theme = theme::get(cx).clone();
+    let scale = theme.scale;
+    let (min, max, default) = edge.limits();
+    let start = window
+        .use_keyed_state((id, 0_usize), cx, |_, _| {
+            Rc::new(Cell::new((px(0.), width)))
+        })
+        .read(cx)
+        .clone();
+    let drag = ResizeDrag {
+        edge,
+        start: start.clone(),
+    };
     div()
         .id(id)
         .test_support()
         .role(Role::Splitter)
         .aria_label(label)
-        .w(px(5.))
+        .aria_numeric_value(width.into())
+        .aria_min_numeric_value(min.into())
+        .aria_max_numeric_value(max.into())
+        .aria_orientation(accesskit::Orientation::Vertical)
+        .reachable(&theme)
+        .group(id)
+        .w(hit_width)
         .h_full()
         .flex_none()
+        .flex()
+        .justify_center()
         .cursor_col_resize()
-        .hover({
-            let accent = theme.accent;
-            move |d| d.bg(accent.opacity(0.4))
+        .child(
+            div()
+                .w(px(2.))
+                .h_full()
+                .bg(theme.accent.opacity(0.7))
+                .opacity(0.)
+                .group_hover(id, |line| line.opacity(1.))
+                .group_drag_over::<ResizeDrag>(id, |line| line.opacity(1.)),
+        )
+        .on_mouse_down(MouseButton::Left, move |event, _, _| {
+            start.set((event.position.x, width))
         })
         .on_drag(drag, |_, _, _, cx| cx.new(|_| Nothing))
+        .on_drag_move::<ResizeDrag>(move |event, _, cx| {
+            let drag = event.drag(cx);
+            if drag.edge == edge {
+                let (origin, width) = drag.start.get();
+                let delta = f32::from(event.event.position.x - origin) / scale;
+                edge.set_width(width + delta * edge.direction(), cx);
+            }
+        })
+        .on_click(move |event, _, cx| {
+            if event.click_count() == 2 {
+                edge.set_width(default, cx);
+            }
+        })
+        .on_key_down(move |event, _, cx| {
+            let width = match event.keystroke.key.as_str() {
+                "left" => width - 16. * edge.direction(),
+                "right" => width + 16. * edge.direction(),
+                "home" => min,
+                "end" => max,
+                _ => return,
+            };
+            cx.stop_propagation();
+            edge.set_width(width, cx);
+        })
 }
 
 /// The right-hand panel (the member list or a feature's panel) in its frame
 /// beside the main pane, as wide as the person dragged it.
-pub fn side_panel(panel: AnyElement, _window: &mut Window, cx: &mut App) -> AnyElement {
+pub fn side_panel(panel: AnyElement, window: &mut Window, cx: &mut App) -> AnyElement {
     let theme = theme::get(cx).clone();
     let width = layout::get(cx).panel_width;
     div()
         .id("side-panel")
-        .w(px(width))
+        .w(px(width * theme.scale))
         .h_full()
         .flex_none()
         .flex()
         .flex_row()
-        .on_drag_move::<ResizePanel>(|e, _, cx| {
-            let width = f32::from(e.bounds.right() - e.event.position.x);
-            layout::update(cx, |l| {
-                l.panel_width = order::clamp_width(width, PANEL_WIDTH)
-            });
-        })
-        .child(handle(
-            "resize-panel",
-            t!("sidebar-resize-panel").into(),
-            &theme,
-            ResizePanel,
-        ))
+        .border_l_1()
+        .border_color(theme.border.opacity(0.45))
+        .child(resize_handle(ResizeEdge::Panel, width, window, cx))
         .child(div().flex_1().min_w_0().h_full().child(panel))
         .into_any_element()
 }
@@ -360,6 +439,7 @@ impl SidebarView {
             .group("conversation-row")
             .px_2()
             .py(theme.row_padding)
+            .text_sm()
             .rounded(theme.radius)
             .flex()
             .items_center()
@@ -371,7 +451,27 @@ impl SidebarView {
                 theme.muted
             })
             .border_1()
-            .when(active, |d| d.bg(theme.selected).border_color(theme.border))
+            .when(active, |d| {
+                let border = if theme.hibiki { 0.58 } else { 0.26 };
+                let d = d
+                    .bg(theme.selected)
+                    .border_color(theme.accent.opacity(border))
+                    .font_weight(FontWeight::SEMIBOLD);
+                d.when(theme.hibiki, |d| {
+                    d.bg(linear_gradient(
+                        95.,
+                        linear_color_stop(theme.sidebar.blend(theme.accent.opacity(0.52)), 0.),
+                        linear_color_stop(theme.sidebar.blend(theme.accent.opacity(0.24)), 1.),
+                    ))
+                    .shadow(vec![BoxShadow {
+                        color: theme.accent.opacity(0.20),
+                        offset: point(px(0.), px(4.)),
+                        blur_radius: px(14.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
+                })
+            })
             .when(!active, |d| {
                 d.border_color(gpui_kit::transparent_black())
                     .hover(|d| d.bg(theme.hover))
@@ -379,7 +479,27 @@ impl SidebarView {
             .when(unread && !muted, |d| d.font_weight(FontWeight::SEMIBOLD))
             .when(!c.joined || muted, |d| d.opacity(0.6))
             .child(marker)
-            .child(div().flex_1().truncate().child(name.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().truncate().child(name.clone()))
+                    .children(
+                        partner
+                            .and_then(|member| {
+                                people::status_label(member, chrono::Utc::now().timestamp_millis())
+                            })
+                            .map(|status| {
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(theme.muted)
+                                    .child(status)
+                            }),
+                    ),
+            )
             .on_click(move |_, _, cx| session.update(cx, |s, cx| s.select_conversation(&id, cx)));
         if let Some(n) = number {
             row = row.aria_description(SharedString::from(number_label(n)));
@@ -717,7 +837,7 @@ impl Render for SidebarView {
         let layout = layout::get(cx);
         let session = self.session.read(cx);
         let Some(client) = session.client().cloned() else {
-            return div().into_any_element();
+            return div().w(px(8.)).into_any_element();
         };
         let selected_network = session.network.clone();
         let selected = session.conversation.clone();
@@ -751,6 +871,7 @@ impl Render for SidebarView {
                 .h_full()
                 .flex()
                 .flex_row()
+                .pr_2()
                 .child(folded)
                 .into_any_element();
         }
@@ -923,15 +1044,9 @@ impl Render for SidebarView {
             .h_full()
             .flex()
             .flex_row()
-            .on_drag_move::<ResizeList>(|e, _, cx| {
-                let width = f32::from(e.event.position.x - e.bounds.left());
-                layout::update(cx, |l| {
-                    l.sidebar_width = order::clamp_width(width, SIDEBAR_WIDTH)
-                });
-            })
             .child(
                 div()
-                    .w(px(layout.sidebar_width))
+                    .w(px(layout.sidebar_width * theme.scale))
                     .h_full()
                     .flex_none()
                     .flex()
@@ -953,11 +1068,11 @@ impl Render for SidebarView {
                     .child(list)
                     .children(bottom),
             )
-            .child(handle(
-                "resize-sidebar",
-                t!("sidebar-resize-list").into(),
-                &theme,
-                ResizeList,
+            .child(resize_handle(
+                ResizeEdge::Sidebar,
+                layout.sidebar_width,
+                window,
+                cx,
             ))
             .into_any_element()
     }
