@@ -464,6 +464,61 @@ fn enlarge_opens_the_viewer_at_the_same_place_and_closing_drops_it(cx: &mut Test
     assert!(!shown(&f, cx, "file-a1-0-viewer"));
 }
 
+fn double_click(f: &Fixture, cx: &mut TestAppContext, id: &'static str) {
+    draw(f, cx);
+    cx.update_window(f.window, |_, window, cx| window.double_click(id, cx))
+        .unwrap();
+    cx.run_until_parked();
+    draw(f, cx);
+}
+
+#[gpui_kit::test]
+fn a_click_on_the_picture_pauses_and_plays_it(cx: &mut TestAppContext) {
+    let (f, backend) = videos(cx, true);
+    click(&f, cx, "file-a1-0-play-video");
+    assert_eq!(backend.state(), State::Playing);
+    click(&f, cx, "file-a1-0-stage");
+    assert_eq!(backend.state(), State::Paused);
+    click(&f, cx, "file-a1-0-stage");
+    assert_eq!(backend.state(), State::Playing);
+    assert_eq!(
+        backend.opens.borrow().len(),
+        1,
+        "no viewer opened by a click"
+    );
+}
+
+#[gpui_kit::test]
+fn a_double_click_on_the_picture_enlarges_it_and_keeps_it_playing(cx: &mut TestAppContext) {
+    let (f, backend) = videos(cx, true);
+    click(&f, cx, "file-a1-0-play-video");
+    double_click(&f, cx, "file-a1-0-stage");
+    assert!(shown(&f, cx, "file-a1-0-viewer"));
+    assert_eq!(backend.state(), State::Playing, "the viewer plays");
+    assert_eq!(playing(cx).as_deref(), Some("file-a1-0"));
+}
+
+#[gpui_kit::test]
+fn in_the_viewer_a_click_pauses_and_a_double_click_leaves_it_playing(cx: &mut TestAppContext) {
+    let (f, backend) = videos(cx, true);
+    click(&f, cx, "file-a1-0-play-video");
+    click(&f, cx, "file-a1-0-enlarge");
+    assert_eq!(backend.state(), State::Playing);
+    click(&f, cx, "file-a1-0-large-picture");
+    assert_eq!(backend.state(), State::Paused);
+    click(&f, cx, "file-a1-0-large-picture");
+    assert_eq!(backend.state(), State::Playing);
+    // A double-click pauses with its first click and plays with its second,
+    // and toggles fullscreen on the second; the viewer stays open.
+    double_click(&f, cx, "file-a1-0-large-picture");
+    assert_eq!(
+        backend.state(),
+        State::Playing,
+        "the pair leaves it playing"
+    );
+    assert!(shown(&f, cx, "file-a1-0-viewer"));
+}
+
 #[gpui_kit::test]
 fn the_box_keeps_its_height_idle_loading_playing_and_failed(cx: &mut TestAppContext) {
     let (f, backend) = videos(cx, true);

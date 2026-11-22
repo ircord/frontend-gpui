@@ -20,6 +20,7 @@ use gpui_kit::*;
 use ircord_platform::video::{self, State, Video};
 use tokio::runtime::Runtime;
 
+use crate::features::shortcuts::MarkRead;
 use crate::features::viewer::{self, Media};
 use crate::media::controls::{self, Controls, Transport};
 use crate::media::{self, video_view::VideoView};
@@ -87,8 +88,14 @@ struct Current {
 struct Playing(Option<Current>);
 impl Global for Playing {}
 
+/// The window enlarging put fullscreen: closing the viewer takes it back.
+#[derive(Default)]
+struct Fullscreened(Option<AnyWindowHandle>);
+impl Global for Fullscreened {}
+
 pub fn init(cx: &mut App) {
     cx.default_global::<Playing>();
+    cx.default_global::<Fullscreened>();
     cx.default_global::<Failed>();
     // Asking runs the helper once (GStreamer can take seconds the first
     // time), so it runs on a thread of its own, outside GPUI.
@@ -388,10 +395,12 @@ fn play(ctx: &PlayableCtx, window: &mut Window, cx: &mut App) {
     media::claim(&ctx.key, cx);
 }
 
-/// The large viewer: the video at the size of a dialog filling the window.
+/// The large viewer: the video fitted into the window, live, so fullscreen
+/// and a resize show it at the new size.
 pub struct Large {
     key: String,
-    size: (f32, f32),
+    /// The video's own size, `(0, 0)` when unknown (16:9).
+    media: (u32, u32),
     view: Entity<VideoView>,
     controls: Entity<Controls>,
     focus: FocusHandle,
@@ -411,11 +420,10 @@ fn enlarge(ctx: &PlayableCtx, window: &mut Window, cx: &mut App) {
     };
     stop(true, cx);
     let viewport = window.viewport_size();
-    let width = (viewport.width - px(64.)).max(px(320.));
     let stage = fit(
         ctx.media.width,
         ctx.media.height,
-        f32::from(width) - 32.,
+        f32::from(viewport.width) - 96.,
         (f32::from(viewport.height) - 220.).max(200.),
     );
     let scale = window.scale_factor();
@@ -439,7 +447,7 @@ fn enlarge(ctx: &PlayableCtx, window: &mut Window, cx: &mut App) {
             .detach();
         Large {
             key: key.clone(),
-            size: stage,
+            media: (ctx.media.width, ctx.media.height),
             view: view.clone(),
             controls: controls.clone(),
             focus: cx.focus_handle(),
@@ -462,10 +470,17 @@ fn enlarge(ctx: &PlayableCtx, window: &mut Window, cx: &mut App) {
     });
     media::claim(&key, cx);
     let focus = large.read(cx).focus.clone();
-    window.open_dialog(cx, move |dialog, _, _| {
+    // Enlarging is fullscreen: the window fills the screen, and the viewer
+    // fills the window (its size is read live, so the change shows).
+    if !window.is_fullscreen() {
+        window.toggle_fullscreen();
+        cx.default_global::<Fullscreened>().0 = Some(window.window_handle());
+    }
+    window.open_dialog(cx, move |dialog, window, _| {
         let key = key.clone();
+        let viewport = window.viewport_size();
         dialog
-            .width(width)
+            .width((viewport.width - px(64.)).max(px(320.)))
             .title(t!("video-viewer-title"))
             .on_close(move |_, _, cx| closed(&key, cx))
             .child(large.clone())
@@ -473,19 +488,46 @@ fn enlarge(ctx: &PlayableCtx, window: &mut Window, cx: &mut App) {
     window.focus(&focus, cx);
 }
 
-/// The large viewer closed: its video stops.
+/// The large viewer closed: its video stops, and the window leaves the
+/// fullscreen that enlarging put it in.
 fn closed(key: &str, cx: &mut App) {
+    leave_fullscreen(cx);
     if current(key, cx).is_some_and(|c| matches!(c.place, Place::Large { .. })) {
         stop(false, cx);
     }
 }
 
+/// Take the window out of the fullscreen that enlarging put it in, if it is
+/// still fullscreen. Deferred: a dialog's close runs inside a window update.
+fn leave_fullscreen(cx: &mut App) {
+    let Some(window) = cx.default_global::<Fullscreened>().0.take() else {
+        return;
+    };
+    cx.defer(move |cx| {
+        window
+            .update(cx, |_, w, _| {
+                if w.is_fullscreen() {
+                    w.toggle_fullscreen();
+                }
+            })
+            .ok();
+    });
+}
+
 impl Render for Large {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
         let key = self.key.clone();
-        let (w, h) = self.size;
+        let viewport = window.viewport_size();
+        let (w, h) = fit(
+            self.media.0,
+            self.media.1,
+            f32::from(viewport.width) - 96.,
+            (f32::from(viewport.height) - 220.).max(200.),
+        );
         let ended = self.view.read(cx).video().state() == State::Ended;
+        let fullscreen = window.is_fullscreen();
+        let exit = key.clone();
         div()
             .id(ElementId::Name(format!("{key}-viewer").into()))
             .test_support()
@@ -497,16 +539,36 @@ impl Render for Large {
                     cx.stop_propagation();
                 }
             }))
+            // Escape is bound to Mark read, which here closes the viewer.
+            .capture_action(cx.listener(|_, _: &MarkRead, _, cx| {
+                stop(true, cx);
+                cx.stop_propagation();
+            }))
             .flex()
             .flex_col()
             .items_center()
             .gap_2()
             .child(
                 div()
+                    .id(ElementId::Name(format!("{key}-large-picture").into()))
+                    .test_support()
                     .relative()
                     .w(px(w))
                     .h(px(h))
                     .child(self.view.clone())
+                    // A click pauses or plays; a double-click (its second
+                    // click) also toggles fullscreen. Each click toggles, so
+                    // the pair of clicks leaves the play state as it was.
+                    .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+                        if this.view.read(cx).video().state() == State::Ended {
+                            return;
+                        }
+                        let key = this.key.clone();
+                        cx.defer(move |cx| toggle(&key, cx));
+                        if e.click_count() >= 2 {
+                            window.toggle_fullscreen();
+                        }
+                    }))
                     .when(ended, |d| {
                         let k = key.clone();
                         d.child(play_button(
@@ -518,6 +580,19 @@ impl Render for Large {
                     }),
             )
             .child(div().w(px(w)).child(self.controls.clone()))
+            .when(fullscreen, |d| {
+                // Leaves fullscreen and keeps the viewer open.
+                d.child(div().w(px(w)).flex().justify_end().child(ui::icon::button(
+                    ElementId::Name(format!("{exit}-large-exit").into()),
+                    IconName::Maximize,
+                    t!("video-exit-fullscreen"),
+                    &theme,
+                    move |_, window, cx| {
+                        cx.default_global::<Fullscreened>().0 = None;
+                        window.toggle_fullscreen();
+                    },
+                )))
+            })
     }
 }
 
@@ -569,6 +644,7 @@ fn render(ctx: &PlayableCtx, _window: &mut Window, cx: &mut App) -> Option<AnyEl
     };
     let stage = div()
         .id(ElementId::Name(format!("{key}-stage").into()))
+        .test_support()
         .relative()
         .w(px(w))
         .h(px(h))
@@ -618,15 +694,29 @@ fn render(ctx: &PlayableCtx, _window: &mut Window, cx: &mut App) -> Option<AnyEl
     } else if let Some((view, controls)) = inline {
         let ended = view.read(cx).video().state() == State::Ended;
         let (again, big, page) = (key.clone(), ctx.clone(), ctx.page.clone());
+        // A click pauses or plays; a double-click's second click opens the
+        // fullscreen viewer, which plays, so the pair leaves it playing.
+        let (tap, dbl) = (key.clone(), ctx.clone());
         (
-            stage.child(view).when(ended, |d| {
-                d.child(play_button(
-                    format!("{key}-play-video"),
-                    t!("video-play-again").to_string(),
-                    &theme,
-                    move |_, _, cx| toggle(&again, cx),
-                ))
-            }),
+            stage
+                .when(!ended, |d| {
+                    d.on_click(move |e, window, cx| {
+                        if e.click_count() >= 2 {
+                            enlarge(&dbl, window, cx);
+                        } else {
+                            toggle(&tap, cx);
+                        }
+                    })
+                })
+                .child(view)
+                .when(ended, |d| {
+                    d.child(play_button(
+                        format!("{key}-play-video"),
+                        t!("video-play-again").to_string(),
+                        &theme,
+                        move |_, _, cx| toggle(&again, cx),
+                    ))
+                }),
             row.child(div().flex_1().min_w_0().child(controls))
                 .child(ui::icon::button(
                     ElementId::Name(format!("{key}-enlarge").into()),
