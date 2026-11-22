@@ -114,6 +114,7 @@ settings-about-tagline = IRCord for the desktop: a persistent, multi-network IRC
 settings-about-app-version = App
 settings-about-server-version = Server
 settings-about-server-unknown = Not known yet
+settings-about-server = IRCord server: { $address }
 settings-about-license = License
 settings-about-license-text = MIT
 settings-about-links = IRCord links

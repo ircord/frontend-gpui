@@ -275,6 +275,11 @@ impl Render for AboutView {
             Server::Ready(notes) if !notes.version.is_empty() => notes.version.clone(),
             _ => t!("settings-about-server-unknown").to_string(),
         };
+        let address = self
+            .session
+            .read(cx)
+            .client()
+            .map(|client| client.api().server().origin());
         let hero = div()
             .flex()
             .flex_col()
@@ -309,6 +314,16 @@ impl Render for AboutView {
                         &theme,
                     )),
             )
+            .children(address.map(|address| {
+                let line = t!("settings-about-server", address = address).to_string();
+                div()
+                    .id("about-server")
+                    .text_sm()
+                    .text_color(theme.muted)
+                    .aria_label(line.clone())
+                    .child(line)
+                    .test_support()
+            }))
             .child(
                 div()
                     .id("about-links")

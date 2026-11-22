@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext, ClipboardItem, TestAppContext};
+use gpui_kit::{AppContext, ClipboardItem, TestAppContext, point, px};
 use ircord_app::theme;
 use ircord_client::store::appearance::{self as look, Device, Mode};
 use ircord_client::testing::{CannedServer, Reply};
@@ -189,9 +189,14 @@ fn switching_scheme_accent_and_font_redraws_and_saves_to_the_account(cx: &mut Te
         theme::get(cx).font.as_ref() == "Atkinson Hyperlegible Next"
     });
 
+    // A click at the track's right end takes the scale to its largest step.
     open_at(&f, cx, "appearance-scale");
-    click(&f, cx, "appearance-scale-up");
-    wait(cx, "105 %", |cx| theme::get(cx).scale == 1.05);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click_at("appearance-scale-track", point(px(215.), px(12.)), cx);
+    })
+    .unwrap();
+    wait(cx, "150 %", |cx| theme::get(cx).scale == 1.5);
     let label = cx
         .update_window(f.window, |_, window, cx| {
             window.render_frame(cx);
@@ -201,11 +206,11 @@ fn switching_scheme_accent_and_font_redraws_and_saves_to_the_account(cx: &mut Te
                 .map(str::to_string)
         })
         .unwrap();
-    assert_eq!(label.as_deref(), Some("105 %"));
+    assert_eq!(label.as_deref(), Some("150 %"));
 
     wait(cx, "every change saved", |_| {
         saved_appearances(&f).last().is_some_and(|s| {
-            s["accent"] == "lime" && s["font"] == "atkinson" && s["interfaceScale"] == 105
+            s["accent"] == "lime" && s["font"] == "atkinson" && s["interfaceScale"] == 150
         })
     });
 }

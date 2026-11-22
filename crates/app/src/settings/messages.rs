@@ -10,9 +10,11 @@
 //! sign-in, when the preferences first arrive.
 
 use crate::ui::focus::Reachable;
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -336,58 +338,106 @@ fn group(id: &str, label: impl Into<SharedString>) -> Stateful<Div> {
         .gap_1()
 }
 
-/// − value +, for the text size and the space between groups.
-fn stepper(
-    id: &str,
+/// The state of each number slider, kept across renders: a slider can be
+/// dragged only while its state outlives the frame.
+#[derive(Default)]
+struct Sliders(HashMap<&'static str, SliderEntry>);
+impl Global for Sliders {}
+
+struct SliderEntry {
+    state: Entity<SliderState>,
+    /// The stored value at the last frame. The thumb follows the store only
+    /// when that value moves, so a drag in progress is never pulled back.
+    seen: i64,
+    _events: Subscription,
+}
+
+/// gpui-kit's slider for one stored number, drawn as the web's: the fill
+/// and the thumb's ring take the accent, and the thumb is the main
+/// background. A release saves the value through `set`. Returns the track
+/// and the value to show, which follows the thumb while it is dragged.
+pub fn number_slider(
+    id: &'static str,
     label: &'static str,
     value: i64,
     (min, max, step): (i64, i64, i64),
-    theme: &Theme,
-    set: impl Fn(i64, &mut App) + 'static,
-) -> impl IntoElement {
-    let set = Rc::new(set);
-    let button = |suffix: &str, text: &'static str, to: i64, enabled: bool| {
-        let set = set.clone();
-        let hover = theme.hover;
-        div()
-            .id(ElementId::Name(format!("{id}-{suffix}").into()))
-            .test_support()
-            .role(Role::Button)
-            .reachable(theme)
-            .aria_label(SharedString::from(format!("{label} {text}")))
-            .w(px(28.))
-            .h(px(28.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_md()
-            .bg(theme.selected)
-            .text_color(if enabled { theme.text } else { theme.faint })
-            .when(enabled, |d| d.cursor_pointer().hover(move |d| d.bg(hover)))
-            .child(text)
-            .on_click(move |_, _, cx| {
-                if enabled {
-                    set(to, cx)
-                }
-            })
-    };
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(button("less", "−", (value - step).max(min), value > min))
+    set: fn(&mut Appearance, i64),
+    window: &mut Window,
+    cx: &mut App,
+) -> (impl IntoElement + use<>, i64) {
+    let theme = theme::get(cx).clone();
+    if !cx.default_global::<Sliders>().0.contains_key(id) {
+        let state = cx.new(|_| {
+            SliderState::new()
+                .min(min as f32)
+                .max(max as f32)
+                .step(step as f32)
+                .default_value(value as f32)
+        });
+        // Only a release saves: the drag itself moves the thumb alone.
+        let events = cx.subscribe(&state, move |_, event: &SliderEvent, cx| {
+            if let SliderEvent::Release(at) = event {
+                let next = at.end().round() as i64;
+                edit_appearance(cx, |a| set(a, next));
+            }
+        });
+        cx.default_global::<Sliders>().0.insert(
+            id,
+            SliderEntry {
+                state,
+                seen: value,
+                _events: events,
+            },
+        );
+    }
+    let entry = cx
+        .default_global::<Sliders>()
+        .0
+        .get_mut(id)
+        .expect("the slider was inserted above");
+    let moved = entry.seen != value;
+    entry.seen = value;
+    let state = entry.state.clone();
+    if moved {
+        state.update(cx, |s, cx| s.set_value(value as f32, window, cx));
+    }
+    let shown = state.read(cx).value().end().round() as i64;
+    let track = div()
+        .id(ElementId::Name(format!("{id}-track").into()))
+        .test_support()
+        .w(px(220.))
         .child(
-            div()
-                .id(ElementId::Name(format!("{id}-value").into()))
-                .test_support()
-                .role(Role::Status)
-                .aria_label(t!("settings-messages-pixels", value = value))
-                .min_w(px(40.))
-                .text_sm()
-                .text_color(theme.muted)
-                .child(t!("settings-messages-pixels", value = value)),
-        )
-        .child(button("more", "+", (value + step).min(max), value < max))
+            Slider::new(&state)
+                .accessibility_label(label)
+                .bg(theme.accent)
+                .text_color(theme.main),
+        );
+    (track, shown)
+}
+
+/// A pixel slider as a row's control: the track, and its value beside it.
+fn slider_with_value(
+    id: &'static str,
+    label: &'static str,
+    value: i64,
+    range: (i64, i64, i64),
+    set: fn(&mut Appearance, i64),
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement + use<> {
+    let theme = theme::get(cx).clone();
+    let (track, shown) = number_slider(id, label, value, range, set, window, cx);
+    div().flex().items_center().gap_3().child(track).child(
+        div()
+            .id(ElementId::Name(format!("{id}-value").into()))
+            .test_support()
+            .role(Role::Status)
+            .aria_label(t!("settings-messages-pixels", value = shown))
+            .min_w(px(40.))
+            .text_sm()
+            .text_color(theme.muted)
+            .child(t!("settings-messages-pixels", value = shown)),
+    )
 }
 
 fn layout_label(l: Layout) -> (&'static str, &'static str) {
@@ -433,7 +483,7 @@ fn font_id(f: AppearanceMessageFont) -> &'static str {
     }
 }
 
-fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
+fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> AnyElement {
     let theme = theme::get(cx).clone();
     let Some(client) = ctx.session.read(cx).client().cloned() else {
         return div().id("message-settings").into_any_element();
@@ -723,13 +773,14 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
         "text-size",
         t!("settings-messages-size"),
         Some(t!("settings-messages-size-help").into()),
-        stepper(
+        slider_with_value(
             "message-size",
             t!("settings-messages-size"),
             look.size,
             (SIZE.0, SIZE.1, 1),
-            &theme,
-            |v, cx| edit_appearance(cx, |a| a.message_size = Some(v)),
+            |a, v| a.message_size = Some(v),
+            window,
+            cx,
         ),
         &theme,
     ))
@@ -738,13 +789,14 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
         "group-spacing",
         t!("settings-messages-spacing"),
         Some(t!("settings-messages-spacing-help").into()),
-        stepper(
+        slider_with_value(
             "group-spacing",
             t!("settings-messages-spacing"),
             look.spacing,
             (SPACING.0, SPACING.1, SPACING_STEP),
-            &theme,
-            |v, cx| edit_appearance(cx, |a| a.group_spacing = Some(v)),
+            |a, v| a.group_spacing = Some(v),
+            window,
+            cx,
         ),
         &theme,
     ))

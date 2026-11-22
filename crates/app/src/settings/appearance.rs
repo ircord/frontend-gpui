@@ -28,6 +28,7 @@ use ircord_client::store::theme_css::CssVariables;
 
 use crate::registry::{self, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection};
 use crate::session::Session;
+use crate::settings::messages;
 use crate::settings::{block, row};
 use crate::theme::{self, Theme, appearance};
 use crate::ui;
@@ -277,7 +278,7 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
                 "appearance-scale",
                 t!("appearance-scale"),
                 Some(t!("appearance-scale-help").into()),
-                scale(current.scale, &theme),
+                scale(current.scale, &theme, window, cx),
                 &theme,
             ),
             &["interface-scale"],
@@ -989,43 +990,32 @@ fn fonts(current: &Look, theme: &Theme) -> impl IntoElement + use<> {
         .child(list)
 }
 
-fn scale(value: i64, theme: &Theme) -> impl IntoElement + use<> {
-    let step = |delta: i64| {
-        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-            let next = (value + delta).clamp(*look::SCALE.start(), *look::SCALE.end());
-            appearance::edit(cx, |a| a.interface_scale = Some(next));
-        }
-    };
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(
-            button("appearance-scale-down", "−", theme)
-                .aria_label(t!("appearance-scale-down"))
-                .test_support()
-                .on_click(step(-5)),
-        )
-        .child(
-            div()
-                .id("appearance-scale-value")
-                .test_support()
-                .role(Role::Status)
-                .aria_label(SharedString::from(t!(
-                    "appearance-scale-value",
-                    percent = value
-                )))
-                .w(px(56.))
-                .text_center()
-                .text_color(theme.text)
-                .child(t!("appearance-scale-value", percent = value)),
-        )
-        .child(
-            button("appearance-scale-up", "+", theme)
-                .aria_label(t!("appearance-scale-up"))
-                .test_support()
-                .on_click(step(5)),
-        )
+/// The interface scale as a slider in steps of 5 %, with its value beside it.
+fn scale(value: i64, theme: &Theme, window: &mut Window, cx: &mut App) -> impl IntoElement + use<> {
+    let range = (*look::SCALE.start(), *look::SCALE.end(), 5);
+    let (track, shown) = messages::number_slider(
+        "appearance-scale",
+        t!("appearance-scale"),
+        value,
+        range,
+        |a, v| a.interface_scale = Some(v),
+        window,
+        cx,
+    );
+    div().flex().items_center().gap_3().child(track).child(
+        div()
+            .id("appearance-scale-value")
+            .test_support()
+            .role(Role::Status)
+            .aria_label(SharedString::from(t!(
+                "appearance-scale-value",
+                percent = shown
+            )))
+            .w(px(56.))
+            .text_center()
+            .text_color(theme.text)
+            .child(t!("appearance-scale-value", percent = shown)),
+    )
 }
 
 // ---- Your themes ----

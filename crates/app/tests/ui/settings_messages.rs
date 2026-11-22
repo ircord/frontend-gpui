@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext, TestAppContext, Window};
+use gpui_kit::{AppContext, Pixels, Point, TestAppContext, Window, point, px};
 use ircord_app::route::Route;
 use ircord_client::testing::{CannedServer, Reply};
 use serde_json::{Value, json};
@@ -61,6 +61,10 @@ fn frame(f: &Fixture, cx: &mut TestAppContext, run: impl FnOnce(&mut Window, &mu
 
 fn click(f: &Fixture, cx: &mut TestAppContext, id: &'static str) {
     frame(f, cx, |window, cx| window.click(id, cx));
+}
+
+fn click_at(f: &Fixture, cx: &mut TestAppContext, id: &'static str, at: Point<Pixels>) {
+    frame(f, cx, |window, cx| window.click_at(id, at, cx));
 }
 
 fn shows(f: &Fixture, cx: &mut TestAppContext, id: &'static str) -> bool {
@@ -152,12 +156,13 @@ fn the_irc_layout_puts_every_message_on_its_own_line(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn text_size_clock_and_channel_activity_are_saved(cx: &mut TestAppContext) {
     let f = signed_in(cx, json!({}));
-    land(&f, cx, "text-size", "message-size-more");
-    click(&f, cx, "message-size-more");
+    // A click at the track's right end takes the slider to its largest size.
+    land(&f, cx, "text-size", "message-size-track");
+    click_at(&f, cx, "message-size-track", point(px(215.), px(12.)));
     let put = f.server.wait_for("PUT", "/api/v1/app/appearance", WAIT);
-    assert_eq!(put.json()["settings"]["messageSize"], 15);
+    assert_eq!(put.json()["settings"]["messageSize"], 20);
     wait(cx, "the size to show", |cx| {
-        ircord_app::message::layout::settings(cx).size == 15
+        ircord_app::message::layout::settings(cx).size == 20
     });
     std::thread::sleep(Duration::from_millis(400));
     land(&f, cx, "clock", "message-clock-12h");
@@ -166,7 +171,7 @@ fn text_size_clock_and_channel_activity_are_saved(cx: &mut TestAppContext) {
         .server
         .wait_for_nth("PUT", "/api/v1/app/appearance", 2, WAIT);
     assert_eq!(put.json()["settings"]["timeFormat"], "12h");
-    assert_eq!(put.json()["settings"]["messageSize"], 15, "kept");
+    assert_eq!(put.json()["settings"]["messageSize"], 20, "kept");
     land(&f, cx, "channel-activity", "channel-activity-hide");
     click(&f, cx, "channel-activity-hide");
     let put = f.server.wait_for("PUT", "/api/v1/app/preferences", WAIT);

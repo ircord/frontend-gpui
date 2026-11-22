@@ -364,6 +364,12 @@ fn about_shows_both_versions_the_people_and_the_release_notes(cx: &mut TestAppCo
         label(&f, cx, "about-app-version"),
         Some(format!("App: {}", env!("CARGO_PKG_VERSION")))
     );
+    // The server signed in to, by its origin, as the web's About shows it.
+    let origin = f.server.address().origin();
+    assert_eq!(
+        label(&f, cx, "about-server"),
+        Some(format!("IRCord server: {origin}"))
+    );
     for id in [
         "about-app-notes",
         "release-9.8.7",
