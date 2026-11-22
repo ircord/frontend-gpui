@@ -11,12 +11,14 @@ on:
         description: Build copies that check for and install updates
         required: true
         type: boolean
-  # Pull requests that change how installers are made build them too, so the
-  # pipeline is proven before it reaches main. Drafts run nothing.
+  # Pull requests that change how installers are made, or the OS-specific
+  # platform crate, build them too, so the pipeline is proven before it
+  # reaches main. Drafts run nothing.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - .github/**
+      - crates/platform/**
       - packaging/**
       - tools/**
       - vendor/**

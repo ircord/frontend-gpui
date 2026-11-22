@@ -130,10 +130,10 @@ screenshots, so a change can be looked at without a screen.
 ## Publishing a release
 
 Pull requests run `.github/workflows/check.yaml` once they are marked ready
-(drafts run nothing). Those that change how installers are made also run
-`build-installers.yaml`, which builds the `.deb`, cross-builds the Windows
-setup and installs and starts it on Windows, and builds the Mac disk image on
-macOS.
+(drafts run nothing). Those that change how installers are made, or
+`crates/platform`, also run `build-installers.yaml`, which builds the `.deb`,
+cross-builds the Windows setup and installs and starts it on Windows, and
+builds the Mac disk image on macOS.
 
 A release is `.github/workflows/publish.yaml`, started by hand:
 

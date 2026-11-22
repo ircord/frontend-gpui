@@ -90,8 +90,8 @@ Changes are delivered by pull request on `ircord/frontend-gpui`. Pass this
 ladder locally before pushing, push the branch once, and open the pull request
 as a draft. The ladder is the gate: a draft runs no CI. Marking it ready runs
 `check.yaml` (steps 1 to 3), and `build-installers.yaml` as well when it
-touches `.github/`, `packaging/`, `tools/`, `vendor/`, `xtask/` or
-`Cargo.lock`. Keep the pull request a draft until the maintainer
+touches `.github/`, `crates/platform/`, `packaging/`, `tools/`, `vendor/`,
+`xtask/` or `Cargo.lock`. Keep the pull request a draft until the maintainer
 marks it ready for review. `cargo xtask ladder` runs steps 1 to 4,
 `cargo xtask check` steps 1 to 3.
 
