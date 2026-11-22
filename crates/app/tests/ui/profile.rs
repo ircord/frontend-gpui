@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use gpui_kit::test::TestWindowExt;
+use gpui_kit::test::{TestQueryExt, TestWindowExt};
 use gpui_kit::{AppContext, TestAppContext};
 use ircord_app::session::Phase;
 use ircord_client::testing::{CANNED_COOKIE, CannedServer, Reply};
@@ -317,6 +317,49 @@ fn profile_chips_add_validate_remove_and_save_individual_entries(cx: &mut TestAp
     assert_eq!(body["languages"], json!(["da"]));
     assert_eq!(body["interests"], json!(["Tea, coffee"]));
     assert!(body.get("pronouns").is_none());
+}
+
+#[gpui_kit::test]
+fn searches_for_and_saves_a_profile_time_zone(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, serve_profile);
+    bootstrap(&f, cx);
+    land(&f, cx, "profile-about", "profile-timezone");
+    click(&f, cx, "profile-timezone");
+    cx.update_window(f.window, |_, window, cx| window.input("Copenhagen", cx))
+        .unwrap();
+    cx.executor().advance_clock(Duration::from_millis(200));
+    wait(cx, "the Copenhagen time zone in the popup", |cx| {
+        f.window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                window
+                    .try_find_by_label("Europe/Copenhagen")
+                    .is_some_and(|option| option.visible())
+            })
+            .unwrap()
+    });
+    cx.update_window(f.window, |_, window, cx| window.press("enter", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        find(&f, cx, "profile-timezone", |element| element
+            .value()
+            .map(str::to_owned))
+        .flatten()
+        .as_deref(),
+        Some("Europe/Copenhagen")
+    );
+    assert!(
+        f.server
+            .requests_to("PATCH", "/api/v1/networks/n1/profile")
+            .is_empty()
+    );
+    enter(&f, cx, "profile-pronouns");
+    let patch = f
+        .server
+        .wait_for("PATCH", "/api/v1/networks/n1/profile", WAIT)
+        .json();
+    assert_eq!(patch["timezone"], "Europe/Copenhagen");
 }
 
 /// The server's sign-in check, the registration policy, the username check

@@ -27,9 +27,9 @@ use std::{cell::Cell, rc::Rc};
 
 use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu};
-use gpui_kit::component::{Selectable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::{Conversation, ConversationKind, NetworkStatus};

@@ -20,6 +20,8 @@ use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
+use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::api::ApiError;
@@ -555,7 +557,6 @@ enum Field {
     Headline,
     Pronouns,
     Location,
-    Timezone,
     Homepage,
     List(ProfileList),
     Accent,
@@ -567,8 +568,37 @@ enum ProfileList {
     Interests,
 }
 
+#[derive(Clone)]
+struct TimeZone(SharedString);
+
+impl SearchableListItem for TimeZone {
+    type Value = SharedString;
+
+    fn value(&self) -> &Self::Value {
+        &self.0
+    }
+
+    fn title(&self) -> SharedString {
+        if self.0.is_empty() {
+            t!("profile-timezone-none").into()
+        } else {
+            self.0.clone()
+        }
+    }
+}
+
+fn time_zone_options(current: &str) -> SearchableVec<TimeZone> {
+    let zones = people::time_zones();
+    let mut choices = vec![TimeZone(SharedString::default())];
+    if !current.is_empty() && !zones.iter().any(|zone| zone == current) {
+        choices.push(TimeZone(current.to_string().into()));
+    }
+    choices.extend(zones.iter().map(|zone| TimeZone(zone.clone().into())));
+    SearchableVec::new(choices)
+}
+
 impl Field {
-    const ALL: [Field; 13] = [
+    const ALL: [Field; 12] = [
         Field::Name,
         Field::Bio,
         Field::Color,
@@ -577,7 +607,6 @@ impl Field {
         Field::Headline,
         Field::Pronouns,
         Field::Location,
-        Field::Timezone,
         Field::Homepage,
         Field::List(ProfileList::Languages),
         Field::List(ProfileList::Interests),
@@ -594,7 +623,6 @@ impl Field {
             Field::Headline => "profile-headline",
             Field::Pronouns => "profile-pronouns",
             Field::Location => "profile-location",
-            Field::Timezone => "profile-timezone",
             Field::Homepage => "profile-homepage",
             Field::List(ProfileList::Languages) => "profile-languages",
             Field::List(ProfileList::Interests) => "profile-interests-input",
@@ -612,7 +640,6 @@ impl Field {
             Field::Headline => t!("profile-headline").into(),
             Field::Pronouns => t!("profile-pronouns").into(),
             Field::Location => t!("profile-location").into(),
-            Field::Timezone => t!("profile-timezone").into(),
             Field::Homepage => t!("profile-homepage").into(),
             Field::List(ProfileList::Languages) => t!("profile-languages").into(),
             Field::List(ProfileList::Interests) => t!("profile-interests").into(),
@@ -630,7 +657,6 @@ impl Field {
             Field::Headline => t!("profile-headline-placeholder").into(),
             Field::Pronouns => t!("profile-pronouns-placeholder").into(),
             Field::Location => t!("profile-location-placeholder").into(),
-            Field::Timezone => t!("profile-timezone-placeholder").into(),
             Field::Homepage => t!("profile-homepage-placeholder").into(),
             Field::List(ProfileList::Languages) => t!("profile-languages-placeholder").into(),
             Field::List(ProfileList::Interests) => t!("profile-interests-placeholder").into(),
@@ -649,7 +675,6 @@ impl Field {
             Field::Headline => text(&m.headline),
             Field::Pronouns => text(&m.pronouns),
             Field::Location => text(&m.location),
-            Field::Timezone => text(&m.timezone),
             Field::Homepage => text(&m.homepage_url),
             Field::List(_) => String::new(),
             Field::Accent => text(&m.profile_accent_color),
@@ -726,6 +751,7 @@ pub struct ProfileView {
     loading: bool,
     load_error: Option<String>,
     inputs: Vec<(Field, Entity<InputState>)>,
+    time_zone: Entity<SelectState<SearchableVec<TimeZone>>>,
     languages: Vec<String>,
     interests: Vec<String>,
     name_color: Entity<ColorPickerState>,
@@ -749,6 +775,14 @@ impl ProfileView {
         let mut subscriptions = Vec::new();
         let mut inputs = Vec::new();
         let name_color = cx.new(|cx| ColorPickerState::new(window, cx));
+        let time_zone =
+            cx.new(|cx| SelectState::new(time_zone_options(""), None, window, cx).searchable(true));
+        subscriptions.push(cx.subscribe(&time_zone, |view: &mut Self, _, event, cx| {
+            let SelectEvent::Confirm(_) = event;
+            view.done = false;
+            view.problem = None;
+            cx.notify();
+        }));
         subscriptions.push(cx.subscribe_in(
             &name_color,
             window,
@@ -821,6 +855,7 @@ impl ProfileView {
             loading: false,
             load_error: None,
             inputs,
+            time_zone,
             languages: Vec::new(),
             interests: Vec::new(),
             name_color,
@@ -848,6 +883,14 @@ impl ProfileView {
 
     fn text(&self, field: Field, cx: &App) -> String {
         self.input(field).read(cx).value().to_string()
+    }
+
+    fn choose_time_zone(&self, value: &str, window: &mut Window, cx: &mut App) {
+        let selected: SharedString = value.to_string().into();
+        self.time_zone.update(cx, |state, cx| {
+            state.set_items(time_zone_options(value), window, cx);
+            state.set_selected_value(&selected, window, cx);
+        });
     }
 
     fn has_pending_tag(&self, cx: &App) -> bool {
@@ -1006,6 +1049,7 @@ impl ProfileView {
             let value = field.saved(&member);
             input.update(cx, |s, cx| s.set_value(value, window, cx));
         }
+        self.choose_time_zone(member.timezone.as_deref().unwrap_or_default(), window, cx);
         let theme = theme::get(cx);
         let color = member
             .name_color
@@ -1078,7 +1122,15 @@ impl ProfileView {
         u.headline = changed(Field::Headline);
         u.pronouns = changed(Field::Pronouns);
         u.location = changed(Field::Location);
-        u.timezone = changed(Field::Timezone);
+        let zone = self
+            .time_zone
+            .read(cx)
+            .selected_value()
+            .map(SharedString::as_str)
+            .unwrap_or_default();
+        if zone != saved.timezone.as_deref().unwrap_or_default() {
+            u.timezone = Some(zone.to_string());
+        }
         u.homepage_url = changed(Field::Homepage);
         if let Some(url) = &u.homepage_url
             && !url.is_empty()
@@ -1441,7 +1493,7 @@ fn choices(
 }
 
 impl Render for ProfileView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
         let Some(ctx) = self.ctx.clone() else {
             return div().into_any_element();
@@ -1869,12 +1921,12 @@ impl Render for ProfileView {
             .small()
             .ghost()
             .label(t!("profile-use-mine"))
+            .disabled(busy)
             .on_click(move |_, window, cx| {
                 let zone = ircord_client::store::notify_settings::local_time_zone();
                 e.update(cx, |v, cx| {
-                    v.input(Field::Timezone)
-                        .clone()
-                        .update(cx, |s, cx| s.set_value(zone, window, cx));
+                    v.choose_time_zone(&zone, window, cx);
+                    v.done = false;
                     cx.notify();
                 })
             });
@@ -1900,7 +1952,20 @@ impl Render for ProfileView {
                         .flex()
                         .items_end()
                         .gap_2()
-                        .child(div().flex_1().child(self.field(Field::Timezone, &theme)))
+                        .child(
+                            div().flex_1().min_w_0().child(ui::field::field(
+                                t!("profile-timezone"),
+                                Select::new(&self.time_zone)
+                                    .id("profile-timezone")
+                                    .w_full()
+                                    .accessibility_label(t!("profile-timezone"))
+                                    .placeholder(t!("profile-timezone-none"))
+                                    .search_placeholder(t!("profile-timezone-search"))
+                                    .highlight_matches(true)
+                                    .disabled(busy),
+                                &theme,
+                            )),
+                        )
                         .child(mine),
                 )
                 .child(self.field(Field::Homepage, &theme)),

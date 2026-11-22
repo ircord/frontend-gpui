@@ -9,6 +9,7 @@
 //! with.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::OnceLock;
 
 use chrono::{DateTime, Duration, TimeZone};
 use icu_locale::{Locale, LocaleCanonicalizer, locale, names::LanguageIdentifierDisplayName};
@@ -301,6 +302,21 @@ pub fn local_time(zone: &str, now_ms: i64, clock_12h: bool) -> Option<String> {
     let time = at.to_zoned_datetime(zone).time();
     let format = if clock_12h { "%I:%M %p" } else { "%H:%M" };
     Some(time.strftime(format).to_string())
+}
+
+/// Time-zone identifiers this device can use to show a profile's local time.
+pub fn time_zones() -> &'static [String] {
+    static ZONES: OnceLock<Vec<String>> = OnceLock::new();
+    ZONES.get_or_init(|| {
+        let mut zones: Vec<_> = jiff::tz::db()
+            .available()
+            .map(|zone| zone.as_str().to_owned())
+            .collect();
+        zones.push("UTC".to_string());
+        zones.sort_unstable();
+        zones.dedup();
+        zones
+    })
 }
 
 fn canonical_language(tag: &str) -> Option<Locale> {
@@ -821,6 +837,8 @@ mod tests {
         assert_eq!(local(after, true), "03:00 AM");
         assert!(local_time("Not/AZone", after, false).is_none());
         assert!(local_time("", after, false).is_none());
+        assert!(time_zones().iter().any(|zone| zone == "Europe/Copenhagen"));
+        assert!(time_zones().iter().any(|zone| zone == "UTC"));
     }
 
     #[test]

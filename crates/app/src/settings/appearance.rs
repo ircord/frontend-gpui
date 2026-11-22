@@ -17,11 +17,11 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::TestSupportExt;
-use gpui_kit::component::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
+use gpui_kit::component::{Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::api::{ApiError, ThemeSave};
