@@ -257,6 +257,22 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
         .flex()
         .flex_col()
         .gap_4()
+        .when(!compact && !sync, |d| {
+            d.child(
+                div()
+                    .id("appearance-local-only")
+                    .test_support()
+                    .role(Role::Status)
+                    .aria_label(t!("appearance-sync-local"))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(ui::icon::icon(ui::icon::LucideIcon::CloudOff, theme.muted))
+                    .child(t!("appearance-sync-local")),
+            )
+        })
         .child(super::preview(&theme, crate::message::layout::settings(cx)))
         .when(compact, |d| {
             d.child(row(
@@ -273,21 +289,7 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
             "appearance-mode",
             t!("appearance-mode"),
             Some(t!("appearance-mode-help").into()),
-            choices(
-                "appearance-mode",
-                &[
-                    (
-                        AppearanceMode::System,
-                        "system",
-                        t!("appearance-mode-system"),
-                    ),
-                    (AppearanceMode::Dark, "dark", t!("appearance-mode-dark")),
-                    (AppearanceMode::Light, "light", t!("appearance-mode-light")),
-                ],
-                current.mode,
-                |a, m| a.mode = Some(m),
-                &theme,
-            ),
+            mode_control(current.mode, &theme),
             &theme,
         ))
         .child(block(
@@ -596,6 +598,70 @@ fn choices<T: Copy + PartialEq + 'static>(
         );
     }
     list
+}
+
+fn mode_control(current: AppearanceMode, theme: &Theme) -> impl IntoElement + use<> {
+    use ui::icon::LucideIcon as Icon;
+    let modes = [
+        (
+            AppearanceMode::System,
+            "system",
+            t!("appearance-mode-system"),
+            Icon::Monitor,
+        ),
+        (
+            AppearanceMode::Dark,
+            "dark",
+            t!("appearance-mode-dark"),
+            Icon::Moon,
+        ),
+        (
+            AppearanceMode::Light,
+            "light",
+            t!("appearance-mode-light"),
+            Icon::Sun,
+        ),
+    ];
+    div()
+        .id("appearance-mode-choices")
+        .test_support()
+        .role(Role::RadioGroup)
+        .aria_label(t!("appearance-mode"))
+        .flex()
+        .gap_0p5()
+        .p_0p5()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.raised)
+        .children(modes.map(|(value, key, text, icon)| {
+            let selected = current == value;
+            let hover = theme.hover;
+            div()
+                .id(ElementId::Name(format!("appearance-mode-{key}").into()))
+                .test_support()
+                .role(Role::RadioButton)
+                .aria_label(text)
+                .aria_selected(selected)
+                .reachable(theme)
+                .flex()
+                .items_center()
+                .gap_1p5()
+                .px_2()
+                .py_1()
+                .rounded(theme.radius)
+                .text_sm()
+                .text_color(if selected { theme.text } else { theme.muted })
+                .when(selected, |d| d.bg(theme.main).shadow_sm())
+                .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+                .cursor_pointer()
+                .child(ui::icon::icon(
+                    icon,
+                    if selected { theme.accent } else { theme.muted },
+                ))
+                .child(text)
+                .on_click(move |_, _, cx| appearance::edit(cx, |a| a.mode = Some(value)))
+        }))
 }
 
 fn family_description(id: &str) -> Option<&'static str> {

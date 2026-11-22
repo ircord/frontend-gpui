@@ -275,6 +275,12 @@ fn with_sync_off_a_change_stays_on_this_device(cx: &mut TestAppContext) {
     let saves = saved_appearances(&f).len();
 
     open_at(&f, cx, "appearance-mode");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("appearance-local-only").is_some());
+        assert_eq!(window.find("appearance-mode-dark").selected(), Some(true));
+    })
+    .unwrap();
     click(&f, cx, "appearance-mode-light");
     let light = look::scheme_tokens(look::scheme_for("ircord-light", Mode::Light), None);
     wait(cx, "the light scheme", |cx| {

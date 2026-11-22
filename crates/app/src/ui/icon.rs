@@ -8,7 +8,15 @@ use gpui_kit::*;
 
 gpui_kit::assets::icon_assets!(
     WorkspaceIcons,
-    [Cloud, CloudOff, Paperclip, Send, ShieldCheck, Users]
+    [
+        Cloud,
+        CloudOff,
+        Monitor,
+        Paperclip,
+        Send,
+        ShieldCheck,
+        Users
+    ]
 );
 
 pub(crate) struct Assets;
