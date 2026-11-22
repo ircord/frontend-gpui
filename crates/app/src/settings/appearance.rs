@@ -1825,8 +1825,8 @@ fn theme_editor(
     if let Some((text, problem)) = editor.read(cx).notice.clone() {
         form = form.child(
             div()
-                .test_support()
                 .id("appearance-themes-notice")
+                .test_support()
                 .role(if problem { Role::Alert } else { Role::Status })
                 .aria_label(text.clone())
                 .text_sm()

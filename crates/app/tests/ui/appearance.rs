@@ -105,19 +105,51 @@ fn an_active_synced_theme_loads_its_background_from_the_signed_in_server(cx: &mu
 
 #[gpui_kit::test]
 fn background_changes_stay_in_the_preview_until_the_theme_is_saved(cx: &mut TestAppContext) {
-    use ircord_client::contract::ThemeBackgroundFit;
+    use ircord_client::contract::{ThemeBackgroundFit, UploadCapability};
 
-    let f = signed_in(
-        cx,
-        json!({"mode": "dark", "theme": "t-bg"}),
-        json!([{
-            "id": "t-bg", "name": "Window", "format": 1, "updatedAt": "revision-1",
-            "background": {"url": "/files/a/b/photo.png", "fit": "cover", "position": "center"}
-        }]),
-    );
+    const PHOTO: &str = "/files/a/b/replacement.png";
+    let f = open_with(cx, true, |server| {
+        let mut snapshot = crate::fixture::snapshot();
+        snapshot.capabilities.upload = Some(UploadCapability {
+            max_bytes: 1 << 20,
+            types: vec!["image/png".into()],
+        });
+        server.snapshot(&snapshot);
+        serve(
+            server,
+            json!({"mode": "dark", "theme": "t-bg"}),
+            json!([{
+                "id": "t-bg", "name": "Window", "format": 1, "updatedAt": "revision-1",
+                "background": {"url": "/files/a/b/photo.png", "fit": "cover", "position": "center"}
+            }]),
+        );
+        server.route("POST", "/api/v1/uploads", 201, json!({
+            "id": "a", "url": PHOTO, "name": "replacement.png", "contentType": "image/png", "size": 64
+        }));
+    });
+    bootstrap(&f, cx);
+    wait(cx, "the personal theme is active", |cx| {
+        theme::get(cx).background.is_some()
+    });
+    let path = cx.update(|cx| f.session.read(cx).config.path().join("replacement.png"));
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([20, 90, 200, 255]))
+        .save(&path)
+        .unwrap();
+
     open_at(&f, cx, "appearance-themes");
     click(&f, cx, "appearance-theme-edit-t-bg");
     click(&f, cx, "appearance-theme-tab-background");
+    click(&f, cx, "theme-background-choose");
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(move |_| Some(vec![path]));
+    wait(cx, "the draft previews the uploaded image", |cx| {
+        f.window
+            .update(cx, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        !f.server.requests_to("GET", PHOTO).is_empty()
+    });
+    let upload = &f.server.requests_to("POST", "/api/v1/uploads")[0];
+    assert_eq!(upload.query_param("networkId").as_deref(), Some("n1"));
     click(&f, cx, "theme-background-fit-tile");
     click(&f, cx, "theme-background-position-right");
     cx.update(|cx| {
@@ -141,6 +173,11 @@ fn background_changes_stay_in_the_preview_until_the_theme_is_saved(cx: &mut Test
     });
     let body = f.server.requests_to("PUT", "/api/v1/app/themes/t-bg")[0].json();
     assert_eq!(body["theme"]["background"]["position"], "right");
+    assert_eq!(body["theme"]["background"]["url"], PHOTO);
+    assert_eq!(
+        body["theme"]["background"]["tones"],
+        json!(["#145ac8", "#145ac8"])
+    );
     assert_eq!(body["expected"], "revision-1");
     assert_eq!(body["theme"]["colors"], Value::Null);
 }
