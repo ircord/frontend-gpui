@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use gpui_kit::test::TestWindowExt;
+use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
 use gpui_kit::{AppContext, ClipboardItem, MouseButton, TestAppContext, point, px};
 use ircord_app::theme;
 use ircord_client::store::appearance::{self as look, Device, Mode};
