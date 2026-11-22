@@ -259,15 +259,12 @@ impl SettingsView {
                         if here != this.visible {
                             this.visible = here;
                             this.focus_pending = here;
-                            if !here {
-                                let opener = this.opener.take();
-                                if this.focus.contains_focused(window, cx) {
-                                    if let Some(opener) = opener {
-                                        opener.focus(window, cx);
-                                    } else {
-                                        window.blur(cx);
-                                    }
-                                }
+                            if here {
+                                this.opener = window.focused(cx);
+                            } else if let Some(opener) = this.opener.take() {
+                                opener.focus(window, cx);
+                            } else if this.focus.contains_focused(window, cx) {
+                                window.blur(cx);
                             }
                         }
                     }
@@ -290,7 +287,7 @@ impl SettingsView {
             scroll,
             flash: None,
             focus: cx.focus_handle(),
-            opener: None,
+            opener: window.focused(cx),
             visible: true,
             focus_pending: true,
             _subscriptions: subscriptions,
@@ -389,7 +386,6 @@ impl Render for SettingsView {
         let query = self.query.read(cx).value().to_string();
         let hover_bg = theme.hover;
         if std::mem::take(&mut self.focus_pending) {
-            self.opener = window.focused(cx);
             self.focus.focus(window, cx);
         }
 

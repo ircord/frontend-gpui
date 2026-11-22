@@ -136,6 +136,7 @@ fn closing_settings_returns_focus_to_the_workspace(cx: &mut TestAppContext) {
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find("timeline").visible());
+        assert!(!opener.is_focused(window), "Settings takes focus");
         window.click("settings-close", cx);
     })
     .unwrap();
