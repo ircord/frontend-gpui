@@ -33,7 +33,7 @@ use ircord_client::api::ApiError;
 use ircord_client::client::PAGE_SIZE;
 use ircord_client::contract::Message;
 use ircord_client::store::timeline::{AROUND_SIZE, NEWER_SIZE, TOPIC};
-use ircord_client::store::{Changes, SendState, Workspace};
+use ircord_client::store::{Changes, SendState, Workspace, people};
 
 use crate::message::{self, MessageView};
 use crate::registry::{self, ConversationCtx, KeyDefault, MenuItem, MessageCtx};
@@ -1138,7 +1138,7 @@ impl TimelineView {
                 )
                 .child(e.text.clone())
                 .into_any_element(),
-            Row::Pending(p) => self.render_pending(&p, &theme),
+            Row::Pending(p) => self.render_pending(&p, &theme, cx),
             Row::Message(m) => {
                 let Some(conversation) = self.conversation.clone() else {
                     return div().into_any_element();
@@ -1357,58 +1357,187 @@ impl TimelineView {
         }
     }
 
-    fn render_pending(&self, p: &ircord_client::store::PendingSend, theme: &Theme) -> AnyElement {
+    /// A send the server has not confirmed, drawn as the web client draws it:
+    /// a message row of yours (with your name, picture and time unless it
+    /// continues your message above), its text faded while it is on its
+    /// way and red once it failed, with the reason and the buttons to retry,
+    /// move it to the draft, copy it or remove it underneath. It stays at
+    /// the end of the conversation, after what the server has stored, until
+    /// it is sent or removed.
+    fn render_pending(&self, row: &rows::PendingRow, theme: &Theme, cx: &App) -> AnyElement {
+        use crate::message::layout::Layout;
+        let p = &row.send;
         let failed = matches!(p.state, SendState::Failed(_));
-        let mut row = div()
-            .id(ElementId::Name(format!("pending-{}", p.client_id).into()))
-            .test_support()
-            .px_4()
-            .py_0p5()
-            .pl(px(72.))
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .text_color(if failed { theme.danger } else { theme.faint })
-                    .child(if p.action {
-                        format!("* {}", p.text)
-                    } else {
-                        p.text.clone()
-                    }),
-            );
+        let look = crate::message::layout::settings(cx);
+        let compact = look.layout == Layout::Compact;
+        let irc = look.layout == Layout::Irc;
+        let avatar = if compact { 24. } else { 40. };
+        // As read, without the IRC formatting codes the send filters added.
+        let plain = ircord_client::format::parse(&p.text).text;
+        let text = if p.action {
+            format!("* {plain}")
+        } else {
+            plain
+        };
         let label = rows::pending_label(p).to_string();
         let mut status = div()
             .flex()
-            .gap_2()
-            .text_xs()
-            .text_color(theme.muted)
-            .child(if failed {
-                t!("timeline-not-sent", reason = label)
-            } else {
-                label
-            });
-        if failed {
-            let session = self.session.clone();
-            let client_id = p.client_id.clone();
-            status = status.child(
+            .flex_wrap()
+            .items_center()
+            .gap_x_2()
+            .gap_y_1()
+            .pt_1()
+            .text_sm()
+            .child(
                 div()
-                    .id(ElementId::Name(format!("retry-{}", p.client_id).into()))
+                    .id(ElementId::Name(
+                        format!("pending-status-{}", p.client_id).into(),
+                    ))
                     .test_support()
-                    .role(Role::Button)
-                    .reachable(theme)
-                    .aria_label(t!("timeline-retry"))
-                    .text_color(theme.link)
-                    .cursor_pointer()
-                    .child(t!("timeline-retry"))
-                    .on_click(move |_, _, cx| {
-                        if let Some(client) = session.read(cx).client() {
-                            client.retry(&client_id);
-                        }
-                    }),
+                    .role(Role::Status)
+                    .aria_label(label.clone())
+                    .text_color(if failed { theme.danger } else { theme.muted })
+                    .child(label),
             );
+        if failed {
+            status = status.children(crate::features::message_actions::failed_send_actions(p));
         }
-        row = row.child(status);
-        row.into_any_element()
+        let body = div()
+            .text_size(px(look.size as f32))
+            .line_height(relative(1.375))
+            .font_family(crate::message::layout::message_font(&look, theme))
+            .text_color(if failed { theme.danger } else { theme.text })
+            .when(!failed, |d| d.opacity(0.55))
+            .child(text.clone());
+        let frame = div()
+            .id(ElementId::Name(format!("pending-{}", p.client_id).into()))
+            .test_support()
+            .role(Role::Group)
+            .aria_label(text)
+            .w_full()
+            .px_4();
+        let (me, name, nick, server) = {
+            let session = self.session.read(cx);
+            let server = session.server().map(|s| s.url().clone());
+            match session.client() {
+                Some(client) => {
+                    let w = client.read();
+                    let network = w
+                        .conversation(&p.conversation_id)
+                        .map(|c| c.network_id.clone())
+                        .unwrap_or_default();
+                    let nick = people::self_nick(&w, &network);
+                    let name = people::self_name(&w, &network).unwrap_or_else(|| nick.clone());
+                    (people::me(&w, Some(&network)).clone(), name, nick, server)
+                }
+                None => (Default::default(), String::new(), String::new(), server),
+            }
+        };
+        let color = ui::avatar::name_color(&me, look.colored_names, theme)
+            .map(theme::hex)
+            .unwrap_or(theme.text);
+        if irc {
+            // One line, as the IRC layout draws a message: the time, your
+            // nick in its column, the text; the status under the text.
+            let (before, after) = if p.action { ("* ", "") } else { ("<", ">") };
+            let line = div()
+                .w_full()
+                .flex()
+                .items_baseline()
+                .gap_2p5()
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(look.size as f32 * 0.85))
+                        .text_color(theme.faint)
+                        .child(row.time.clone()),
+                )
+                .child(
+                    div()
+                        .w(px(128.))
+                        .flex_none()
+                        .flex()
+                        .justify_end()
+                        .overflow_hidden()
+                        .child(div().text_color(theme.faint).child(before))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(color)
+                                .truncate()
+                                .child(nick),
+                        )
+                        .child(div().text_color(theme.faint).child(after)),
+                )
+                .child(div().flex_1().min_w_0().child(body));
+            return frame
+                .py(px(1.))
+                .flex()
+                .flex_col()
+                .child(line)
+                .child(div().pl(px(138.)).child(status))
+                .into_any_element();
+        }
+        let mut column = div().flex_1().min_w_0().flex().flex_col();
+        let gutter = if row.header {
+            column = column.child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .gap_2()
+                    .line_height(px(21.))
+                    .child(
+                        div()
+                            .id(ElementId::Name(
+                                format!("pending-sender-{}", p.client_id).into(),
+                            ))
+                            .test_support()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_size(px(if compact { 14. } else { 15. }))
+                            .text_color(color)
+                            .child(name.clone()),
+                    )
+                    .child(
+                        div()
+                            .id(ElementId::Name(
+                                format!("pending-time-{}", p.client_id).into(),
+                            ))
+                            .test_support()
+                            .text_size(px(12.))
+                            .text_color(theme.faint)
+                            .child(row.time.clone()),
+                    ),
+            );
+            ui::avatar::person(
+                ui::avatar::Person {
+                    member: &me,
+                    name: &name,
+                    server: server.as_ref(),
+                    presence: false,
+                    key: &format!("pending-{}", p.client_id),
+                },
+                px(avatar),
+                theme,
+            )
+            .into_any_element()
+        } else {
+            div().w(px(avatar)).flex_none().into_any_element()
+        };
+        column = column.child(body).child(status);
+        let space = if compact {
+            look.spacing as f32 / 2.
+        } else {
+            look.spacing as f32
+        };
+        frame
+            .py(px(1.))
+            .when(row.header, |d| d.pt(px(space.max(2.))))
+            .flex()
+            .when(compact, |d| d.gap_2p5())
+            .when(!compact, |d| d.gap_3p5())
+            .child(gutter)
+            .child(column)
+            .into_any_element()
     }
 }
 

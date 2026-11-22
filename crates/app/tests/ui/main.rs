@@ -32,6 +32,7 @@ mod parties;
 mod people;
 mod profile;
 mod search;
+mod sending;
 mod server_window;
 mod settings;
 mod settings_messages;

@@ -41,6 +41,10 @@
 - Switching networks returns to the last channel you viewed on that network, even after restarting IRCord.
 - The collapsed sidebar still gives you access to Search, Inbox, Saved messages, Drafts, Links and Server.
 - In the collapsed sidebar, channels show numbers and direct messages show avatars and presence. Both keep their conversation menus.
+### Fixed
+
+- Text pasted on Windows sends again instead of failing with "invalid message (maximum 4000 characters / 4096 UTF-8 bytes)": its line breaks go out as the server expects, and a long multi-line paste goes out as one message the server splits within the network's limits, as in the web client.
+- A message that fails to send stays in the conversation as one row of yours, in red with the reason and Retry, Move to draft, Copy text and Remove from outbox under it, as the web client shows it, instead of a second block over the message box.
 
 ## v0.1.1 — 2026-11-22
 

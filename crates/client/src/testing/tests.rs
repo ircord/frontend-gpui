@@ -264,3 +264,33 @@ fn discovered_pictures_are_read_with_the_session() {
     assert_eq!(picture.bytes, png);
     assert_eq!(server.requests_to("GET", apng).len(), 2);
 }
+
+#[test]
+fn send_turns_windows_line_breaks_into_plain_ones_and_stamps_the_time() {
+    let (server, client) = started(
+        SnapshotBuilder::new()
+            .channel("c-a", "alpha")
+            .in_conversation("c-a", ME, ""),
+    );
+    server.route_fn("POST", "/api/v1/conversations/c-a/messages", |r| {
+        let body = r.json();
+        Reply::json(
+            202,
+            json!({"clientId": body["clientId"], "conversationId": "c-a", "state": "queued"}),
+        )
+    });
+    let before = crate::events::now_ms();
+    client.send("c-a", "a\r\nb\rc\r\n");
+    let sent = server
+        .wait_for("POST", "/api/v1/conversations/c-a/messages", WAIT)
+        .json();
+    // The server refuses any carriage return in a message.
+    assert_eq!(sent["text"], "a\nb\nc");
+    let w = client.read();
+    let pending = w.pending_in("c-a");
+    assert_eq!(pending.len(), 1);
+    assert!(
+        (pending[0].created_ms - before).abs() < 60_000,
+        "stamped with the time it was sent"
+    );
+}

@@ -164,6 +164,17 @@ pub enum Moderation {
 pub const MAX_TEXT_CHARACTERS: usize = 4000;
 pub const MAX_TEXT_BYTES: usize = 4096;
 
+/// `text` with Windows (`\r\n`) and old Mac (`\r`) line breaks turned into
+/// `\n`, as a browser's text box does. The server refuses any message with a
+/// carriage return in it, and the Windows clipboard pastes `\r\n`.
+pub fn plain_line_breaks(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\r') {
+        text.replace("\r\n", "\n").replace('\r', "\n").into()
+    } else {
+        text.into()
+    }
+}
+
 /// What the workspace knows about the signed-in user in one conversation.
 pub struct Context<'a> {
     pub workspace: &'a Workspace,
@@ -544,6 +555,30 @@ mod tests {
             Context::of(&w, "c-a", true).action_reason(&message("u-me"), MessageAction::Redact),
             Some(Reason::RedactUnsupported)
         );
+    }
+
+    #[test]
+    fn windows_line_breaks_become_plain_ones() {
+        // The server refuses a carriage return anywhere in a message
+        // ("invalid message (maximum 4000 characters / 4096 UTF-8 bytes)").
+        assert_eq!(plain_line_breaks("> a\r\n\r\nb\rc\n"), "> a\n\nb\nc\n");
+        assert!(matches!(
+            plain_line_breaks("no breaks"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn a_long_paragraph_fits_a_multiline_batch() {
+        let mut w = workspace();
+        w.networks[0].features.multiline = Some(MultilineLimits {
+            max_bytes: 4096,
+            max_lines: 100,
+        });
+        let cx = Context::of(&w, "c-a", true);
+        // A 1500-byte line is cut into wire lines by the server.
+        let text = format!("first\n\n{}\n\nlast", "word ".repeat(300));
+        assert_eq!(cx.text_reason(&text, false), None);
     }
 
     #[test]
