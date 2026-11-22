@@ -1015,7 +1015,7 @@ impl SidebarView {
             .flex()
             .flex_col()
             .items_center()
-            .bg(theme.sidebar)
+            .when(theme.app_background().is_none(), |d| d.bg(theme.sidebar))
             .child(div().h(px(48.)).flex().items_center().child(restore))
             .child(column)
     }
@@ -1257,7 +1257,10 @@ impl Render for SidebarView {
                     .flex_none()
                     .flex()
                     .flex_col()
-                    .bg(theme.sidebar)
+                    .when(
+                        theme.app_background().is_none() || window.viewport_size().width < px(900.),
+                        |d| d.bg(theme.sidebar),
+                    )
                     .child(search)
                     .child(
                         div()

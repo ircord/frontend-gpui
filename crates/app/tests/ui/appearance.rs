@@ -6,7 +6,7 @@ use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
 use gpui_kit::{AppContext, ClipboardItem, MouseButton, TestAppContext, point, px};
 use ircord_app::theme;
 use ircord_client::store::appearance::{self as look, Device, Mode};
-use ircord_client::testing::{CannedServer, Reply};
+use ircord_client::testing::{CANNED_COOKIE, CannedServer, Reply};
 use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, bootstrap, open_with, wait};
@@ -56,6 +56,46 @@ fn signed_in(cx: &mut TestAppContext, settings: Value, themes: Value) -> Fixture
         client.documents.appearance.is_loaded() && client.documents.themes.is_loaded()
     });
     f
+}
+
+#[gpui_kit::test]
+fn an_active_synced_theme_loads_its_background_from_the_signed_in_server(cx: &mut TestAppContext) {
+    const PATH: &str = "/files/wallpaper/token/blue.png";
+    let f = open_with(cx, true, |server| {
+        serve(
+            server,
+            json!({"mode": "dark", "theme": "t-background"}),
+            json!([{
+                "id": "t-background", "name": "Background", "format": 1,
+                "background": {"url": PATH, "placement": "app", "fit": "tile", "dim": 65}
+            }]),
+        );
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            4,
+            4,
+            image::Rgba([20, 90, 200, 255]),
+        ))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+        let png = png.into_inner();
+        server.route_fn("GET", PATH, move |request| {
+            assert_eq!(request.header("cookie"), Some(CANNED_COOKIE));
+            Reply::bytes(200, "image/png", png.clone())
+        });
+    });
+    bootstrap(&f, cx);
+    wait(cx, "the active theme's background request", |cx| {
+        f.window
+            .update(cx, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        !f.server.requests_to("GET", PATH).is_empty()
+    });
+    cx.update(|cx| {
+        let bg = theme::get(cx).background.as_ref().unwrap();
+        assert_eq!(bg.path, PATH);
+        assert_eq!(bg.dim, 65);
+    });
 }
 
 /// Open settings on `row` and wait until it is drawn.

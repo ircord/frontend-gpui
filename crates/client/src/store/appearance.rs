@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use super::theme_css::{self, CssVariables};
 use super::{Changes, Workspace};
 
+pub mod background;
+
 /// The topic this sub-state reports in [`Changes`].
 pub const TOPIC: &str = "appearance";
 
@@ -854,6 +856,8 @@ pub struct Compiled {
     pub reduced_motion: bool,
     /// The personal theme drawn, when one is in use and this client can draw it.
     pub theme: Option<String>,
+    /// The personal theme's image and its contrast-adjusted presentation.
+    pub background: Option<background::Background>,
     /// What the theme's CSS set on the root, when it was applied
     /// ([`compile_with_css`]); `None` when not applied.
     pub css: Option<CssVariables>,
@@ -921,6 +925,9 @@ pub fn compile_with_css(
         }
         css = Some(vars);
     }
+    let background = theme
+        .and_then(|theme| theme.background.as_ref())
+        .and_then(|image| background::Background::compile(image, &tokens));
     Compiled {
         mode,
         scheme,
@@ -932,6 +939,7 @@ pub fn compile_with_css(
         compact: look.density == AppearanceDensity::Compact,
         reduced_motion: look.reduced_motion(system_reduced),
         theme: theme.and_then(|t| t.id.clone()),
+        background,
         css,
     }
 }

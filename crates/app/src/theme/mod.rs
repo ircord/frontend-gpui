@@ -10,9 +10,12 @@
 //! is what settings edit.
 
 pub mod appearance;
+pub(crate) mod background;
 pub mod fonts;
 
 use gpui_kit::{App, Global, Hsla, Pixels, Rems, Rgba, SharedString, px, rems, rgb};
+use ircord_client::contract::ThemeBackgroundPlacement;
+use ircord_client::store::appearance::background::Background;
 use ircord_client::store::appearance::{self as look, Compiled, Look, Mode};
 
 /// The colour tokens every view draws with.
@@ -83,6 +86,8 @@ pub struct Theme {
     pub scale: f32,
     /// Leave out non-essential motion.
     pub reduced_motion: bool,
+    /// The selected personal theme's image, if it has one on this server.
+    pub background: Option<Background>,
 }
 
 impl Theme {
@@ -130,7 +135,14 @@ impl Theme {
             compact: c.compact,
             scale: c.scale,
             reduced_motion: c.reduced_motion,
+            background: c.background.clone(),
         }
+    }
+
+    pub(crate) fn app_background(&self) -> Option<&Background> {
+        self.background
+            .as_ref()
+            .filter(|bg| bg.placement == ThemeBackgroundPlacement::App)
     }
 
     /// IRCord's own dark scheme with the default settings.

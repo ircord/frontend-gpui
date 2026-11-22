@@ -399,7 +399,7 @@ fn bar(
         .flex()
         .items_center()
         .gap_1p5()
-        .bg(theme.sidebar)
+        .when(theme.app_background().is_none(), |d| d.bg(theme.sidebar))
         .when(draggable, |d| {
             d.on_mouse_down(MouseButton::Left, drag_window)
         })

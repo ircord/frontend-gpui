@@ -32,6 +32,7 @@
 - Themes and interface fonts appear in grids that adapt to the window width, with a sample in each font.
 - Appearance groups the System, Dark and Light choices and shows when settings are saved only on this device.
 - Pick separate theme variants for dark and light mode, and open the palette source from Appearance.
+- Personal themes can show a synced background image behind the conversation or the whole workspace.
 - Direct messages use the same sidebar order as the web client.
 - Switching networks returns to the last channel you viewed on that network, even after restarting IRCord.
 - The collapsed sidebar still gives you access to Search, Inbox, Saved messages, Drafts, Links and Server.

@@ -28,6 +28,7 @@ use crate::registry::{self, BannerCtx, ConversationCtx, HeaderCtx, PaneCtx, Pane
 use crate::route::Route;
 use crate::session::{NO_PANEL, Session, SessionEvent};
 use crate::sidebar::SidebarView;
+use crate::theme::background::{self, Wallpaper};
 use crate::theme::{self, Theme};
 use crate::timeline::TimelineView;
 use crate::ui;
@@ -39,6 +40,7 @@ pub struct WorkspaceView {
     pub timeline: Entity<TimelineView>,
     pub members: Entity<MembersView>,
     pub composer: Entity<ComposerView>,
+    wallpaper: Entity<Wallpaper>,
     notice: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -118,6 +120,7 @@ impl WorkspaceView {
             timeline,
             members,
             composer,
+            wallpaper: cx.new(|_| Wallpaper::default()),
             notice: None,
             _subscriptions: subscriptions,
         }
@@ -582,6 +585,10 @@ impl Render for WorkspaceView {
         let session = self.session.read(cx);
         let settings_open = session.route() == Some(Route::Settings);
         let route = session.workspace_route();
+        let client = session.client().cloned();
+        self.wallpaper.update(cx, |wallpaper, cx| {
+            wallpaper.select(client.as_ref().zip(theme.background.as_ref()), window, cx);
+        });
         let compact = window.viewport_size().width < members::DRAWER_BREAKPOINT;
         let drawer = window.use_keyed_state("member-drawer", cx, |_, cx| MembersDrawer {
             conversation: None,
@@ -682,6 +689,16 @@ impl Render for WorkspaceView {
                 None,
             )
         };
+        let card_corners = Corners {
+            top_left: theme.radius_large,
+            top_right: theme.radius_large,
+            ..Default::default()
+        };
+        let app_background = theme.app_background();
+        let chat_background = theme
+            .background
+            .as_ref()
+            .filter(|_| app_background.is_none());
         let card = div()
             .id("workspace-card")
             .relative()
@@ -695,8 +712,18 @@ impl Render for WorkspaceView {
             .border_1()
             .border_b_0()
             .border_color(theme.border.opacity(0.65))
-            .bg(theme.main)
+            .bg(theme
+                .main
+                .opacity(app_background.map_or(1., |bg| f32::from(bg.dim) / 100.)))
             .shadow(frame_shadows(&theme))
+            .when_some(chat_background, |card, bg| {
+                card.child(background::layer(
+                    self.wallpaper.clone(),
+                    bg,
+                    1. - f32::from(bg.dim) / 100.,
+                    card_corners,
+                ))
+            })
             .when(
                 theme.hibiki && (header.is_some() || route == Some(Route::Search)),
                 |d| d.child(ambient_light(&theme, window, cx)),
@@ -711,6 +738,14 @@ impl Render for WorkspaceView {
             .flex_col()
             .bg(theme.sidebar)
             .text_color(theme.text)
+            .when_some(app_background, |workspace, bg| {
+                workspace.child(background::layer(
+                    self.wallpaper.clone(),
+                    bg,
+                    1. - f32::from(bg.panel_opacity) / 100.,
+                    Corners::default(),
+                ))
+            })
             .child(crate::sidebar::topbar::frame(&self.session, window, cx))
             .child(
                 div()
@@ -905,7 +940,10 @@ const AMBIENT_BLEED: f32 = 8.;
 
 fn ambient_light(theme: &Theme, window: &mut Window, cx: &mut App) -> impl IntoElement {
     let colors = AmbientColors {
-        main: theme.main.into(),
+        main: theme
+            .main
+            .opacity(if theme.background.is_some() { 0. } else { 1. })
+            .into(),
         warm: theme
             .accent
             .blend(theme.danger.opacity(0.35))
@@ -977,17 +1015,31 @@ fn render_ambient_light(size: Size<Pixels>, colors: AmbientColors) -> Arc<Render
                 .hypot((y + 30.) / 244.8)
                 .min(1.);
         let amber = 1. - ((x - width * 0.36) / 378.).hypot((y + 20.) / 196.).min(1.);
-        let color = colors
-            .main
-            .blend(colors.amber.alpha(colors.amber.a * amber))
-            .blend(colors.warm.alpha(colors.warm.a * warm));
+        let color = overlay(
+            overlay(colors.main, colors.amber.alpha(colors.amber.a * amber)),
+            colors.warm.alpha(colors.warm.a * warm),
+        );
         // GPUI's texture atlas expects BGRA.
         image::Rgba([
             (color.b * 255.).round() as u8,
             (color.g * 255.).round() as u8,
             (color.r * 255.).round() as u8,
-            255,
+            (color.a * 255.).round() as u8,
         ])
     });
     Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]))
+}
+
+fn overlay(base: Rgba, top: Rgba) -> Rgba {
+    let covered_base = base.a * (1. - top.a);
+    let alpha = top.a + covered_base;
+    if alpha == 0. {
+        return base;
+    }
+    Rgba {
+        r: (top.r * top.a + base.r * covered_base) / alpha,
+        g: (top.g * top.a + base.g * covered_base) / alpha,
+        b: (top.b * top.a + base.b * covered_base) / alpha,
+        a: alpha,
+    }
 }
