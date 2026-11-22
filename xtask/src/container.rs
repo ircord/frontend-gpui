@@ -94,9 +94,13 @@ pub fn base_args(root: &Path) -> Result<Vec<String>> {
         "/work".into(),
     ];
     args.extend(xwin_cache_args(&xwin_download));
-    if let Ok(filter) = std::env::var("RUST_LOG") {
-        args.push("-e".into());
-        args.push(format!("RUST_LOG={filter}"));
+    // RUST_LOG for logging; IRCORD_UPDATES=1 is set only by the release
+    // builds, the ones allowed to update themselves.
+    for name in ["RUST_LOG", "IRCORD_UPDATES"] {
+        if let Ok(value) = std::env::var(name) {
+            args.push("-e".into());
+            args.push(format!("{name}={value}"));
+        }
     }
     Ok(args)
 }

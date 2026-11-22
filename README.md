@@ -23,7 +23,7 @@ xtask/            contract refresh, the build container, builds, integration tes
 vendor/           GPUI's Windows backend with the cross-build patch
 tools/            the build container's Dockerfile
 packaging/        icons, the Linux desktop entry and installer, the macOS Info.plist,
-                  and the installer config (Packager.toml)
+                  the installer config (Packager.toml) and the update key (updater.pub)
 .github/          CI: checks on pull requests, the installers, the release
 ```
 
@@ -42,6 +42,7 @@ Everything that compiles runs in a Docker image built from
 | `cargo xtask package windows` | the Windows build, then its setup, `dist/IRCord-GPUI-Windows-x64-setup.exe` |
 | `cargo xtask package linux` | the Linux build, then `dist/IRCord-GPUI-Linux-x64.deb` |
 | `cargo xtask package macos` | on an Apple Silicon Mac: the bundle, `dist/IRCord-GPUI-macOS-Apple-Silicon.dmg` and the updater's `.app.tar.gz` |
+| `cargo xtask release-assets …` | the release job's signing, `latest.json` and `SHA256SUMS` (see "Publishing a release") |
 | `cargo xtask contract` | refresh `crates/contract` from the backend checkout |
 | `cargo xtask contract --check` | fail if the committed contract is stale |
 | `cargo xtask integration` | the client against a real backend and IRC server in containers |
@@ -119,6 +120,38 @@ server and `RUST_LOG=info` turns on logging. `cargo xtask capture` runs the
 Linux build on a virtual display against a disposable backend, signs in through
 the form, types a server emoji into the message box and saves
 screenshots, so a change can be looked at without a screen.
+
+## Publishing a release
+
+Pull requests run `.github/workflows/check.yaml` once they are marked ready
+(drafts run nothing). Those that change how installers are made also run
+`build-installers.yaml`, which builds the `.deb`, cross-builds the Windows
+setup and installs and starts it on Windows, and builds the Mac disk image on
+macOS.
+
+A release is `.github/workflows/publish.yaml`, started by hand:
+
+1. On `main`, set `version` under `[workspace.package]` in `Cargo.toml`
+   (and `Cargo.lock` with it), and move the `## Unreleased` entries in
+   `CHANGELOG.md` under `## v<version> — <date>`.
+2. Run the workflow with that version and **verify only** ticked. It checks
+   the version, runs the checks, builds every installer, signs the Windows
+   setup and the macOS `.app.tar.gz` for the updater, writes `latest.json`
+   and `SHA256SUMS`, and keeps them as the `ircord-gpui-release` artifact.
+3. Run it again without **verify only** to tag `v<version>` and publish the
+   release, with that version's changelog section as its notes.
+
+The release holds `IRCord-GPUI-Windows-x64-setup.exe`,
+`IRCord-GPUI-macOS-Apple-Silicon.dmg`, `IRCord-GPUI-Linux-x64.deb`, the
+updater's `IRCord-GPUI-macOS-Apple-Silicon.app.tar.gz`, a `.sig` for each
+update, `latest.json`, `build-info.txt` (the commit and the backend contract
+it was built against) and `SHA256SUMS`.
+
+Updates are signed with a minisign key in cargo-packager's format. The
+repository's Actions secrets `CARGO_PACKAGER_SIGN_PRIVATE_KEY` and
+`CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD` hold it, only the publish job sees
+them, and `packaging/updater.pub` is its public half, the key installed
+copies trust. Losing the key means installed copies can no longer update.
 
 ## License
 

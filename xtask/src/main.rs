@@ -12,6 +12,7 @@ mod contract;
 mod integration;
 mod macos;
 mod package;
+mod release;
 
 use anyhow::{Result, bail};
 use std::path::PathBuf;
@@ -28,6 +29,8 @@ usage: cargo xtask <command>
   package macos        build the .dmg and the updater's .app.tar.gz in dist/ (on a Mac)
   check                fmt, clippy, contract check and tests: what CI runs on a pull request
   ladder               the whole local ladder: check, then both installers
+  release-assets <version> <installers> <out> <owner/repo>
+                       sign the installers, write latest.json and SHA256SUMS (publish job)
   image-tag            print the build image's name (CI builds the image under it)
   integration          run the client against a real backend in disposable containers
   capture              screenshot the Linux app against a disposable backend (target/capture/)
@@ -49,6 +52,13 @@ fn main() -> Result<()> {
         ["package", "macos"] => package::macos(&root),
         ["check"] => check(&root),
         ["ladder"] => ladder(&root),
+        ["release-assets", version, installers, out, repo] => release::run(
+            &root,
+            version,
+            std::path::Path::new(installers),
+            std::path::Path::new(out),
+            repo,
+        ),
         ["image-tag"] => {
             println!("{}", container::image_tag(&root)?);
             Ok(())
