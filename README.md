@@ -24,6 +24,7 @@ vendor/           GPUI's Windows backend with the cross-build patch
 tools/            the build container's Dockerfile
 packaging/        icons, the Linux desktop entry and installer, the macOS Info.plist,
                   and the installer config (Packager.toml)
+.github/          CI: checks on pull requests, the installers, the release
 ```
 
 ## Commands
