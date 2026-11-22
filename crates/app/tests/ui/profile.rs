@@ -325,21 +325,32 @@ fn searches_for_and_saves_a_profile_time_zone(cx: &mut TestAppContext) {
     bootstrap(&f, cx);
     land(&f, cx, "profile-about", "profile-timezone");
     click(&f, cx, "profile-timezone");
-    cx.update_window(f.window, |_, window, cx| window.input("Copenhagen", cx))
-        .unwrap();
+    assert_eq!(
+        find(&f, cx, "profile-timezone", |element| element.expanded()).flatten(),
+        Some(true)
+    );
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .find_all_by_role(gpui_kit::Role::TextInput)
+                .iter()
+                .any(|element| {
+                    element.placeholder() == Some("Search time zones")
+                        && element.focused() == Some(true)
+                })
+        );
+        window.input("Copenhagen", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
     cx.executor().advance_clock(Duration::from_millis(200));
-    wait(cx, "the Copenhagen time zone in the popup", |cx| {
-        f.window
-            .update(cx, |_, window, cx| {
-                window.render_frame(cx);
-                window
-                    .try_find_by_label("Europe/Copenhagen")
-                    .is_some_and(|option| option.visible())
-            })
-            .unwrap()
-    });
-    cx.update_window(f.window, |_, window, cx| window.press("enter", cx))
-        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.press("down", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
     cx.run_until_parked();
     assert_eq!(
         find(&f, cx, "profile-timezone", |element| element
