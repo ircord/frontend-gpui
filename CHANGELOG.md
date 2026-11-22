@@ -28,6 +28,7 @@
 - Search time zones in Profile settings and choose the one shown on your profile card.
 - The composer’s attachment menu opens the file picker, GIF picker, or slash command suggestions.
 - Run slash commands from a form with separate arguments, suggestions, and a masked field for channel keys.
+- Set or clear your network status directly with `/status`, or open its composer form to choose an emoji and a deadline.
 - Bulleted text pasted into the composer keeps its list formatting. On macOS and Windows, copied webpage and document lists also retain nesting and numbering.
 - The resizable emoji and GIF picker floats above the composer and returns focus when you dismiss it with Escape.
 - The composer shows Send when there’s text or a file to send, counts down near the text limit, and keeps drafts that exceed it.

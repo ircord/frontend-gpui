@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext, Entity, TestAppContext};
+use gpui_kit::{AppContext, Entity, MouseButton, TestAppContext};
 use ircord_app::Screen;
 use ircord_app::composer::ComposerView;
 use ircord_app::features::commands;
@@ -273,6 +273,126 @@ fn raw_commands_send_their_line_and_clear_the_box(cx: &mut TestAppContext) {
         .wait_for("POST", "/api/v1/networks/n1/commands", WAIT);
     assert_eq!(request.json()["line"], "TOPIC #general :Fresh news");
     assert_eq!(text(&f, cx), "");
+}
+
+#[gpui_kit::test]
+fn a_typed_status_command_updates_only_the_network_status_fields(cx: &mut TestAppContext) {
+    const PROFILE: &str = "/api/v1/networks/n1/profile";
+    let f = open(cx, snapshot(), |server| {
+        server.route_fn("PATCH", PROFILE, |request| {
+            let status = request.json();
+            Reply::json(
+                200,
+                json!({
+                    "id": "u-me", "account": "me", "nick": "me", "status": "online",
+                    "statusText": status["statusText"], "statusEmoji": status["statusEmoji"],
+                    "statusExpiresAt": status["statusExpiresAt"],
+                }),
+            )
+        });
+    });
+    type_in(&f, cx, "/status ☕ At lunch --for 1h");
+    press(&f, cx, "enter");
+    let update = f.server.wait_for("PATCH", PROFILE, WAIT).json();
+    let deadline = update["statusExpiresAt"].as_str().unwrap();
+    let deadline = chrono::DateTime::parse_from_rfc3339(deadline).unwrap();
+    let minutes = (deadline.to_utc() - chrono::Utc::now()).num_minutes();
+    assert!((59..=60).contains(&minutes));
+    assert_eq!(
+        update,
+        json!({
+            "statusText": "At lunch", "statusEmoji": "☕", "statusExpiresAt": update["statusExpiresAt"],
+        })
+    );
+    wait(cx, "the sent status command to clear", |cx| {
+        ircord_app::features::message_actions::box_text(cx).is_empty()
+    });
+    type_in(&f, cx, "/status clear");
+    press(&f, cx, "enter");
+    let clear = f.server.wait_for_nth("PATCH", PROFILE, 2, WAIT).json();
+    assert_eq!(
+        clear,
+        json!({"statusText": "", "statusEmoji": "", "statusExpiresAt": ""})
+    );
+}
+
+#[gpui_kit::test]
+fn an_invalid_status_command_stays_in_the_composer(cx: &mut TestAppContext) {
+    let f = open(cx, snapshot(), |_| {});
+    let invalid = "/status Busy --for";
+    type_in(&f, cx, invalid);
+    press(&f, cx, "enter");
+    assert_eq!(text(&f, cx), invalid);
+    assert!(
+        f.server
+            .requests_to("PATCH", "/api/v1/networks/n1/profile")
+            .is_empty()
+    );
+}
+
+#[gpui_kit::test]
+fn the_status_form_stays_in_the_composer_and_spends_draft_on_save(cx: &mut TestAppContext) {
+    let f = open(cx, snapshot(), |server| {
+        server.route_fn("PATCH", "/api/v1/networks/n1/profile", |request| {
+            let status = request.json();
+            Reply::json(
+                200,
+                json!({
+                    "id": "u-me", "account": "me", "nick": "me", "status": "online",
+                    "statusText": status["statusText"], "statusEmoji": status["statusEmoji"],
+                    "statusExpiresAt": status["statusExpiresAt"],
+                }),
+            )
+        });
+    });
+    type_in(&f, cx, "/status");
+    press(&f, cx, "enter");
+    assert!(shows(&f, cx, "command-editor"));
+    assert!(!shows(&f, cx, "status-editor"));
+    press(&f, cx, "escape");
+    assert!(!shows(&f, cx, "command-editor"));
+    assert_eq!(text(&f, cx), "/status");
+
+    press(&f, cx, "enter");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.input("grinning", cx);
+        window.render_frame(cx);
+        window.click("command-option-😀", cx);
+        window.click("command-argument-message", cx);
+        window.input("At lunch", cx);
+        window.click("command-status-expiry", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let hour = window.find_by_label("1 hour").bounds().center();
+        window.pointer_down(hour, MouseButton::Left, cx);
+        window.pointer_up(hour, MouseButton::Left, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("command-editor-run", cx);
+    })
+    .unwrap();
+    let status = f
+        .server
+        .wait_for("PATCH", "/api/v1/networks/n1/profile", WAIT)
+        .json();
+    assert_eq!(status["statusEmoji"], "😀");
+    assert_eq!(status["statusText"], "At lunch");
+    assert!(
+        status["statusExpiresAt"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+    wait(cx, "the command to clear after saving", |cx| {
+        ircord_app::features::message_actions::box_text(cx).is_empty()
+    });
+    assert!(!shows(&f, cx, "command-editor"));
 }
 
 #[gpui_kit::test]

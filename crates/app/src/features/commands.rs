@@ -260,8 +260,14 @@ fn command_filter(
             SendOutcome::Handled
         }
         Ok(Plan::Open { view, args }) => {
+            if view == View::Status && args.is_empty() {
+                let (draft, _) = composer::typed(&ctx.composer, cx);
+                if open_editor(ctx, "status", &draft, window, cx) {
+                    return SendOutcome::Keep;
+                }
+            }
             open_view(ctx, view, args, window, cx);
-            if view == View::Gif {
+            if matches!(view, View::Gif | View::Status) {
                 SendOutcome::Keep
             } else {
                 SendOutcome::Handled

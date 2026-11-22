@@ -7,6 +7,7 @@ use std::time::Duration;
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -14,7 +15,7 @@ use ircord_client::Client;
 use ircord_client::commands::catalog::{FieldKind, Spec, Suggest, matching, resolve};
 use ircord_client::contract::{ChannelListing, ConversationKind, Member};
 use ircord_client::store::drafts::TEXT_LIMIT;
-use ircord_client::store::{Workspace, people};
+use ircord_client::store::{Workspace, emoji, people};
 
 use super::{CommandFinished, CommandOrigin, SendOutcome, View, arg_error_text, args, cmd};
 use super::{
@@ -22,7 +23,8 @@ use super::{
 };
 use crate::composer::ComposerView;
 use crate::features::shortcuts::MarkRead;
-use crate::features::{drafts, klipy, message_actions, text};
+use crate::features::{drafts, klipy, message_actions, status, text};
+use crate::message::emoji as pictures;
 use crate::registry::ComposerCtx;
 use crate::route::Route;
 use crate::session::{Session, SessionEvent};
@@ -105,10 +107,6 @@ pub(crate) fn open(
         network.id.clone()
     };
 
-    if spec.name == "status" {
-        super::open_view(ctx, View::Status, String::new(), window, cx);
-        return true;
-    }
     if is_open(ctx, cx) {
         return true;
     }
@@ -132,6 +130,7 @@ struct OptionRow {
     label: String,
     detail: String,
     member: Option<String>,
+    emoji: Option<emoji::EmojiItem>,
 }
 
 impl OptionRow {
@@ -141,6 +140,7 @@ impl OptionRow {
             label: people::name(member).to_string(),
             detail: format!("@{}", member.nick),
             member: Some(member.id.clone()),
+            emoji: None,
         }
     }
 
@@ -150,6 +150,7 @@ impl OptionRow {
             value,
             detail,
             member: None,
+            emoji: None,
         }
     }
 }
@@ -162,6 +163,7 @@ struct Editor {
     network: String,
     spec: &'static Spec,
     draft: String,
+    status: Option<StatusDraft>,
     inputs: Vec<Entity<InputState>>,
     directory: Vec<ChannelListing>,
     directory_round: usize,
@@ -176,6 +178,11 @@ struct Editor {
     _subscriptions: Vec<Subscription>,
 }
 
+struct StatusDraft {
+    initial: Member,
+    expiry: people::Expiry,
+}
+
 impl Editor {
     fn new(
         ctx: &ComposerCtx,
@@ -187,15 +194,36 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut subscriptions = Vec::new();
+        let status = (spec.name == "status").then(|| StatusDraft {
+            initial: people::me(&client.read(), Some(&network)).clone(),
+            expiry: people::Expiry::Keep,
+        });
         let inputs = spec
             .fields
             .iter()
+            .filter(|field| status.is_none() || field.kind != FieldKind::Duration)
             .enumerate()
             .map(|(i, field)| {
                 let input = cx.new(|cx| {
-                    InputState::new(window, cx)
+                    let mut state = InputState::new(window, cx)
                         .placeholder(field_label(field.name))
-                        .masked(field.kind == FieldKind::Secret)
+                        .masked(field.kind == FieldKind::Secret);
+                    if let Some(status) = &status {
+                        let (placeholder, initial) = if i == 0 {
+                            (
+                                t!("people-status-emoji-placeholder"),
+                                status.initial.status_emoji.as_deref(),
+                            )
+                        } else {
+                            (
+                                t!("people-status-text-placeholder"),
+                                status.initial.status_text.as_deref(),
+                            )
+                        };
+                        state.set_placeholder(placeholder, window, cx);
+                        state.set_value(initial.unwrap_or_default(), window, cx);
+                    }
+                    state
                 });
                 subscriptions.push(cx.subscribe_in(
                     &input,
@@ -241,6 +269,7 @@ impl Editor {
             network,
             spec,
             draft: draft.to_string(),
+            status,
             inputs,
             directory: Vec::new(),
             directory_round: 0,
@@ -361,8 +390,24 @@ impl Editor {
                     .map(|nick| OptionRow::option(nick.clone(), String::new()))
                     .collect()
             }
-            // Status opens its own editor, which owns its emoji field.
-            Suggest::Emoji => Vec::new(),
+            Suggest::Emoji => {
+                if query.is_empty() {
+                    return Vec::new();
+                }
+                let ranked = emoji::usage_rank(w.documents.library.value());
+                let tone = emoji::skin_tone(w.documents.library.value());
+                emoji::rank(emoji::search(w.emoji.all(), query, None), &ranked, query)
+                    .into_iter()
+                    .take(8)
+                    .map(|item| OptionRow {
+                        value: item.text(tone),
+                        label: format!(":{}:", item.shortcode),
+                        detail: item.label.clone(),
+                        member: None,
+                        emoji: Some(item.clone()),
+                    })
+                    .collect()
+            }
         }
     }
 
@@ -395,6 +440,9 @@ impl Editor {
         self.inputs[field].update(cx, |input, cx| {
             input.set_value(row.value.clone(), window, cx)
         });
+        if let Some(emoji) = &row.emoji {
+            klipy::record_pick(&self.session, &emoji.id, cx);
+        }
         self.show_suggestions = false;
         if advance {
             self.inputs
@@ -490,6 +538,25 @@ impl Editor {
             .iter()
             .map(|i| i.read(cx).value().to_string())
             .collect();
+        let ctx = ComposerCtx {
+            session: self.session.clone(),
+            conversation: self.conversation.clone(),
+            composer,
+        };
+        if let Some(status) = &self.status {
+            let update = people::status_update(
+                &status.initial,
+                &values[0],
+                &values[1],
+                status.expiry,
+                chrono::Local::now(),
+            );
+            match update {
+                Ok(update) => self.save_status(&ctx, &client, update, window, cx),
+                Err(error) => self.failed(Some(status::error_text(error).into()), cx),
+            }
+            return;
+        }
         let line = match args::serialize(self.spec, &values) {
             Ok(line) => line,
             Err((index, error)) => {
@@ -515,11 +582,6 @@ impl Editor {
                 cx.notify();
                 return;
             }
-        };
-        let ctx = ComposerCtx {
-            session: self.session.clone(),
-            conversation: self.conversation.clone(),
-            composer,
         };
         let finished = completion(&ctx, &client, &self.draft, cx);
         self.busy = true;
@@ -574,6 +636,39 @@ impl Editor {
                 cx,
             ),
         }
+    }
+
+    fn save_status(
+        &mut self,
+        ctx: &ComposerCtx,
+        client: &Rc<Client>,
+        update: Option<ircord_client::contract::ProfileUpdate>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let finished = completion(ctx, client, &self.draft, cx);
+        self.busy = true;
+        self.error = None;
+        self.show_suggestions = false;
+        cx.notify();
+        let Some(update) = update else {
+            window.defer(cx, move |window, cx| finished(true, window, cx));
+            return;
+        };
+        let editor = cx.weak_entity();
+        status::update_status(
+            &self.session,
+            &self.network,
+            update,
+            window,
+            cx,
+            move |result, window, cx| match result {
+                Ok(()) => finished(true, window, cx),
+                Err(error) => {
+                    let _ = editor.update(cx, |editor, cx| editor.failed(Some(error), cx));
+                }
+            },
+        );
     }
 
     fn failed(&mut self, message: Option<String>, cx: &mut Context<Self>) {
@@ -637,11 +732,16 @@ impl Render for Editor {
         }
         let theme = theme::get(cx).clone();
         let field = self.focused(window, cx);
+        let label = if self.status.is_some() {
+            t!("people-status-title").to_string()
+        } else {
+            t!("commands-editor-label", command = self.spec.name)
+        };
         let mut form = div()
             .id("command-editor")
             .test_support()
             .role(Role::Group)
-            .aria_label(t!("commands-editor-label", command = self.spec.name))
+            .aria_label(label)
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(|this, _: &MarkRead, window, cx| this.escape(window, cx)))
             .flex()
@@ -688,7 +788,7 @@ impl Render for Editor {
             }
         }
 
-        let fields = div()
+        let mut fields = div()
             .id("command-editor-fields")
             .flex_1()
             .min_w_0()
@@ -714,10 +814,19 @@ impl Render for Editor {
                         )
                     }),
             );
-        let run = if self.busy {
-            t!("commands-editor-running")
-        } else {
-            t!("commands-editor-run")
+        if let Some(status) = &self.status {
+            fields = fields.child(
+                div()
+                    .flex_1()
+                    .min_w(px(132.))
+                    .child(self.expiry_button(status, cx)),
+            );
+        }
+        let run = match (self.status.is_some(), self.busy) {
+            (true, true) => t!("people-status-command-saving"),
+            (true, false) => t!("people-status-save"),
+            (false, true) => t!("commands-editor-running"),
+            (false, false) => t!("commands-editor-run"),
         };
         form.child(
             div()
@@ -768,6 +877,58 @@ impl Render for Editor {
 }
 
 impl Editor {
+    fn expiry_button(&self, draft: &StatusDraft, cx: &Context<Self>) -> impl IntoElement {
+        let edited = self.inputs[0].read(cx).value().trim()
+            != draft.initial.status_emoji.as_deref().unwrap_or_default()
+            || self.inputs[1].read(cx).value().trim()
+                != draft.initial.status_text.as_deref().unwrap_or_default();
+        let label = |expiry| {
+            if edited
+                && expiry == people::Expiry::Keep
+                && draft
+                    .initial
+                    .status_expires_at
+                    .as_ref()
+                    .is_some_and(|s| !s.is_empty())
+            {
+                t!("people-status-command-new-deadline").to_string()
+            } else {
+                status::expiry_label(expiry, draft.initial.status_expires_at.as_deref())
+            }
+        };
+        let selected = draft.expiry;
+        let choices = people::Expiry::CHOICES.map(|expiry| (expiry, label(expiry)));
+        let editor = cx.weak_entity();
+        Button::new("command-status-expiry")
+            .small()
+            .outline()
+            .w_full()
+            .dropdown_caret(true)
+            .label(label(selected))
+            .accessibility_label(t!("people-status-clear-after"))
+            .disabled(self.busy)
+            .dropdown_menu_with_anchor(Anchor::BottomRight, move |mut menu, _, _| {
+                for (expiry, label) in &choices {
+                    let expiry = *expiry;
+                    let editor = editor.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(label.clone())
+                            .checked(expiry == selected)
+                            .on_click(move |_, _, cx| {
+                                let _ = editor.update(cx, |editor, cx| {
+                                    if let Some(draft) = &mut editor.status {
+                                        draft.expiry = expiry;
+                                        editor.error = None;
+                                        cx.notify();
+                                    }
+                                });
+                            }),
+                    );
+                }
+                menu
+            })
+    }
+
     fn suggestions(
         &self,
         field: usize,
@@ -776,11 +937,8 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let client = self.client(cx);
-        let server = self
-            .session
-            .read(cx)
-            .server()
-            .map(|server| server.url().clone());
+        let origin = self.session.read(cx).server().cloned();
+        let server = origin.as_ref().map(|server| server.url());
         let selected = self.selected.min(options.len() - 1);
         let hover = theme.hover;
         div()
@@ -806,13 +964,31 @@ impl Editor {
                         ui::avatar::Person {
                             member,
                             name: &option.label,
-                            server: server.as_ref(),
+                            server,
                             presence: true,
                             key: &format!("command-editor-person-{}", member.id),
                         },
                         px(ui::avatar::TINY),
                         theme,
                     ))
+                });
+                let emoji = option.emoji.as_ref().map(|item| {
+                    let url = pictures::picture_url(item, false, origin.as_ref());
+                    div()
+                        .size(px(24.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(url.map_or_else(
+                            || {
+                                div()
+                                    .text_lg()
+                                    .child(option.value.clone())
+                                    .into_any_element()
+                            },
+                            |url| pictures::picture(url, theme.faint),
+                        ))
                 });
                 div()
                     .id(ElementId::Name(
@@ -832,6 +1008,7 @@ impl Editor {
                     .when(i == selected, |d| d.bg(hover))
                     .hover(move |d| d.bg(hover))
                     .children(picture)
+                    .children(emoji)
                     .child(div().flex_none().text_sm().child(option.label.clone()))
                     .when(!option.detail.is_empty(), |d| {
                         d.child(

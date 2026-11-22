@@ -3,7 +3,8 @@
 //! Your name at the foot of the sidebar opens your own menu: set or clear
 //! a status (an emoji and a line of text that clears after a while), go
 //! away or come back, and open your profile. The line under your name
-//! shows your presence and status. `/status` opens the same editor.
+//! shows your presence and status. `/status` without arguments uses the
+//! composer editor, and a complete command updates the network profile.
 
 use crate::menu_order;
 use crate::ui::focus::Reachable;
@@ -12,11 +13,13 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use ircord_client::commands::View;
+use ircord_client::commands::{View, status as command};
 use ircord_client::contract::{MemberStatus, NetworkStatus, ProfileUpdate};
 use ircord_client::store::people::{self, Expiry, StatusError};
+use std::rc::Rc;
 
-use crate::features::commands::on_view;
+use crate::features::commands::{ViewRequest, on_view};
+use crate::features::drafts;
 use crate::message::emoji;
 use crate::registry::{self, MemberCtx, MenuItem, SidebarCtx, Slot};
 use crate::session::Session;
@@ -33,7 +36,7 @@ pub fn init(cx: &mut App) {
                 t!("people-status-set"),
                 |ctx: &SidebarCtx, window, cx| {
                     if let Some(network) = ctx.network.clone() {
-                        open_editor(&ctx.session, &network, "", window, cx);
+                        open_dialog(&ctx.session, &network, window, cx);
                     }
                 },
             )
@@ -103,15 +106,39 @@ pub fn init(cx: &mut App) {
         );
         r.self_line.add(Slot::new("status-line", self_line));
     });
-    on_view(cx, View::Status, |request, window, cx| {
-        open_editor(
-            &request.session,
-            &request.network,
-            &request.args,
-            window,
-            cx,
-        );
-    });
+    on_view(cx, View::Status, run_command);
+}
+
+fn run_command(request: &ViewRequest, window: &mut Window, cx: &mut App) {
+    let Some(command) = command::parse(&request.args, chrono::Utc::now()) else {
+        return ui::toast::info(window, cx, t!("people-status-command-usage"));
+    };
+    if request.network.is_empty() {
+        return ui::toast::info(window, cx, t!("people-status-command-network"));
+    }
+    let (update, notice) = match command {
+        command::Command::Edit => {
+            return open_dialog(&request.session, &request.network, window, cx);
+        }
+        command::Command::Clear => (people::clear_status(), t!("people-status-command-cleared")),
+        command::Command::Set(status) => (status.into(), t!("people-status-command-set")),
+    };
+    let session = request.session.clone();
+    let (conversation, draft) = (request.conversation.clone(), request.draft.clone());
+    update_status(
+        &request.session,
+        &request.network,
+        update,
+        window,
+        cx,
+        move |result, window, cx| match result {
+            Ok(()) => {
+                drafts::clear_if_matches(&session, &conversation, &draft, window, cx);
+                ui::toast::success(window, cx, notice);
+            }
+            Err(error) => ui::toast::error(window, cx, error),
+        },
+    );
 }
 
 /// Your status label on the sidebar's network and whether you are away.
@@ -225,6 +252,27 @@ fn save(
     window: &mut Window,
     cx: &mut App,
 ) {
+    update_status(
+        session,
+        network,
+        update,
+        window,
+        cx,
+        |result, window, cx| match result {
+            Ok(()) => ui::dialog::close(window, cx),
+            Err(error) => ui::toast::error(window, cx, error),
+        },
+    );
+}
+
+pub(super) fn update_status(
+    session: &Entity<Session>,
+    network: &str,
+    update: ProfileUpdate,
+    window: &mut Window,
+    cx: &mut App,
+    finished: impl FnOnce(Result<(), String>, &mut Window, &mut App) + 'static,
+) {
     let Some(client) = session.read(cx).client().cloned() else {
         return;
     };
@@ -232,37 +280,37 @@ fn save(
     let task = client
         .handle()
         .request(move |api| async move { api.update_network_profile(&network, &update).await });
-    let client = client.clone();
+    let session = session.clone();
     window
         .spawn(cx, async move |acx| {
             let result = task
                 .await
                 .map_err(|e| e.to_string())
                 .and_then(|r| r.map_err(|e| e.to_string()));
-            let _ = acx.update(|window, cx| match result {
-                Ok(member) => {
-                    client.change(|w| people::put_member(w, member));
-                    ui::dialog::close(window, cx);
+            let _ = acx.update(|window, cx| {
+                if !session
+                    .read(cx)
+                    .client()
+                    .is_some_and(|active| Rc::ptr_eq(active, &client))
+                {
+                    return;
                 }
-                Err(e) => ui::toast::error(window, cx, e),
+                finished(
+                    result.map(|member| client.change(|w| people::put_member(w, member))),
+                    window,
+                    cx,
+                );
             });
         })
         .detach();
 }
 
-/// The status editor. `typed` prefills the text (what followed `/status`).
-pub fn open_editor(
-    session: &Entity<Session>,
-    network: &str,
-    typed: &str,
-    window: &mut Window,
-    cx: &mut App,
-) {
+/// The status editor opened from the account menu.
+fn open_dialog(session: &Entity<Session>, network: &str, window: &mut Window, cx: &mut App) {
     let Some(client) = session.read(cx).client().cloned() else {
         return;
     };
     let me = people::me(&client.read(), Some(network)).clone();
-    let typed = typed.trim().to_string();
     let editor = cx.new(|cx| {
         let emoji = cx.new(|cx| {
             let mut s =
@@ -273,12 +321,7 @@ pub fn open_editor(
         let text = cx.new(|cx| {
             let mut s =
                 InputState::new(window, cx).placeholder(t!("people-status-text-placeholder"));
-            let value = if typed.is_empty() {
-                me.status_text.clone().unwrap_or_default()
-            } else {
-                typed.clone()
-            };
-            s.set_value(value, window, cx);
+            s.set_value(me.status_text.clone().unwrap_or_default(), window, cx);
             s
         });
         StatusEditor {
@@ -314,30 +357,29 @@ pub struct StatusEditor {
     error: Option<SharedString>,
 }
 
-fn expiry_label(expiry: Expiry, cx: &App, editor: &StatusEditor) -> String {
+pub(super) fn expiry_label(expiry: Expiry, until: Option<&str>) -> String {
     match expiry {
-        Expiry::Keep => {
-            let session = editor.session.read(cx);
-            let until = session.client().and_then(|c| {
-                people::me(&c.read(), Some(&editor.network))
-                    .status_expires_at
-                    .clone()
-                    .filter(|s| !s.is_empty())
-            });
-            match until.and_then(|u| chrono::DateTime::parse_from_rfc3339(&u).ok()) {
-                Some(at) => t!(
-                    "people-status-keep-until",
-                    when = at.with_timezone(&chrono::Local).format("%H:%M %d %b")
-                ),
-                None => t!("people-status-keep").to_string(),
-            }
-        }
+        Expiry::Keep => match until.and_then(|u| chrono::DateTime::parse_from_rfc3339(u).ok()) {
+            Some(at) => t!(
+                "people-status-keep-until",
+                when = at.with_timezone(&chrono::Local).format("%H:%M %d %b")
+            ),
+            None => t!("people-status-keep").to_string(),
+        },
         Expiry::Never => t!("people-status-never").to_string(),
         Expiry::Minutes30 => t!("people-status-30m").to_string(),
         Expiry::Hour1 => t!("people-status-1h").to_string(),
         Expiry::Hours4 => t!("people-status-4h").to_string(),
         Expiry::Today => t!("people-status-today").to_string(),
         Expiry::Week => t!("people-status-week").to_string(),
+    }
+}
+
+pub(super) fn error_text(error: StatusError) -> &'static str {
+    match error {
+        StatusError::Controls => t!("people-status-error-controls"),
+        StatusError::TextTooLong => t!("people-status-error-text"),
+        StatusError::EmojiTooLong => t!("people-status-error-emoji"),
     }
 }
 
@@ -351,14 +393,7 @@ impl StatusEditor {
         let text = self.text.read(cx).value().to_string();
         match people::status_update(&me, &emoji, &text, self.expiry, chrono::Local::now()) {
             Err(e) => {
-                self.error = Some(
-                    match e {
-                        StatusError::Controls => t!("people-status-error-controls"),
-                        StatusError::TextTooLong => t!("people-status-error-text"),
-                        StatusError::EmojiTooLong => t!("people-status-error-emoji"),
-                    }
-                    .into(),
-                );
+                self.error = Some(error_text(e).into());
                 cx.notify();
             }
             Ok(None) => ui::dialog::close(window, cx),
@@ -370,6 +405,11 @@ impl StatusEditor {
 impl Render for StatusEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
+        let until = self.session.read(cx).client().and_then(|client| {
+            people::me(&client.read(), Some(&self.network))
+                .status_expires_at
+                .clone()
+        });
         let mut choices = div()
             .id("status-expiry")
             .test_support()
@@ -380,7 +420,7 @@ impl Render for StatusEditor {
             .gap_1();
         for expiry in Expiry::CHOICES {
             let selected = self.expiry == expiry;
-            let label = expiry_label(expiry, cx, self);
+            let label = expiry_label(expiry, until.as_deref());
             choices = choices.child(
                 div()
                     .id(ElementId::Name(
