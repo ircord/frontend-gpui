@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request replaces its running checks. The event is in
+# the group, so a release's own run (workflow_dispatch) is never cancelled.
+concurrency:
+  group: gpui-check-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     # Draft pull requests run nothing; marking one ready runs the check.
@@ -37,6 +43,12 @@ jobs:
             ~/.cargo/git/db
           key: cargo-registry-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-registry-
+      # Microsoft's C runtime and SDK libraries, about 1 GB, for linking.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/cargo-xwin/xwin
+          key: cargo-xwin-${{ hashFiles('tools/build.Dockerfile') }}
+          restore-keys: cargo-xwin-
       - uses: ./.github/actions/build-image
       - name: cargo xtask check
         env:
