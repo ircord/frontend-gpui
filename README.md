@@ -65,6 +65,10 @@ macOS asks once as described under macOS.
 
 **Windows 10 or 11.** Run `IRCord-GPUI-Windows-x64-setup.exe`; it installs
 for the current user, with a Start menu entry, and needs no administrator.
+The setup also makes IRCord GPUI the app for `irc://` and `ircs://` links; to
+give them back to another IRC app, set that app as the handler again in its
+own settings (Settings → This device here shows which app has them), and
+uninstalling IRCord GPUI removes its registration if it still points at it.
 A build from this repository also runs as it is: copy `dist/ircord.exe` over
 and run it. Settings live in `%APPDATA%\com.ircord.gpui` (the server address,
 window size and `ircord.log`); the sign-in is kept in Windows Credential
