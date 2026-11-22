@@ -4,8 +4,8 @@
 use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
-use gpui_kit::test::{TestQueryExt, TestWindowExt};
-use gpui_kit::{AppContext, ClipboardItem, MouseButton, TestAppContext, point, px};
+use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
+use gpui_kit::{AppContext, ClipboardItem, Focusable, MouseButton, TestAppContext, point, px};
 use ircord_app::Screen;
 use ircord_app::composer::expressions::Tab;
 use ircord_app::features::{klipy, message_actions};

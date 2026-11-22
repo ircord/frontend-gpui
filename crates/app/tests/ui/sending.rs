@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use gpui_kit::test::TestWindowExt;
+use gpui_kit::test::{TestQueryExt, TestWindowExt};
 use gpui_kit::{AppContext, ClipboardItem, TestAppContext};
 use ircord_app::features::message_actions;
 use ircord_client::contract::*;

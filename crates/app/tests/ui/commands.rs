@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gpui_kit::test::TestWindowExt;
+use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
 use gpui_kit::{AppContext, Entity, MouseButton, TestAppContext};
 use ircord_app::Screen;
 use ircord_app::composer::ComposerView;
