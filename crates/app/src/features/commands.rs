@@ -17,7 +17,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::Client;
 use ircord_client::commands::args::{self, ArgError};
-use ircord_client::commands::catalog::{self, Place, Suggest};
+use ircord_client::commands::catalog::{Place, Suggest};
 use ircord_client::commands::complete;
 use ircord_client::commands::ignore::Notice;
 use ircord_client::commands::{self as cmd, NickError, Plan, Problem, View};
