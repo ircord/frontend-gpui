@@ -193,7 +193,9 @@ impl ComposerView {
             return;
         }
         let filters = registry::get(cx).composer.send_filters.to_vec();
-        let mut text = text;
+        // Text pasted on Windows keeps its `\r\n` line breaks, which the
+        // server refuses: every send, reply and edit goes out with `\n`.
+        let mut text = ircord_client::features::plain_line_breaks(&text).into_owned();
         for filter in filters {
             match (filter.filter)(&ctx, text, window, cx) {
                 SendOutcome::Continue(next) => text = next,

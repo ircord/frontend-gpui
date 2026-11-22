@@ -22,7 +22,7 @@ use ircord_client::contract::{
 };
 use ircord_client::format::{self, Formatted};
 use ircord_client::irc::Prefixes;
-use ircord_client::store::{PendingSend, SendState, Workspace};
+use ircord_client::store::{PendingSend, SELF_ID, SendState, Workspace};
 
 /// Messages from one sender less than this many milliseconds apart share a
 /// header.
@@ -95,7 +95,7 @@ pub enum Row {
     Event(Rc<EventRow>),
     /// A run of joins, parts, quits and nick changes as one line.
     Fold(Rc<FoldRow>),
-    Pending(Rc<PendingSend>),
+    Pending(Rc<PendingRow>),
 }
 
 impl Row {
@@ -117,9 +117,22 @@ impl Row {
             Row::Message(m) => format!("m:{}:{}", m.id, m.version),
             Row::Event(e) => format!("e:{}", e.id),
             Row::Fold(f) => format!("f:{}:{}:{}", f.id, f.events.len(), f.expanded),
-            Row::Pending(p) => format!("p:{}:{:?}", p.client_id, p.state),
+            Row::Pending(p) => format!(
+                "p:{}:{:?}:{}:{}",
+                p.send.client_id, p.send.state, p.header, p.time
+            ),
         }
     }
+}
+
+/// A send the server has not confirmed yet, drawn after what it stored.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingRow {
+    pub send: PendingSend,
+    /// Show your name, picture and the time above it: it does not continue
+    /// your own message just above, as a message row would not.
+    pub header: bool,
+    pub time: String,
 }
 
 /// What the start of a conversation's history says about it.
@@ -619,16 +632,42 @@ pub fn build_with(
     } else if timeline.newer_failed {
         rows.push(Row::NewerFailed);
     }
-    // Sends the server has not echoed yet sit at the end of the present.
+    // Sends the server has not echoed yet sit at the end of the present,
+    // as the web client keeps its outbox after the stored history, grouped
+    // with your messages just above them.
     if !timeline.has_newer {
+        if !matches!(rows.last(), Some(Row::Message(_))) {
+            last = None;
+        }
         for pending in w.pending_in(conversation) {
             let echoed = timeline
                 .entries
                 .iter()
                 .any(|e| e.message.client_id.as_deref() == Some(pending.client_id.as_str()));
-            if !echoed {
-                rows.push(Row::Pending(Rc::new(pending.clone())));
+            if echoed {
+                continue;
             }
+            let at = pending.created_ms;
+            let kind = if pending.action {
+                MessageKind::Action
+            } else {
+                MessageKind::Message
+            };
+            let header = match &last {
+                Some((sender, prev, prev_kind)) => {
+                    !w.is_self(sender, &network)
+                        || at - prev >= GROUP_MS
+                        || *prev_kind != kind
+                        || pending.action
+                }
+                None => true,
+            };
+            last = Some((SELF_ID.to_string(), at, kind));
+            rows.push(Row::Pending(Rc::new(PendingRow {
+                send: pending.clone(),
+                header,
+                time: crate::message::layout::time_label(w, &local_time(at)),
+            })));
         }
     }
     rows
@@ -1193,12 +1232,75 @@ mod tests {
             text: "hi".into(),
             action: false,
             state: SendState::Failed("Not connected".into()),
+            created_ms: 0,
+            ..Default::default()
         });
         let rows = build(&w, "c", Options::default());
         let Some(Row::Pending(p)) = rows.last() else {
             panic!()
         };
-        assert_eq!(pending_label(p), "Not connected");
+        assert_eq!(pending_label(&p.send), "Not connected");
+        assert!(p.header, "nothing of yours above it");
+    }
+
+    #[test]
+    fn an_unsent_message_groups_with_yours_above_it() {
+        let send = |w: &mut Workspace, id: &str, at: &str| {
+            w.queue_send(PendingSend {
+                client_id: id.into(),
+                conversation_id: "c".into(),
+                text: "hi".into(),
+                action: false,
+                state: SendState::Sending,
+                created_ms: ms(at),
+                ..Default::default()
+            });
+        };
+        let headers = |w: &Workspace| -> Vec<bool> {
+            build(w, "c", Options::default())
+                .into_iter()
+                .filter_map(|r| match r {
+                    Row::Pending(p) => Some(p.header),
+                    _ => None,
+                })
+                .collect()
+        };
+        // After your own message a minute earlier: no header, as on the web.
+        let mut w = workspace();
+        load(
+            &mut w,
+            vec![msg("1", "2026-11-20T12:00:00Z", "u-me", "mine")],
+            None,
+        );
+        send(&mut w, "k1", "2026-11-20T12:01:00Z");
+        send(&mut w, "k2", "2026-11-20T12:01:30Z");
+        assert_eq!(headers(&w), [false, false]);
+        // A pause of five minutes or more starts a new group.
+        send(&mut w, "k3", "2026-11-20T12:07:00Z");
+        assert_eq!(headers(&w), [false, false, true]);
+        // An action always has its own header.
+        w.queue_send(PendingSend {
+            client_id: "k4".into(),
+            conversation_id: "c".into(),
+            text: "waves".into(),
+            action: true,
+            created_ms: ms("2026-11-20T12:07:10Z"),
+            ..Default::default()
+        });
+        assert_eq!(headers(&w), [false, false, true, true]);
+        // After someone else's message: your name and picture above it.
+        let mut w = workspace();
+        load(
+            &mut w,
+            vec![msg("1", "2026-11-20T12:00:00Z", "m-bob", "theirs")],
+            None,
+        );
+        send(&mut w, "k1", "2026-11-20T12:01:00Z");
+        assert_eq!(headers(&w), [true]);
+    }
+
+    fn ms(at: &str) -> i64 {
+        ircord_client::store::parse_time(at)
     }
 
     #[test]
@@ -1523,6 +1625,8 @@ mod tests {
             text: "hi".into(),
             action: false,
             state: SendState::Sending,
+            created_ms: 0,
+            ..Default::default()
         });
         let b = w.begin_newer("c").unwrap();
         let rows = build(&w, "c", Options::default());

@@ -173,6 +173,8 @@ fn the_outbox_can_be_opened_without_a_draft(cx: &mut TestAppContext) {
                 text: "Still on my device".into(),
                 action: false,
                 state: SendState::Failed("Could not send".into()),
+                created_ms: 0,
+                ..Default::default()
             })
         });
     });
