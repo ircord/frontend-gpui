@@ -4835,6 +4835,7 @@ dependencies = [
  "http",
  "iana-time-zone",
  "icu_locale",
+ "icu_properties",
  "ircord-contract",
  "jiff",
  "keyring",
@@ -4854,6 +4855,7 @@ dependencies = [
  "tokio-tungstenite",
  "unicode-normalization",
  "unicode-script",
+ "unicode-segmentation",
  "url",
  "webpki-roots",
 ]

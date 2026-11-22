@@ -12,6 +12,7 @@ pub mod catalog;
 pub mod complete;
 pub mod ignore;
 pub mod run;
+pub mod status;
 
 pub use catalog::{ALIASES, COMMANDS, Field, FieldKind, Place, Spec, resolve};
 pub use run::{Done, NickError, Plan, Problem, View, execute, ignore_outcome, plan};
