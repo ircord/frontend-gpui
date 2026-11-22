@@ -11,6 +11,7 @@
 use crate::menu_order;
 use crate::ui::focus::Reachable;
 use std::rc::{Rc, Weak};
+use std::time::Duration;
 
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -875,6 +876,7 @@ pub struct ProfileCard {
     member: String,
     network: String,
     _subscription: Subscription,
+    _clock: Task<()>,
 }
 
 impl ProfileCard {
@@ -891,11 +893,22 @@ impl ProfileCard {
                 cx.notify();
             }
         });
+        let clock = cx.spawn(async move |card, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(60))
+                    .await;
+                if card.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        });
         let this = Self {
             session,
             member,
             network,
             _subscription: subscription,
+            _clock: clock,
         };
         if let Some(client) = this.session.read(cx).client().cloned() {
             let nick = people::person(&client.read(), &this.member, &this.network)
@@ -953,6 +966,7 @@ fn info_rows(
         .aria_label(label)
         .flex()
         .flex_col();
+    let row_count = rows.len();
     for (i, (key, value)) in rows.into_iter().enumerate() {
         list = list.child(
             div()
@@ -961,11 +975,13 @@ fn info_rows(
                 .role(Role::ListItem)
                 .aria_label(SharedString::from(format!("{key}: {value}")))
                 .flex()
+                .items_baseline()
                 .justify_between()
                 .gap_4()
-                .py_1()
-                .border_b_1()
-                .border_color(theme.rail)
+                .py_1p5()
+                .when(i + 1 < row_count, |row| {
+                    row.border_b_1().border_color(theme.rail)
+                })
                 .child(
                     div()
                         .flex_none()
@@ -973,57 +989,17 @@ fn info_rows(
                         .text_color(theme.muted)
                         .child(key),
                 )
-                .child(div().min_w_0().text_sm().child(value)),
+                .child(
+                    div()
+                        .min_w_0()
+                        .text_sm()
+                        .text_right()
+                        .whitespace_normal()
+                        .child(value),
+                ),
         );
     }
     list.into_any_element()
-}
-
-/// Facts as tiles side by side, the value over its label, as the web's card.
-fn fact_tiles(
-    id: &'static str,
-    label: &'static str,
-    facts: Vec<(String, String)>,
-    theme: &Theme,
-) -> AnyElement {
-    let mut tiles = div()
-        .id(id)
-        .test_support()
-        .role(Role::List)
-        .aria_label(label)
-        .flex_none()
-        .flex()
-        .flex_wrap()
-        .gap_px()
-        .rounded(theme.radius_large)
-        .overflow_hidden()
-        .bg(theme.border);
-    for (i, (key, value)) in facts.into_iter().enumerate() {
-        tiles = tiles.child(
-            div()
-                .id(ElementId::Name(format!("{id}-{i}").into()))
-                .test_support()
-                .role(Role::ListItem)
-                .aria_label(SharedString::from(format!("{key}: {value}")))
-                .flex_1()
-                .min_w(px(110.))
-                .flex()
-                .flex_col()
-                .gap_0p5()
-                .px_3()
-                .py_2p5()
-                .bg(theme.sidebar)
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.text)
-                        .child(value),
-                )
-                .child(div().text_xs().text_color(theme.muted).child(key)),
-        );
-    }
-    tiles.into_any_element()
 }
 
 fn badge(id: String, text: SharedString, theme: &Theme) -> AnyElement {
@@ -1426,14 +1402,19 @@ impl Render for ProfileCard {
         if let Some(location) = m.location.clone().filter(|l| !l.is_empty()) {
             details.push((t!("people-profile-location").to_string(), location));
         }
-        if let Some(langs) = m.languages.clone().filter(|l| !l.is_empty()) {
+        let clock_12h = crate::message::layout::settings(cx).clock_12h;
+        if let Some(time) = m
+            .timezone
+            .as_deref()
+            .and_then(|zone| people::local_time(zone, now, clock_12h))
+        {
+            details.push((t!("people-profile-local-time").to_string(), time));
+        }
+        if let Some(langs) = m.languages.as_ref().filter(|l| !l.is_empty()) {
             details.push((t!("people-profile-languages").to_string(), langs.join(", ")));
         }
-        if let Some(tz) = m.timezone.clone().filter(|t| !t.is_empty()) {
-            details.push((t!("people-profile-timezone").to_string(), tz));
-        }
         if !details.is_empty() {
-            card = card.child(fact_tiles(
+            card = card.child(info_rows(
                 "profile-details",
                 t!("people-profile-details"),
                 details,

@@ -293,6 +293,15 @@ pub fn status_label(m: &Member, now_ms: i64) -> Option<String> {
     Some(parts.join(" "))
 }
 
+/// The time where someone is, using the reader's clock format.
+pub fn local_time(zone: &str, now_ms: i64, clock_12h: bool) -> Option<String> {
+    let zone = jiff::tz::TimeZone::get(zone).ok()?;
+    let at = jiff::Timestamp::from_millisecond(now_ms).ok()?;
+    let time = at.to_zoned_datetime(zone).time();
+    let format = if clock_12h { "%I:%M %p" } else { "%H:%M" };
+    Some(time.strftime(format).to_string())
+}
+
 /// When a status set now clears.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expiry {
@@ -766,6 +775,18 @@ mod tests {
     use super::*;
     use crate::testing::{SnapshotBuilder, member};
     use chrono::{FixedOffset, Utc};
+
+    #[test]
+    fn profile_time_uses_the_readers_clock_and_the_members_daylight_saving() {
+        let before = parse_time("2026-03-29T00:59:00Z");
+        let after = parse_time("2026-03-29T01:00:00Z");
+        let local = |at, twelve| local_time("Europe/Copenhagen", at, twelve).unwrap();
+        assert_eq!(local(before, false), "01:59");
+        assert_eq!(local(after, false), "03:00");
+        assert_eq!(local(after, true), "03:00 AM");
+        assert!(local_time("Not/AZone", after, false).is_none());
+        assert!(local_time("", after, false).is_none());
+    }
 
     fn workspace() -> Workspace {
         SnapshotBuilder::new()
