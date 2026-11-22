@@ -264,3 +264,77 @@ fn s5_upload_rename_and_remove_an_emoji() {
         .expect("remove the emoji");
     assert!(listed(&api).iter().all(|e| e.id != uploaded.id));
 }
+
+/// Discover lists emoji.gg's emoji, and each one's picture is read with the
+/// session (the backend serves `previewUrl` only to a signed-in account).
+/// The backend reads emoji.gg itself, so this case needs the internet.
+#[test]
+fn s5_discover_lists_emoji_with_their_pictures() {
+    use ircord_client::api::ApiError;
+    use ircord_client::api::emotes::{Discover, image_type, is_discovery_preview};
+
+    let Some((server, irc)) = environment() else {
+        return;
+    };
+    let channel = format!("#{}", unique("discover"));
+    let rt = runtime().unwrap();
+    let address = ServerAddress::parse(&server).unwrap();
+    let username = unique("gpui");
+    let password = random_id();
+    wait_for_backend(&rt, &address);
+    let cookie = rt.block_on(setup_account(
+        &address, &username, &password, &irc, &channel,
+    ));
+    let api = Api::new(address.clone());
+    api.set_cookie(Some(cookie));
+
+    // A slow first read of emoji.gg answers 503 and the backend waits a
+    // minute before it tries that page again.
+    let deadline = Instant::now() + Duration::from_secs(150);
+    let page = loop {
+        match rt.block_on(api.discover_emotes(&Discover::default())) {
+            Ok(page) if page.items.as_ref().is_some_and(|i| !i.is_empty()) => break page,
+            other if Instant::now() > deadline => {
+                panic!("Discover never listed emoji: {other:?}")
+            }
+            _ => std::thread::sleep(Duration::from_secs(10)),
+        }
+    };
+    let items = page.items.unwrap();
+    assert!(
+        page.filters
+            .sources
+            .unwrap_or_default()
+            .contains(&"emoji.gg".to_string())
+    );
+    let first = &items[0];
+    assert_eq!(first.provider, "emoji.gg");
+    assert!(!first.name.is_empty());
+    assert!(
+        is_discovery_preview(&first.preview_url),
+        "{} is a discovery preview path",
+        first.preview_url
+    );
+
+    // The pictures, still and played, are pictures.
+    for item in items.iter().take(3) {
+        for still in [true, false] {
+            let picture = rt
+                .block_on(api.discovered_picture(&item.preview_url, still))
+                .unwrap_or_else(|e| panic!("{}'s picture: {e}", item.name));
+            assert!(
+                image_type(&picture.bytes).is_some(),
+                "{}'s picture is {}",
+                item.name,
+                picture.content_type
+            );
+        }
+    }
+
+    // Without the session the server refuses it: why `img(url)` drew none.
+    let anonymous = Api::new(address);
+    assert!(matches!(
+        rt.block_on(anonymous.discovered_picture(&first.preview_url, true)),
+        Err(ApiError::Unauthorized)
+    ));
+}

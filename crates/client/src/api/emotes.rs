@@ -106,6 +106,88 @@ impl Api {
         }
         self.get_query("/api/v1/emotes/discover", &params).await
     }
+
+    /// `GET /api/v1/emotes/discover/{provider}/{id}/preview`: a discovered
+    /// emoji's picture, by the item's `previewUrl`. The server serves it only
+    /// to a signed-in account, so it is fetched here with the session rather
+    /// than through `img(url)`; `still` asks for the first frame
+    /// (`?static=true`), as the web's tiles do. The server makes stills only
+    /// from GIFs and refuses one for an animated PNG (which emoji.gg lists as
+    /// still); that one comes whole, and is drawn on its first frame.
+    pub async fn discovered_picture(
+        &self,
+        preview_url: &str,
+        still: bool,
+    ) -> Result<Picture, ApiError> {
+        if !is_discovery_preview(preview_url) {
+            return Err(ApiError::Decode(format!(
+                "{preview_url} is not a discovery preview on this server"
+            )));
+        }
+        let mut request = self.request(Method::GET, preview_url);
+        if still {
+            request = request.query(&[("static", "true")]);
+        }
+        let response = match self.send(request).await {
+            Err(ApiError::Http { status: 422, .. }) if still => {
+                self.send(self.request(Method::GET, preview_url)).await?
+            }
+            other => other?,
+        };
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        if bytes.len() > PICTURE_MAX {
+            return Err(ApiError::Decode(format!(
+                "the preview is larger than {PICTURE_MAX} bytes"
+            )));
+        }
+        let content_type = image_type(&bytes)
+            .map(str::to_string)
+            .unwrap_or(content_type);
+        Ok(Picture {
+            content_type,
+            bytes: bytes.to_vec(),
+        })
+    }
+}
+
+/// A picture read from the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Picture {
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
+/// The largest discovery preview read.
+pub const PICTURE_MAX: usize = 8 << 20;
+
+/// Whether `url` is a discovery preview path on the signed-in server (the
+/// only kind the backend hands out), the one place the session is sent for
+/// a picture.
+pub fn is_discovery_preview(url: &str) -> bool {
+    url.strip_prefix("/api/v1/emotes/discover/")
+        .and_then(|rest| rest.strip_suffix("/preview"))
+        .is_some_and(|middle| {
+            let mut parts = middle.split('/');
+            let ok = |p: Option<&str>| {
+                p.is_some_and(|p| {
+                    !p.is_empty()
+                        && p != ".."
+                        && p.chars().all(|ch| {
+                            ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '%')
+                        })
+                })
+            };
+            ok(parts.next()) && ok(parts.next()) && parts.next().is_none()
+        })
 }
 
 /// A picture to upload as an emote.
@@ -379,6 +461,24 @@ mod emote_tests {
         assert_eq!(image_type(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
         assert_eq!(image_type(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
         assert_eq!(image_type(b"<svg"), None);
+    }
+
+    #[test]
+    fn discovery_preview_paths() {
+        assert!(is_discovery_preview(
+            "/api/v1/emotes/discover/emoji.gg/739853-oof/preview"
+        ));
+        for wrong in [
+            "https://cdn.example/emotes/discover/emoji.gg/1/preview",
+            "//evil.example/api/v1/emotes/discover/emoji.gg/1/preview",
+            "/api/v1/emotes/discover/emoji.gg/../../me/preview",
+            "/api/v1/emotes/discover/emoji.gg/1/2/preview",
+            "/api/v1/emotes/discover/emoji.gg//preview",
+            "/api/v1/emotes/discover/emoji.gg/1/preview?x=1",
+            "/api/v1/emotes",
+        ] {
+            assert!(!is_discovery_preview(wrong), "{wrong}");
+        }
     }
 
     #[test]

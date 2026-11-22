@@ -7,7 +7,7 @@ use std::time::Duration;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, ScrollDelta, TestAppContext, Window, point, px};
 use ircord_app::settings::emotes::{self, Tab};
-use ircord_client::testing::{CannedServer, Reply};
+use ircord_client::testing::{CANNED_COOKIE, CannedServer, Reply};
 use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, bootstrap, open_with, wait};
@@ -41,17 +41,21 @@ fn catalog(can_manage: bool) -> Value {
 }
 
 fn discovery(cursor: &str) -> Value {
-    let item = |id: &str, name: &str, installed: bool| {
+    let item = |id: &str, name: &str, installed: bool, animated: bool| {
         json!({"provider": "emoji.gg", "providerId": id, "name": name, "creator": "Bo",
                "sourceUrl": "https://emoji.gg/x", "previewUrl":
                format!("/api/v1/emotes/discover/emoji.gg/{id}/preview"),
-               "license": "free", "animated": false, "width": 64, "height": 64,
-               "category": "cats", "installed": installed})
+               "license": "free", "animated": animated, "width": 0, "height": 0,
+               "category": "", "installed": installed})
     };
     let items = if cursor.is_empty() {
-        vec![item("g1", "Cat Wave", false), item("g2", "dog", true)]
+        vec![
+            item("g1", "Cat Wave", false, false),
+            item("g2", "dog", true, false),
+            item("g4", "gone", false, false),
+        ]
     } else {
-        vec![item("g3", "page two", false)]
+        vec![item("g3", "page two", false, true)]
     };
     json!({"items": items, "nextCursor": if cursor.is_empty() { "c2" } else { "" },
            "stale": false,
@@ -84,6 +88,21 @@ fn serve(server: &CannedServer, can_manage: bool) {
         let cursor = request.query_param("cursor").unwrap_or_default();
         Reply::json(200, discovery(&cursor))
     });
+    // The pictures, which the real server serves only with the session;
+    // `g4`'s is unavailable.
+    server.route_fn(
+        "GET",
+        "/api/v1/emotes/discover/emoji.gg/*/preview",
+        |request| {
+            if request.header("cookie") != Some(CANNED_COOKIE) {
+                Reply::problem(401, "authentication required")
+            } else if request.path.contains("/g4/") {
+                Reply::problem(503, "The preview is unavailable.")
+            } else {
+                Reply::bytes(200, "image/png", RED_PNG.to_vec())
+            }
+        },
+    );
 }
 
 fn open(cx: &mut TestAppContext) -> Fixture {
@@ -375,4 +394,39 @@ fn discover_filters_pages_and_adds(cx: &mut TestAppContext) {
     // One already on the server cannot be added again.
     click(&f, cx, "discover-emoji.gg-g2");
     reads(&f, cx, "emote-add", "Installed");
+}
+
+#[gpui_kit::test]
+fn discover_shows_the_pictures(cx: &mut TestAppContext) {
+    let f = open(cx);
+    let session = f.session.clone();
+    cx.update(|cx| emotes::show_tab(&session, Tab::Discover, cx));
+
+    // Every tile's still, read with the session, as the web's tiles ask.
+    shows(&f, cx, "discover-emoji.gg-g1-picture");
+    shows(&f, cx, "discover-emoji.gg-g2-picture");
+    let path = "/api/v1/emotes/discover/emoji.gg/g1/preview";
+    let still = f.server.wait_for("GET", path, WAIT);
+    assert_eq!(still.header("cookie"), Some(CANNED_COOKIE));
+    assert_eq!(still.query_param("static").as_deref(), Some("true"));
+    // One the server cannot give keeps its tile, without a picture.
+    f.server
+        .wait_for("GET", "/api/v1/emotes/discover/emoji.gg/g4/preview", WAIT);
+    reads(&f, cx, "discover-emoji.gg-g4", ":gone:");
+    assert!(!found(&f, cx, "discover-emoji.gg-g4-picture"));
+    // Each is read once, however often the page is drawn.
+    assert_eq!(f.server.requests_to("GET", path).len(), 1);
+
+    // Chosen, an animated one plays in the preview.
+    click(&f, cx, "discover-next");
+    shows(&f, cx, "discover-emoji.gg-g3-picture");
+    click(&f, cx, "discover-emoji.gg-g3");
+    shows(&f, cx, "emote-chat-preview");
+    let g3 = "/api/v1/emotes/discover/emoji.gg/g3/preview";
+    wait(cx, "the played picture", |_| {
+        f.server
+            .requests_to("GET", g3)
+            .iter()
+            .any(|r| r.query_param("static").is_none())
+    });
 }

@@ -22,8 +22,9 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::api::ApiError;
 use ircord_client::api::emotes::{
-    self as api, DISCOVER_PAGE, Discover, NewEmote, emote_matches, image_type, is_installed,
-    parse_provider_link, provider_name, split_aliases, suggest_shortcode,
+    self as api, DISCOVER_PAGE, Discover, NewEmote, emote_matches, image_type,
+    is_discovery_preview, is_installed, parse_provider_link, provider_name, split_aliases,
+    suggest_shortcode,
 };
 use ircord_client::contract as c;
 use ircord_client::store::topic;
@@ -131,6 +132,18 @@ struct Discovery {
     started: bool,
 }
 
+/// A discovered emoji's picture, read with the session (the server serves
+/// it only to a signed-in account, so `img(url)` cannot load it).
+enum Shown {
+    Loading,
+    Ready(Arc<Image>),
+    Failed,
+}
+
+/// At most this many discovered pictures are kept; past it the cache starts
+/// again.
+const MAX_SHOWN: usize = 256;
+
 pub struct EmotesView {
     session: Entity<Session>,
     ctx: Option<SettingsCtx>,
@@ -148,6 +161,8 @@ pub struct EmotesView {
     picked: Option<Picked>,
     selected: Option<c::DiscoveryItem>,
     discovery: Discovery,
+    /// Discovered pictures by preview URL and whether still.
+    shown: HashMap<(String, bool), Shown>,
     typing: u64,
     busy: bool,
     error: Option<String>,
@@ -228,6 +243,7 @@ impl EmotesView {
                 query: String::new(),
                 started: false,
             },
+            shown: HashMap::new(),
             typing: 0,
             busy: false,
             error: None,
@@ -291,6 +307,8 @@ impl EmotesView {
         let generation = self.discovery.generation;
         self.discovery.loading = true;
         self.discovery.error = None;
+        // A picture that failed is asked for again with the new page.
+        self.shown.retain(|_, s| !matches!(s, Shown::Failed));
         let query = Discover {
             source: self.discovery.source.clone(),
             query: self.discovery.query.clone(),
@@ -315,6 +333,58 @@ impl EmotesView {
             });
         })
         .detach();
+    }
+
+    /// Ask for the discovered pictures on show that are not read yet: every
+    /// tile's still, and the chosen one played when it animates (the web's
+    /// `EmoteStillPreview`).
+    fn load_pictures(&mut self, animate: bool, cx: &mut Context<Self>) {
+        if self.tab != Tab::Discover && self.panel != Panel::Discover {
+            return;
+        }
+        let mut wanted: Vec<(String, bool)> = Vec::new();
+        if self.tab == Tab::Discover
+            && !self.discovery.loading
+            && let Some(items) = self.discovery.page.as_ref().and_then(|p| p.items.as_ref())
+        {
+            wanted.extend(items.iter().map(|i| (i.preview_url.clone(), true)));
+        }
+        if self.panel == Panel::Discover
+            && let Some(item) = &self.selected
+        {
+            wanted.push((item.preview_url.clone(), !(animate && item.animated)));
+        }
+        for key in wanted {
+            if !is_discovery_preview(&key.0) || self.shown.contains_key(&key) {
+                continue;
+            }
+            let Some(client) = self.client(cx) else {
+                return;
+            };
+            if self.shown.len() >= MAX_SHOWN {
+                self.shown.clear();
+            }
+            self.shown.insert(key.clone(), Shown::Loading);
+            let (url, still) = key.clone();
+            let task =
+                client.request(move |api| async move { api.discovered_picture(&url, still).await });
+            cx.spawn(async move |this, cx| {
+                let shown = match joined(task.await) {
+                    Ok(picture) => match picture_format(&picture.content_type) {
+                        Some(format) => {
+                            Shown::Ready(Arc::new(Image::from_bytes(format, picture.bytes)))
+                        }
+                        None => Shown::Failed,
+                    },
+                    Err(_) => Shown::Failed,
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.shown.insert(key, shown);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
     }
 
     /// Discover from its first page, after a filter changed.
@@ -451,12 +521,7 @@ impl EmotesView {
             self.shortcode
                 .update(cx, |f, cx| f.set_value(code, window, cx));
         }
-        let format = match content_type {
-            "image/png" => ImageFormat::Png,
-            "image/gif" => ImageFormat::Gif,
-            "image/webp" => ImageFormat::Webp,
-            _ => ImageFormat::Jpeg,
-        };
+        let format = picture_format(content_type).unwrap_or(ImageFormat::Jpeg);
         let preview = Arc::new(Image::from_bytes(format, bytes.clone()));
         let still = still_frame(content_type, &bytes);
         self.picked = Some(Picked {
@@ -742,6 +807,35 @@ fn joined<T>(result: Result<Result<T, ApiError>, tokio::task::JoinError>) -> Res
         .and_then(|r| r.map_err(|e| e.to_string()))
 }
 
+/// The small outlined square a picture that did not load leaves, as
+/// `message::emoji::picture` draws it.
+fn missing_picture(faint: Hsla) -> AnyElement {
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .size(rems(0.8))
+                .rounded_sm()
+                .border_1()
+                .border_color(faint),
+        )
+        .into_any_element()
+}
+
+/// The picture format GPUI draws for a content type.
+fn picture_format(content_type: &str) -> Option<ImageFormat> {
+    match content_type {
+        "image/png" => Some(ImageFormat::Png),
+        "image/gif" => Some(ImageFormat::Gif),
+        "image/webp" => Some(ImageFormat::Webp),
+        "image/jpeg" => Some(ImageFormat::Jpeg),
+        _ => None,
+    }
+}
+
 /// `max_bytes` in whole KiB, as the web client says it.
 fn kib(bytes: i64) -> i64 {
     (bytes as f64 / 1024.0).round() as i64
@@ -795,6 +889,7 @@ impl Render for EmotesView {
             .client(cx)
             .map(|c| crate::features::klipy::animate(&c.read()))
             .unwrap_or(true);
+        self.load_pictures(animate, cx);
         let here = Here {
             theme: &theme,
             origin: origin.as_ref(),
@@ -1296,7 +1391,7 @@ impl EmotesView {
                 .as_ref()
                 .is_some_and(|s| s.provider_id == item.provider_id && s.provider == item.provider);
         let label = format!(":{}:", item.name);
-        let picture = crate::message::emoji::resolve(&item.preview_url, here.origin);
+        let picture = self.discovered(&item, false, true, here);
         let id = format!("discover-{}-{}", item.provider, item.provider_id);
         div()
             .id(ElementId::Name(id.into()))
@@ -1317,9 +1412,7 @@ impl EmotesView {
             .bg(theme.raised)
             .cursor_pointer()
             .hover(|d| d.bg(theme.hover))
-            .child(div().size(px(48.)).when_some(picture, |d, url| {
-                d.child(crate::message::emoji::picture(url, theme.faint))
-            }))
+            .child(div().size(px(48.)).children(picture))
             .child(
                 div()
                     .w_full()
@@ -1548,9 +1641,56 @@ impl EmotesView {
         super::block(ctx, "add-emote", t!("emotes-add"), form, theme).into_any_element()
     }
 
+    /// A discovered emoji's picture filling its box: a still, or played when
+    /// `play`. A server preview is drawn from what [`Self::load_pictures`]
+    /// read (nothing while it loads, the outlined square if it failed); any
+    /// other URL loads as a public picture. The grid's tile names it
+    /// `discover-{provider}-{id}-picture` once it is drawn.
+    fn discovered(
+        &self,
+        item: &c::DiscoveryItem,
+        play: bool,
+        tile: bool,
+        here: &Here,
+    ) -> Option<AnyElement> {
+        let url = &item.preview_url;
+        if !is_discovery_preview(url) {
+            let url = crate::message::emoji::resolve(url, here.origin)?;
+            return Some(crate::message::emoji::picture(url, here.theme.faint));
+        }
+        // Played once it is read; until then (or if it failed) the still.
+        let played = (play && item.animated)
+            .then(|| self.shown.get(&(url.clone(), false)))
+            .flatten()
+            .filter(|s| matches!(s, Shown::Ready(_)));
+        let shown = played.or_else(|| self.shown.get(&(url.clone(), true)))?;
+        match shown {
+            Shown::Loading => None,
+            Shown::Ready(image) => {
+                let picture = img(image.clone())
+                    .size_full()
+                    .object_fit(ObjectFit::Contain);
+                Some(if tile {
+                    div()
+                        .id(ElementId::Name(
+                            format!("discover-{}-{}-picture", item.provider, item.provider_id)
+                                .into(),
+                        ))
+                        .test_support()
+                        .size_full()
+                        .child(picture)
+                        .into_any_element()
+                } else {
+                    picture.into_any_element()
+                })
+            }
+            Shown::Failed => Some(missing_picture(here.theme.faint)),
+        }
+    }
+
     fn provider_preview(&self, item: &c::DiscoveryItem, here: &Here) -> impl IntoElement {
         let theme = here.theme;
-        let picture = crate::message::emoji::resolve(&item.preview_url, here.origin);
+        let picture = self.discovered(item, here.animate, false, here);
         let mut from = t!("emotes-from", provider = item.provider);
         if !item.creator.is_empty() {
             from.push(' ');
@@ -1560,14 +1700,7 @@ impl EmotesView {
             .flex()
             .items_center()
             .gap_3()
-            .child(
-                div()
-                    .size(px(64.))
-                    .flex_none()
-                    .when_some(picture, |d, url| {
-                        d.child(crate::message::emoji::picture(url, theme.faint))
-                    }),
-            )
+            .child(div().size(px(64.)).flex_none().children(picture))
             .child(
                 div()
                     .flex()
@@ -1595,8 +1728,7 @@ impl EmotesView {
             }
             Panel::Discover => {
                 let item = self.selected.as_ref()?;
-                let url = crate::message::emoji::resolve(&item.preview_url, here.origin)?;
-                crate::message::emoji::picture(url, theme.faint)
+                self.discovered(item, here.animate, false, here)?
             }
             _ => return None,
         };

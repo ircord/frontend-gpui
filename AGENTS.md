@@ -45,7 +45,9 @@ client; it never speaks IRC itself. Layout and commands are in
   A person's picture and name colour come from `ui::avatar::person` and
   `ui::avatar::name_color`: pictures load only from the signed-in server
   (`people::picture_url`, the web's #278 privacy rule), so never `img()` an
-  `avatar_url` directly.
+  `avatar_url` directly. `img(url)` sends no session: a picture under
+  `/api/v1/` (Discover's previews) is read through the `Api` and drawn from
+  bytes, as `settings/emotes.rs` does.
   A control drawn from a `div` takes `.reachable(&theme)` (`ui/focus.rs`)
   after `.test_support()`, so Tab reaches it; `tests/ui/audit.rs` fails on
   any shown control without a role, a name or keyboard reach.

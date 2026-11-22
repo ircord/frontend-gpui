@@ -220,3 +220,47 @@ fn revisioned_documents_read_save_and_follow_remote_changes() {
         Some("r2")
     );
 }
+
+#[test]
+fn discovered_pictures_are_read_with_the_session() {
+    let rt = runtime().unwrap();
+    let server = CannedServer::start(&rt);
+    let png = b"\x89PNG\r\n\x1a\nrest".to_vec();
+    server.route_reply(
+        "GET",
+        "/api/v1/emotes/discover/*/*/preview",
+        Reply::bytes(200, "application/octet-stream", png.clone()),
+    );
+    let api = server.api();
+    let path = "/api/v1/emotes/discover/emoji.gg/739853-oof/preview";
+    let picture = rt
+        .block_on(api.discovered_picture(path, true))
+        .expect("the canned server answers");
+    assert_eq!(picture.bytes, png);
+    assert_eq!(picture.content_type, "image/png");
+    let request = server.wait_for("GET", path, WAIT);
+    assert_eq!(request.header("cookie"), Some(CANNED_COOKIE));
+    assert_eq!(request.query_param("static").as_deref(), Some("true"));
+
+    // Played: no `static`. Anywhere else: refused before anything is sent.
+    rt.block_on(api.discovered_picture(path, false)).unwrap();
+    let played = server.wait_for_nth("GET", path, 2, WAIT);
+    assert_eq!(played.query_param("static"), None);
+    let elsewhere = rt.block_on(api.discovered_picture("https://cdn.example/a.png", false));
+    assert!(matches!(elsewhere, Err(ApiError::Decode(_))));
+    assert_eq!(server.requests().len(), 2);
+
+    // A still the server cannot make (an animated PNG): the whole picture.
+    let apng = "/api/v1/emotes/discover/emoji.gg/1-apng/preview";
+    let whole = png.clone();
+    server.route_fn("GET", apng, move |request| {
+        if request.query_param("static").is_some() {
+            Reply::problem(422, "Animated images need a still frame.")
+        } else {
+            Reply::bytes(200, "image/png", whole.clone())
+        }
+    });
+    let picture = rt.block_on(api.discovered_picture(apng, true)).unwrap();
+    assert_eq!(picture.bytes, png);
+    assert_eq!(server.requests_to("GET", apng).len(), 2);
+}

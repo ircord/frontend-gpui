@@ -8,7 +8,8 @@
 //! in the keyring, types a server emoji into the message box, plays a test
 //! video sent to the channel (printing the app's resident memory 2 s and
 //! 32 s after it starts), then restarts the app to show it signs in from
-//! there.
+//! there, and opens Settings → Emotes → Discover (emoji.gg's emoji, read by
+//! the backend over the internet).
 //! Screenshots and the app's logs land in `target/capture/`; look at them.
 //!
 //! Xvfb runs without its COMPOSITE extension. With it, GPUI picks a 32-bit
@@ -152,6 +153,25 @@ stop_app 1
 start_app
 sleep 7
 shot 4-restarted
+
+# Settings → Emotes → Discover, reached through the settings search: a page
+# of emoji.gg's emoji with their pictures. The backend reads emoji.gg
+# itself (this scene needs the internet), and a cold first read can fail,
+# so ask until a page comes back first.
+i=0
+until curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" "$SERVER/api/v1/emotes/discover?limit=30" \
+  | grep -q '"providerId"'; do
+  i=$((i + 1)); [ "$i" -lt 10 ] || { echo "Discover listed nothing (is emoji.gg reachable?)"; break; }
+  sleep 10
+done
+xdotool windowfocus --sync "$WIN"
+xdotool key ctrl+comma
+sleep 1
+xdotool key Tab
+xdotool type --delay 30 "discover"
+xdotool key Return
+sleep 10
+shot 9-emotes-discover
 stop_app 2
 
 # A personal theme whose CSS sets the accent and the rail, switched on for
