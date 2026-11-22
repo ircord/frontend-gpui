@@ -13,6 +13,34 @@ use std::ops::Range;
 
 use super::Formatted;
 
+/// Turn leading bullet glyphs from the clipboard into Markdown list markers.
+/// Return `None` when the input should go through the normal paste path.
+pub fn pasted_bullets(text: &str) -> Option<String> {
+    let normalized = crate::features::plain_line_breaks(text);
+    let mut converted = None::<String>;
+    let mut offset = 0;
+    for line in normalized.split_inclusive('\n') {
+        let trimmed = line.trim_start_matches([' ', '\t']);
+        let mut chars = trimmed.chars();
+        let bullet = chars.next().is_some_and(|c| "•◦▪▫‣⁃●○■□".contains(c));
+        let after = chars.as_str();
+        let content = after.trim_start_matches([' ', '\t']);
+        if bullet
+            && after.len() != content.len()
+            && content.starts_with(|c: char| !c.is_whitespace() && c != '\u{feff}')
+        {
+            let result = converted.get_or_insert_with(|| normalized[..offset].to_owned());
+            result.push_str(&line[..line.len() - trimmed.len()]);
+            result.push_str("- ");
+            result.push_str(content);
+        } else if let Some(result) = &mut converted {
+            result.push_str(line);
+        }
+        offset += line.len();
+    }
+    converted
+}
+
 /// Text cut out of a longer source text, with each byte's offset in that
 /// source. Quote markers and list indentation are left out, so the offsets
 /// are increasing but not always consecutive.
@@ -669,6 +697,18 @@ fn list_blocks(text: &Mapped) -> Vec<Block> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_bullets_keep_indentation_crlf_and_surrounding_text() {
+        assert_eq!(
+            pasted_bullets("Intro\r\n• first\r\n\t◦\t second\r\n■ third\r\nOutro\r\n").as_deref(),
+            Some("Intro\n- first\n\t- second\n- third\nOutro\n")
+        );
+        assert_eq!(
+            pasted_bullets("inline • dot\r\n•\t\r\n•word\r\n1. item"),
+            None
+        );
+    }
 
     fn texts(blocks: &[Block]) -> Vec<String> {
         blocks

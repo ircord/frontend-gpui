@@ -145,6 +145,48 @@ fn a_quote_pasted_on_windows_sends_with_plain_line_breaks(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
+fn pasted_bullets_use_markdown_and_replace_the_selection_in_one_edit(cx: &mut TestAppContext) {
+    let f = open(cx, accept);
+    let select = if cfg!(target_os = "macos") {
+        "cmd-a"
+    } else {
+        "ctrl-a"
+    };
+    let paste = if cfg!(target_os = "macos") {
+        "cmd-v"
+    } else {
+        "ctrl-v"
+    };
+    let undo = if cfg!(target_os = "macos") {
+        "cmd-z"
+    } else {
+        "ctrl-z"
+    };
+    focus_box(&f, cx);
+    type_text(&f, cx, "Earlier draft");
+    cx.update(|cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string("• parent\r\n  ◦ child".into()))
+    });
+    press(&f, cx, select);
+    press(&f, cx, paste);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find_by_label("Message #general").value(),
+            Some("- parent\n  - child")
+        );
+    })
+    .unwrap();
+    press(&f, cx, undo);
+    cx.update(|cx| assert_eq!(message_actions::box_text(cx), "Earlier draft"));
+    press(&f, cx, select);
+    press(&f, cx, paste);
+    press(&f, cx, "enter");
+    let sent = f.server.wait_for("POST", SEND, WAIT).json();
+    assert_eq!(sent["text"], "- parent\n  - child");
+}
+
+#[gpui_kit::test]
 fn typed_carriage_returns_never_reach_the_server(cx: &mut TestAppContext) {
     let f = open(cx, accept);
     focus_box(&f, cx);

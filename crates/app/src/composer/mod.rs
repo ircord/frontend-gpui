@@ -651,6 +651,7 @@ impl Render for ComposerView {
                         .child(
                             Textarea::new(&self.input)
                                 .token(draw_token)
+                                .on_paste(move |item, window, cx| paste(&ctx, item, window, cx))
                                 .appearance(false)
                                 .p_0()
                                 .font_family(font)
@@ -865,6 +866,21 @@ impl ComposerView {
                 this.submit(text, window, cx);
             }))
     }
+}
+
+fn paste(ctx: &ComposerCtx, item: &ClipboardItem, window: &mut Window, cx: &mut App) -> bool {
+    if uploads::paste(ctx, item, window, cx) {
+        return true;
+    }
+    let Some(text) = item
+        .text()
+        .and_then(|text| ircord_client::format::blocks::pasted_bullets(&text))
+    else {
+        return false;
+    };
+    let input = ctx.composer.read(cx).input.clone();
+    input.update(cx, |input, cx| input.replace(text, window, cx));
+    true
 }
 
 /// Mark what the token providers find in the box's text as tokens. A

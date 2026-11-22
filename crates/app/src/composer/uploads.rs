@@ -73,7 +73,7 @@ pub struct Uploads {
     queues: HashMap<String, Vec<Pending>>,
     sending: HashSet<String>,
     next: u64,
-    /// The composer, to redraw it and to tell whether its box has focus.
+    /// The composer, to redraw it when an upload changes.
     composer: Option<WeakEntity<ComposerView>>,
     /// How long an upload may stand still; [`uploads::STALL`] outside tests.
     stall: Option<Duration>,
@@ -126,7 +126,6 @@ pub fn init(cx: &mut App) {
                 send_all(ctx, sent.is_empty(), window, cx);
             }));
     });
-    cx.intercept_keystrokes(paste).detach();
 }
 
 fn client(session: &Entity<Session>, cx: &App) -> Option<Rc<Client>> {
@@ -538,50 +537,27 @@ pub fn add_paths(
         .detach();
 }
 
-/// Ctrl+V (Cmd+V) in the message box with a picture or copied files on the
-/// clipboard adds them to the batch; text pastes as usual.
-fn paste(event: &KeystrokeEvent, window: &mut Window, cx: &mut App) {
-    let k = &event.keystroke;
-    if k.key != "v" || !k.modifiers.secondary(cx) || k.modifiers.shift || k.modifiers.alt {
-        return;
-    }
-    let Some(composer) = cx
-        .try_global::<Uploads>()
-        .and_then(|u| u.composer.clone())
-        .and_then(|c| c.upgrade())
-    else {
-        return;
-    };
-    let focused = composer
-        .read(cx)
-        .input
-        .read(cx)
-        .focus_handle(cx)
-        .is_focused(window);
-    if !focused {
-        return;
-    }
-    let Some(item) = cx.read_from_clipboard() else {
-        return;
-    };
+/// A picture or copied files join the batch when the clipboard has no text.
+pub(super) fn paste(
+    ctx: &ComposerCtx,
+    item: &ClipboardItem,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
     let mut images = Vec::new();
     let mut paths = Vec::new();
     for entry in item.entries() {
         match entry {
-            ClipboardEntry::String(s) if !s.text().is_empty() => return,
+            ClipboardEntry::String(s) if !s.text().is_empty() => return false,
             ClipboardEntry::Image(image) => images.push(image.clone()),
             ClipboardEntry::ExternalPaths(p) => paths.extend(p.paths().iter().cloned()),
             ClipboardEntry::String(_) => {}
         }
     }
     if images.is_empty() && paths.is_empty() {
-        return;
+        return false;
     }
-    let session = composer.read(cx).session.clone();
-    let Some(conversation) = session.read(cx).conversation.clone() else {
-        return;
-    };
-    cx.stop_propagation();
+    let (session, conversation) = (&ctx.session, &ctx.conversation);
     if !images.is_empty() {
         let files = images
             .into_iter()
@@ -597,11 +573,12 @@ fn paste(event: &KeystrokeEvent, window: &mut Window, cx: &mut App) {
                 (file, Some(Preview::Image(Arc::new(image))))
             })
             .collect();
-        add(&session, &conversation, files, window, cx);
+        add(session, conversation, files, window, cx);
     }
     if !paths.is_empty() {
-        add_paths(session, conversation, paths, window, cx);
+        add_paths(session.clone(), conversation.clone(), paths, window, cx);
     }
+    true
 }
 
 /// Open the file dialog and add what was picked.
