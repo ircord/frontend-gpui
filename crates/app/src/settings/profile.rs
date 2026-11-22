@@ -26,7 +26,7 @@ use ircord_client::api::uploads::{self, FileData, Progress};
 use ircord_client::contract::{Member, ProfileUpdate};
 use ircord_client::store::people;
 
-use super::{block, row};
+use super::{block, frame, row};
 use crate::registry::{self, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection};
 use crate::session::{Session, SessionEvent};
 use crate::theme::{self, Theme};
@@ -50,6 +50,10 @@ pub fn init(cx: &mut App) {
             .row(
                 SettingsRow::new("profile-picture", t!("profile-picture"))
                     .keywords(t!("profile-picture-keywords")),
+            )
+            .row(
+                SettingsRow::new("profile-defaults", t!("profile-default-pictures"))
+                    .keywords(t!("profile-defaults-keywords")),
             )
             .row(
                 SettingsRow::new("profile-name", t!("profile-display-name"))
@@ -1249,7 +1253,14 @@ impl Render for ProfileView {
         let mut page = div().flex().flex_col().gap_3();
 
         // The server.
-        if networks.len() > 1 {
+        if networks.is_empty() {
+            page = page.child(
+                div()
+                    .text_sm()
+                    .text_color(theme.muted)
+                    .child(t!("profile-account-only")),
+            );
+        } else {
             let e = entity.clone();
             page = page.child(row(
                 &ctx,
@@ -1259,7 +1270,7 @@ impl Render for ProfileView {
                 choices(
                     "profile-network",
                     t!("profile-server").into(),
-                    networks.clone(),
+                    networks,
                     self.network.as_deref().unwrap_or_default(),
                     &theme,
                     move |id, window, cx| {
@@ -1269,13 +1280,6 @@ impl Render for ProfileView {
                 ),
                 &theme,
             ));
-        } else if networks.is_empty() {
-            page = page.child(
-                div()
-                    .text_sm()
-                    .text_color(theme.muted)
-                    .child(t!("profile-account-only")),
-            );
         }
 
         let Some(saved) = self.saved.clone() else {
@@ -1330,27 +1334,23 @@ impl Render for ProfileView {
         };
         let has_picture = !matches!(pic, Picture::None);
         let e = entity.clone();
-        let upload = Button::new("profile-upload-picture")
-            .small()
-            .label(t!("profile-upload-own"))
-            .disabled(busy)
-            .on_click(move |_, window, cx| {
-                let e = e.clone();
-                pick_picture(window, cx, move |prepared, _, cx| {
-                    e.update(cx, |v, cx| {
-                        match prepared {
-                            Ok(p) => v.avatar = AvatarChoice::Upload(p),
-                            Err(err) => v.error = Some(err.into()),
-                        }
-                        v.done = false;
-                        cx.notify();
-                    });
+        let pick_upload = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+            let e = e.clone();
+            pick_picture(window, cx, move |prepared, _, cx| {
+                e.update(cx, |v, cx| {
+                    match prepared {
+                        Ok(p) => v.avatar = AvatarChoice::Upload(p),
+                        Err(err) => v.error = Some(err.into()),
+                    }
+                    v.done = false;
+                    cx.notify();
                 });
             });
+        };
         let e = entity.clone();
         let remove = Button::new("profile-remove-picture")
             .small()
-            .ghost()
+            .link()
             .label(t!("profile-remove-image"))
             .disabled(busy)
             .on_click(move |_, _, cx| {
@@ -1364,7 +1364,7 @@ impl Render for ProfileView {
                 })
             });
         let e = entity.clone();
-        let picker = (!avatars.is_empty()).then(|| {
+        let defaults = (!avatars.is_empty()).then(|| {
             picker(
                 "profile-default",
                 &avatars,
@@ -1386,85 +1386,116 @@ impl Render for ProfileView {
                 },
             )
         });
-        page = page.child(block(
+        let avatar_size = px(84.);
+        let upload = Button::new("profile-upload-picture")
+            .text()
+            .size(avatar_size)
+            .rounded(avatar_size / 2.)
+            .accessibility_label(t!("profile-upload-image"))
+            .tooltip(t!("profile-image-limits"))
+            .disabled(busy)
+            .on_click(pick_upload.clone())
+            .child(
+                div()
+                    .id("profile-picture-preview")
+                    .test_support()
+                    .role(Role::Image)
+                    .aria_label(t!("profile-picture"))
+                    .child(picture(&pic, &name_now, avatar_size, &theme)),
+            );
+        let avatar = frame(
             &ctx,
             "profile-picture",
-            t!("profile-picture"),
+            t!("profile-picture").into(),
+            &theme,
+        )
+        .flex()
+        .flex_col()
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .child(upload)
+        .when(has_picture, |d| d.child(remove))
+        .test_support();
+
+        // Name, colour, about.
+        let display_name = frame(
+            &ctx,
+            "profile-name",
+            t!("profile-display-name").into(),
+            &theme,
+        )
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w_0()
+        .gap_1()
+        .child(
             div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text)
+                .child(t!("profile-display-name")),
+        )
+        .child(
+            Input::new(self.input(Field::Name))
+                .id(Field::Name.id())
+                .aria_label(Field::Name.label()),
+        )
+        .child(
+            div()
+                .id("profile-shown-as")
+                .test_support()
+                .role(Role::Status)
+                .aria_label(SharedString::from(t!(
+                    "profile-shown-as",
+                    name = name_now.clone(),
+                    nick = saved.nick.clone()
+                )))
+                .text_sm()
+                .text_color(theme.muted)
+                .child(t!(
+                    "profile-shown-as",
+                    name = name_now,
+                    nick = saved.nick.clone()
+                )),
+        )
+        .test_support();
+        page = page
+            .child(div().flex().items_start().child(avatar).child(display_name))
+            .when_some(defaults, |d, picker| {
+                d.child(block(
+                    &ctx,
+                    "profile-defaults",
+                    t!("profile-default-pictures"),
                     div()
                         .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(
-                            div()
-                                .id("profile-picture-preview")
-                                .test_support()
-                                .role(Role::Image)
-                                .aria_label(t!("profile-picture"))
-                                .child(picture(&pic, &name_now, px(64.), &theme)),
-                        )
+                        .flex_col()
+                        .gap_2()
                         .child(
                             div()
                                 .flex()
-                                .flex_col()
-                                .gap_1()
+                                .flex_wrap()
+                                .items_center()
+                                .gap_2()
                                 .child(
                                     div()
-                                        .flex()
-                                        .gap_2()
-                                        .child(upload)
-                                        .when(has_picture, |d| d.child(remove)),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
+                                        .text_sm()
                                         .text_color(theme.muted)
                                         .child(t!("profile-image-limits")),
+                                )
+                                .child(
+                                    Button::new("profile-upload-own")
+                                        .small()
+                                        .link()
+                                        .label(t!("profile-upload-own"))
+                                        .disabled(busy)
+                                        .on_click(pick_upload),
                                 ),
-                        ),
-                )
-                .children(picker),
-            &theme,
-        ));
-
-        // Name, colour, about.
-        page = page.child(block(
-            &ctx,
-            "profile-name",
-            t!("profile-display-name"),
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    Input::new(self.input(Field::Name))
-                        .id(Field::Name.id())
-                        .aria_label(Field::Name.label()),
-                )
-                .child(
-                    div()
-                        .id("profile-shown-as")
-                        .test_support()
-                        .role(Role::Status)
-                        .aria_label(SharedString::from(t!(
-                            "profile-shown-as",
-                            name = name_now.clone(),
-                            nick = saved.nick.clone()
-                        )))
-                        .text_sm()
-                        .text_color(theme.muted)
-                        .child(t!(
-                            "profile-shown-as",
-                            name = name_now.clone(),
-                            nick = saved.nick.clone()
-                        )),
-                ),
-            &theme,
-        ));
+                        )
+                        .child(picker),
+                    &theme,
+                ))
+            });
         let e = entity.clone();
         page = page.child(block(
             &ctx,

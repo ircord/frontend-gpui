@@ -159,13 +159,21 @@ fn edits_the_profile_in_settings(cx: &mut TestAppContext) {
     // The gear opens Settings on Profile, the first section.
     click(&f, cx, "open-settings");
     reads(&f, cx, "settings-content", "Profile");
+    assert_eq!(
+        find(&f, cx, "profile-network-n1", |e| e.selected()).flatten(),
+        Some(true)
+    );
     land(&f, cx, "profile-name", "profile-name-input");
+    let avatar = find(&f, cx, "profile-picture-preview", |e| e.bounds()).unwrap();
+    let name = find(&f, cx, "profile-name-input", |e| e.bounds()).unwrap();
+    assert!(avatar.right() < name.origin.x);
     render(&f, cx);
     reads(&f, cx, "profile-shown-as", "Shown as me · @me");
 
     type_into(&f, cx, "profile-name-input", "Petra");
     reads(&f, cx, "profile-shown-as", "Shown as Petra · @me");
-    land(&f, cx, "profile-picture", "profile-default-a2");
+    land(&f, cx, "profile-picture", "profile-upload-picture");
+    land(&f, cx, "profile-defaults", "profile-default-a2");
     click(&f, cx, "profile-default-a2");
     assert_eq!(
         find(&f, cx, "profile-default-a2", |e| e.selected()).flatten(),
