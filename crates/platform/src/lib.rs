@@ -2,4 +2,5 @@
 pub mod audio;
 pub mod desktop;
 pub mod toast;
+pub mod update;
 pub mod video;
