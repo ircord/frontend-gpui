@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.1.1 — 2026-11-22
+
 ### Improved
 
 - The desktop workspace, message list and composer follow the web layout and use your chosen theme, fonts and density.
