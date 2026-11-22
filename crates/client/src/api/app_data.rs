@@ -99,6 +99,27 @@ impl Api {
     }
 }
 
+// ---- E1: the picker library ----
+
+impl Api {
+    /// Add emoji picks to the picker library (E1); answers the library.
+    pub async fn update_library(&self, patch: &c::LibraryPatch) -> Result<c::Library, ApiError> {
+        self.call(Method::PATCH, "/api/v1/app/library", patch).await
+    }
+
+    /// Save a GIF to the picker library, or move it to the front (E1).
+    pub async fn save_gif(&self, gif: &c::SavePickerGIF) -> Result<c::Library, ApiError> {
+        self.call(Method::POST, "/api/v1/app/library/gifs", gif)
+            .await
+    }
+
+    /// Take a saved GIF out of the picker library (E1).
+    pub async fn delete_gif(&self, id: &str) -> Result<c::Library, ApiError> {
+        let path = format!("/api/v1/app/library/gifs/{}", segment(id));
+        self.json(self.request(Method::DELETE, &path)).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,26 +161,5 @@ mod tests {
             runtime.block_on(api.save_theme(&draft, Some("old-revision"), false)),
             Err(ApiError::Unauthorized)
         ));
-    }
-}
-
-// ---- E1: the picker library ----
-
-impl Api {
-    /// Add emoji picks to the picker library (E1); answers the library.
-    pub async fn update_library(&self, patch: &c::LibraryPatch) -> Result<c::Library, ApiError> {
-        self.call(Method::PATCH, "/api/v1/app/library", patch).await
-    }
-
-    /// Save a GIF to the picker library, or move it to the front (E1).
-    pub async fn save_gif(&self, gif: &c::SavePickerGIF) -> Result<c::Library, ApiError> {
-        self.call(Method::POST, "/api/v1/app/library/gifs", gif)
-            .await
-    }
-
-    /// Take a saved GIF out of the picker library (E1).
-    pub async fn delete_gif(&self, id: &str) -> Result<c::Library, ApiError> {
-        let path = format!("/api/v1/app/library/gifs/{}", segment(id));
-        self.json(self.request(Method::DELETE, &path)).await
     }
 }
