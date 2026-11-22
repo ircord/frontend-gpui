@@ -1,6 +1,9 @@
 # Text for package U1. IDs start with `uploads-`.
-uploads-attach = Attach files
-uploads-attach-limit = Attach files (up to { $size } each)
+uploads-menu = Attachments and commands
+uploads-menu-gif = Send a GIF
+uploads-menu-command = Use a slash command
+uploads-attach = Upload files
+uploads-attach-limit = Upload files (up to { $size } each)
 uploads-pick-prompt = Attach
 uploads-drop = Drop files here to attach them
 uploads-tray = Files to send

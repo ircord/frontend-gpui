@@ -26,6 +26,7 @@
 - Profile cards show the person’s current local time and present profile details as label and value rows.
 - Add and remove languages and interests individually in Profile settings. Profile cards show readable language names.
 - Search time zones in Profile settings and choose the one shown on your profile card.
+- The composer’s attachment menu opens the file picker, GIF picker, or slash command suggestions.
 - In Profile settings, the server name stays visible and you can upload a picture by clicking the avatar next to your display name.
 - The Profile settings preview shows the name people will see when you leave your display name blank.
 - Choose a custom name color with the Profile color picker and see it in the name preview.

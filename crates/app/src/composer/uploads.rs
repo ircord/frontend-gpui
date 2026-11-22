@@ -1,7 +1,7 @@
 //! The upload tray and the attach button (package U1), after
 //! `useUploads.ts` and `ComposerUploads.vue` in the web client.
 //!
-//! Files join a per-conversation batch from the attach button's file dialog,
+//! Files join a per-conversation batch from the attachment menu's file dialog,
 //! by dropping them on the drop zone that shows above the box while files are
 //! dragged over the window, or by pasting a picture or copied files into the
 //! box. The tray above the box shows each with its progress; removing one
@@ -17,18 +17,22 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::Sizable;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::Client;
 use ircord_client::api::uploads::{self, FileData, Progress, Rejection, UploadError};
 use ircord_client::contract as c;
 
-use crate::composer::ComposerView;
+use crate::composer::{ComposerView, expressions::Tab};
+use crate::features::{klipy, shortcuts::Gifs};
 use crate::registry::{self, ComposerCtx, Slot, SubmitHook};
 use crate::session::Session;
 use crate::theme::{self, Theme};
 use crate::ui;
-use crate::ui::icon::IconName;
+use crate::ui::icon::{IconName, LucideIcon};
 
 /// How often the tray redraws while files upload, for the progress bars.
 const PROGRESS_TICK: Duration = Duration::from_millis(150);
@@ -603,36 +607,66 @@ fn remember_composer(ctx: &ComposerCtx, cx: &mut App) {
     cx.default_global::<Uploads>().composer = Some(ctx.composer.downgrade());
 }
 
-/// The attach button beside the box.
+/// The attachment menu beside the box also opens GIFs and slash commands.
 fn attach_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     remember_composer(ctx, cx);
-    let theme = theme::get(cx).clone();
-    let limits = capability(&ctx.session, cx);
-    let label: SharedString = match &limits {
-        Some(l) if l.max_bytes > 0 => t!(
-            "uploads-attach-limit",
-            size = uploads::human_size(l.max_bytes as u64)
-        )
-        .into(),
-        Some(_) => t!("uploads-attach").into(),
-        None => t!("uploads-server-unavailable").into(),
-    };
-    let (session, conversation) = (ctx.session.clone(), ctx.conversation.clone());
+    let ctx = ctx.clone();
     Some(
-        ui::icon::button(
-            "composer-attach",
-            ui::icon::LucideIcon::Paperclip,
-            label,
-            &theme,
-            move |_, window, cx| {
-                if capability(&session, cx).is_none() {
-                    ui::toast::error(window, cx, t!("uploads-server-unavailable"));
-                    return;
-                }
-                pick(session.clone(), conversation.clone(), window, cx);
-            },
-        )
-        .into_any_element(),
+        Button::new("composer-attach")
+            .ghost()
+            .small()
+            .size(px(30.))
+            .rounded_full()
+            .icon(LucideIcon::Paperclip)
+            .accessibility_label(t!("uploads-menu"))
+            .tooltip(t!("uploads-menu"))
+            .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _, cx| {
+                let limits = capability(&ctx.session, cx);
+                let upload =
+                    if let Some(limit) = limits.as_ref().filter(|limit| limit.max_bytes > 0) {
+                        t!(
+                            "uploads-attach-limit",
+                            size = uploads::human_size(limit.max_bytes as u64)
+                        )
+                        .into()
+                    } else {
+                        SharedString::from(t!("uploads-attach"))
+                    };
+                let (session, conversation) = (ctx.session.clone(), ctx.conversation.clone());
+                let gif = ctx.clone();
+                let composer = ctx.composer.clone();
+                menu.item(
+                    PopupMenuItem::new(upload)
+                        .icon(LucideIcon::Upload)
+                        .disabled(limits.is_none())
+                        .on_click(move |_, window, cx| {
+                            if capability(&session, cx).is_none() {
+                                ui::toast::error(window, cx, t!("uploads-server-unavailable"));
+                                return;
+                            }
+                            pick(session.clone(), conversation.clone(), window, cx);
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(t!("uploads-menu-gif"))
+                        .icon(LucideIcon::Image)
+                        .action(Box::new(Gifs))
+                        .on_click(move |_, window, cx| klipy::toggle(&gif, Tab::Gifs, window, cx)),
+                )
+                .item(
+                    PopupMenuItem::new(t!("uploads-menu-command"))
+                        .icon(LucideIcon::Slash)
+                        .on_click(move |_, window, cx| {
+                            let input = composer.read(cx).input.clone();
+                            input.update(cx, |input, cx| {
+                                input.replace_all("/", window, cx);
+                                input.set_selected_range(1..1, cx);
+                                input.focus(window, cx);
+                            });
+                        }),
+                )
+            })
+            .into_any_element(),
     )
 }
 
