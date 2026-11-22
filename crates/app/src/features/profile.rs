@@ -624,12 +624,25 @@ fn invitable(ctx: &ConversationCtx, cx: &App) -> Option<(String, String)> {
         .then(|| (c.network_id.clone(), ircord_client::irc::channel_target(c)))
 }
 
+/// The members of the conversation `ctx` is in: an invitation to it leaves
+/// them out, as the web's invite does.
+fn channel_members(ctx: &ConversationCtx, cx: &App) -> Vec<String> {
+    let Some(client) = ctx.session.read(cx).client().cloned() else {
+        return Vec::new();
+    };
+    let w = client.read();
+    w.conversation(&ctx.conversation)
+        .map(|c| c.member_ids.clone())
+        .unwrap_or_default()
+}
+
 /// Pick someone and invite them to the channel.
 fn invite_someone(ctx: &ConversationCtx, window: &mut Window, cx: &mut App) {
     let Some((network, channel)) = invitable(ctx, cx) else {
         return;
     };
     let session = ctx.session.clone();
+    let except = channel_members(ctx, cx);
     people_picker::open(
         window,
         cx,
@@ -639,7 +652,7 @@ fn invite_someone(ctx: &ConversationCtx, window: &mut Window, cx: &mut App) {
             network: network.clone(),
             purpose: ircord_client::api::people::Purpose::Dm,
             conversation: None,
-            except: Vec::new(),
+            except,
         },
         move |picked, window, cx| {
             raw(

@@ -17,16 +17,19 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::Client;
 use ircord_client::commands::args::{self, ArgError};
+use ircord_client::commands::catalog::Suggest;
+use ircord_client::commands::complete;
 use ircord_client::commands::ignore::Notice;
 use ircord_client::commands::{self as cmd, NickError, Plan, Problem, View};
 use ircord_client::documents::NOTIFICATION_SETTINGS;
 use ircord_client::features::{Context as Allowed, Reason};
-use ircord_client::store::Connection;
+use ircord_client::store::{Connection, people};
 
 use crate::composer::{self, FormatBold, FormatItalic, FormatUnderline};
 use crate::features::message_actions::reason_text;
 use crate::registry::{
-    self, ComposerCtx, KeyDefault, SendFilter, SendOutcome, Slot, SuggestionProvider,
+    self, ComposerCtx, KeyDefault, SendFilter, SendOutcome, Slot, Suggestion, SuggestionLook,
+    SuggestionProvider,
 };
 use crate::session::Session;
 use crate::theme;
@@ -69,6 +72,56 @@ struct Watched(Vec<std::rc::Weak<Client>>);
 
 impl Global for Watched {}
 
+/// How many people an argument's list shows.
+const ARGUMENT_LIMIT: usize = 12;
+
+/// `/kick bo` → `bob`: people for a nickname argument, in the same rows as
+/// the @ list. `/invite` offers the people not yet in the channel it names,
+/// or else the one you are in.
+fn arguments(ctx: &ComposerCtx, text: &str, cx: &App) -> Vec<Suggestion> {
+    let (_, caret) = crate::composer::typed(&ctx.composer, cx);
+    let Some(arg) = complete::argument(text, caret) else {
+        return Vec::new();
+    };
+    let session = ctx.session.read(cx);
+    let Some(client) = session.client() else {
+        return Vec::new();
+    };
+    let w = client.read();
+    let Some(conversation) = w.conversation(&ctx.conversation) else {
+        return Vec::new();
+    };
+    let found = match arg.suggest {
+        Suggest::Invitee => {
+            let target = match &arg.channel {
+                Some(name) => complete::channel_named(&w, &conversation.network_id, name),
+                None => Some(conversation).filter(|c| {
+                    c.kind == ircord_client::contract::ConversationKind::Channel
+                        && c.party.is_none()
+                }),
+            };
+            complete::network_members(&w, &conversation.network_id, target, &arg.query)
+        }
+        _ => complete::members(&w, conversation, &arg.query),
+    };
+    let heading = SharedString::from(t!("composer-people", query = arg.query.as_str()));
+    found
+        .into_iter()
+        .take(ARGUMENT_LIMIT)
+        .map(|m| Suggestion {
+            id: format!("person-{}", m.nick).into(),
+            label: people::name(m).to_string().into(),
+            detail: Some(format!("@{}", m.nick).into()),
+            replace: arg.range.clone(),
+            insert: format!("{} ", m.nick),
+            heading: Some(heading.clone()),
+            look: SuggestionLook::Person {
+                member: m.id.clone(),
+            },
+        })
+        .collect()
+}
+
 pub fn init(cx: &mut App) {
     registry::register(cx, |r| {
         let c = &mut r.composer;
@@ -76,6 +129,11 @@ pub fn init(cx: &mut App) {
             id: "commands".into(),
             order: 0,
             suggest: Rc::new(composer::suggest::commands),
+        });
+        c.suggestions.add(SuggestionProvider {
+            id: "arguments".into(),
+            order: 5,
+            suggest: Rc::new(arguments),
         });
         c.suggestions.add(SuggestionProvider {
             id: "people".into(),

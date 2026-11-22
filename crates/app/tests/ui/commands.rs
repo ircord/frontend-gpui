@@ -137,6 +137,24 @@ fn arrows_move_through_suggestions_and_escape_hides_them(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
+fn nicknames_in_command_arguments_complete_as_the_at_list_does(cx: &mut TestAppContext) {
+    let f = open(cx, snapshot(), |_| {});
+    type_in(&f, cx, "/kick b");
+    assert!(shows(&f, cx, "suggestion-person-bob"));
+    press(&f, cx, "enter");
+    assert_eq!(text(&f, cx), "/kick bob ");
+}
+
+#[gpui_kit::test]
+fn invite_leaves_out_the_people_already_in_the_channel(cx: &mut TestAppContext) {
+    // #general is the channel you are in, and bob is in it.
+    let f = open(cx, snapshot(), |_| {});
+    type_in(&f, cx, "/invite b");
+    assert!(!shows(&f, cx, "suggestion-person-bob"));
+    assert!(!shows(&f, cx, "composer-suggestions"));
+}
+
+#[gpui_kit::test]
 fn people_and_channels_complete_with_the_sigil(cx: &mut TestAppContext) {
     let f = open(cx, snapshot(), |_| {});
     type_in(&f, cx, "hi @b");

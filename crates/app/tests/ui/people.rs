@@ -423,6 +423,35 @@ fn an_empty_direct_conversation_shows_the_person(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn invite_someone_leaves_out_the_people_already_in_the_channel(cx: &mut TestAppContext) {
+    let f = open(cx, workspace(), |server| {
+        server.route(
+            "GET",
+            "/api/v1/people",
+            200,
+            json!({"items": [{"key": "k-zed", "networkId": "n1", "displayName": "Zed",
+                              "nickname": "zed", "presence": "online", "eligible": true}],
+                   "more": false, "source": "known", "status": "ready"}),
+        );
+    });
+    menu(&f, cx, "conversation-c-general", "Invite someone…");
+    wait_for(&f, cx, "people-picker");
+    // eve is in #general already: typed, she is not offered; the server's zed is.
+    type_text(&f, cx, "eve");
+    let deadline = std::time::Instant::now() + WAIT;
+    while !shows(&f, cx, "people-picker-option-0")
+        || label(&f, cx, "people-picker-option-0") != "Zed, zed"
+    {
+        assert!(std::time::Instant::now() < deadline, "zed never showed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        !shows(&f, cx, "people-picker-option-1"),
+        "eve is not offered"
+    );
+}
+
+#[gpui_kit::test]
 fn the_people_picker_finds_people_here_and_on_the_server(cx: &mut TestAppContext) {
     let f = open(cx, workspace(), |server| {
         server.route(
