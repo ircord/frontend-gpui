@@ -8,6 +8,7 @@
 //! stay in their draft until saved to the account.
 
 mod background;
+mod colors;
 
 use crate::ui::focus::Reachable;
 use std::cell::Cell;
@@ -26,9 +27,7 @@ use ircord_client::contract::{
     Appearance, AppearanceAccent, AppearanceCorners, AppearanceDensity, AppearanceFont,
     AppearanceMode, AppearanceMotion, Theme as UserTheme,
 };
-use ircord_client::store::appearance::{
-    self as look, Compiled, FAMILIES, ImportError, Look, Mode, Seed,
-};
+use ircord_client::store::appearance::{self as look, Compiled, FAMILIES, ImportError, Look, Mode};
 use ircord_client::store::theme_css::CssVariables;
 
 use crate::registry::{self, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection};
@@ -141,7 +140,7 @@ struct Editor {
     name: Entity<InputState>,
     import: Entity<InputState>,
     css: Entity<TextareaState>,
-    seeds: Vec<(Seed, Entity<InputState>)>,
+    seeds: Vec<colors::Field>,
     /// The unsaved theme and its editing mode.
     editing: Option<(UserTheme, Mode)>,
     tab: ThemeTab,
@@ -182,20 +181,12 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
     let name = input(t!("appearance-themes-new-name"), window, cx);
     let import = input(t!("appearance-themes-import-paste"), window, cx);
     let css = cx.new(|cx| TextareaState::new(window, cx).rows(6));
-    let seeds: Vec<_> = Seed::ALL
-        .iter()
-        .map(|s| {
-            (
-                *s,
-                input(t!("appearance-accent-custom-placeholder"), window, cx),
-            )
-        })
-        .collect();
+    let seeds = colors::fields(window, cx);
     let background_preview = cx.new(|_| crate::theme::background::Wallpaper::default());
     let e = cx.new(|cx: &mut Context<Editor>| {
         let mut inputs: Vec<_> = seeds
             .iter()
-            .map(|(_, field)| cx.subscribe(field, |_, _, event, cx| draft_input_changed(event, cx)))
+            .flat_map(|field| field.subscribe(window, cx))
             .collect();
         inputs.push(cx.subscribe(&name, |_, _, event, cx| draft_input_changed(event, cx)));
         inputs.push(cx.subscribe(&css, |_, _, event, cx| draft_input_changed(event, cx)));
@@ -1453,6 +1444,11 @@ fn themes_block(
                 .child(t!("appearance-themes-full")),
         );
     }
+    let base = library
+        .themes
+        .iter()
+        .find(|theme| theme.id == current.theme)
+        .and_then(|theme| theme.base.clone());
     let new_editor = editor.clone();
     let paste_editor = editor.clone();
     let file_editor = editor.clone();
@@ -1469,12 +1465,15 @@ fn themes_block(
                         .test_support()
                         .reachable(theme)
                         .on_click(move |_, window, cx| {
-                            let made = look::new_theme(
+                            let mut made = look::new_theme(
                                 &current,
                                 t!("appearance-themes-new-name"),
                                 made_with(),
                                 &now(),
                             );
+                            if let Some(base) = &base {
+                                made.base = Some(base.clone());
+                            }
                             open_studio(&new_editor, &made, mode, true, window, cx);
                         }),
                 )
@@ -1683,28 +1682,6 @@ fn theme_row(
         )
 }
 
-fn seed_label(seed: Seed) -> &'static str {
-    match seed {
-        Seed::Canvas => t!("appearance-seed-canvas"),
-        Seed::Surface => t!("appearance-seed-surface"),
-        Seed::Overlay => t!("appearance-seed-overlay"),
-        Seed::Ink => t!("appearance-seed-ink"),
-        Seed::Muted => t!("appearance-seed-muted"),
-        Seed::Accent => t!("appearance-seed-accent"),
-    }
-}
-
-fn seed_key(seed: Seed) -> &'static str {
-    match seed {
-        Seed::Canvas => "canvas",
-        Seed::Surface => "surface",
-        Seed::Overlay => "overlay",
-        Seed::Ink => "ink",
-        Seed::Muted => "muted",
-        Seed::Accent => "accent",
-    }
-}
-
 fn open_studio(
     editor: &Entity<Editor>,
     user_theme: &UserTheme,
@@ -1760,10 +1737,8 @@ fn fill_seeds(
     cx: &mut App,
 ) {
     let seeds = look::drawn_seeds(theme, mode);
-    for (seed, input) in editor.read(cx).seeds.clone() {
-        input.update(cx, |s, cx| {
-            s.set_value(look::to_hex(seed.get(&seeds)), window, cx)
-        });
+    for field in editor.read(cx).seeds.clone() {
+        field.fill(&seeds, window, cx);
     }
 }
 
@@ -1775,17 +1750,16 @@ fn draft_fields(
 ) -> Result<UserTheme, &'static str> {
     let mut draft = base.clone();
     let shown = look::drawn_seeds(base, mode);
-    for (seed, input) in &editor.seeds {
-        let text = input.read(cx).value();
-        let text = text.trim();
-        let color = if text.starts_with('#') {
-            look::parse_hex(text)
-        } else {
-            look::parse_hex(&format!("#{text}"))
-        };
-        let color = color.ok_or_else(|| t!("appearance-accent-custom-invalid"))?;
-        if color != seed.get(&shown) {
-            look::set_seed(&mut draft, mode, *seed, color);
+    if look::theme_seeds(base, mode).is_some() {
+        let mut colors = shown;
+        for field in &editor.seeds {
+            let color = field
+                .value(cx)
+                .ok_or_else(|| t!("appearance-accent-custom-invalid"))?;
+            field.seed.set(&mut colors, color);
+        }
+        if colors != shown {
+            look::set_theme_seeds(&mut draft, mode, Some(colors));
         }
     }
     let css = editor.css.read(cx).value();
@@ -1874,7 +1848,6 @@ pub(crate) fn studio_view(
     let collapsed = !docked && state.collapsed;
     let focus = state.focus.clone();
     let busy = state.busy;
-    let seeds = state.seeds.clone();
     let safe = Theme::from_compiled(&look::compile(&appearance::look(cx), mode, &[], false));
     let collapse = editor.clone();
     let dismiss = editor.clone();
@@ -1949,9 +1922,7 @@ pub(crate) fn studio_view(
                 }),
         )
         .when(!collapsed, |panel| {
-            panel.child(theme_editor(
-                &draft, mode, &seeds, &editor, &safe, window, cx,
-            ))
+            panel.child(theme_editor(&draft, mode, &editor, &safe, window, cx))
         });
     Some((panel.into_any_element(), docked))
 }
@@ -1959,7 +1930,6 @@ pub(crate) fn studio_view(
 fn theme_editor(
     user_theme: &UserTheme,
     mode: Mode,
-    inputs: &[(Seed, Entity<InputState>)],
     editor: &Entity<Editor>,
     theme: &Theme,
     window: &mut Window,
@@ -2034,66 +2004,7 @@ fn theme_editor(
     if tab == ThemeTab::Css {
         form = form.child(css_editor(editor, user_theme, mode, theme, cx));
     } else if tab == ThemeTab::Colors {
-        form = form.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(div().text_sm().child(t!("appearance-studio-preview-mode")))
-                .child(
-                    div()
-                        .id("theme-studio-mode")
-                        .test_support()
-                        .role(Role::RadioGroup)
-                        .aria_label(t!("appearance-studio-preview-mode"))
-                        .flex()
-                        .gap_1()
-                        .children(
-                            [
-                                (Mode::Dark, "theme-studio-dark", t!("appearance-mode-dark")),
-                                (
-                                    Mode::Light,
-                                    "theme-studio-light",
-                                    t!("appearance-mode-light"),
-                                ),
-                            ]
-                            .map(|(choice, id, label)| {
-                                let editor = editor.clone();
-                                option(id, label, mode == choice, theme)
-                                    .test_support()
-                                    .reachable(theme)
-                                    .on_click(move |_, window, cx| {
-                                        switch_preview_mode(&editor, choice, window, cx)
-                                    })
-                            }),
-                        ),
-                ),
-        );
-        for (seed, input) in inputs {
-            form = form.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .w(px(120.))
-                            .text_sm()
-                            .text_color(theme.text)
-                            .child(seed_label(*seed)),
-                    )
-                    .child(
-                        div().w(px(120.)).child(
-                            Input::new(input)
-                                .id(SharedString::from(format!(
-                                    "appearance-seed-{}",
-                                    seed_key(*seed)
-                                )))
-                                .aria_label(seed_label(*seed)),
-                        ),
-                    ),
-            );
-        }
+        form = form.child(colors::render(editor, user_theme, mode, theme, cx));
     }
     if let Some((text, problem)) = editor.read(cx).notice.clone() {
         form = form.child(

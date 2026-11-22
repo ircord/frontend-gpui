@@ -754,6 +754,79 @@ fn theme_studio_docks_and_preview_mode_does_not_change_the_account(cx: &mut Test
 }
 
 #[gpui_kit::test]
+fn theme_studio_saves_separate_base_schemes_and_keeps_the_other_modes_colors(
+    cx: &mut TestAppContext,
+) {
+    let f = signed_in(
+        cx,
+        json!({"mode": "dark"}),
+        json!([{
+            "id": "t-preview", "format": 1, "name": "Preview", "updatedAt": "revision-1"
+        }]),
+    );
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-theme-edit-t-preview");
+    pick_studio_base(&f, cx, "Hibiki Stage");
+    wait(cx, "the dark base is previewed", |cx| {
+        theme::appearance::compiled(cx).scheme == "hibiki-dark"
+    });
+    click(&f, cx, "theme-studio-customize");
+    click(&f, cx, "appearance-seed-blue");
+    cx.update_window(f.window, |_, window, cx| {
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-a"
+            } else {
+                "ctrl-a"
+            },
+            cx,
+        );
+        window.input("#468def", cx);
+    })
+    .unwrap();
+    click(&f, cx, "theme-studio-light");
+    pick_studio_base(&f, cx, "Hibiki Paper");
+    wait(cx, "the light base is previewed", |cx| {
+        theme::appearance::compiled(cx).scheme == "hibiki-light"
+    });
+    click(&f, cx, "theme-studio-customize");
+    click(&f, cx, "theme-studio-reset-colors");
+    assert!(
+        f.server
+            .requests_to("PUT", "/api/v1/app/themes/t-preview")
+            .is_empty()
+    );
+    click(&f, cx, "appearance-theme-save");
+    wait(cx, "the edited theme is saved", |_| {
+        !f.server
+            .requests_to("PUT", "/api/v1/app/themes/t-preview")
+            .is_empty()
+    });
+    let body = f.server.requests_to("PUT", "/api/v1/app/themes/t-preview")[0].json();
+    assert_eq!(
+        body["theme"]["base"],
+        json!({"dark": "hibiki-dark", "light": "hibiki-light"})
+    );
+    assert_eq!(
+        body["theme"]["colors"]["dark"]["palette"]["blue"],
+        "#468def"
+    );
+    assert_eq!(body["theme"]["colors"]["light"], Value::Null);
+    assert!(saved_appearances(&f).is_empty());
+}
+
+fn pick_studio_base(f: &Fixture, cx: &mut TestAppContext, name: &str) {
+    click(f, cx, "theme-studio-base");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let item = window.find_by_label(name).bounds().center();
+        window.pointer_down(item, MouseButton::Left, cx);
+        window.pointer_up(item, MouseButton::Left, cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn every_scheme_can_be_picked_and_reads_clearly(cx: &mut TestAppContext) {
     let f = signed_in(cx, json!({"mode": "dark"}), json!([]));
     open_at(&f, cx, "appearance-scheme");

@@ -1035,16 +1035,34 @@ pub enum Seed {
     Ink,
     Muted,
     Accent,
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Cyan,
+    Blue,
+    Purple,
+    Pink,
 }
 
 impl Seed {
-    pub const ALL: [Seed; 6] = [
+    pub const INTERFACE: [Seed; 6] = [
         Seed::Canvas,
         Seed::Surface,
         Seed::Overlay,
         Seed::Ink,
         Seed::Muted,
         Seed::Accent,
+    ];
+    pub const PALETTE: [Seed; 8] = [
+        Seed::Red,
+        Seed::Orange,
+        Seed::Yellow,
+        Seed::Green,
+        Seed::Cyan,
+        Seed::Blue,
+        Seed::Purple,
+        Seed::Pink,
     ];
 
     pub fn get(self, s: &Seeds) -> u32 {
@@ -1055,6 +1073,14 @@ impl Seed {
             Seed::Ink => s.ink,
             Seed::Muted => s.muted,
             Seed::Accent => s.accent,
+            Seed::Red => s.palette.red,
+            Seed::Orange => s.palette.orange,
+            Seed::Yellow => s.palette.yellow,
+            Seed::Green => s.palette.green,
+            Seed::Cyan => s.palette.cyan,
+            Seed::Blue => s.palette.blue,
+            Seed::Purple => s.palette.purple,
+            Seed::Pink => s.palette.pink,
         }
     }
 
@@ -1066,6 +1092,14 @@ impl Seed {
             Seed::Ink => &mut s.ink,
             Seed::Muted => &mut s.muted,
             Seed::Accent => &mut s.accent,
+            Seed::Red => &mut s.palette.red,
+            Seed::Orange => &mut s.palette.orange,
+            Seed::Yellow => &mut s.palette.yellow,
+            Seed::Green => &mut s.palette.green,
+            Seed::Cyan => &mut s.palette.cyan,
+            Seed::Blue => &mut s.palette.blue,
+            Seed::Purple => &mut s.palette.purple,
+            Seed::Pink => &mut s.palette.pink,
         } = value;
     }
 }
@@ -1073,13 +1107,31 @@ impl Seed {
 /// Change one seed of `theme` in `mode`, starting from its base's seeds when
 /// the theme has none of its own for that mode yet.
 pub fn set_seed(theme: &mut Theme, mode: Mode, seed: Seed, value: u32) {
-    let mut seeds = theme_seeds(theme, mode).unwrap_or(theme_base(theme, mode).seeds);
+    let mut seeds = drawn_seeds(theme, mode);
     seed.set(&mut seeds, value);
+    set_theme_seeds(theme, mode, Some(seeds));
+}
+
+/// Store a mode's own colors, or return that mode to its base palette.
+pub fn set_theme_seeds(theme: &mut Theme, mode: Mode, seeds: Option<Seeds>) {
+    if seeds.is_none() && theme.colors.is_none() {
+        return;
+    }
     let colors = theme.colors.get_or_insert_default();
-    let stored = Some(seeds_to(&seeds));
+    let stored = seeds.as_ref().map(seeds_to);
     match mode {
         Mode::Dark => colors.dark = stored,
         Mode::Light => colors.light = stored,
+    }
+}
+
+/// Change one mode's base scheme without changing either mode's custom colors.
+pub fn set_theme_base(theme: &mut Theme, scheme: &'static Scheme) {
+    let base = theme.base.get_or_insert_default();
+    let id = Some(scheme.id.to_string());
+    match scheme.mode {
+        Mode::Dark => base.dark = id,
+        Mode::Light => base.light = id,
     }
 }
 
@@ -1473,6 +1525,24 @@ mod tests {
         let newer = compile(&look, Mode::Dark, std::slice::from_ref(&theme), false);
         assert_eq!(newer.theme, None);
         assert_eq!(newer.scheme, DEFAULT_DARK);
+    }
+
+    #[test]
+    fn custom_colors_follow_their_own_mode_and_can_return_to_base() {
+        let look = Look::default();
+        let mut theme = new_theme(&look, "Test", "Tests", "revision-1");
+        let dark = scheme_for("github-dark", Mode::Dark);
+        let light = scheme_for("hibiki-light", Mode::Light);
+        set_theme_base(&mut theme, dark);
+        set_theme_base(&mut theme, light);
+        assert_eq!(drawn_seeds(&theme, Mode::Dark), dark.seeds);
+        assert_eq!(drawn_seeds(&theme, Mode::Light), light.seeds);
+        set_seed(&mut theme, Mode::Dark, Seed::Blue, 0x468def);
+        set_seed(&mut theme, Mode::Light, Seed::Canvas, 0xd2e4fc);
+        set_theme_seeds(&mut theme, Mode::Light, None);
+        assert_eq!(drawn_seeds(&theme, Mode::Light), light.seeds);
+        assert_eq!(drawn_seeds(&theme, Mode::Dark).palette.blue, 0x468def);
+        assert_eq!(theme_base(&theme, Mode::Dark).id, dark.id);
     }
 
     #[test]

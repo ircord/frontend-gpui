@@ -37,6 +37,7 @@
 - Try a theme with custom CSS for 20 seconds before keeping it. Press Shift+F8 to pause or resume your personal theme.
 - Edit a personal theme’s custom CSS in Appearance and see which rules GPUI can use before saving.
 - Theme Studio previews your unsaved colors, background, and CSS beside the conversation, with Dark, Light, and Compare controls.
+- Choose a base scheme and customize interface, status, and code colors independently for dark and light mode in Theme Studio.
 - Direct messages use the same sidebar order as the web client.
 - Switching networks returns to the last channel you viewed on that network, even after restarting IRCord.
 - The collapsed sidebar still gives you access to Search, Inbox, Saved messages, Drafts, Links and Server.
