@@ -129,10 +129,14 @@ fn the_irc_layout_puts_every_message_on_its_own_line(cx: &mut TestAppContext) {
     assert!(!shows(&f, cx, "sender-2"), "a grouped message has no name");
 
     open_section(&f, cx, "settings-section-messages");
+    assert!(shows(&f, cx, "settings-preview-cozy"));
     wait_shows(&f, cx, "message-layout-irc", true);
     click(&f, cx, "message-layout-irc");
     let put = f.server.wait_for("PUT", "/api/v1/app/appearance", WAIT);
     assert_eq!(put.json()["settings"]["messageLayout"], "irc");
+    wait_shows(&f, cx, "settings-preview-irc", true);
+    open_section(&f, cx, "settings-section-appearance");
+    wait_shows(&f, cx, "settings-preview-irc", true);
 
     back_to_general(&f, cx);
     wait_shows(&f, cx, "sender-2", true);

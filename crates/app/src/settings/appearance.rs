@@ -256,13 +256,7 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
         .flex()
         .flex_col()
         .gap_4()
-        .child(super::preview(
-            &theme,
-            super::PreviewLook {
-                font: crate::message::layout::settings(cx).family(),
-                ..Default::default()
-            },
-        ))
+        .child(super::preview(&theme, crate::message::layout::settings(cx)))
         .when(compact, |d| {
             d.child(row(
                 ctx,

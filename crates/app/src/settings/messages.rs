@@ -745,16 +745,8 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> AnyElement {
     }
 
     let hover = theme.hover;
-    page.child(super::preview(
-        &theme,
-        super::PreviewLook {
-            font: look.family(),
-            size: look.size as f32,
-            clock_12h: look.clock_12h,
-            colored_names: look.colored_names,
-        },
-    ))
-    .child(super::block(
+    let page = page.child(super::preview(&theme, look));
+    page.child(super::block(
         ctx,
         "message-layout",
         t!("settings-messages-layout"),

@@ -697,43 +697,19 @@ fn save_indicator(state: &SaveState, theme: &Theme) -> impl IntoElement + use<> 
         .child(text)
 }
 
-/// How the sample messages are drawn: the message settings' font, size,
-/// clock and name colours; the defaults are the app's.
-#[derive(Clone, Debug)]
-pub struct PreviewLook {
-    pub font: Option<&'static str>,
-    pub size: f32,
-    pub clock_12h: bool,
-    pub colored_names: bool,
-}
-
-impl Default for PreviewLook {
-    fn default() -> Self {
-        Self {
-            font: None,
-            size: 14.,
-            clock_12h: false,
-            colored_names: true,
-        }
-    }
-}
-
 /// Two sample messages drawn with the active theme, as the web's preview
 /// at the top of Appearance and Messages, so a change shows at once.
-pub fn preview(theme: &Theme, look: PreviewLook) -> impl IntoElement + use<> {
-    let time: SharedString = if look.clock_12h {
-        t!("settings-preview-time-12h").into()
-    } else {
-        t!("settings-preview-time").into()
-    };
+fn preview(theme: &Theme, look: crate::message::layout::Look) -> impl IntoElement + use<> {
+    use crate::message::layout::{Layout, message_font};
+    let font = message_font(&look, theme);
     let message = |id: &'static str,
-                   account: &'static str,
                    tone: &'static str,
                    name: &'static str,
+                   time: &'static str,
                    text: Div| {
         let member = ircord_client::contract::Member {
-            id: id.to_string(),
-            account: account.to_string(),
+            id: id.into(),
+            account: id.into(),
             nick: name.to_lowercase(),
             display_name: name.to_string(),
             ..Default::default()
@@ -742,12 +718,38 @@ pub fn preview(theme: &Theme, look: PreviewLook) -> impl IntoElement + use<> {
             .map(theme::hex)
             .unwrap_or(theme.text);
         let (fill, ink) = ircord_client::store::people::tone(tone);
+        let avatar_size = if look.layout == Layout::Compact {
+            24.
+        } else {
+            40.
+        };
+        let text = text
+            .min_w_0()
+            .font_family(font.clone())
+            .text_size(px(look.size as f32))
+            .line_height(relative(1.5))
+            .text_color(theme.body);
+        let clock = div()
+            .flex_none()
+            .text_xs()
+            .text_color(theme.faint)
+            .child(time);
+        let author = div().font_weight(FontWeight::SEMIBOLD).text_color(color);
+        if look.layout == Layout::Irc {
+            return div()
+                .flex()
+                .items_baseline()
+                .gap_2()
+                .child(clock)
+                .child(author.w(px(100.)).flex_none().truncate().child(member.nick))
+                .child(text);
+        }
         div()
             .flex()
             .gap_3()
             .child(
                 div()
-                    .size(px(36.))
+                    .size(px(avatar_size))
                     .flex_none()
                     .rounded_full()
                     .bg(theme::hex(fill))
@@ -762,52 +764,53 @@ pub fn preview(theme: &Theme, look: PreviewLook) -> impl IntoElement + use<> {
                 div()
                     .flex()
                     .flex_col()
+                    .min_w_0()
                     .child(
                         div()
                             .flex()
                             .items_baseline()
                             .gap_2()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(color)
-                                    .child(name),
-                            )
-                            .child(div().text_xs().text_color(theme.faint).child(time.clone())),
+                            .child(author.child(name))
+                            .child(clock),
                     )
-                    .child(text.text_color(theme.body)),
+                    .child(text),
             )
     };
-    div()
-        .id("settings-preview")
+    let (first_time, second_time) = if look.clock_12h {
+        (
+            t!("settings-preview-time-12h"),
+            t!("settings-preview-second-time-12h"),
+        )
+    } else {
+        (
+            t!("settings-preview-time"),
+            t!("settings-preview-second-time"),
+        )
+    };
+    let samples = div()
+        .id(ElementId::Name(
+            format!("settings-preview-{}", look.layout.id()).into(),
+        ))
         .test_support()
-        .role(Role::Group)
-        .aria_label(t!("settings-preview"))
-        .p_4()
         .flex()
         .flex_col()
-        .gap_3()
-        .rounded(theme.radius_large)
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.main)
-        .shadow_sm()
-        .text_size(px(look.size))
-        .when_some(look.font, |d, family| d.font_family(family))
+        .gap(px(look.spacing as f32))
         .child(message(
-            "preview-jules",
             "jules",
             "mint",
             t!("settings-preview-first-name"),
+            first_time,
             div().child(t!("settings-preview-first")),
         ))
         .child(message(
-            "preview-noah",
             "noah",
             "blue",
             t!("settings-preview-second-name"),
+            second_time,
             div()
                 .flex()
+                .flex_wrap()
+                .items_baseline()
                 .gap_1()
                 .child(t!("settings-preview-second"))
                 .child(
@@ -815,7 +818,19 @@ pub fn preview(theme: &Theme, look: PreviewLook) -> impl IntoElement + use<> {
                         .text_color(theme.link)
                         .child(t!("settings-preview-channel")),
                 ),
-        ))
+        ));
+    div()
+        .id("settings-preview")
+        .test_support()
+        .role(Role::Group)
+        .aria_label(t!("settings-preview"))
+        .p_4()
+        .rounded(theme.radius_large)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.main)
+        .shadow_sm()
+        .child(samples)
 }
 
 /// A setting: its label (and a short description) beside its control, under

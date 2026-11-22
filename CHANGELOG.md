@@ -15,6 +15,7 @@
 - The Profile settings preview shows the name people will see when you leave your display name blank.
 - The Inbox tabs and Saved messages filter stay visible while you scroll.
 - Links uses the same header and keyboard hints as the other workspace pages, with filters that stay visible while you scroll.
+- The Appearance and Messages previews reflect your selected message layout, font, spacing, clock and name colors.
 
 - The desktop workspace, message list and composer follow the web layout and use your chosen theme, fonts and density.
 - On narrow windows, members open over the conversation. Resize the sidebars from their edges or with the arrow keys, and double-click an edge to reset its width.
