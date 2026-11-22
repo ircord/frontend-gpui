@@ -591,10 +591,28 @@ impl Draw<'_> {
         let id = format!("file-{}-{i}", self.message);
         let url = media.url.clone();
         let hover = self.theme.hover;
-        let icon = if media.content_type.starts_with("video/") {
+        let is_video = media.content_type.starts_with("video/");
+        let icon = if is_video {
             IconName::Play
         } else {
             IconName::File
+        };
+        // A video's play icon opens the file in the browser, as its name does
+        // (the card is what a video shows where it cannot play here).
+        let play_url = url.clone();
+        let glyph = if is_video {
+            div()
+                .id(ElementId::Name(format!("{id}-play").into()))
+                .test_support()
+                .role(Role::Button)
+                .aria_label(SharedString::from(t!("uploads-open").to_string()))
+                .cursor_pointer()
+                .on_click(move |_, _, cx| cx.open_url(&play_url))
+                .reachable(self.theme)
+                .child(ui::icon::icon(icon, self.theme.muted))
+                .into_any_element()
+        } else {
+            ui::icon::icon(icon, self.theme.muted).into_any_element()
         };
         div()
             .id(ElementId::Name(id.clone().into()))
@@ -612,7 +630,7 @@ impl Draw<'_> {
             .flex()
             .items_center()
             .gap_3()
-            .child(ui::icon::icon(icon, self.theme.muted))
+            .child(glyph)
             .child(
                 div()
                     .id(ElementId::Name(format!("{id}-name").into()))
