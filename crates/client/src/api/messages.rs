@@ -23,7 +23,8 @@ impl Api {
             .await
     }
 
-    pub(crate) async fn messages_before(
+    /// A history page with an optional local fallback for an opaque server cursor.
+    pub async fn messages_before(
         &self,
         conversation: &str,
         before: Option<&str>,
@@ -61,7 +62,7 @@ impl Api {
     ) -> Result<c::MessagePage, ApiError> {
         let boundary = match message_id {
             Some(id) => {
-                let around = self.messages_around(conversation, id, 1).await?;
+                let around = self.online_messages_around(conversation, id, 1).await?;
                 let Some(cursor) = around.next_cursor else {
                     return Ok(c::MessagePage {
                         cursor: around.cursor,
@@ -85,6 +86,24 @@ impl Api {
     /// A window of history centred on `message`, for jumping to an old
     /// message and for paging towards the present (`hasNewer`).
     pub async fn messages_around(
+        &self,
+        conversation: &str,
+        message: &str,
+        limit: u32,
+    ) -> Result<c::MessagePage, ApiError> {
+        let page = self
+            .online_messages_around(conversation, message, limit)
+            .await;
+        if page.as_ref().is_err_and(ApiError::unreachable)
+            && let Some(archive) = &self.archive
+            && let Some(saved) = archive.history_around(conversation, message, limit).await
+        {
+            return Ok(saved);
+        }
+        page
+    }
+
+    async fn online_messages_around(
         &self,
         conversation: &str,
         message: &str,

@@ -10,17 +10,20 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use ircord_contract::event::ServerEvent;
-use ircord_contract::{Message, MessagePage, OfflineSnapshot, Snapshot};
+use ircord_contract::{Message, OfflineSnapshot, Snapshot};
 use ring::{aead, digest, hmac, rand};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::api::{Api, ApiError};
 
+mod history;
 mod replay;
+mod search;
 pub(crate) use replay::{EVENT_BUFFER, Signal};
 use replay::{Projection, SCHEMA_VERSION, read_replay};
+pub(crate) use search::SEARCH_CURSOR;
 
 const RETENTION: chrono::TimeDelta = chrono::TimeDelta::days(7);
 const SNAPSHOT_PAGE_SIZE: u16 = 500;
@@ -123,84 +126,6 @@ impl Archive {
             .await
             .ok()
             .flatten()
-    }
-
-    /// A newest or exclusive older page. The boundary is a message ID and
-    /// stays usable when an offline timeline returns to the online API.
-    pub(crate) async fn history(
-        &self,
-        conversation: &str,
-        before: Option<&str>,
-        limit: u32,
-    ) -> Option<MessagePage> {
-        let cache = self.clone();
-        let conversation = conversation.to_owned();
-        let before = before.map(str::to_owned);
-        blocking(move || {
-            cache
-                .read(|db, projection| {
-                    if !projection
-                        .snapshot
-                        .conversations
-                        .iter()
-                        .any(|c| c.id == conversation)
-                    {
-                        return Ok(None);
-                    }
-                    let mut boundary_stmt = db.prepare_cached(
-                        "SELECT at, position FROM messages WHERE conversation=?1 AND id=?2",
-                    )?;
-                    let boundary = match before.as_deref() {
-                        Some(id) => {
-                            let Some((at, position)) = boundary_stmt
-                                .query_row(params![conversation, id], |row| {
-                                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-                                })
-                                .optional()?
-                            else {
-                                return Ok(None);
-                            };
-                            (at, position, id)
-                        }
-                        None => (i64::MAX, i64::MAX, ""),
-                    };
-                    let mut query = db.prepare_cached(
-                        "SELECT payload FROM messages
-                     WHERE conversation=?1 AND at>=?2 AND (at,position,id)<(?3,?4,?5)
-                     ORDER BY at DESC,position DESC,id DESC LIMIT ?6",
-                    )?;
-                    let limit = limit.max(1);
-                    let mut rows = query.query(params![
-                        conversation,
-                        retention_start(),
-                        boundary.0,
-                        boundary.1,
-                        boundary.2,
-                        i64::from(limit) + 1,
-                    ])?;
-                    let mut items = Vec::new();
-                    while let Some(row) = rows.next()? {
-                        let payload: Vec<u8> = row.get(0)?;
-                        items.push(cache.open::<Message>(b"message", payload)?);
-                    }
-                    let more = items.len() > limit as usize;
-                    items.truncate(limit as usize);
-                    let next_cursor = items
-                        .last()
-                        .filter(|_| more)
-                        .map(|message| format!("{CURSOR_PREFIX}{}", message.id));
-                    items.reverse();
-                    Ok(Some(MessagePage {
-                        items,
-                        next_cursor,
-                        ..Default::default()
-                    }))
-                })
-                .map(Option::flatten)
-        })
-        .await
-        .ok()
-        .flatten()
     }
 
     pub(crate) async fn forget(&self) {
@@ -674,5 +599,138 @@ mod tests {
         })
         .await
         .expect("the archive catches up to the expected cursor");
+    }
+
+    #[test]
+    fn offline_search_pages_and_opens_matches_with_their_surrounding_messages() {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use ircord_contract::{MemberRole, MessageKind};
+
+        use crate::search_filter::{Author, Chip, Filters, Has, Query, Source};
+
+        let rt = runtime().unwrap();
+        let server = CannedServer::start(&rt);
+        let mut snapshot = SnapshotBuilder::new()
+            .channel("c", "general")
+            .channel("elsewhere", "other")
+            .member("bot", "helper")
+            .member("alice", "Al-ice")
+            .cursor(7)
+            .build();
+        snapshot
+            .members
+            .iter_mut()
+            .find(|m| m.id == "bot")
+            .unwrap()
+            .role = MemberRole::Bot;
+        let hit = |id, hours| Message {
+            kind: MessageKind::Message,
+            sender_id: "bot".into(),
+            text: "Café au lait, @Al-ice. https://example.test/photo.webp".into(),
+            ..message(id, hours)
+        };
+        let newest = hit("newest", 1);
+        let pivot = hit("pivot", 4);
+        let oldest = hit("oldest", 6);
+        let wrong_phrase = Message {
+            text: "Café chaud au lait, Al-ice https://example.test/photo.webp".into(),
+            ..hit("words", 2)
+        };
+        let code_link = Message {
+            text: "Café au lait, Al-ice\n```\nhttps://example.test/photo.webp\n```".into(),
+            ..hit("code", 5)
+        };
+        let deleted = Message {
+            deleted: Some(true),
+            ..hit("deleted", 2)
+        };
+        let other = Message {
+            conversation_id: "elsewhere".into(),
+            ..hit("elsewhere", 3)
+        };
+        server.route("GET", "/api/v1/search", 503, json!({}));
+        server.route("GET", "/api/v1/conversations/c/messages", 503, json!({}));
+        let temp = tempfile::tempdir().unwrap();
+        let api = server
+            .api()
+            .with_offline_archive(&ConfigDir::at(temp.path()));
+        let archive = api.archive.clone().unwrap();
+        let mut stage = Staging::begin(archive, snapshot, retention_start()).unwrap();
+        stage
+            .append(
+                vec![
+                    newest.clone(),
+                    pivot.clone(),
+                    oldest.clone(),
+                    wrong_phrase,
+                    code_link,
+                    deleted,
+                    other,
+                ],
+                7,
+            )
+            .unwrap();
+        stage.finish(&[], 7).unwrap();
+        stage.publish().unwrap();
+
+        let filters = Filters::default()
+            .scoped("c")
+            .with(Chip::From("bot".into()))
+            .with(Chip::Mentions("alice".into()))
+            .with(Chip::Author(Author::Bot))
+            .with(Chip::Has(Has::Image));
+        let mut query = Query::new("cafe au la", filters, Source::Retained);
+        query.limit = Some(1);
+        rt.block_on(async {
+            let first = api.search_with_archive(&query).await.unwrap();
+            assert!(first.archived);
+            assert_eq!(first.page.items[0].message, newest);
+            let saved_cursor = first.page.next_cursor;
+
+            // A server cursor already in the view can serve as a local boundary.
+            query.cursor = Some(
+                URL_SAFE_NO_PAD.encode(
+                    serde_json::to_vec(&json!({
+                        "v": 2, "a": 0, "i": URL_SAFE_NO_PAD.encode("newest"), "s": "server-scope"
+                    }))
+                    .unwrap(),
+                ),
+            );
+            let continued = api.search_with_archive(&query).await.unwrap();
+            assert!(continued.archived);
+            assert_eq!(continued.page.items[0].message, pivot);
+
+            // The offline cursor remains local even if HTTP comes back.
+            server.route("GET", "/api/v1/search", 200, json!({"items": []}));
+            query.cursor = saved_cursor;
+            assert_eq!(
+                api.search_with_archive(&query).await.unwrap().page.items[0].message,
+                pivot
+            );
+            query.text = "different query".into();
+            assert!(matches!(
+                api.search_with_archive(&query).await,
+                Err(ApiError::ArchivedSearchUnavailable)
+            ));
+            query.cursor = None;
+            assert!(!api.search_with_archive(&query).await.unwrap().archived);
+            server.route("GET", "/api/v1/search", 401, json!({}));
+            assert!(matches!(
+                api.search_with_archive(&query).await,
+                Err(ApiError::Unauthorized)
+            ));
+
+            let jump = api.messages_around("c", "pivot", 1).await.unwrap();
+            assert_eq!(jump.items, vec![pivot]);
+            assert_eq!(jump.has_newer, Some(true));
+            assert_eq!(jump.next_cursor.as_deref(), Some("offline:pivot"));
+            let older = api
+                .messages("c", jump.next_cursor.as_deref(), 20)
+                .await
+                .unwrap();
+            assert_eq!(older.items.first(), Some(&oldest));
+            assert!(older.next_cursor.is_none());
+            assert!(api.messages_around("elsewhere", "pivot", 10).await.is_err());
+        });
     }
 }

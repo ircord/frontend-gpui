@@ -54,6 +54,8 @@ pub fn user_agent() -> String {
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ApiError {
+    #[error("Saved search results are unavailable. Search again.")]
+    ArchivedSearchUnavailable,
     /// The session is missing or expired.
     #[error("You are signed out.")]
     Unauthorized,

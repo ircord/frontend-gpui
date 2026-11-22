@@ -235,6 +235,7 @@ pub struct SearchModel {
     pub status: Status,
     pub more: More,
     generation: u64,
+    request: Option<tokio::task::AbortHandle>,
 }
 
 impl SearchModel {
@@ -253,6 +254,7 @@ impl SearchModel {
             status: Status::Idle,
             more: More::Idle,
             generation: 0,
+            request: None,
         }
     }
 
@@ -276,7 +278,7 @@ impl SearchModel {
 
     /// Whether server history can be asked: one conversation is searched.
     pub fn source_allowed(&self) -> bool {
-        self.sent_filters().in_.len() == 1
+        self.sent_filters().in_.len() == 1 && self.coverage != Some(Coverage::Offline)
     }
 
     fn set_text(&mut self, typed: &str, cx: &mut Context<Self>) {
@@ -285,6 +287,7 @@ impl SearchModel {
         }
         self.pending = typed.to_string();
         self.generation += 1;
+        self.cancel_request();
         let generation = self.generation;
         let runtime = self.session.read(cx).runtime.clone();
         let settle = runtime.spawn(async { tokio::time::sleep(DEBOUNCE).await });
@@ -329,6 +332,7 @@ impl SearchModel {
     }
 
     fn run(&mut self, cx: &mut Context<Self>) {
+        self.cancel_request();
         self.generation += 1;
         self.text = self.pending.clone();
         self.cursor = None;
@@ -347,7 +351,9 @@ impl SearchModel {
         self.status = Status::Searching;
         let query = Query::new(self.text.clone(), self.sent_filters(), self.source);
         let generation = self.generation;
-        let request = client.request(move |api| async move { api.search(&query).await });
+        let request =
+            client.request(move |api| async move { api.search_with_archive(&query).await });
+        self.request = Some(request.abort_handle());
         cx.spawn(async move |this, cx| {
             let result = request.await;
             this.update(cx, |m, cx| {
@@ -355,14 +361,19 @@ impl SearchModel {
                     return;
                 }
                 match result {
-                    Ok(Ok(page)) => {
-                        m.coverage = sf::coverage(&page);
-                        m.bounded = sf::is_bounded(&page);
+                    Ok(Ok(answer)) => {
+                        let page = answer.page;
+                        m.coverage = if answer.archived {
+                            Some(Coverage::Offline)
+                        } else {
+                            sf::coverage(&page)
+                        };
+                        m.bounded = !answer.archived && sf::is_bounded(&page);
                         m.cursor = page.next_cursor.filter(|c| !c.is_empty());
                         m.results = page.items;
                         m.status = Status::Done;
                     }
-                    Ok(Err(e)) => m.status = Status::Failed(e.to_string()),
+                    Ok(Err(e)) => m.status = Status::Failed(search_error(e)),
                     Err(e) => m.status = Status::Failed(e.to_string()),
                 }
                 cx.notify();
@@ -375,6 +386,12 @@ impl SearchModel {
 
     fn retry(&mut self, cx: &mut Context<Self>) {
         self.run(cx);
+    }
+
+    fn cancel_request(&mut self) {
+        if let Some(request) = self.request.take() {
+            request.abort();
+        }
     }
 
     fn load_more(&mut self, cx: &mut Context<Self>) {
@@ -391,7 +408,9 @@ impl SearchModel {
         let mut query = Query::new(self.text.clone(), self.sent_filters(), self.source);
         query.cursor = Some(cursor);
         let generation = self.generation;
-        let request = client.request(move |api| async move { api.search(&query).await });
+        let request =
+            client.request(move |api| async move { api.search_with_archive(&query).await });
+        self.request = Some(request.abort_handle());
         cx.spawn(async move |this, cx| {
             let result = request.await;
             this.update(cx, |m, cx| {
@@ -399,7 +418,12 @@ impl SearchModel {
                     return;
                 }
                 match result {
-                    Ok(Ok(page)) => {
+                    Ok(Ok(answer)) => {
+                        let page = answer.page;
+                        if answer.archived {
+                            m.coverage = Some(Coverage::Offline);
+                            m.bounded = false;
+                        }
                         for item in page.items {
                             // A repeated message keeps its last place.
                             m.results.retain(|r| r.message.id != item.message.id);
@@ -408,7 +432,7 @@ impl SearchModel {
                         m.cursor = page.next_cursor.filter(|c| !c.is_empty());
                         m.more = More::Idle;
                     }
-                    Ok(Err(e)) => m.more = More::Failed(e.to_string()),
+                    Ok(Err(e)) => m.more = More::Failed(search_error(e)),
                     Err(e) => m.more = More::Failed(e.to_string()),
                 }
                 cx.notify();
@@ -656,6 +680,7 @@ fn result_time(created_at: &str, with_time: bool, clock_12h: bool) -> String {
 fn coverage_text(coverage: Coverage) -> &'static str {
     use c::SearchSourceReason as R;
     match coverage {
+        Coverage::Offline => t!("search-coverage-offline"),
         Coverage::Retained => t!("search-coverage-retained"),
         Coverage::Upstream => t!("search-coverage-upstream"),
         Coverage::Fallback(reason) => match reason {
@@ -666,6 +691,17 @@ fn coverage_text(coverage: Coverage) -> &'static str {
             R::Continuation => t!("search-fallback-continuation"),
             R::Unknown => t!("search-coverage-retained"),
         },
+    }
+}
+
+fn search_error(error: ircord_client::api::ApiError) -> String {
+    if matches!(
+        error,
+        ircord_client::api::ApiError::ArchivedSearchUnavailable
+    ) {
+        t!("search-archive-unavailable").into()
+    } else {
+        error.to_string()
     }
 }
 
@@ -789,7 +825,8 @@ fn source_switch(
 ) -> Div {
     let m = model.read(cx);
     let allowed = m.source_allowed();
-    let on = m.source == Source::Upstream;
+    let on = allowed && m.source == Source::Upstream;
+    let offline = m.coverage == Some(Coverage::Offline);
     let model = model.clone();
     div()
         .px_3()
@@ -800,7 +837,8 @@ fn source_switch(
         .gap_2()
         .text_xs()
         .text_color(theme.muted)
-        .when(help && !allowed, |d| {
+        .when(offline, |d| d.child(t!("search-server-history-offline")))
+        .when(help && !allowed && !offline, |d| {
             d.child(t!("search-server-history-needs-scope"))
         })
         .child(
