@@ -10,16 +10,18 @@
 //! the Server window shows them, and between two joins they would end
 //! every fold.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone};
+use ircord_client::api::channels::Chanmodes;
 use ircord_client::contract::{
     Attachment, ClientPreferencesEvents, ConversationKind, MembershipEventType, Message,
     MessageKind,
 };
 use ircord_client::format::{self, Formatted};
+use ircord_client::irc::Prefixes;
 use ircord_client::store::{PendingSend, SendState, Workspace};
 
 /// Messages from one sender less than this many milliseconds apart share a
@@ -767,15 +769,25 @@ fn without_urls(text: &str, attachments: &[Attachment]) -> String {
 
 /// An event as a line with people's names (the exported log).
 pub(crate) fn event_text(w: &Workspace, m: &Message, network: &str) -> String {
-    event_line(m, &|id| w.display_name(id, network))
+    event_line(m, isupport(w, network), &|id| w.display_name(id, network))
 }
 
 /// An event as the timeline shows it: with nicks, as the web client does.
 fn event_nicks(w: &Workspace, m: &Message, network: &str) -> String {
-    event_line(m, &|id| nick(w, id, network))
+    event_line(m, isupport(w, network), &|id| nick(w, id, network))
 }
 
-fn event_line(m: &Message, name: &dyn Fn(&str) -> String) -> String {
+/// The network's ISUPPORT, which says how its mode changes read.
+fn isupport<'a>(w: &'a Workspace, network: &str) -> &'a BTreeMap<String, String> {
+    static NONE: BTreeMap<String, String> = BTreeMap::new();
+    w.network(network).map_or(&NONE, |n| &n.isupport)
+}
+
+fn event_line(
+    m: &Message,
+    isupport: &BTreeMap<String, String>,
+    name: &dyn Fn(&str) -> String,
+) -> String {
     let Some(e) = &m.event else {
         return ircord_client::format::parse(&m.text).text;
     };
@@ -809,7 +821,7 @@ fn event_line(m: &Message, name: &dyn Fn(&str) -> String) -> String {
             t!(
                 "timeline-event-mode",
                 actor = actor,
-                changes = mode_description(&detail)
+                changes = mode_description(&detail, isupport)
             )
         }
         MembershipEventType::Topic => t!("timeline-event-topic", actor = actor, topic = detail),
@@ -823,7 +835,12 @@ fn event_line(m: &Message, name: &dyn Fn(&str) -> String) -> String {
     }
 }
 
-fn mode_description(text: &str) -> String {
+/// A `MODE` change in words. Which letters take an argument comes from the
+/// network's `PREFIX` and `CHANMODES`, so the arguments stay with their
+/// modes; a channel key is consumed without being shown.
+fn mode_description(text: &str, isupport: &BTreeMap<String, String>) -> String {
+    let chanmodes = Chanmodes::parse(isupport);
+    let prefixes = Prefixes::of(isupport);
     let mut words = text.split_whitespace();
     let flags = words.next().unwrap_or_default();
     let mut adding = true;
@@ -834,52 +851,25 @@ fn mode_description(text: &str) -> String {
             adding = mode == '+';
             continue;
         }
-        // In particular, consume a key as an argument without showing it.
-        let has_arg = if adding { "qaohvbeIklfj" } else { "qaohvbeIk" };
-        let arg = has_arg.contains(mode).then(|| words.next()).flatten();
-        let phrase = match (mode, adding, arg) {
-            ('q', true, Some(nick)) => t!("timeline-mode-founder-add", nick = nick),
-            ('q', false, Some(nick)) => t!("timeline-mode-founder-remove", nick = nick),
-            ('a', true, Some(nick)) => t!("timeline-mode-admin-add", nick = nick),
-            ('a', false, Some(nick)) => t!("timeline-mode-admin-remove", nick = nick),
-            ('o', true, Some(nick)) => t!("timeline-mode-operator-add", nick = nick),
-            ('o', false, Some(nick)) => t!("timeline-mode-operator-remove", nick = nick),
-            ('h', true, Some(nick)) => t!("timeline-mode-half-op-add", nick = nick),
-            ('h', false, Some(nick)) => t!("timeline-mode-half-op-remove", nick = nick),
-            ('v', true, Some(nick)) => t!("timeline-mode-voice-add", nick = nick),
-            ('v', false, Some(nick)) => t!("timeline-mode-voice-remove", nick = nick),
-            ('b', true, Some(mask)) => t!("timeline-mode-ban-add", mask = mask),
-            ('b', false, Some(mask)) => t!("timeline-mode-ban-remove", mask = mask),
-            ('e', true, Some(mask)) => t!("timeline-mode-ban-exception-add", mask = mask),
-            ('e', false, Some(mask)) => t!("timeline-mode-ban-exception-remove", mask = mask),
-            ('I', true, Some(mask)) => t!("timeline-mode-invite-exception-add", mask = mask),
-            ('I', false, Some(mask)) => t!("timeline-mode-invite-exception-remove", mask = mask),
-            ('l', true, Some(count)) => t!("timeline-mode-limit-add", count = count),
-            ('l', false, _) => t!("timeline-mode-limit-remove").into(),
-            ('k', true, _) => t!("timeline-mode-key-add").into(),
-            ('k', false, _) => t!("timeline-mode-key-remove").into(),
-            ('i', true, _) => t!("timeline-mode-invite-only-add").into(),
-            ('i', false, _) => t!("timeline-mode-invite-only-remove").into(),
-            ('m', true, _) => t!("timeline-mode-moderated-add").into(),
-            ('m', false, _) => t!("timeline-mode-moderated-remove").into(),
-            ('t', true, _) => t!("timeline-mode-topic-add").into(),
-            ('t', false, _) => t!("timeline-mode-topic-remove").into(),
-            ('n', true, _) => t!("timeline-mode-external-add").into(),
-            ('n', false, _) => t!("timeline-mode-external-remove").into(),
-            ('s', true, _) => t!("timeline-mode-secret-add").into(),
-            ('s', false, _) => t!("timeline-mode-secret-remove").into(),
-            ('p', true, _) => t!("timeline-mode-private-add").into(),
-            ('p', false, _) => t!("timeline-mode-private-remove").into(),
-            ('r', true, _) => t!("timeline-mode-registered-add").into(),
-            ('r', false, _) => t!("timeline-mode-registered-remove").into(),
-            _ => {
-                let sign = if adding { '+' } else { '-' };
-                raw.push(match arg {
-                    Some(arg) => format!("{sign}{mode} {arg}"),
-                    None => format!("{sign}{mode}"),
-                });
-                continue;
-            }
+        let status = prefixes.modes.contains(&mode);
+        let has_arg = status
+            || chanmodes.list.contains(mode)
+            || chanmodes.always.contains(mode)
+            || (adding && chanmodes.when_set.contains(mode));
+        let arg = has_arg.then(|| words.next()).flatten();
+        let phrase = if status {
+            arg.and_then(|nick| status_change(mode, adding, nick))
+        } else {
+            channel_change(mode, adding, arg, &chanmodes)
+        };
+        let Some(phrase) = phrase else {
+            let sign = if adding { '+' } else { '-' };
+            raw.push(match arg {
+                Some(_) if mode == 'k' => format!("{sign}{mode}"),
+                Some(arg) => format!("{sign}{mode} {arg}"),
+                None => format!("{sign}{mode}"),
+            });
+            continue;
         };
         phrases.push(phrase);
     }
@@ -895,6 +885,66 @@ fn mode_description(text: &str) -> String {
             last = last
         ),
     }
+}
+
+/// A status the network's `PREFIX` lists, given to or taken from `nick`.
+fn status_change(mode: char, adding: bool, nick: &str) -> Option<String> {
+    Some(match (mode, adding) {
+        ('q', true) => t!("timeline-mode-founder-add", nick = nick),
+        ('q', false) => t!("timeline-mode-founder-remove", nick = nick),
+        ('a', true) => t!("timeline-mode-admin-add", nick = nick),
+        ('a', false) => t!("timeline-mode-admin-remove", nick = nick),
+        ('o', true) => t!("timeline-mode-operator-add", nick = nick),
+        ('o', false) => t!("timeline-mode-operator-remove", nick = nick),
+        ('h', true) => t!("timeline-mode-half-op-add", nick = nick),
+        ('h', false) => t!("timeline-mode-half-op-remove", nick = nick),
+        ('v', true) => t!("timeline-mode-voice-add", nick = nick),
+        ('v', false) => t!("timeline-mode-voice-remove", nick = nick),
+        _ => return None,
+    })
+}
+
+/// A channel mode in words, or `None` to show it as the server sent it.
+fn channel_change(
+    mode: char,
+    adding: bool,
+    arg: Option<&str>,
+    chanmodes: &Chanmodes,
+) -> Option<String> {
+    let listed = chanmodes.list.contains(mode);
+    Some(match (mode, adding, arg) {
+        ('b', true, Some(mask)) if listed => t!("timeline-mode-ban-add", mask = mask),
+        ('b', false, Some(mask)) if listed => t!("timeline-mode-ban-remove", mask = mask),
+        ('e', true, Some(mask)) if listed => t!("timeline-mode-ban-exception-add", mask = mask),
+        ('e', false, Some(mask)) if listed => {
+            t!("timeline-mode-ban-exception-remove", mask = mask)
+        }
+        ('I', true, Some(mask)) if listed => {
+            t!("timeline-mode-invite-exception-add", mask = mask)
+        }
+        ('I', false, Some(mask)) if listed => {
+            t!("timeline-mode-invite-exception-remove", mask = mask)
+        }
+        ('l', true, Some(count)) => t!("timeline-mode-limit-add", count = count),
+        ('l', false, _) => t!("timeline-mode-limit-remove").into(),
+        ('k', true, _) => t!("timeline-mode-key-add").into(),
+        ('k', false, _) => t!("timeline-mode-key-remove").into(),
+        ('i', true, _) => t!("timeline-mode-invite-only-add").into(),
+        ('i', false, _) => t!("timeline-mode-invite-only-remove").into(),
+        ('m', true, _) => t!("timeline-mode-moderated-add").into(),
+        ('m', false, _) => t!("timeline-mode-moderated-remove").into(),
+        ('t', true, _) => t!("timeline-mode-topic-add").into(),
+        ('t', false, _) => t!("timeline-mode-topic-remove").into(),
+        ('n', true, _) => t!("timeline-mode-external-add").into(),
+        ('n', false, _) => t!("timeline-mode-external-remove").into(),
+        ('s', true, _) => t!("timeline-mode-secret-add").into(),
+        ('s', false, _) => t!("timeline-mode-secret-remove").into(),
+        ('p', true, _) => t!("timeline-mode-private-add").into(),
+        ('p', false, _) => t!("timeline-mode-private-remove").into(),
+        ('r', true, _) => t!("timeline-mode-registered-add").into(),
+        ('r', false, _) => t!("timeline-mode-registered-remove").into(),
+        _ => return None,
+    })
 }
 
 fn parse_hex(s: &str) -> Option<u32> {
@@ -1675,12 +1725,41 @@ mod tests {
 #[test]
 fn mode_events_describe_changes_without_showing_channel_keys() {
     assert_eq!(
-        mode_description("+q PeterPowers"),
+        mode_description("+q PeterPowers", &BTreeMap::new()),
         "made PeterPowers a founder"
     );
     assert_eq!(
-        mode_description("+ko-v private-key Alice Bob"),
+        mode_description("+ko-v private-key Alice Bob", &BTreeMap::new()),
         "set a channel key, made Alice an operator and took voice from Bob"
     );
-    assert_eq!(mode_description("+X"), "set mode +X");
+    assert_eq!(mode_description("+X", &BTreeMap::new()), "set mode +X");
+}
+
+#[test]
+fn mode_arguments_follow_the_networks_chanmodes_and_prefix() {
+    let isupport = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    };
+    // `L` always takes an argument here, so the key stays with `k`.
+    let overflow = isupport(&[("CHANMODES", "beI,kL,l,imnpst"), ("PREFIX", "(ov)@+")]);
+    let text = mode_description("+Lko #overflow private-key Alice", &overflow);
+    assert!(!text.contains("private-key"), "{text}");
+    assert_eq!(
+        text,
+        "set a channel key, made Alice an operator and set mode +L #overflow"
+    );
+    // `q` is a quiet list where PREFIX has no founder.
+    let quiets = isupport(&[("CHANMODES", "beIq,k,l,imnpst"), ("PREFIX", "(ov)@+")]);
+    assert_eq!(
+        mode_description("+q *!*@spam.example", &quiets),
+        "set mode +q *!*@spam.example"
+    );
+    // A limit is removed without an argument; the next one keeps its own.
+    assert_eq!(
+        mode_description("-l+v Alice", &BTreeMap::new()),
+        "removed the user limit and gave voice to Alice"
+    );
 }
