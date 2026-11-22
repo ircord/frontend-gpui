@@ -304,6 +304,18 @@ fn the_composer_counts_down_near_the_web_clients_draft_limit(cx: &mut TestAppCon
         label_of(&f, cx, "composer-remaining"),
         "2 characters over the limit"
     );
+    cx.update_window(f.window, |_, window, cx| window.click("composer-send", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        f.server
+            .requests_to("POST", "/api/v1/conversations/c-general/messages")
+            .is_empty()
+    );
+    assert_eq!(
+        cx.update(|cx| composer.read(cx).text(cx)),
+        "😀".repeat(2_001)
+    );
 }
 
 #[gpui_kit::test]

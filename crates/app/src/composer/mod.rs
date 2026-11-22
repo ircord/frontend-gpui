@@ -32,6 +32,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::commands::complete::{self, TabCycle};
 use ircord_client::contract::ConversationKind;
+use ircord_client::{features::plain_line_breaks, store::drafts::TEXT_LIMIT};
 
 use crate::registry::{self, ComposerCtx, SendOutcome, Suggestion, SuggestionLook, TokenView};
 use crate::route::Route;
@@ -189,14 +190,22 @@ impl ComposerView {
         let Some(ctx) = self.ctx(cx) else {
             return;
         };
-        if text.trim().is_empty() {
+        // Text pasted on Windows keeps its `\r\n` line breaks. Count and send
+        // the normalized text, as the web textarea does.
+        let text = plain_line_breaks(&text);
+        let blank = text.trim().is_empty();
+        if text.encode_utf16().count() > TEXT_LIMIT
+            && (!blank || uploads::Uploads::has_pending(cx, &ctx.conversation))
+        {
+            ui::toast::info(window, cx, t!("composer-too-long"));
+            return;
+        }
+        if blank {
             self.after_submit(&ctx, "", window, cx);
             return;
         }
         let filters = registry::get(cx).composer.send_filters.to_vec();
-        // Text pasted on Windows keeps its `\r\n` line breaks, which the
-        // server refuses: every send, reply and edit goes out with `\n`.
-        let mut text = ircord_client::features::plain_line_breaks(&text).into_owned();
+        let mut text = text.into_owned();
         for filter in filters {
             match (filter.filter)(&ctx, text, window, cx) {
                 SendOutcome::Continue(next) => text = next,
@@ -574,8 +583,8 @@ impl Render for ComposerView {
         let sendable =
             !draft.trim().is_empty() || uploads::Uploads::has_pending(cx, &ctx.conversation);
         // Count the draft the way the web composer counts its input.
-        let remaining = ircord_client::store::drafts::TEXT_LIMIT as isize
-            - draft.encode_utf16().count() as isize;
+        let remaining =
+            TEXT_LIMIT as isize - plain_line_breaks(&draft).encode_utf16().count() as isize;
         let message_look = crate::message::layout::settings(cx);
         let font = crate::message::layout::message_font(&message_look, &theme);
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
