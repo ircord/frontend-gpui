@@ -263,14 +263,15 @@ fn the_attachment_menu_keeps_gifs_and_commands_available_without_uploads(cx: &mu
     cx.run_until_parked();
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find_by_label("Upload files").disabled(), Some(true));
-        assert_eq!(window.find_by_label("Send a GIF").disabled(), Some(false));
-        assert_eq!(
-            window.find_by_label("Use a slash command").disabled(),
-            Some(false)
-        );
+        assert!(window.find_by_label("Send a GIF").visible());
+        assert!(window.find_by_label("Use a slash command").visible());
+        let at = window.find_by_label("Upload files").bounds().center();
+        window.pointer_down(at, MouseButton::Left, cx);
+        window.pointer_up(at, MouseButton::Left, cx);
     })
     .unwrap();
+    cx.run_until_parked();
+    assert!(!cx.did_prompt_for_paths());
 }
 
 #[gpui_kit::test]
