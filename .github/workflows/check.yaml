@@ -1,5 +1,6 @@
 name: GPUI client checks
 on:
+  workflow_dispatch:
   workflow_call:
   push:
     branches: [main]
@@ -10,7 +11,7 @@ permissions:
   contents: read
 
 # A newer push to a pull request replaces its running checks. The event is in
-# the group, so a release's own run (workflow_dispatch) is never cancelled.
+# the group, so a manually started run is never cancelled by a pull request push.
 concurrency:
   group: gpui-check-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
