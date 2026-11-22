@@ -283,7 +283,7 @@ pub fn server_allows_css(cx: &App) -> bool {
 
 /// Whether a personal theme's CSS is applied: the account's switch is on and
 /// the server allows CSS.
-fn css_allowed(cx: &App) -> bool {
+pub(crate) fn css_allowed(cx: &App) -> bool {
     library(cx).is_some_and(|l| l.custom_css) && server_allows_css(cx)
 }
 

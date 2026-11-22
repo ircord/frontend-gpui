@@ -697,6 +697,25 @@ fn save_indicator(state: &SaveState, theme: &Theme) -> impl IntoElement + use<> 
 /// Two sample messages drawn with the active theme, as the web's preview
 /// at the top of Appearance and Messages, so a change shows at once.
 fn preview(theme: &Theme, look: crate::message::layout::Look) -> impl IntoElement + use<> {
+    div()
+        .id("settings-preview")
+        .test_support()
+        .role(Role::Group)
+        .aria_label(t!("settings-preview"))
+        .p_4()
+        .rounded(theme.radius_large)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.main)
+        .shadow_sm()
+        .child(preview_samples(theme, look, "settings-preview"))
+}
+
+fn preview_samples(
+    theme: &Theme,
+    look: crate::message::layout::Look,
+    id: &str,
+) -> impl IntoElement + use<> {
     use crate::message::layout::{Layout, message_font};
     let font = message_font(&look, theme);
     let message = |id: &'static str,
@@ -784,10 +803,8 @@ fn preview(theme: &Theme, look: crate::message::layout::Look) -> impl IntoElemen
             t!("settings-preview-second-time"),
         )
     };
-    let samples = div()
-        .id(ElementId::Name(
-            format!("settings-preview-{}", look.layout.id()).into(),
-        ))
+    div()
+        .id(ElementId::Name(format!("{id}-{}", look.layout.id()).into()))
         .test_support()
         .flex()
         .flex_col()
@@ -815,19 +832,7 @@ fn preview(theme: &Theme, look: crate::message::layout::Look) -> impl IntoElemen
                         .text_color(theme.link)
                         .child(t!("settings-preview-channel")),
                 ),
-        ));
-    div()
-        .id("settings-preview")
-        .test_support()
-        .role(Role::Group)
-        .aria_label(t!("settings-preview"))
-        .p_4()
-        .rounded(theme.radius_large)
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.main)
-        .shadow_sm()
-        .child(samples)
+        ))
 }
 
 /// A setting: its label (and a short description) beside its control, under

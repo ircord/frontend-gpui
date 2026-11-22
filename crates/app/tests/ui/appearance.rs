@@ -42,7 +42,12 @@ fn serve(server: &CannedServer, settings: Value, themes: Value) {
     server.route_fn("PUT", "/api/v1/app/themes/*", move |request| {
         let mut library = library.lock().unwrap();
         let theme = request.json()["theme"].clone();
-        library["themes"].as_array_mut().unwrap().push(theme);
+        let themes = library["themes"].as_array_mut().unwrap();
+        if let Some(existing) = themes.iter_mut().find(|item| item["id"] == theme["id"]) {
+            *existing = theme;
+        } else {
+            themes.push(theme);
+        }
         Reply::json(200, library.clone())
     });
 }
@@ -96,6 +101,48 @@ fn an_active_synced_theme_loads_its_background_from_the_signed_in_server(cx: &mu
         assert_eq!(bg.path, PATH);
         assert_eq!(bg.dim, 65);
     });
+}
+
+#[gpui_kit::test]
+fn background_changes_stay_in_the_preview_until_the_theme_is_saved(cx: &mut TestAppContext) {
+    use ircord_client::contract::ThemeBackgroundFit;
+
+    let f = signed_in(
+        cx,
+        json!({"mode": "dark", "theme": "t-bg"}),
+        json!([{
+            "id": "t-bg", "name": "Window", "format": 1, "updatedAt": "revision-1",
+            "background": {"url": "/files/a/b/photo.png", "fit": "cover", "position": "center"}
+        }]),
+    );
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-theme-edit-t-bg");
+    click(&f, cx, "appearance-theme-tab-background");
+    click(&f, cx, "theme-background-fit-tile");
+    click(&f, cx, "theme-background-position-right");
+    cx.update(|cx| {
+        assert_eq!(
+            theme::get(cx).background.as_ref().unwrap().fit,
+            ThemeBackgroundFit::Cover
+        )
+    });
+    assert!(
+        f.server
+            .requests_to("PUT", "/api/v1/app/themes/t-bg")
+            .is_empty()
+    );
+
+    click(&f, cx, "appearance-theme-save");
+    wait(cx, "the saved background is active", |cx| {
+        theme::get(cx)
+            .background
+            .as_ref()
+            .is_some_and(|bg| bg.fit == ThemeBackgroundFit::Tile)
+    });
+    let body = f.server.requests_to("PUT", "/api/v1/app/themes/t-bg")[0].json();
+    assert_eq!(body["theme"]["background"]["position"], "right");
+    assert_eq!(body["expected"], "revision-1");
+    assert_eq!(body["theme"]["colors"], Value::Null);
 }
 
 /// Open settings on `row` and wait until it is drawn.

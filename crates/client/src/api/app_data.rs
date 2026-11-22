@@ -9,14 +9,13 @@ use ircord_contract as c;
 
 // ---- S1: personal themes ----
 
+use crate::store::appearance::background::{MAX_IMAGE_BYTES, is_upload_path};
 use ircord_contract::{SaveAppThemeInputBody, Theme, Themes};
-
-const BACKGROUND_MAX_BYTES: usize = 25 << 20;
 
 impl Api {
     /// Read a theme's image from this instance without following redirects.
     pub async fn theme_background(&self, path: &str) -> Result<Vec<u8>, ApiError> {
-        if !crate::store::appearance::background::is_upload_path(path) {
+        if !is_upload_path(path) {
             return Err(ApiError::Decode("Invalid theme background path.".into()));
         }
         let mut response = self
@@ -28,13 +27,13 @@ impl Api {
         let too_large = || ApiError::Decode("The theme background is too large.".into());
         if response
             .content_length()
-            .is_some_and(|len| len > BACKGROUND_MAX_BYTES as u64)
+            .is_some_and(|len| len > MAX_IMAGE_BYTES as u64)
         {
             return Err(too_large());
         }
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(ApiError::network)? {
-            if bytes.len() + chunk.len() > BACKGROUND_MAX_BYTES {
+            if bytes.len() + chunk.len() > MAX_IMAGE_BYTES {
                 return Err(too_large());
             }
             bytes.extend_from_slice(&chunk);

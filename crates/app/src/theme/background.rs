@@ -45,13 +45,7 @@ impl Wallpaper {
             }
             _ => {}
         }
-        self.selected = None;
-        self.source = None;
-        self.generation = self.generation.wrapping_add(1);
-        if let Some((abort, _)) = self.download.take() {
-            abort.abort();
-        }
-        self.replace_texture(None, window, cx);
+        self.clear(Some(window), cx);
         let Some((client, bg)) = selection else {
             return;
         };
@@ -66,7 +60,7 @@ impl Wallpaper {
                 return;
             };
             let source = executor
-                .spawn(async move { decode(bytes).map(Arc::new) })
+                .spawn(async move { decode(&bytes).map(Arc::new) })
                 .await;
             this.update_in(cx, |this, window, _| {
                 if this.generation == generation {
@@ -79,14 +73,26 @@ impl Wallpaper {
         self.download = Some((abort, task));
     }
 
+    pub(crate) fn clear(&mut self, window: Option<&mut Window>, cx: &mut App) {
+        if self.selected.take().is_none() {
+            return;
+        }
+        self.source = None;
+        self.generation = self.generation.wrapping_add(1);
+        if let Some((abort, _)) = self.download.take() {
+            abort.abort();
+        }
+        self.replace_texture(None, window, cx);
+    }
+
     fn replace_texture(
         &mut self,
         new: Option<(Layout, Arc<RenderImage>)>,
-        window: &mut Window,
+        window: Option<&mut Window>,
         cx: &mut App,
     ) {
         if let Some((_, old)) = std::mem::replace(&mut self.texture, new) {
-            cx.drop_image(old, Some(window));
+            cx.drop_image(old, window);
         }
     }
 
@@ -118,7 +124,7 @@ impl Wallpaper {
                 this.update_in(cx, |this, window, cx| {
                     this.drawing = false;
                     if this.generation == generation {
-                        this.replace_texture(Some((layout, image)), window, cx);
+                        this.replace_texture(Some((layout, image)), Some(window), cx);
                     }
                     window.refresh();
                 })
@@ -166,7 +172,7 @@ pub(crate) fn layer(
     .opacity(opacity)
 }
 
-fn decode(bytes: Vec<u8>) -> Option<RgbaImage> {
+pub(crate) fn decode(bytes: &[u8]) -> Option<RgbaImage> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
@@ -251,7 +257,7 @@ fn compose(source: &RgbaImage, layout: Layout) -> RgbaImage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Fit, Layout, Position, Rgba, RgbaImage, compose};
 
     const RED: Rgba<u8> = Rgba([255, 0, 0, 255]);
     const BLUE: Rgba<u8> = Rgba([0, 0, 255, 255]);

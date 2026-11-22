@@ -7,6 +7,8 @@ use ircord_contract::{
 
 use super::{Tokens, contrast, mix, parse_hex};
 
+pub const MAX_IMAGE_BYTES: usize = 25 << 20;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Background {
     pub path: String,
@@ -21,27 +23,7 @@ pub struct Background {
 impl Background {
     pub(super) fn compile(image: &ThemeBackground, colors: &Tokens) -> Option<Self> {
         let path = image.url.as_ref().filter(|path| is_upload_path(path))?;
-        let tones = match image.tones.as_deref() {
-            Some([dark, light]) => parse_hex(dark).zip(parse_hex(light)),
-            _ => None,
-        };
-        let (dim_floor, panel_floor) = tones.map_or((60, 85), |(dark, light)| {
-            let readable_at = |cover, percent| {
-                [dark, light].into_iter().all(|tone| {
-                    let surface = mix(tone, cover, f64::from(percent) / 100.);
-                    contrast(colors.text, surface) >= 4.5
-                        && contrast(colors.body, surface) >= 4.5
-                        && contrast(colors.muted, surface) >= 3.
-                })
-            };
-            let floor = |cover, start: u8, end| {
-                (start..=end)
-                    .step_by(5)
-                    .find(|percent| readable_at(cover, *percent))
-                    .unwrap_or(end)
-            };
-            (floor(colors.main, 0, 90), floor(colors.sidebar, 40, 100))
-        });
+        let (dim_floor, panel_floor) = contrast_floors(image, colors);
         Some(Self {
             path: path.clone(),
             placement: match image.placement {
@@ -62,6 +44,45 @@ impl Background {
             panel_opacity: bounded(image.panel_opacity, 85, 40, 100).max(panel_floor),
         })
     }
+}
+
+/// Minimum dimming and panel opacity that keep the theme's text readable.
+pub fn contrast_floors(image: &ThemeBackground, colors: &Tokens) -> (u8, u8) {
+    let tones = match image.tones.as_deref() {
+        Some([dark, light]) => parse_hex(dark).zip(parse_hex(light)),
+        _ => None,
+    };
+    let Some((dark, light)) = tones else {
+        return (60, 85);
+    };
+    let readable_at = |cover, percent| {
+        [dark, light].into_iter().all(|tone| {
+            let surface = mix(tone, cover, f64::from(percent) / 100.);
+            contrast(colors.text, surface) >= 4.5
+                && contrast(colors.body, surface) >= 4.5
+                && contrast(colors.muted, surface) >= 3.
+        })
+    };
+    let floor = |cover, start: u8, end| {
+        (start..=end)
+            .step_by(5)
+            .find(|p| readable_at(cover, *p))
+            .unwrap_or(end)
+    };
+    (floor(colors.main, 0, 90), floor(colors.sidebar, 40, 100))
+}
+
+/// Store the instance path from an upload response, as Theme Studio does.
+/// Any host in the response is discarded. Background readers use their own server.
+pub fn instance_upload_path(address: &str, server: &url::Url) -> Option<String> {
+    let url = server.join(address).ok()?;
+    (matches!(url.scheme(), "http" | "https")
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && is_upload_path(url.path()))
+    .then(|| url.path().to_string())
 }
 
 fn bounded(value: Option<i64>, default: u8, min: u8, max: u8) -> u8 {
@@ -153,5 +174,26 @@ mod tests {
         ] {
             assert!(!is_upload_path(path), "{path}");
         }
+    }
+
+    #[test]
+    fn saved_upload_paths_discard_the_response_origin_but_keep_an_escaped_name() {
+        let server = url::Url::parse("https://chat.example.org").unwrap();
+        assert_eq!(
+            instance_upload_path(
+                "https://files.example.org/files/id/tok/my%20photo.png",
+                &server
+            )
+            .as_deref(),
+            Some("/files/id/tok/my%20photo.png")
+        );
+        assert_eq!(
+            instance_upload_path("/files/id/tok/a.png?different", &server),
+            None
+        );
+        assert_eq!(
+            instance_upload_path("file:///files/id/tok/a.png", &server),
+            None
+        );
     }
 }
