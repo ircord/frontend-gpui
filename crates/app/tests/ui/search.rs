@@ -266,6 +266,9 @@ fn arrow_keys_and_tab_accept_a_workspace_search_suggestion(cx: &mut TestAppConte
         assert_eq!(window.find("search-input").focused(), Some(true));
         assert!(window.try_find("search-offers").is_none());
     });
+    frame(&f, cx, |window, cx| window.input("has:", cx));
+    shows(&f, cx, "search-offers");
+    assert_eq!(label(&f, cx, "search-offer-1").as_deref(), Some("GIF"));
 }
 
 #[gpui_kit::test]

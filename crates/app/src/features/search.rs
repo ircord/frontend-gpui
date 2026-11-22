@@ -639,7 +639,6 @@ fn offers(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Vec<Offer> 
     {
         offers[..=index].rotate_right(1);
     }
-    offers.truncate(OFFERS);
     offers
 }
 
@@ -1165,7 +1164,12 @@ impl FilterSelection {
             return None;
         }
         let client = model.session.read(cx).client()?;
-        let choices = offers(&client.read(), token.key, &token.value, today());
+        let chosen = model.filters.chips();
+        let choices = offers(&client.read(), token.key, &token.value, today())
+            .into_iter()
+            .filter(|offer| !chosen.contains(&offer.chip))
+            .take(OFFERS)
+            .collect();
         Some((token, choices))
     }
 
