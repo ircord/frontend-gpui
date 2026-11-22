@@ -170,6 +170,7 @@ fn update_row(updates: &Entity<Updates>, theme: &Theme, cx: &App) -> AnyElement 
         .children(text.map(|line| {
             div()
                 .id("about-update-status")
+                .w_full()
                 .text_sm()
                 .text_color(theme.muted)
                 .aria_label(line.clone())
