@@ -498,13 +498,16 @@ fn conversation_search_dismisses_and_accepts_suggestions_from_the_keyboard(
     click(&f, cx, "search-conversation-toggle");
     frame(&f, cx, |window, cx| window.input("has:", cx));
     shows(&f, cx, "conversation-search-offers");
+    frame(&f, cx, |window, cx| window.press("escape", cx));
     frame(&f, cx, |window, cx| {
-        window.press("escape", cx);
         assert!(window.try_find("conversation-search-offers").is_none());
         assert!(window.find("conversation-search").visible());
         window.press("backspace", cx);
-        window.input(":", cx);
-        window.press("up", cx);
+    });
+    frame(&f, cx, |window, cx| window.input(":", cx));
+    shows(&f, cx, "conversation-search-offers");
+    frame(&f, cx, |window, cx| window.press("up", cx));
+    frame(&f, cx, |window, cx| {
         assert_eq!(
             window.find("conversation-search-offer-4").selected(),
             Some(true)

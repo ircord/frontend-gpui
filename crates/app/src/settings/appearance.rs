@@ -316,6 +316,8 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
         .test_support()
         .role(Role::Group)
         .aria_label(t!("appearance-title"))
+        .w_full()
+        .min_w_0()
         .flex()
         .flex_col()
         .gap_4()
@@ -1005,6 +1007,8 @@ fn scheme_variants(current: &Look, mode: Mode, theme_in_use: bool) -> impl IntoE
         ),
     ];
     div()
+        .w_full()
+        .min_w_0()
         .flex()
         .flex_wrap()
         .items_end()
@@ -1014,6 +1018,7 @@ fn scheme_variants(current: &Look, mode: Mode, theme_in_use: bool) -> impl IntoE
             div()
                 .w(px(220.))
                 .max_w_full()
+                .min_w_0()
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -1397,6 +1402,9 @@ fn themes_block(
             .gap_3()
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
+                    .whitespace_normal()
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -1413,11 +1421,13 @@ fn themes_block(
                     })),
             )
             .child(
-                Switch::new("appearance-themes-css-switch")
-                    .checked(library.custom_css)
-                    .disabled(!server)
-                    .accessibility_label(t!("appearance-themes-css-switch"))
-                    .on_click(|on: &bool, _, cx| appearance::set_custom_css(cx, *on)),
+                div().flex_none().child(
+                    Switch::new("appearance-themes-css-switch")
+                        .checked(library.custom_css)
+                        .disabled(!server)
+                        .accessibility_label(t!("appearance-themes-css-switch"))
+                        .on_click(|on: &bool, _, cx| appearance::set_custom_css(cx, *on)),
+                ),
             ),
     );
     if library.themes.is_empty() {

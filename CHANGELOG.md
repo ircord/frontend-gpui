@@ -45,6 +45,7 @@
 - In the collapsed sidebar, channels show numbers and direct messages show avatars and presence. Both keep their conversation menus.
 ### Fixed
 
+- Keep the custom CSS switch visible when its explanation wraps in Appearance settings.
 - Text pasted on Windows sends again instead of failing with "invalid message (maximum 4000 characters / 4096 UTF-8 bytes)": its line breaks go out as the server expects, and a long multi-line paste goes out as one message the server splits within the network's limits, as in the web client.
 - A message that fails to send stays in the conversation as one row of yours, in red with the reason and Retry, Move to draft, Copy text and Remove from outbox under it, as the web client shows it, instead of a second block over the message box.
 

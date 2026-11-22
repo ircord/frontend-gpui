@@ -600,9 +600,9 @@ fn a_theme_css_sets_the_root_variables_until_the_switch_is_off(cx: &mut TestAppC
     });
     assert_eq!(saved_appearances(&f).len(), saves);
 
-    // Switched off: the account is saved with CSS off and the accent is the scheme's.
-    // The switch itself is not reported visible to the harness, so the setter it calls runs here.
-    cx.update(|cx| ircord_app::theme::appearance::set_custom_css(cx, false));
+    cx.simulate_window_resize(f.window, gpui_kit::size(px(880.), px(800.)));
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-themes-css-switch");
     let saved = f.server.wait_for(
         "PATCH",
         "/api/v1/app/themes",

@@ -806,16 +806,28 @@ impl SidebarView {
                     title.into()
                 };
                 let session = self.session.clone();
-                Button::new(id)
-                    .ghost()
+                let hover = theme.hover;
+                div()
+                    .id(id)
+                    .test_support()
+                    .role(Role::Button)
+                    .reachable(theme)
+                    .aria_label(label.clone())
+                    .aria_selected(active)
                     .relative()
-                    .small()
                     .size(px(32.))
-                    .icon(icon)
-                    .selected(active)
+                    .rounded(theme.radius)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .child(ui::icon::icon(
+                        icon,
+                        if active { theme.text } else { theme.muted },
+                    ))
                     .when(active, |b| b.bg(theme.selected))
-                    .accessibility_label(label.clone())
-                    .tooltip(label)
+                    .when(!active, |b| b.hover(move |b| b.bg(hover)))
+                    .tooltip(ui::tooltip::text(label))
                     .when(fresh_inbox, |b| {
                         b.child(
                             div()
