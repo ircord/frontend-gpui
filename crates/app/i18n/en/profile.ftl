@@ -74,6 +74,7 @@ profile-remove = Remove
 profile-accent = Accent color
 profile-accent-help = Tints your card and avatar frame. Automatic uses your name color.
 profile-frame = Avatar frame
+profile-frame-preview = Your picture in this frame
 profile-frame-none = None
 profile-frame-ring = Ring
 profile-frame-glow = Glow

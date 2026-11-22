@@ -310,6 +310,45 @@ fn pictures_show_from_this_server_and_you_by_your_nick(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
+fn the_card_frames_their_picture_in_their_accent(cx: &mut TestAppContext) {
+    let mut s = workspace();
+    for m in &mut s.members {
+        if m.id == "m-bob" {
+            m.avatar_frame = Some("glow".into());
+            m.profile_accent_color = Some("#22d3ee".into());
+        }
+        if m.id == "m-eve" {
+            m.avatar_frame = Some("none".into());
+        }
+    }
+    let bob = s.members.iter().find(|m| m.id == "m-bob").unwrap().clone();
+    let f = open(cx, s, |_| {});
+    // The colour is their accent, not their name colour or the theme's.
+    cx.update(|cx| {
+        let theme = ircord_app::theme::get(cx);
+        assert_eq!(
+            ircord_app::ui::avatar::tint(&bob, true, theme),
+            Some(ircord_app::theme::hex(0x22d3ee))
+        );
+    });
+    click(&f, cx, "member-m-bob");
+    wait_for(&f, cx, "avatar-frame-profile-glow");
+    // The frame is a band 5 px wide around the 80 px picture.
+    let mut size = px(0.);
+    frame(&f, cx, |window, _| {
+        size = window.find("avatar-frame-profile-glow").bounds().size.width
+    });
+    assert_eq!(size, px(90.));
+
+    // "none" is no frame.
+    frame(&f, cx, |window, cx| {
+        ircord_app::ui::dialog::close(window, cx)
+    });
+    click(&f, cx, "member-m-eve");
+    wait_for(&f, cx, "avatar-frame-profile-none");
+}
+
+#[gpui_kit::test]
 fn a_name_in_the_timeline_opens_the_card(cx: &mut TestAppContext) {
     let f = open(cx, workspace(), |server| {
         server.route(

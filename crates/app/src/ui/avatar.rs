@@ -79,6 +79,95 @@ pub fn name_color(m: &Member, colored_names: bool, theme: &Theme) -> Option<u32>
     Some(people::name_color(m, theme.dark, rgb(theme.main)))
 }
 
+/// The colour a person's profile card and picture frame take, as the web's
+/// `ProfileDialog` tint: the accent they picked, else their name colour,
+/// else `None` for the theme's accent.
+pub fn tint(m: &Member, colored_names: bool, theme: &Theme) -> Option<Hsla> {
+    people::accent_color(m)
+        .or_else(|| name_color(m, colored_names, theme))
+        .map(theme::hex)
+}
+
+/// `picture` (a disc `size` across) in the frame `frame`, drawn in `color`
+/// as the web's `.avatar-frame-*` (`identity.css`): in a band 5 px wide
+/// around the picture, on `backdrop`. Without a frame only the band shows.
+pub fn framed(
+    picture: impl IntoElement,
+    frame: Option<people::AvatarFrame>,
+    color: Hsla,
+    backdrop: Hsla,
+    size: Pixels,
+    key: &str,
+) -> Stateful<Div> {
+    use people::AvatarFrame;
+    let kind = frame.map_or("none", AvatarFrame::key);
+    let outer = div()
+        .id(ElementId::Name(format!("avatar-frame-{key}-{kind}").into()))
+        .size(size + px(10.))
+        .flex_none()
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(backdrop);
+    // The two gradients are a band of colour with the backdrop inside it.
+    let band = |outer: Stateful<Div>, fill: Background, picture: AnyElement| {
+        outer.bg(fill).child(
+            div()
+                .size(size + px(4.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(backdrop)
+                .child(picture),
+        )
+    };
+    let picture = picture.into_any_element();
+    match frame {
+        None => outer.child(picture),
+        Some(AvatarFrame::Ring) => outer.border_3().border_color(color).child(picture),
+        Some(AvatarFrame::Glow) => outer
+            .border_2()
+            .border_color(color)
+            .shadow(vec![BoxShadow {
+                color: color.opacity(0.65),
+                offset: point(px(0.), px(0.)),
+                blur_radius: px(18.),
+                spread_radius: px(2.),
+                inset: false,
+            }])
+            .child(picture),
+        // The web's conic sweep from their colour through amber, cyan and
+        // violet; GPUI draws two-stop linear gradients, so it runs from
+        // their colour to cyan.
+        Some(AvatarFrame::Gradient) => band(
+            outer,
+            linear_gradient(
+                210.,
+                linear_color_stop(color, 0.),
+                linear_color_stop(theme::hex(0x22d3ee), 1.),
+            ),
+            picture,
+        ),
+        // Gold whatever their colour, as on the web.
+        Some(AvatarFrame::Gold) => band(
+            outer,
+            linear_gradient(
+                135.,
+                linear_color_stop(theme::hex(0xfde68a), 0.),
+                linear_color_stop(theme::hex(0xb45309), 1.),
+            ),
+            picture,
+        ),
+        Some(AvatarFrame::Dashed) => outer
+            .border_2()
+            .border_dashed()
+            .border_color(color)
+            .child(picture),
+    }
+}
+
 /// `0xrrggbb` for a colour.
 fn rgb(color: Hsla) -> u32 {
     let c = Rgba::from(color);
@@ -188,6 +277,22 @@ pub fn person(p: Person, size: Pixels, theme: &Theme) -> Div {
 mod tests {
     use super::{LARGE, NORMAL, SMALL, TINY, letter_size};
     use gpui_kit::px;
+
+    #[test]
+    fn the_tint_is_their_accent_else_their_name_colour() {
+        use super::tint;
+        use crate::theme::{self, Theme};
+        let theme = Theme::dark();
+        let mut m = ircord_client::testing::member("m-bob", "bob");
+        assert_eq!(tint(&m, false, &theme), None);
+        assert!(tint(&m, true, &theme).is_some());
+        m.name_color = Some("#ff8800".into());
+        let named = tint(&m, false, &theme);
+        assert!(named.is_some());
+        m.profile_accent_color = Some("#22d3ee".into());
+        assert_eq!(tint(&m, false, &theme), Some(theme::hex(0x22d3ee)));
+        assert_ne!(tint(&m, false, &theme), named);
+    }
 
     #[test]
     fn letters_are_sized_as_on_the_web() {

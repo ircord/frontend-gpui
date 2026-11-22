@@ -589,8 +589,8 @@ const NAME_PALETTE_LIGHT: [u32; 8] = [
     0x984263, 0x3e649d, 0x7852a0, 0x816021, 0x34705a, 0x945c36, 0x307177, 0x676c27,
 ];
 
-/// `#rrggbb`, the only form a chosen name colour takes.
-fn parse_hex(value: Option<&str>) -> Option<u32> {
+/// `#rrggbb`, the only form a chosen name or accent colour takes.
+pub fn parse_hex(value: Option<&str>) -> Option<u32> {
     let digits = value?.strip_prefix('#')?;
     (digits.len() == 6 && digits.chars().all(|c| c.is_ascii_hexdigit()))
         .then(|| u32::from_str_radix(digits, 16).ok())
@@ -627,6 +627,52 @@ pub fn name_color(m: &Member, dark: bool, background: u32) -> u32 {
 /// off, as on the web.
 pub fn chosen_name_color(m: &Member) -> Option<u32> {
     parse_hex(m.name_color.as_deref())
+}
+
+/// The accent a person picked for their profile, `#rrggbb`.
+pub fn accent_color(m: &Member) -> Option<u32> {
+    parse_hex(m.profile_accent_color.as_deref())
+}
+
+/// The frames the web draws around a person's picture
+/// (`shared/utils/profile.ts`). The backend stores only the preset name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AvatarFrame {
+    Ring,
+    Glow,
+    Gradient,
+    Gold,
+    Dashed,
+}
+
+impl AvatarFrame {
+    /// The preset `value` names; `none`, empty or unknown is no frame.
+    pub fn parse(value: Option<&str>) -> Option<Self> {
+        Some(match value? {
+            "ring" => Self::Ring,
+            "glow" => Self::Glow,
+            "gradient" => Self::Gradient,
+            "gold" => Self::Gold,
+            "dashed" => Self::Dashed,
+            _ => return None,
+        })
+    }
+
+    /// The preset's name, as the backend stores it.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Ring => "ring",
+            Self::Glow => "glow",
+            Self::Gradient => "gradient",
+            Self::Gold => "gold",
+            Self::Dashed => "dashed",
+        }
+    }
+}
+
+/// The frame a person chose for their picture.
+pub fn avatar_frame(m: &Member) -> Option<AvatarFrame> {
+    AvatarFrame::parse(m.avatar_frame.as_deref())
 }
 
 /// The nick the backend gives an account before any network names it.
@@ -731,6 +777,33 @@ mod tests {
             .with_conversation(|c| c.member_ids = vec!["m-eve".into()])
             .direct("d-eve", "m-eve")
             .workspace()
+    }
+
+    #[test]
+    fn the_frame_and_accent_are_read_as_the_web_reads_them() {
+        let mut m = member("m-bob", "bob");
+        assert_eq!(avatar_frame(&m), None);
+        assert_eq!(accent_color(&m), None);
+        for (value, frame) in [
+            ("ring", Some(AvatarFrame::Ring)),
+            ("glow", Some(AvatarFrame::Glow)),
+            ("gradient", Some(AvatarFrame::Gradient)),
+            ("gold", Some(AvatarFrame::Gold)),
+            ("dashed", Some(AvatarFrame::Dashed)),
+            ("none", None),
+            ("", None),
+            ("sparkles", None),
+        ] {
+            m.avatar_frame = Some(value.into());
+            assert_eq!(avatar_frame(&m), frame, "{value}");
+            if let Some(f) = frame {
+                assert_eq!(f.key(), value);
+            }
+        }
+        m.profile_accent_color = Some("#22d3ee".into());
+        assert_eq!(accent_color(&m), Some(0x22d3ee));
+        m.profile_accent_color = Some(String::new());
+        assert_eq!(accent_color(&m), None);
     }
 
     #[test]

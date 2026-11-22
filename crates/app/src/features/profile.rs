@@ -1150,12 +1150,9 @@ impl Render for ProfileCard {
         let banner_url = server
             .as_ref()
             .and_then(|s| people::picture_url(m.banner_url.as_deref(), s));
-        let accent = m
-            .profile_accent_color
-            .as_deref()
-            .and_then(|c| u32::from_str_radix(c.strip_prefix('#')?, 16).ok())
-            .map(theme::hex)
-            .unwrap_or(theme.accent);
+        // Their accent, else their name colour, tints the card and colours
+        // their picture's frame, as on the web.
+        let accent = ui::avatar::tint(&m, colored, &theme).unwrap_or(theme.accent);
         let banner = div()
             .id("profile-banner")
             .test_support()
@@ -1170,25 +1167,27 @@ impl Render for ProfileCard {
                     .size_full()
                     .object_fit(ObjectFit::Cover)
             }));
-        let face = div()
-            .self_start()
-            .mt(px(-56.))
-            .ml_3()
-            .p_1()
-            .flex_none()
-            .rounded_full()
-            .bg(theme.main)
-            .child(ui::avatar::person(
-                ui::avatar::Person {
-                    member: &m,
-                    name: people::name(&m),
-                    server: server.as_ref(),
-                    presence: true,
-                    key: "profile",
-                },
+        let face = div().self_start().mt(px(-56.)).ml_3().flex_none().child(
+            ui::avatar::framed(
+                ui::avatar::person(
+                    ui::avatar::Person {
+                        member: &m,
+                        name: people::name(&m),
+                        server: server.as_ref(),
+                        presence: true,
+                        key: "profile",
+                    },
+                    px(ui::avatar::LARGE),
+                    &theme,
+                ),
+                people::avatar_frame(&m),
+                accent,
+                theme.main,
                 px(ui::avatar::LARGE),
-                &theme,
-            ));
+                "profile",
+            )
+            .test_support(),
+        );
         let dot = match m.status {
             MemberStatus::Online => theme.online,
             MemberStatus::Away => theme.away,
@@ -1313,7 +1312,7 @@ impl Render for ProfileCard {
                                 div()
                                     .px_2()
                                     .rounded_full()
-                                    .bg(theme.accent.opacity(0.15))
+                                    .bg(accent.opacity(0.16))
                                     .text_xs()
                                     .child(i)
                             }),

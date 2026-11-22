@@ -24,6 +24,7 @@ use ircord_client::api::ApiError;
 use ircord_client::api::auth::{self, DefaultAvatar};
 use ircord_client::api::uploads::{self, FileData, Progress};
 use ircord_client::contract::{Member, ProfileUpdate};
+use ircord_client::store::people;
 
 use super::{block, row};
 use crate::registry::{self, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection};
@@ -1744,6 +1745,13 @@ impl Render for ProfileView {
                 })
             },
         );
+        // The frame in the accent being picked, as the web's previews.
+        let frame_color = self
+            .custom_accent
+            .then(|| people::parse_hex(Some(self.text(Field::Accent, cx).trim())))
+            .flatten()
+            .map(theme::hex)
+            .unwrap_or(theme.accent);
         let e = entity.clone();
         let frame = if self.frame.is_empty() {
             "none"
@@ -1804,7 +1812,32 @@ impl Render for ProfileView {
                         .text_color(theme.text)
                         .child(t!("profile-frame")),
                 )
-                .child(frames),
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_4()
+                        .child(
+                            div()
+                                .id("profile-frame-preview")
+                                .test_support()
+                                .role(Role::Image)
+                                .aria_label(t!("profile-frame-preview"))
+                                .p_2()
+                                .child(
+                                    ui::avatar::framed(
+                                        picture(&pic, &name_now, px(ui::avatar::NORMAL), &theme),
+                                        people::AvatarFrame::parse(Some(&self.frame)),
+                                        frame_color,
+                                        theme.main,
+                                        px(ui::avatar::NORMAL),
+                                        "settings",
+                                    )
+                                    .test_support(),
+                                ),
+                        )
+                        .child(frames),
+                ),
             &theme,
         ));
 

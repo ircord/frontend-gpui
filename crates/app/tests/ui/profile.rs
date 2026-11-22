@@ -187,7 +187,10 @@ fn edits_the_profile_in_settings(cx: &mut TestAppContext) {
     );
     type_into(&f, cx, "profile-color-input", "#3366cc");
     land(&f, cx, "profile-look", "profile-frame-ring");
+    shows(&f, cx, "avatar-frame-settings-none");
     click(&f, cx, "profile-frame-ring");
+    // The preview beside the choices wears the frame picked.
+    shows(&f, cx, "avatar-frame-settings-ring");
     land(&f, cx, "profile-about", "profile-pronouns");
     type_into(&f, cx, "profile-pronouns", "she/her");
     enter(&f, cx, "profile-pronouns");
