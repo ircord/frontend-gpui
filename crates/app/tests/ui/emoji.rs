@@ -1,6 +1,7 @@
 //! Tests for package E1: the emoji and GIF pickers, emoji autocomplete,
 //! reacting with any emoji and custom emoji drawn inline in messages.
 
+use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
 use gpui_kit::test::{TestQueryExt, TestWindowExt};
@@ -8,6 +9,7 @@ use gpui_kit::{AppContext, ClipboardItem, TestAppContext};
 use ircord_app::composer::expressions::Tab;
 use ircord_app::features::{klipy, message_actions};
 use ircord_app::message::emoji;
+use ircord_app::registry::MessageCtx;
 use ircord_client::contract::*;
 use ircord_client::testing::{CannedServer, Reply};
 use serde_json::{Value, json};
@@ -408,7 +410,90 @@ fn slash_gif_sends_a_matching_gif(cx: &mut TestAppContext) {
         .wait_for("POST", "/api/v1/conversations/c-general/messages", WAIT)
         .json();
     assert_eq!(sent["gif"]["id"], "s1");
-    cx.update(|cx| assert_eq!(message_actions::box_text(cx), ""));
+    wait(cx, "the sent command draft to clear", |cx| {
+        message_actions::box_text(cx).is_empty()
+    });
+}
+
+const GIF_SEARCH: &str = "/klipy/test-key/gifs/search";
+const SEND_MESSAGE: &str = "/api/v1/conversations/c-general/messages";
+
+fn delayed_search(cx: &mut TestAppContext, items: Value) -> (Fixture, mpsc::Sender<()>) {
+    let (release, received) = mpsc::channel();
+    let received = Mutex::new(received);
+    let f = open(cx, |server| {
+        server.route_fn("GET", GIF_SEARCH, move |_| {
+            received.lock().unwrap().recv_timeout(WAIT).unwrap();
+            Reply::json(
+                200,
+                json!({"result": true, "data": {
+                    "data": items, "current_page": 1, "has_next": false
+                }}),
+            )
+        });
+    });
+    (f, release)
+}
+
+fn search_pending(f: &Fixture, cx: &mut gpui_kit::App) -> bool {
+    f.window
+        .update(cx, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("composer-gif-lookup").is_some()
+        })
+        .unwrap()
+}
+
+#[gpui_kit::test]
+fn slash_gif_without_matches_keeps_the_draft(cx: &mut TestAppContext) {
+    let (f, release) = delayed_search(cx, json!([]));
+    type_in_box(&f, cx, "/gif cats");
+    press(&f, cx, &["enter"]);
+    f.server.wait_for("GET", GIF_SEARCH, WAIT);
+    assert!(cx.update(|cx| search_pending(&f, cx)));
+    release.send(()).unwrap();
+    wait(cx, "the GIF search to finish", |cx| !search_pending(&f, cx));
+    assert_eq!(box_text(cx), "/gif cats");
+    assert!(f.server.requests_to("POST", SEND_MESSAGE).is_empty());
+}
+
+#[gpui_kit::test]
+fn slash_gif_sends_the_original_reply_and_preserves_newer_changes(cx: &mut TestAppContext) {
+    let (f, release) = delayed_search(cx, json!([gif("s1")]));
+    let reply = |message: &str, cx: &mut TestAppContext| {
+        cx.update_window(f.window, |_, window, cx| {
+            message_actions::start_reply(
+                &MessageCtx {
+                    session: f.session.clone(),
+                    conversation: "c-general".into(),
+                    message: message.into(),
+                    own: false,
+                },
+                window,
+                cx,
+            );
+        })
+        .unwrap();
+    };
+    reply("1", cx);
+    type_on(&f, cx, "/gif cats");
+    press(&f, cx, &["enter"]);
+    f.server.wait_for("GET", GIF_SEARCH, WAIT);
+    type_on(&f, cx, " later");
+    reply("2", cx);
+    release.send(()).unwrap();
+    wait(cx, "the GIF reply", |_| {
+        !f.server.requests_to("POST", SEND_MESSAGE).is_empty()
+    });
+    let sent = f.server.requests_to("POST", SEND_MESSAGE)[0].json();
+    assert_eq!(sent["replyToId"], "1");
+    assert_eq!(box_text(cx), "/gif cats later");
+    cx.update(|cx| {
+        assert!(matches!(
+            message_actions::mode("c-general", cx),
+            Some(message_actions::Mode::Reply { message, .. }) if message == "2"
+        ));
+    });
 }
 
 #[gpui_kit::test]

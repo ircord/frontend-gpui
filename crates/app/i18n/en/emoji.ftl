@@ -48,6 +48,7 @@ emoji-gif-save = Save GIF
 emoji-gif-forget = Remove from saved GIFs
 emoji-gif-usage = Usage: /gif <search terms>
 emoji-gif-pending = Still looking for a GIF…
+emoji-gif-finding = Finding a GIF for “{ $query }”…
 emoji-gif-no-match = No GIFs matched “{ $query }”. Try other words.
 emoji-gif-not-configured = GIF search is not set up in this build of the app.
 emoji-gif-unreachable = Couldn’t reach Klipy. Check your connection and try again.

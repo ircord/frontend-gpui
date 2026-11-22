@@ -204,6 +204,7 @@ impl ComposerView {
             self.after_submit(&ctx, "", window, cx);
             return;
         }
+        self.remember(cx);
         let filters = registry::get(cx).composer.send_filters.to_vec();
         let mut text = text.into_owned();
         for filter in filters {

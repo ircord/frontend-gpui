@@ -20,6 +20,7 @@ use crate::ui::focus::Reachable;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use gpui_kit::TestSupportExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::Client;
@@ -36,6 +37,7 @@ use ircord_client::store::{Changes, Connection, PendingSend, SendState, Workspac
 use crate::composer::expressions::{self, PickerView, Purpose, Tab};
 use crate::composer::{self, ComposerView};
 use crate::features::commands::{self, ViewRequest};
+use crate::features::drafts;
 use crate::features::message_actions::{self, Mode};
 use crate::features::shortcuts::Gifs;
 use crate::message::emoji as pictures;
@@ -56,8 +58,8 @@ struct Expressions {
     composer: Option<ComposerCtx>,
     /// Clients whose library this module watches.
     watched: HashSet<usize>,
-    /// Conversations with a `/gif` lookup running.
-    lookups: HashSet<String>,
+    /// Account and conversation pairs with a `/gif` lookup running.
+    lookups: HashMap<(usize, String), String>,
     /// Klipy's address and key, when set by [`configure`].
     klipy: Option<(String, String)>,
 }
@@ -94,6 +96,8 @@ pub fn init(cx: &mut App) {
         let c = &mut r.composer;
         c.tokens.add(pictures::token_provider());
         c.above.add(Slot::new("expressions", picker_slot).order(20));
+        c.above
+            .add(Slot::new("gif-lookup", lookup_status).order(30));
         c.buttons.add(Slot::new("gif", gif_button).order(20));
         c.buttons.add(Slot::new("emoji", emoji_button).order(30));
         c.suggestions.add(SuggestionProvider {
@@ -373,6 +377,29 @@ pub fn send_gif(
     window: &mut Window,
     cx: &mut App,
 ) -> bool {
+    let mode = message_actions::mode(conversation, cx);
+    let reply = match &mode {
+        Some(Mode::Reply { message, .. }) => Some(message.as_str()),
+        _ => None,
+    };
+    if !send_gif_to(session, conversation, gif, query, reply, window, cx) {
+        return false;
+    }
+    if reply.is_some() {
+        message_actions::take_reply(conversation, cx);
+    }
+    true
+}
+
+fn send_gif_to(
+    session: &Entity<Session>,
+    conversation: &str,
+    gif: c::GIF,
+    query: &str,
+    reply: Option<&str>,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
     let Some(client) = session.read(cx).client().cloned() else {
         return false;
     };
@@ -388,10 +415,6 @@ pub fn send_gif(
         ui::toast::error(window, cx, t!("emoji-gif-unsafe"));
         return false;
     }
-    let reply = match message_actions::mode(conversation, cx) {
-        Some(Mode::Reply { message, .. }) => Some(message),
-        _ => None,
-    };
     let pending = PendingSend {
         client_id: random_id(),
         conversation_id: conversation.to_string(),
@@ -399,7 +422,7 @@ pub fn send_gif(
         action: false,
         state: SendState::Sending,
         created_ms: ircord_client::events::now_ms(),
-        reply_to_id: reply.clone(),
+        reply_to_id: reply.map(str::to_string),
         gif: Some(gif.clone()),
         ..Default::default()
     };
@@ -410,7 +433,7 @@ pub fn send_gif(
         text: gif.url.clone(),
         kind: Some(c::MessageInputBodyKind::Message),
         gif: Some(gif.clone()),
-        reply_to_id: reply.clone(),
+        reply_to_id: pending.reply_to_id.clone(),
         ..Default::default()
     };
     let (id, client_id) = (conversation.to_string(), pending.client_id);
@@ -421,9 +444,6 @@ pub fn send_gif(
             Err(e) => w.fail_send(&client_id, &e.to_string()).unwrap_or_default(),
         },
     );
-    if reply.is_some() {
-        message_actions::cancel(conversation, window, cx);
-    }
     if let Some(klipy) = klipy(cx) {
         let query = query.to_string();
         session
@@ -445,15 +465,20 @@ fn gif_command(request: &ViewRequest, window: &mut Window, cx: &mut App) {
     let Some(klipy) = klipy(cx) else {
         return ui::toast::info(window, cx, t!("emoji-gif-not-configured"));
     };
+    let session = request.session.clone();
+    let Some(client) = session.read(cx).client().cloned() else {
+        return;
+    };
     let conversation = request.conversation.clone();
-    if !cx
-        .default_global::<Expressions>()
-        .lookups
-        .insert(conversation.clone())
-    {
+    let lookup = (Rc::as_ptr(&client) as usize, conversation.clone());
+    let lookups = &mut cx.default_global::<Expressions>().lookups;
+    if lookups.contains_key(&lookup) {
         return ui::toast::info(window, cx, t!("emoji-gif-pending"));
     }
-    let session = request.session.clone();
+    lookups.insert(lookup.clone(), query.clone());
+    cx.refresh_windows();
+    let draft = request.draft.clone();
+    let reply_mode = message_actions::mode(&conversation, cx);
     let search = query.clone();
     let task = session
         .read(cx)
@@ -463,16 +488,33 @@ fn gif_command(request: &ViewRequest, window: &mut Window, cx: &mut App) {
         .spawn(cx, async move |cx| {
             let result = task.await;
             cx.update(|window, cx| {
-                cx.default_global::<Expressions>()
-                    .lookups
-                    .remove(&conversation);
+                cx.default_global::<Expressions>().lookups.remove(&lookup);
+                cx.refresh_windows();
+                if !session
+                    .read(cx)
+                    .client()
+                    .is_some_and(|active| Rc::ptr_eq(active, &client))
+                {
+                    return;
+                }
                 match result {
                     Ok(Ok(page)) if page.items.is_empty() => {
                         ui::toast::info(window, cx, t!("emoji-gif-no-match", query = query))
                     }
                     Ok(Ok(page)) => {
                         let gif = page.items[pick_random(page.items.len())].clone();
-                        send_gif(&session, &conversation, gif, &query, window, cx);
+                        let reply = match &reply_mode {
+                            Some(Mode::Reply { message, .. }) => Some(message.as_str()),
+                            _ => None,
+                        };
+                        if send_gif_to(&session, &conversation, gif, &query, reply, window, cx) {
+                            if reply.is_some()
+                                && message_actions::mode(&conversation, cx) == reply_mode
+                            {
+                                message_actions::take_reply(&conversation, cx);
+                            }
+                            drafts::clear_if_matches(&session, &conversation, &draft, window, cx);
+                        }
                     }
                     Ok(Err(e)) => ui::toast::error(window, cx, error_text(&e)),
                     Err(e) => ui::toast::error(window, cx, e.to_string()),
@@ -481,6 +523,28 @@ fn gif_command(request: &ViewRequest, window: &mut Window, cx: &mut App) {
             .ok();
         })
         .detach();
+}
+
+fn lookup_status(ctx: &ComposerCtx, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let client = ctx.session.read(cx).client()?;
+    let query = cx
+        .try_global::<Expressions>()?
+        .lookups
+        .get(&(Rc::as_ptr(client) as usize, ctx.conversation.clone()))?;
+    let label = SharedString::from(t!("emoji-gif-finding", query = query.as_str()));
+    Some(
+        div()
+            .id("composer-gif-lookup")
+            .test_support()
+            .role(Role::Status)
+            .aria_label(label.clone())
+            .px_2()
+            .truncate()
+            .text_xs()
+            .text_color(theme::get(cx).muted)
+            .child(label)
+            .into_any_element(),
+    )
 }
 
 /// A position below `len`, uniformly enough for picking a GIF.
@@ -615,7 +679,6 @@ fn text_button(
     tab: Tab,
     cx: &App,
 ) -> AnyElement {
-    use gpui_kit::TestSupportExt;
     let theme = theme::get(cx).clone();
     let ctx = ctx.clone();
     let hover = theme.hover;

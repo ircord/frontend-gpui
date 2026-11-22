@@ -44,6 +44,8 @@ pub struct ViewRequest {
     pub network: String,
     /// What was typed after the command, trimmed.
     pub args: String,
+    /// The original draft, including any whitespace removed in planning.
+    pub draft: String,
 }
 
 pub type ViewHandler = Rc<dyn Fn(&ViewRequest, &mut Window, &mut App)>;
@@ -233,7 +235,11 @@ fn command_filter(
         }
         Ok(Plan::Open { view, args }) => {
             open_view(ctx, view, args, window, cx);
-            SendOutcome::Handled
+            if view == View::Gif {
+                SendOutcome::Keep
+            } else {
+                SendOutcome::Handled
+            }
         }
         Ok(Plan::Ignore { unignore, arg }) => ignore(ctx, &client, unignore, &arg, window, cx),
         Ok(plan) => {
@@ -308,6 +314,7 @@ fn request(ctx: &ComposerCtx, args: String, cx: &App) -> ViewRequest {
         conversation: ctx.conversation.clone(),
         network,
         args,
+        draft: composer::typed(&ctx.composer, cx).0,
     }
 }
 

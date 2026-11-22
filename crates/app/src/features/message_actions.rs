@@ -44,6 +44,7 @@ pub const QUICK_REACTIONS: [&str; 5] = ["👍", "❤️", "😂", "😮", "😢"
 pub enum Mode {
     /// The next message replies to `message`.
     Reply {
+        id: String,
         message: String,
         nick: String,
         text: String,
@@ -418,6 +419,7 @@ pub fn start_reply(ctx: &MessageCtx, window: &mut Window, cx: &mut App) {
     set_mode(
         &ctx.conversation,
         Some(Mode::Reply {
+            id: random_id(),
             message: ctx.message.clone(),
             nick,
             text,
@@ -463,7 +465,7 @@ pub fn cancel(conversation: &str, window: &mut Window, cx: &mut App) {
     set_mode(conversation, None, cx);
 }
 
-/// Take the reply target as a file-only send begins.
+/// Take the reply target as a send begins.
 pub fn take_reply(conversation: &str, cx: &mut App) -> Option<String> {
     let Mode::Reply { message, .. } = mode(conversation, cx)? else {
         return None;
