@@ -356,7 +356,12 @@ impl Client {
             updates: app,
             watchers,
         };
-        let forwarder = runtime.spawn(forward(handle.clone(), internal));
+        let (archive_wake, archive_connected) = mpsc::channel(1);
+        let forwarder = runtime.spawn(forward(handle.clone(), internal, archive_wake));
+        let mut tasks = vec![events, reporter, forwarder];
+        if let Some(archive) = api.archive.clone() {
+            tasks.push(runtime.spawn(archive.watch(api.clone(), archive_connected)));
+        }
         let client = Client {
             runtime,
             api,
@@ -366,7 +371,7 @@ impl Client {
             activity,
             activity_changed,
             typing: Mutex::default(),
-            tasks: vec![events, reporter, forwarder],
+            tasks,
         };
         (client, rx)
     }
@@ -488,15 +493,29 @@ impl Client {
 
     /// Load the page before the oldest message shown, if there is one.
     pub fn load_older(&self, conversation: &str) {
-        let Some(cursor) = self.shared.store.write().unwrap().begin_older(conversation) else {
-            return;
+        let (cursor, oldest) = {
+            let mut store = self.shared.store.write().unwrap();
+            let Some(cursor) = store.begin_older(conversation) else {
+                return;
+            };
+            let oldest = store
+                .timelines
+                .get(conversation)
+                .and_then(|timeline| timeline.entries.first())
+                .map(|entry| entry.message.id.clone());
+            (cursor, oldest)
         };
         let api = self.api.clone();
         let store = self.shared.store.clone();
         let updates = self.handle.clone();
         let id = conversation.to_string();
         self.runtime.spawn(async move {
-            let result = api.messages(&id, Some(&cursor), PAGE_SIZE).await;
+            let result = api
+                .messages_before(&id, Some(&cursor), oldest.as_deref(), PAGE_SIZE)
+                .await;
+            if matches!(result, Err(ApiError::Unauthorized)) {
+                updates.emit(Update::SignedOut);
+            }
             let mut changes = store
                 .write()
                 .unwrap()
@@ -660,6 +679,7 @@ impl Client {
     pub fn sign_out(&self, store: Arc<dyn CredentialStore>) -> tokio::task::JoinHandle<()> {
         let api = self.api.clone();
         self.runtime.spawn(async move {
+            api.forget_offline_archive().await;
             if let Err(e) = api.logout().await {
                 log::warn!("sign out: {e}");
             }
@@ -671,8 +691,20 @@ impl Client {
 }
 
 /// Pass the event task's updates to the app, letting the watchers see changes first.
-async fn forward(handle: Handle, mut internal: UnboundedReceiver<Update>) {
+async fn forward(
+    handle: Handle,
+    mut internal: UnboundedReceiver<Update>,
+    archive_wake: mpsc::Sender<String>,
+) {
     while let Some(update) = internal.next().await {
+        if handle.api.archive.is_some()
+            && matches!(update, Update::Connection(crate::store::Connection::Live))
+        {
+            let workspace = handle.read();
+            if !workspace.demo && !workspace.user.id.is_empty() {
+                let _ = archive_wake.try_send(workspace.user.id.clone());
+            }
+        }
         handle.emit(update);
     }
 }

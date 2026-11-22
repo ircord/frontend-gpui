@@ -7,6 +7,8 @@
 
 use ircord_contract as c;
 
+use crate::archive::CURSOR_PREFIX;
+
 use super::{Api, ApiError, Method, segment};
 
 impl Api {
@@ -17,11 +19,64 @@ impl Api {
         before: Option<&str>,
         limit: u32,
     ) -> Result<c::MessagePage, ApiError> {
+        self.messages_before(conversation, before, None, limit)
+            .await
+    }
+
+    pub(crate) async fn messages_before(
+        &self,
+        conversation: &str,
+        before: Option<&str>,
+        oldest_message: Option<&str>,
+        limit: u32,
+    ) -> Result<c::MessagePage, ApiError> {
+        let local_cursor = before.and_then(|value| value.strip_prefix(CURSOR_PREFIX));
+        let timeline_cursor = before
+            .and_then(|value| value.strip_prefix("message:"))
+            .and_then(|value| url::form_urlencoded::parse(value.as_bytes()).next())
+            .map(|(id, _)| id.into_owned());
+        let message_id = local_cursor.or(timeline_cursor.as_deref());
+        let page = self
+            .online_messages_before(conversation, before, message_id, limit)
+            .await;
+        if page.as_ref().is_err_and(|error| error.unreachable())
+            && let Some(archive) = &self.archive
+        {
+            let boundary = message_id.or(oldest_message);
+            if (before.is_none() || boundary.is_some())
+                && let Some(saved) = archive.history(conversation, boundary, limit).await
+            {
+                return Ok(saved);
+            }
+        }
+        page
+    }
+
+    async fn online_messages_before(
+        &self,
+        conversation: &str,
+        before: Option<&str>,
+        message_id: Option<&str>,
+        limit: u32,
+    ) -> Result<c::MessagePage, ApiError> {
+        let boundary = match message_id {
+            Some(id) => {
+                let around = self.messages_around(conversation, id, 1).await?;
+                let Some(cursor) = around.next_cursor else {
+                    return Ok(c::MessagePage {
+                        cursor: around.cursor,
+                        ..Default::default()
+                    });
+                };
+                Some(cursor)
+            }
+            None => None,
+        };
         let path = format!("/api/v1/conversations/{}/messages", segment(conversation));
         let mut request = self
             .request(Method::GET, &path)
             .query(&[("limit", limit.to_string())]);
-        if let Some(before) = before {
+        if let Some(before) = boundary.as_deref().or(before) {
             request = request.query(&[("before", before)]);
         }
         self.json(request).await

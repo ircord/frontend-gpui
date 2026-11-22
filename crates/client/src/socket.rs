@@ -31,6 +31,10 @@ impl Transport for WsTransport {
         self.api.bootstrap().await
     }
 
+    async fn cached_bootstrap(&self) -> Option<Snapshot> {
+        self.api.archive.as_ref()?.snapshot().await
+    }
+
     async fn connect(&self) -> Result<WsConn, ApiError> {
         tokio::time::timeout(Duration::from_secs(15), open(&self.api))
             .await

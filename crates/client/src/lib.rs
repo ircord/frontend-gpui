@@ -20,6 +20,7 @@
 
 pub mod address;
 pub mod api;
+mod archive;
 pub mod channel_modes;
 pub mod client;
 pub mod commands;

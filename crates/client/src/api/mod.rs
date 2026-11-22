@@ -17,6 +17,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::address::ServerAddress;
+use crate::archive::Archive;
+use crate::config::ConfigDir;
 
 pub mod admin;
 mod app_data;
@@ -64,6 +66,17 @@ pub enum ApiError {
 }
 
 impl ApiError {
+    pub(crate) fn unreachable(&self) -> bool {
+        matches!(
+            self,
+            Self::Network(_)
+                | Self::Http {
+                    status: 500..=599,
+                    ..
+                }
+        )
+    }
+
     fn network(e: reqwest::Error) -> Self {
         ApiError::Network(e.to_string())
     }
@@ -74,6 +87,7 @@ pub struct Api {
     http: reqwest::Client,
     server: ServerAddress,
     cookie: Arc<RwLock<Option<String>>>,
+    pub(crate) archive: Option<Archive>,
 }
 
 impl Api {
@@ -89,6 +103,21 @@ impl Api {
             http,
             server,
             cookie: Arc::default(),
+            archive: None,
+        }
+    }
+
+    /// Enable the persistent archive for the current saved session.
+    pub fn with_offline_archive(mut self, config: &ConfigDir) -> Self {
+        if let Some(cookie) = self.cookie() {
+            self.archive = Some(Archive::new(config.path(), &self.server.origin(), &cookie));
+        }
+        self
+    }
+
+    pub async fn forget_offline_archive(&self) {
+        if let Some(archive) = &self.archive {
+            archive.forget().await;
         }
     }
 

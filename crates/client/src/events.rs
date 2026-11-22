@@ -43,6 +43,9 @@ pub enum Update {
 pub trait Transport: Send + Sync + 'static {
     type Conn: Conn;
     fn bootstrap(&self) -> impl Future<Output = Result<Snapshot, ApiError>> + Send;
+    fn cached_bootstrap(&self) -> impl Future<Output = Option<Snapshot>> + Send {
+        std::future::ready(None)
+    }
     fn connect(&self) -> impl Future<Output = Result<Self::Conn, ApiError>> + Send;
 }
 
@@ -214,6 +217,14 @@ async fn session<T: Transport>(
                 recovery.last_bootstrap = Some(Instant::now());
             }
             Err(ApiError::Unauthorized) => return End::SignedOut,
+            Err(e) if e.unreachable() => {
+                let needs_archive = shared.store.read().unwrap().user.id.is_empty();
+                if needs_archive && let Some(snapshot) = transport.cached_bootstrap().await {
+                    let changes = shared.store.write().unwrap().reset(snapshot);
+                    shared.emit(Update::Changed(changes));
+                }
+                return End::Lost(e.to_string());
+            }
             Err(e) => return End::Lost(e.to_string()),
         }
     }

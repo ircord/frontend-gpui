@@ -6,6 +6,7 @@
 
 - Configure a speech service and play a Read Aloud sample in Notifications settings. The speech key stays in this device’s credential store.
 - Read Aloud can speak new highlights on this device through your chosen speech service. It respects ignored senders, muted conversations and quiet hours.
+- Open your workspace and read saved messages while the server is unavailable, after IRCord has downloaded your recent history.
 
 ### Improved
 
