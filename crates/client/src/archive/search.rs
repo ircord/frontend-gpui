@@ -332,7 +332,7 @@ fn content(message: &Message) -> Vec<Has> {
     for attachment in message
         .attachments
         .as_deref()
-        .unwrap_or_else(|| message.attachment.as_slice())
+        .unwrap_or(message.attachment.as_slice())
     {
         let mime = attachment
             .content_type

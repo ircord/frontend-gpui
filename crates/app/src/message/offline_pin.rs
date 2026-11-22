@@ -146,7 +146,7 @@ impl Render for PinControl {
                     if self.status.pinned {
                         IconName::Check
                     } else {
-                        IconName::Download
+                        IconName::ArrowDown
                     },
                     action,
                     &theme,

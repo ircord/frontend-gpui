@@ -248,7 +248,7 @@ pub(super) fn store_refs(
     for attachment in message
         .attachments
         .as_deref()
-        .unwrap_or_else(|| message.attachment.as_slice())
+        .unwrap_or(message.attachment.as_slice())
     {
         if pinned
             || attachment
