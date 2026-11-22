@@ -1,0 +1,53 @@
+# cargo-packager configuration for the Linux .deb and the Windows setup.
+# `cargo xtask package linux|windows` fills in @VERSION@ (the workspace
+# version) and @ROOT@ (the repository root in the build container), writes the
+# result to target/packager/Packager.toml and runs cargo-packager on it. The
+# macOS bundle is assembled by xtask itself (xtask/src/macos.rs).
+name = "ircord"
+productName = "IRCord GPUI"
+version = "@VERSION@"
+identifier = "com.ircord.gpui"
+description = "Experimental native IRCord desktop client"
+homepage = "https://github.com/ircord/frontend-gpui"
+publisher = "IRCord"
+# The .deb's Maintainer field.
+authors = ["IRCord"]
+category = "SocialNetworking"
+binariesDir = "@ROOT@/dist"
+icons = [
+    "@ROOT@/packaging/linux/ircord.png",
+    "@ROOT@/packaging/windows/ircord.ico",
+]
+binaries = [{ path = "ircord", main = true }]
+deepLinkProtocols = [{ schemes = ["irc", "ircs"] }]
+
+[deb]
+packageName = "ircord-gpui"
+section = "net"
+depends = [
+    "libc6 (>= 2.35)",
+    "libasound2",
+    "libvulkan1",
+    "mesa-vulkan-drivers | vulkan-icd",
+    "libxcb1",
+    "libxkbcommon0",
+    "libxkbcommon-x11-0",
+    "libwayland-client0",
+    "gstreamer1.0-plugins-base",
+    "gstreamer1.0-plugins-good",
+    "gstreamer1.0-libav",
+]
+
+# The video helper sits beside the app, and the menu entry and icons are the
+# repository's own: the app registers itself as com.ircord.gpui.desktop.
+[deb.files]
+"@ROOT@/dist/ircord-video" = "usr/bin/ircord-video"
+"@ROOT@/packaging/linux/com.ircord.gpui.desktop" = "usr/share/applications/com.ircord.gpui.desktop"
+"@ROOT@/packaging/linux/ircord.svg" = "usr/share/icons/hicolor/scalable/apps/com.ircord.gpui.svg"
+"@ROOT@/packaging/linux/ircord.png" = "usr/share/icons/hicolor/256x256/apps/com.ircord.gpui.png"
+
+[linux]
+generateDesktopEntry = false
+
+[nsis]
+installMode = "currentUser"

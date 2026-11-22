@@ -16,10 +16,17 @@ use std::process::Command;
 
 pub const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";
 
+/// The build image's name: the Dockerfile's hash, so a changed Dockerfile
+/// builds a new image.
+pub fn image_tag(root: &Path) -> Result<String> {
+    let text = std::fs::read(root.join("tools/build.Dockerfile"))
+        .context("read tools/build.Dockerfile")?;
+    Ok(format!("ircord-gpui-build:{:016x}", fnv1a(&text)))
+}
+
 pub fn image(root: &Path) -> Result<String> {
     let dockerfile = root.join("tools/build.Dockerfile");
-    let text = std::fs::read(&dockerfile).context("read tools/build.Dockerfile")?;
-    let tag = format!("ircord-gpui-build:{:016x}", fnv1a(&text));
+    let tag = image_tag(root)?;
     let present = Command::new("docker")
         .args(["image", "inspect", &tag])
         .stdout(std::process::Stdio::null())

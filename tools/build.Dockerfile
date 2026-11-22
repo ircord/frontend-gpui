@@ -1,6 +1,7 @@
 # Build environment for ircord-gpui: the Linux packages GPUI needs, clang,
-# lld and llvm-rc for the Windows cross-build, and cargo-xwin. `cargo xtask`
-# builds this image on first use and runs every compile step inside it.
+# lld and llvm-rc for the Windows cross-build, cargo-xwin, and cargo-packager
+# with NSIS for the installers. `cargo xtask` builds this image on first use
+# and runs every compile step inside it.
 FROM rust:1.99-bookworm
 
 # Build libraries: GPUI's (X11, Wayland, fonts, Vulkan), D-Bus for the tray
@@ -26,8 +27,15 @@ RUN apt-get update \
         gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav gstreamer1.0-tools \
     && rm -rf /var/lib/apt/lists/*
 
+# The installers: cargo-packager builds the .deb and, with NSIS's makensis,
+# the Windows setup; minisign checks update signatures.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nsis minisign \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN rustup component add rustfmt clippy \
     && rustup target add x86_64-pc-windows-msvc aarch64-apple-darwin x86_64-apple-darwin \
     && cargo install cargo-xwin --locked --version 0.23.1 \
+    && cargo install cargo-packager --locked --version 0.11.8 \
     && rm -rf /usr/local/cargo/registry /usr/local/cargo/git \
     && chmod -R a+rwX /usr/local/cargo /usr/local/rustup

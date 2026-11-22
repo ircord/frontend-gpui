@@ -22,7 +22,8 @@ crates/video-gst  `ircord-video`, the Linux video helper: GStreamer in its own p
 xtask/            contract refresh, the build container, builds, integration test, capture
 vendor/           GPUI's Windows backend with the cross-build patch
 tools/            the build container's Dockerfile
-packaging/        icons, the Linux desktop entry and installer, the macOS Info.plist
+packaging/        icons, the Linux desktop entry and installer, the macOS Info.plist,
+                  and the installer config (Packager.toml)
 ```
 
 ## Commands
@@ -32,10 +33,14 @@ Everything that compiles runs in a Docker image built from
 
 | Command | What it does |
 | --- | --- |
-| `cargo xtask ladder` | fmt, clippy (and `crates/platform` for macOS and Windows), contract check, tests, and the Windows and Linux builds |
+| `cargo xtask ladder` | `check`, then the Windows and Linux installers |
+| `cargo xtask check` | fmt, clippy (and `crates/platform` for macOS and Windows), contract check and tests: what CI runs on a pull request |
 | `cargo xtask build windows` | cross-build `dist/ircord.exe`, with its icon and version |
 | `cargo xtask build linux` | build `dist/ircord`, `dist/ircord-video` and `dist/ircord-linux-x86_64.tar.gz` |
-| `cargo xtask build macos` | on a Mac only: build `dist/IRCord.app` (see below) |
+| `cargo xtask build macos` | on a Mac only: build `dist/IRCord GPUI.app` (see below) |
+| `cargo xtask package windows` | the Windows build, then its setup, `dist/IRCord-GPUI-Windows-x64-setup.exe` |
+| `cargo xtask package linux` | the Linux build, then `dist/IRCord-GPUI-Linux-x64.deb` |
+| `cargo xtask package macos` | on an Apple Silicon Mac: the bundle, `dist/IRCord-GPUI-macOS-Apple-Silicon.dmg` and the updater's `.app.tar.gz` |
 | `cargo xtask contract` | refresh `crates/contract` from the backend checkout |
 | `cargo xtask contract --check` | fail if the committed contract is stale |
 | `cargo xtask integration` | the client against a real backend and IRC server in containers |
@@ -49,13 +54,23 @@ accepts Microsoft's licence for them. They are used for linking only.
 
 ## Running it
 
-**Windows 10 or 11.** Copy `dist/ircord.exe` over and run it; nothing is
-installed. Settings live in `%APPDATA%\com.ircord.gpui` (the server address,
+Releases on GitHub carry the installers below. Without a code-signing
+certificate, Windows warns about an unknown publisher on the first run of the
+setup ("More info", then "Run anyway"), and macOS asks once as described
+under macOS.
+
+**Windows 10 or 11.** Run `IRCord-GPUI-Windows-x64-setup.exe`; it installs
+for the current user, with a Start menu entry, and needs no administrator.
+A build from this repository also runs as it is: copy `dist/ircord.exe` over
+and run it. Settings live in `%APPDATA%\com.ircord.gpui` (the server address,
 window size and `ircord.log`); the sign-in is kept in Windows Credential
 Manager under `com.ircord.gpui`.
 
-**Linux** (x86-64; X11 or Wayland). Unpack `dist/ircord-linux-x86_64.tar.gz`
-and run `ircord/install.sh`, which puts `ircord` in `~/.local/bin` with a menu
+**Linux** (x86-64; X11 or Wayland). On Debian 12, Ubuntu 22.04 or later,
+`sudo apt install ./IRCord-GPUI-Linux-x64.deb` installs `ircord`, its video
+helper, the menu entry and the GStreamer plugins it plays videos with.
+Elsewhere, unpack `dist/ircord-linux-x86_64.tar.gz` and run
+`ircord/install.sh`, which puts `ircord` in `~/.local/bin` with a menu
 entry and icon (`install.sh --uninstall` removes them). Settings live in
 `~/.config/com.ircord.gpui`. The sign-in is kept in the Secret Service (GNOME
 Keyring or KWallet); without one running, sign-in says so. The binary needs
@@ -70,13 +85,15 @@ Apple's SDK and Metal compiler. With Xcode (not only the command line tools),
 Rust from rustup, and this repository checked out:
 
 ```sh
-cargo xtask build macos        # builds dist/IRCord.app for this Mac's architecture
-open dist/IRCord.app
+cargo xtask build macos          # builds dist/IRCord GPUI.app for this Mac's architecture
+open "dist/IRCord GPUI.app"
 ```
+
+`cargo xtask package macos` also makes the disk image a release ships.
 
 The bundle is signed ad hoc, not with a developer ID, so the first launch of a
 copy downloaded or moved from elsewhere needs Control-click → Open (or
-`xattr -dr com.apple.quarantine IRCord.app`). The sign-in is kept in the
+`xattr -dr com.apple.quarantine "IRCord GPUI.app"`). The sign-in is kept in the
 login keychain. If the build stops at the Metal shader step, install the
 toolchain with `xcodebuild -downloadComponent MetalToolchain` and run it again.
 
