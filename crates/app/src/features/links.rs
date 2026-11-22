@@ -42,7 +42,7 @@ use ircord_client::documents;
 use ircord_client::store::link_media::{self, Preview};
 use ircord_client::store::{Connection, Workspace};
 
-use crate::features::viewer::Media;
+use crate::features::{shortcuts::MarkRead, viewer::Media};
 use crate::registry::{
     self, ConversationCtx, KeyDefault, MenuItem, Pane, PaneCtx, SidebarCtx, Slot,
 };
@@ -52,6 +52,7 @@ use crate::sidebar::layout;
 use crate::theme::{self, Theme};
 use crate::ui;
 use crate::ui::icon::IconName;
+use crate::ui::page::Hint;
 
 gpui_kit::actions!(
     links,
@@ -1593,18 +1594,9 @@ impl Render for LinksView {
             );
         }
         let toolbar = div()
-            .px_4()
-            .pt_3()
-            .pb_2()
             .flex()
             .flex_col()
             .gap_2()
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(theme.muted)
-                    .child(t!("links-view-description")),
-            )
             .child(
                 Input::new(&self.input)
                     .id("links-filter")
@@ -1742,13 +1734,39 @@ impl Render for LinksView {
                 .children(more)
                 .into_any_element()
         };
-        let indexing = l.indexing;
-
+        let notices = toolbar
+            .when(offline, |d| {
+                d.child(notice("links-offline", t!("links-view-offline")))
+            })
+            .when(l.indexing, |d| {
+                d.child(notice("links-indexing", t!("links-view-indexing")))
+            });
+        let session = self.session.clone();
+        let mut page = ui::page::Page::new(
+            "links-page",
+            t!("links-view-title"),
+            div().px_4().pb_4().child(body),
+        )
+        .description(t!("links-view-description"))
+        .toolbar(notices)
+        .close(t!("links-view-close"), move |_, _, cx| {
+            ui::page::leave(&session, cx)
+        })
+        .hints(vec![
+            Hint::new(&["↑", "↓"], t!("links-view-key-choose")),
+            Hint::new(&["↵"], t!("links-view-key-jump")),
+            Hint::new(&[t!("search-key-escape")], t!("links-view-key-return")),
+        ]);
+        if let Some(meta) = meta {
+            page = page.meta("links-meta", meta);
+        }
         let count = self.list.items.len();
-        let page = div()
+        div()
             .id("links-page-root")
+            .flex_1()
+            .min_w_0()
+            .h_full()
             .flex()
-            .flex_col()
             .capture_action(cx.listener(move |this, _: &MoveDown, _, cx| {
                 if count > 0 {
                     this.selected = (this.selected + 1) % count;
@@ -1772,41 +1790,15 @@ impl Render for LinksView {
                 }
             }))
             .capture_action(cx.listener(|this, _: &Escape, window, cx| {
-                this.session.update(cx, |s, cx| s.go_back(cx));
+                ui::page::leave(&this.session, cx);
                 window.refresh();
                 cx.stop_propagation();
             }))
-            .child(toolbar)
-            .when(offline, |d| {
-                d.child(notice("links-offline", t!("links-view-offline")))
-            })
-            .when(indexing, |d| {
-                d.child(notice("links-indexing", t!("links-view-indexing")))
-            })
-            .child(div().px_4().pb_4().child(body))
-            .child(
-                div()
-                    .px_4()
-                    .py_1()
-                    .border_t_1()
-                    .border_color(theme.rail)
-                    .text_xs()
-                    .text_color(theme.faint)
-                    .child(t!("links-view-keyboard")),
-            );
-        let mut frame = ui::page::Page::new("links-page", t!("links-view-title"), page);
-        if let Some(meta) = meta {
-            frame = frame.action(
-                div()
-                    .id("links-meta")
-                    .test_support()
-                    .role(Role::Status)
-                    .aria_label(SharedString::from(meta.clone()))
-                    .text_sm()
-                    .text_color(theme.muted)
-                    .child(meta),
-            );
-        }
-        frame.render(&theme).into_any_element()
+            .capture_action(cx.listener(|this, _: &MarkRead, _, cx| {
+                ui::page::leave(&this.session, cx);
+                cx.stop_propagation();
+            }))
+            .child(page.render(&theme))
+            .into_any_element()
     }
 }
