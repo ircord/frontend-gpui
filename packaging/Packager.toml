@@ -8,6 +8,11 @@ productName = "IRCord GPUI"
 version = "@VERSION@"
 identifier = "com.ircord.gpui"
 description = "Experimental native IRCord desktop client"
+longDescription = """
+A native IRCord client written in Rust with GPUI. It talks to an IRCord \
+server over the same HTTP and WebSocket API as the web client. It is \
+experimental and not ready for daily use; the supported desktop app is \
+IRCord (github.com/ircord/desktop)."""
 homepage = "https://github.com/ircord/frontend-gpui"
 publisher = "IRCord"
 # The .deb's Maintainer field.
