@@ -8,6 +8,7 @@
 //! account with sync on and on this device with it off, and redraws at once.
 
 use crate::ui::focus::Reachable;
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -293,7 +294,7 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
             ctx,
             "appearance-scheme",
             t!("appearance-scheme"),
-            schemes(&current, mode, compiled.theme.is_some(), &theme),
+            schemes(&current, mode, compiled.theme.is_some(), &theme, window, cx),
             &theme,
         ))
         .child(block(
@@ -312,7 +313,12 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
             ctx,
             "appearance-font",
             t!("appearance-font"),
-            under(fonts(&current, &theme), &["font-ui"], &compiled, &theme),
+            under(
+                fonts(&current, &theme, window, cx),
+                &["font-ui"],
+                &compiled,
+                &theme,
+            ),
             &theme,
         ))
         .child(under(
@@ -617,7 +623,7 @@ fn miniature(seeds: &look::Seeds) -> Div {
     let bar = |w: f32, color: u32| {
         div()
             .h(px(3.))
-            .w(px(w))
+            .w(relative(w))
             .rounded_full()
             .bg(theme::hex(color))
     };
@@ -649,21 +655,70 @@ fn miniature(seeds: &look::Seeds) -> Div {
         .child(
             div()
                 .flex_1()
+                .min_w_0()
                 .p_1p5()
                 .flex()
                 .flex_col()
                 .gap_1p5()
                 .rounded_sm()
                 .bg(theme::hex(seeds.surface))
-                .child(bar(64., seeds.ink))
-                .child(bar(96., seeds.muted))
+                .child(bar(0.6, seeds.ink))
+                .child(bar(1., seeds.muted))
                 .child(
                     div()
                         .h(px(6.))
-                        .w(px(44.))
+                        .w(relative(0.4))
                         .rounded_full()
                         .bg(theme::hex(seeds.accent)),
                 ),
+        )
+}
+
+/// Draw equal-width cards, adding a column when another 150 px card fits.
+fn card_grid(
+    id: &'static str,
+    label: &'static str,
+    cards: Vec<AnyElement>,
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement + use<> {
+    const MIN_WIDTH: f32 = 150.;
+    const GAP: f32 = 10.;
+    let columns = window
+        .use_keyed_state((id, 0_usize), cx, |_, _| Rc::new(Cell::new(1u16)))
+        .read(cx)
+        .clone();
+    let count = cards.len().max(1) as u16;
+    div()
+        .relative()
+        .w_full()
+        .child(
+            div()
+                .id(id)
+                .test_support()
+                .role(Role::RadioGroup)
+                .aria_label(label)
+                .w_full()
+                .grid()
+                .grid_cols(columns.get())
+                .gap(px(GAP))
+                .children(cards),
+        )
+        .child(
+            canvas(
+                move |bounds, window, _| {
+                    let available = f32::from(bounds.size.width);
+                    let fit = ((available + GAP) / (MIN_WIDTH + GAP)) as u16;
+                    let next = fit.clamp(1, count);
+                    if columns.replace(next) != next {
+                        window.refresh();
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0()
+            .size_full(),
         )
 }
 
@@ -702,16 +757,11 @@ fn schemes(
     mode: Mode,
     theme_in_use: bool,
     theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
 ) -> impl IntoElement + use<> {
     let chosen = current.scheme(mode);
-    let mut grid = div()
-        .id("appearance-schemes")
-        .test_support()
-        .role(Role::RadioGroup)
-        .aria_label(t!("appearance-scheme"))
-        .flex()
-        .flex_wrap()
-        .gap_2();
+    let mut cards = Vec::new();
     for family in FAMILIES {
         let shown = family
             .variants
@@ -728,7 +778,7 @@ fn schemes(
             _ => None,
         };
         let seeds = shown.seeds;
-        grid = grid.child(
+        cards.push(
             div()
                 .id(ElementId::Name(
                     format!("appearance-scheme-{}", family.id).into(),
@@ -741,7 +791,7 @@ fn schemes(
                     name = family.name
                 )))
                 .aria_selected(selected)
-                .w(px(172.))
+                .min_w_0()
                 .p_1p5()
                 .rounded(theme.radius_large)
                 .border_2()
@@ -772,7 +822,8 @@ fn schemes(
                 .when_some(only, |d, text| {
                     d.child(div().px_1().text_xs().text_color(theme.muted).child(text))
                 })
-                .on_click(move |_, _, cx| pick_family(family, cx)),
+                .on_click(move |_, _, cx| pick_family(family, cx))
+                .into_any_element(),
         );
     }
     let variants: Vec<_> = look::family(chosen.family)
@@ -788,7 +839,13 @@ fn schemes(
                 .text_color(theme.muted)
                 .child(t!("appearance-scheme-help")),
         )
-        .child(grid)
+        .child(card_grid(
+            "appearance-schemes",
+            t!("appearance-scheme"),
+            cards,
+            window,
+            cx,
+        ))
         .when(variants.len() > 1 && !theme_in_use, |d| {
             let mut list = div()
                 .id("appearance-variants")
@@ -979,45 +1036,88 @@ fn accents(
         )
 }
 
-fn font_name(font: AppearanceFont) -> &'static str {
+fn font_labels(font: AppearanceFont) -> (&'static str, &'static str) {
     match font {
-        AppearanceFont::Inter => t!("appearance-font-inter"),
-        AppearanceFont::IbmMinusPlex => t!("appearance-font-ibm-plex"),
-        AppearanceFont::Manrope => t!("appearance-font-manrope"),
-        AppearanceFont::Nunito => t!("appearance-font-nunito"),
-        AppearanceFont::Atkinson => t!("appearance-font-atkinson"),
-        AppearanceFont::SourceMinusSans => t!("appearance-font-source-sans"),
-        AppearanceFont::System => t!("appearance-font-system"),
-        _ => t!("appearance-font-geist"),
+        AppearanceFont::Inter => (
+            t!("appearance-font-inter"),
+            t!("appearance-font-inter-note"),
+        ),
+        AppearanceFont::IbmMinusPlex => (
+            t!("appearance-font-ibm-plex"),
+            t!("appearance-font-ibm-plex-note"),
+        ),
+        AppearanceFont::Manrope => (
+            t!("appearance-font-manrope"),
+            t!("appearance-font-manrope-note"),
+        ),
+        AppearanceFont::Nunito => (
+            t!("appearance-font-nunito"),
+            t!("appearance-font-nunito-note"),
+        ),
+        AppearanceFont::Atkinson => (
+            t!("appearance-font-atkinson"),
+            t!("appearance-font-atkinson-note"),
+        ),
+        AppearanceFont::SourceMinusSans => (
+            t!("appearance-font-source-sans"),
+            t!("appearance-font-source-sans-note"),
+        ),
+        AppearanceFont::System => (
+            t!("appearance-font-system"),
+            t!("appearance-font-system-note"),
+        ),
+        _ => (
+            t!("appearance-font-geist"),
+            t!("appearance-font-geist-note"),
+        ),
     }
 }
 
-fn fonts(current: &Look, theme: &Theme) -> impl IntoElement + use<> {
-    let mut list = div()
-        .id("appearance-fonts")
-        .test_support()
-        .role(Role::RadioGroup)
-        .aria_label(t!("appearance-font"))
-        .flex()
-        .flex_wrap()
-        .gap_1();
+fn fonts(
+    current: &Look,
+    theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement + use<> {
+    let mut cards = Vec::new();
     for font in look::FONTS {
         let font = *font;
         let key = look::key(&font);
         let family: SharedString = look::font_family(font).unwrap_or(".SystemUIFont").into();
-        list = list.child(
-            option(
-                format!("appearance-font-{key}"),
-                font_name(font),
-                current.font == font,
-                theme,
-            )
-            .font_family(family)
-            .test_support()
-            .reachable(theme)
-            .on_click(move |_, _, cx| {
-                appearance::edit(cx, |a| a.font = Some(font));
-            }),
+        let selected = current.font == font;
+        let hover = theme.hover;
+        let (name, description) = font_labels(font);
+        cards.push(
+            div()
+                .id(ElementId::Name(format!("appearance-font-{key}").into()))
+                .test_support()
+                .role(Role::RadioButton)
+                .aria_label(name)
+                .aria_selected(selected)
+                .reachable(theme)
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .py_2()
+                .px_2p5()
+                .font_family(family)
+                .rounded(theme.radius_large)
+                .border_2()
+                .border_color(if selected { theme.accent } else { theme.border })
+                .bg(theme.main)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .child(
+                    div()
+                        .text_size(px(26.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Aa"),
+                )
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
+                .child(div().text_xs().text_color(theme.muted).child(description))
+                .on_click(move |_, _, cx| appearance::edit(cx, |a| a.font = Some(font)))
+                .into_any_element(),
         );
     }
     div()
@@ -1030,7 +1130,13 @@ fn fonts(current: &Look, theme: &Theme) -> impl IntoElement + use<> {
                 .text_color(theme.muted)
                 .child(t!("appearance-font-help")),
         )
-        .child(list)
+        .child(card_grid(
+            "appearance-fonts",
+            t!("appearance-font"),
+            cards,
+            window,
+            cx,
+        ))
 }
 
 /// The interface scale as a slider in steps of 5 %, with its value beside it.

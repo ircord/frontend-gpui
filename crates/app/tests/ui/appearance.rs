@@ -76,6 +76,26 @@ fn open_at(f: &Fixture, cx: &mut TestAppContext, row: &'static str) {
     });
 }
 
+#[gpui_kit::test]
+fn theme_cards_reflow_when_the_window_narrows(cx: &mut TestAppContext) {
+    let f = signed_in(cx, json!({}), json!([]));
+    open_at(&f, cx, "appearance-scheme");
+    let window = f.window;
+    let same_row = move |cx: &mut gpui_kit::App| {
+        window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                let first = window.find("appearance-scheme-ircord").bounds();
+                let third = window.find("appearance-scheme-midnight").bounds();
+                first.top() == third.top()
+            })
+            .unwrap()
+    };
+    wait(cx, "three themes fit on one row", same_row);
+    cx.simulate_window_resize(f.window, gpui_kit::size(px(760.), px(800.)));
+    wait(cx, "the themes wrap into more rows", |cx| !same_row(cx));
+}
+
 /// Click `id`, scrolling the settings page down until it is wholly in view.
 fn click(f: &Fixture, cx: &mut TestAppContext, id: &str) {
     let id = gpui_kit::ElementId::Name(id.to_string().into());
