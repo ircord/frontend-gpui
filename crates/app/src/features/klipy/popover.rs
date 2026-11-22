@@ -35,7 +35,8 @@ pub(super) fn slot(ctx: &ComposerCtx, _: &mut Window, cx: &mut App) -> Option<An
                 let mut panel = div()
                     .id("expression-popover")
                     .relative()
-                    .size(placement.bounds.size)
+                    .w(placement.bounds.size.width)
+                    .h(placement.bounds.size.height)
                     .p_2()
                     .bg(theme.raised)
                     .rounded(theme.radius_large)
@@ -217,7 +218,8 @@ fn resizer(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::place;
+    use gpui_kit::{Bounds, point, px, size};
 
     #[test]
     fn places_the_picker_over_the_anchor_and_fits_it_on_small_screens() {
