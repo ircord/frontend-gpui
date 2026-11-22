@@ -35,3 +35,6 @@ desktop-tray-mark = Unread mark on the tray icon
 desktop-tray-mark-help = A red dot on the tray icon while mentions or direct messages wait.
 desktop-tray-mark-keywords = tray, badge, unread, dot, count
 desktop-tray-missing = This desktop shows no tray icon; the mark appears where it does.
+
+# A second copy started while one runs
+desktop-already-running = You already have an instance of IRCord running.

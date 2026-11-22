@@ -1,11 +1,12 @@
 //! Desktop integration (package DK1):
 //!
-//! - **One running copy.** The first copy listens on a loopback port named
-//!   in `instance` in the settings folder. A later copy hands its links to
-//!   it over that port (with the token from the same file) and exits, and
-//!   the first copy brings its window up and opens them ([`hand_over`],
-//!   [`instance`]). macOS never starts a second copy: it hands links to the
-//!   running app ([`open_urls`]).
+//! - **One running copy.** The first copy holds a lock in the settings
+//!   folder and listens on a loopback port named in `instance` there. A
+//!   later copy hands its links to it over that port (with the token from
+//!   the same file) and exits, saying the app already runs when it was
+//!   started without links; the first copy brings its window up and opens
+//!   them ([`hand_over`], [`instance`]). macOS never starts a second copy
+//!   from Finder: it hands links to the running app ([`open_urls`]).
 //! - **Links.** `irc://` and `ircs://` links, and links to a message on the
 //!   signed-in server, open in the app ([`open_link`]); links that arrive
 //!   before the workspace has loaded wait for it. Registering IRCord as the
@@ -247,25 +248,42 @@ fn deliver(links: Vec<String>) {
 
 /// Before the app starts: hand this launch's links to a copy that is already
 /// running and return `true` (this copy should exit), or become the running
-/// copy and return `false`.
+/// copy and return `false`. A second copy started without links tells the
+/// person the app already runs; one started by a link just opens it there.
 pub fn hand_over() -> bool {
     let links = links_from_args(std::env::args().skip(1));
     let claim = match ConfigDir::platform() {
-        Ok(config) => instance::claim(config.path(), &links),
-        Err(_) => instance::Claim::First(None),
+        Ok(config) => {
+            ircord_platform::desktop::allow_foreground();
+            instance::claim(config.path(), &links, instance::PATIENCE)
+        }
+        Err(_) => instance::Claim::First(instance::Running::default()),
     };
     match claim {
-        instance::Claim::Handed => true,
-        instance::Claim::First(listener) => {
-            if let Some(listener) = listener {
-                listener.serve(deliver);
+        instance::Claim::Handed | instance::Claim::Unreachable => {
+            if tells_the_person(&links) {
+                ircord_platform::desktop::message(
+                    t!("core-app-name"),
+                    t!("desktop-already-running"),
+                );
             }
+            true
+        }
+        instance::Claim::First(running) => {
+            // Held until the process ends, so the lock goes with it.
+            running.serve(deliver);
             if !links.is_empty() {
                 deliver(links);
             }
             false
         }
     }
+}
+
+/// Whether a second copy started with `links` says the app already runs: a
+/// copy started from a link (a click in a browser) opens it without a word.
+pub fn tells_the_person(links: &[String]) -> bool {
+    links.is_empty()
 }
 
 /// Links the system hands the running app (macOS opens `irc://` links this way).
@@ -280,25 +298,48 @@ pub fn reopen(cx: &mut App) {
     }
 }
 
-/// The single running copy: a loopback listener and the file that names it.
+/// The single running copy. The first copy holds a lock on `instance.lock`
+/// in the settings folder for as long as it runs (the system lets go of it
+/// when the process ends, even in a crash), listens on a loopback port and
+/// names that port in `instance`. A later copy that cannot take the lock
+/// hands its links over that port, with the token from the same file, and
+/// exits even when the running copy does not answer: two copies never run
+/// side by side. Without a lock (a file system that has none) the port
+/// alone decides, as before.
 pub mod instance {
+    use std::fs::{File, TryLockError};
     use std::io::{self, BufRead, BufReader, Read, Write};
     use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
     use std::path::Path;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// The file in the settings folder: `<port> <token>`.
     pub const FILE: &str = "instance";
+    /// The file the running copy holds a lock on.
+    pub const LOCK: &str = "instance.lock";
     const HELLO: &str = "ircord-handoff 1";
     pub const MAX_LINKS: usize = 32;
     pub const MAX_LINE: usize = 4096;
     const WAIT: Duration = Duration::from_secs(2);
+    /// How long a second copy keeps trying a running copy that has the lock
+    /// but is not listening yet (it is starting at the same moment).
+    pub const PATIENCE: Duration = Duration::from_secs(5);
 
     pub enum Claim {
         /// Another copy took the links; this one should exit.
         Handed,
-        /// This is the running copy now, listening when it could.
-        First(Option<Listener>),
+        /// Another copy runs but did not answer; this one should exit too.
+        Unreachable,
+        /// This is the running copy now.
+        First(Running),
+    }
+
+    /// What the running copy keeps: the lock, and the listener when there
+    /// is one.
+    #[derive(Default)]
+    pub struct Running {
+        lock: Option<File>,
+        listener: Option<Listener>,
     }
 
     pub struct Listener {
@@ -306,20 +347,70 @@ pub mod instance {
         token: String,
     }
 
-    /// Hand `links` to the copy named in `dir`, or become that copy.
-    pub fn claim(dir: &Path, links: &[String]) -> Claim {
-        if let Some((port, token)) = read(dir)
-            && send(port, &token, links).is_ok()
-        {
-            return Claim::Handed;
+    impl Running {
+        pub fn listening(&self) -> bool {
+            self.listener.is_some()
         }
-        match listen(dir) {
-            Ok(listener) => Claim::First(Some(listener)),
+
+        pub fn locked(&self) -> bool {
+            self.lock.is_some()
+        }
+    }
+
+    /// Hand `links` to the copy running for `dir`, or become that copy.
+    /// `patience` is how long to keep trying a copy that holds the lock.
+    pub fn claim(dir: &Path, links: &[String], patience: Duration) -> Claim {
+        let lock = match lock(dir) {
+            Ok(Some(lock)) => Some(lock),
+            Ok(None) => return hand_to_running(dir, links, patience),
             Err(e) => {
-                log::warn!("single copy: {e}");
-                Claim::First(None)
+                log::warn!("single copy: no lock ({e}), going by the port alone");
+                if handed(dir, links) {
+                    return Claim::Handed;
+                }
+                None
             }
+        };
+        let listener = listen(dir)
+            .inspect_err(|e| log::warn!("single copy: {e}"))
+            .ok();
+        Claim::First(Running { lock, listener })
+    }
+
+    /// The lock, `None` when another copy holds it.
+    fn lock(dir: &Path) -> io::Result<Option<File>> {
+        std::fs::create_dir_all(dir)?;
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join(LOCK))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(e)) => Err(e),
         }
+    }
+
+    /// Another copy holds the lock: keep trying its port, which it may not
+    /// have written yet if both started together.
+    fn hand_to_running(dir: &Path, links: &[String], patience: Duration) -> Claim {
+        let until = Instant::now() + patience;
+        loop {
+            if handed(dir, links) {
+                return Claim::Handed;
+            }
+            if Instant::now() >= until {
+                log::warn!("single copy: the running copy did not answer");
+                return Claim::Unreachable;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn handed(dir: &Path, links: &[String]) -> bool {
+        read(dir).is_some_and(|(port, token)| send(port, &token, links).is_ok())
     }
 
     fn read(dir: &Path) -> Option<(u16, String)> {
@@ -327,7 +418,6 @@ pub mod instance {
         let (port, token) = text.trim().split_once(' ')?;
         Some((port.parse().ok()?, token.to_string()))
     }
-
     fn send(port: u16, token: &str, links: &[String]) -> io::Result<()> {
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(500))?;
@@ -378,15 +468,23 @@ pub mod instance {
         std::fs::write(path, bytes)
     }
 
-    impl Listener {
+    impl Running {
         /// Take hand-overs on a thread of their own, calling `deliver` with
-        /// each one's links (none: just show the window).
+        /// each one's links (none: just show the window). The lock stays
+        /// held until the process ends.
         pub fn serve(self, deliver: impl Fn(Vec<String>) + Send + 'static) {
+            let Running { lock, listener } = self;
+            // The lock lives as long as the process: the system drops it at
+            // exit, whatever way the process ends.
+            std::mem::forget(lock);
+            let Some(listener) = listener else {
+                return;
+            };
             let spawned = std::thread::Builder::new()
                 .name("ircord-handoff".into())
                 .spawn(move || {
-                    for stream in self.socket.incoming().flatten() {
-                        match accept(stream, &self.token) {
+                    for stream in listener.socket.incoming().flatten() {
+                        match accept(stream, &listener.token) {
                             Ok(links) => deliver(links),
                             Err(e) => log::warn!("hand-over refused: {e}"),
                         }
@@ -850,23 +948,31 @@ mod tests {
         dir
     }
 
+    const SOON: Duration = Duration::from_millis(300);
+
+    fn first(dir: &std::path::Path) -> instance::Running {
+        let instance::Claim::First(running) = instance::claim(dir, &[], SOON) else {
+            panic!("the first copy runs");
+        };
+        assert!(running.locked() && running.listening());
+        running
+    }
+
     #[test]
     fn a_second_copy_hands_its_links_to_the_first() {
         let dir = temp();
-        let instance::Claim::First(Some(listener)) = instance::claim(&dir, &[]) else {
-            panic!("the first copy listens");
-        };
         let (send, receive) = std::sync::mpsc::channel();
-        listener.serve(move |links| send.send(links).unwrap());
+        first(&dir).serve(move |links| send.send(links).unwrap());
         let links = vec!["irc://irc.libera.chat/#rust".to_string()];
         assert!(matches!(
-            instance::claim(&dir, &links),
+            instance::claim(&dir, &links, SOON),
             instance::Claim::Handed
         ));
         assert_eq!(receive.recv_timeout(Duration::from_secs(5)).unwrap(), links);
-        // A copy with nothing to open still hands over: the window comes up.
+        // A copy with nothing to open still hands over: the window comes up,
+        // and that copy says the app already runs.
         assert!(matches!(
-            instance::claim(&dir, &[]),
+            instance::claim(&dir, &[], SOON),
             instance::Claim::Handed
         ));
         assert!(
@@ -875,29 +981,99 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        assert!(super::tells_the_person(&[]));
+        assert!(!super::tells_the_person(&links));
         std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
-    fn a_stale_or_forged_instance_file_does_not_stop_the_app() {
+    fn a_running_copy_that_does_not_answer_still_stops_a_second() {
         let dir = temp();
-        // A port nobody listens on any more.
+        // The running copy holds the lock, but its port is gone (or it has
+        // not written it yet, or a firewall eats the connection).
+        let running = first(&dir);
+        std::fs::write(dir.join(instance::FILE), "1 forged\n").unwrap();
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            instance::claim(&dir, &["irc://x/#y".to_string()], SOON),
+            instance::Claim::Unreachable
+        ));
+        assert!(started.elapsed() >= SOON, "it waits for a copy starting up");
+        // A wrong token is refused, and the second copy still does not run.
+        drop(running);
+        let (send, receive) = std::sync::mpsc::channel();
+        first(&dir).serve(move |links| send.send(links).unwrap());
+        let text = std::fs::read_to_string(dir.join(instance::FILE)).unwrap();
+        let port: u16 = text.split(' ').next().unwrap().parse().unwrap();
+        std::fs::write(dir.join(instance::FILE), format!("{port} wrong\n")).unwrap();
+        assert!(matches!(
+            instance::claim(&dir, &["irc://x/#y".to_string()], SOON),
+            instance::Claim::Unreachable
+        ));
+        assert!(receive.recv_timeout(SOON).is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_copy_starting_late_is_waited_for() {
+        let dir = temp();
+        // The lock is taken, the port follows a moment later (two copies
+        // started together).
+        let lock = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join(instance::LOCK))
+            .unwrap();
+        lock.lock().unwrap();
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        let late = dir.clone();
+        let server = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            std::fs::write(late.join(instance::FILE), format!("{port} t\n")).unwrap();
+            let (stream, _) = socket.accept().unwrap();
+            let mut lines = std::io::BufRead::lines(std::io::BufReader::new(&stream));
+            let mut got = Vec::new();
+            while let Some(Ok(line)) = lines.next() {
+                if line.is_empty() {
+                    break;
+                }
+                got.push(line);
+            }
+            std::io::Write::write_all(&mut &stream, b"ok\n").unwrap();
+            got
+        });
+        assert!(matches!(
+            instance::claim(&dir, &["irc://x/#y".to_string()], Duration::from_secs(5)),
+            instance::Claim::Handed
+        ));
+        assert_eq!(
+            server.join().unwrap(),
+            ["ircord-handoff 1", "t", "irc://x/#y"]
+        );
+        drop(lock);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_stale_instance_file_does_not_stop_the_app() {
+        let dir = temp();
+        // A copy that crashed: its file names a port nobody listens on, and
+        // its lock went with the process.
         let gone = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = gone.local_addr().unwrap().port();
         drop(gone);
         std::fs::write(dir.join(instance::FILE), format!("{port} abc\n")).unwrap();
-        let instance::Claim::First(Some(listener)) = instance::claim(&dir, &[]) else {
-            panic!("a stale file is taken over");
-        };
-        let (send, receive) = std::sync::mpsc::channel();
-        listener.serve(move |links| send.send(links).unwrap());
-        // Someone who read the port but not the token gets nowhere.
+        std::fs::write(dir.join(instance::LOCK), "").unwrap();
+        let started = std::time::Instant::now();
+        let running = first(&dir);
+        assert!(started.elapsed() < SOON, "no waiting on a dead copy");
         let text = std::fs::read_to_string(dir.join(instance::FILE)).unwrap();
-        let port: u16 = text.split(' ').next().unwrap().parse().unwrap();
-        std::fs::write(dir.join(instance::FILE), format!("{port} wrong\n")).unwrap();
-        let claim = instance::claim(&dir, &["irc://x/#y".to_string()]);
-        assert!(matches!(claim, instance::Claim::First(_)));
-        assert!(receive.recv_timeout(Duration::from_millis(300)).is_err());
+        assert!(!text.ends_with(" abc\n"), "the file names the new copy");
+        // And when that copy ends in turn, the next one starts.
+        drop(running);
+        first(&dir);
         std::fs::remove_dir_all(dir).ok();
     }
 
