@@ -323,6 +323,15 @@ fn searching_one_conversation_beside_it_with_server_history(cx: &mut TestAppCont
         label(&f, cx, "conversation-search").as_deref(),
         Some("Search #general")
     );
+    frame(&f, cx, |window, _| {
+        assert!(window.find("conversation-search").bounds().size.width >= gpui_kit::px(330.));
+        assert!(window.try_find("resize-panel").is_none());
+    });
+    searched(&f, cx, "recent messages in #general", |r| {
+        param(r, "q").iter().all(|value| value.is_empty())
+            && param(r, "conversationId") == ["c-general"]
+    });
+    shows(&f, cx, "conversation-search-result-0");
     frame(&f, cx, |window, cx| window.input("hello", cx));
     searched(&f, cx, "a search in #general", |r| {
         param(r, "q") == ["hello"] && param(r, "conversationId") == ["c-general"]

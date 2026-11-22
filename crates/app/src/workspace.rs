@@ -698,9 +698,12 @@ impl Render for WorkspaceView {
             Some(route) => main.child(self.route_pane(route, &theme, window, cx)),
             None => main,
         };
+        let fixed_panel_width = (!compact
+            && self.session.read(cx).panel.as_deref() == Some(crate::features::search::PANEL))
+        .then_some(340.);
         let panel = self
             .panel(&route, !compact, window, cx)
-            .map(|panel| crate::sidebar::side_panel(panel, window, cx));
+            .map(|panel| crate::sidebar::side_panel(panel, fixed_panel_width, window, cx));
         let card = div()
             .id("workspace-card")
             .relative()

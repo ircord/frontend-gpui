@@ -235,7 +235,7 @@ impl SearchModel {
 
     /// Whether what is typed and chosen is a search.
     pub fn searches(&self) -> bool {
-        sf::can_search(&self.pending, &self.filters)
+        self.scope.is_some() || sf::can_search(&self.pending, &self.filters)
     }
 
     /// Whether the results are not yet for what is typed.
@@ -2504,6 +2504,7 @@ impl ConversationSearch {
             this.selected = this.selected.min(n.saturating_sub(1));
             cx.notify();
         });
+        model.update(cx, |model, cx| model.run(cx));
         Self {
             session,
             conversation,
@@ -2554,7 +2555,6 @@ impl Render for ConversationSearch {
         let m = self.model.read(cx);
         let count = m.results.len();
         let filters = m.filters.count();
-        let searches = m.searches();
         let text = m.text.clone();
         let filters_label = if filters > 0 {
             t!("search-filters-on", count = filters)
@@ -2607,9 +2607,8 @@ impl Render for ConversationSearch {
             .min_h_0()
             .overflow_y_scroll()
             .flex()
-            .flex_col();
-        if searches {
-            list = list.child(messages_part(
+            .flex_col()
+            .child(messages_part(
                 "conversation-search",
                 &self.model,
                 &self.session,
@@ -2620,16 +2619,6 @@ impl Render for ConversationSearch {
                 &theme,
                 cx,
             ));
-        } else {
-            list = list.child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .text_sm()
-                    .text_color(theme.muted)
-                    .child(t!("search-conversation-hint")),
-            );
-        }
         if !text.trim().is_empty() {
             list = list.child(
                 div().px_3().py_2().child(

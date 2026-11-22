@@ -118,7 +118,6 @@ search-in-conversation = Search in this conversation
 search-conversation-search = Search { $place }
 search-conversation-field = Search messages in { $place }
 search-conversation-close = Close search
-search-conversation-hint = Type at least two characters or choose a filter.
 search-conversation-no-messages-query = No messages in { $place } match “{ $query }”.
 search-conversation-everywhere = Search everywhere for “{ $query }”
 search-conversation-none = Open a conversation to search it.

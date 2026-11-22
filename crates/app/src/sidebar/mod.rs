@@ -205,9 +205,14 @@ fn resize_handle(
 
 /// The right-hand panel (the member list or a feature's panel) in its frame
 /// beside the main pane, as wide as the person dragged it.
-pub fn side_panel(panel: AnyElement, window: &mut Window, cx: &mut App) -> AnyElement {
+pub fn side_panel(
+    panel: AnyElement,
+    fixed_width: Option<f32>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let theme = theme::get(cx).clone();
-    let width = layout::get(cx).panel_width;
+    let width = fixed_width.unwrap_or_else(|| layout::get(cx).panel_width);
     div()
         .id("side-panel")
         .w(px(width * theme.scale))
@@ -217,7 +222,9 @@ pub fn side_panel(panel: AnyElement, window: &mut Window, cx: &mut App) -> AnyEl
         .flex_row()
         .border_l_1()
         .border_color(theme.border.opacity(0.45))
-        .child(resize_handle(ResizeEdge::Panel, width, window, cx))
+        .when(fixed_width.is_none(), |d| {
+            d.child(resize_handle(ResizeEdge::Panel, width, window, cx))
+        })
         .child(div().flex_1().min_w_0().h_full().child(panel))
         .into_any_element()
 }
