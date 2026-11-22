@@ -19,9 +19,10 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use ircord_contract as c;
 use ircord_contract::event::Document;
 use tokio::runtime::Runtime;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, broadcast, mpsc};
 
 use crate::api::{Api, ApiError};
+use crate::archive::EVENT_BUFFER;
 use crate::credentials::CredentialStore;
 use crate::events::{self, Shared, Timing, Update};
 use crate::socket::WsTransport;
@@ -325,6 +326,12 @@ impl Client {
         let (app, rx) = unbounded();
         let (from_events, internal) = unbounded();
         let watchers: Arc<Mutex<Vec<Watcher>>> = Arc::default();
+        let (archive_sender, archive_events) = if api.archive.is_some() {
+            let (sender, receiver) = broadcast::channel(EVENT_BUFFER);
+            (Some(sender), Some(receiver))
+        } else {
+            (None, None)
+        };
         let shared = Arc::new(Shared {
             store: Arc::new(RwLock::new(Workspace::default())),
             updates: from_events,
@@ -333,6 +340,7 @@ impl Client {
             tab: random_id(),
             incarnation: random_id(),
             read_aloud: AtomicBool::new(false),
+            archive: archive_sender,
         });
         let (socket, outgoing) = mpsc::unbounded_channel();
         let events = runtime.spawn(events::run(
@@ -356,11 +364,10 @@ impl Client {
             updates: app,
             watchers,
         };
-        let (archive_wake, archive_connected) = mpsc::channel(1);
-        let forwarder = runtime.spawn(forward(handle.clone(), internal, archive_wake));
+        let forwarder = runtime.spawn(forward(handle.clone(), internal));
         let mut tasks = vec![events, reporter, forwarder];
-        if let Some(archive) = api.archive.clone() {
-            tasks.push(runtime.spawn(archive.watch(api.clone(), archive_connected)));
+        if let (Some(archive), Some(archive_events)) = (api.archive.clone(), archive_events) {
+            tasks.push(runtime.spawn(archive.watch(api.clone(), archive_events)));
         }
         let client = Client {
             runtime,
@@ -691,20 +698,8 @@ impl Client {
 }
 
 /// Pass the event task's updates to the app, letting the watchers see changes first.
-async fn forward(
-    handle: Handle,
-    mut internal: UnboundedReceiver<Update>,
-    archive_wake: mpsc::Sender<String>,
-) {
+async fn forward(handle: Handle, mut internal: UnboundedReceiver<Update>) {
     while let Some(update) = internal.next().await {
-        if handle.api.archive.is_some()
-            && matches!(update, Update::Connection(crate::store::Connection::Live))
-        {
-            let workspace = handle.read();
-            if !workspace.demo && !workspace.user.id.is_empty() {
-                let _ = archive_wake.try_send(workspace.user.id.clone());
-            }
-        }
         handle.emit(update);
     }
 }

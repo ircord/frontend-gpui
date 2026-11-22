@@ -9,19 +9,22 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use ircord_contract::event::ServerEvent;
 use ircord_contract::{Message, MessagePage, OfflineSnapshot, Snapshot};
 use ring::{aead, digest, hmac, rand};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::sync::mpsc;
 
 use crate::api::{Api, ApiError};
+
+mod replay;
+pub(crate) use replay::{EVENT_BUFFER, Signal};
+use replay::{Projection, SCHEMA_VERSION, read_replay};
 
 const RETENTION: chrono::TimeDelta = chrono::TimeDelta::days(7);
 const SNAPSHOT_PAGE_SIZE: u16 = 500;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-const MIN_DOWNLOAD_INTERVAL: Duration = Duration::from_secs(15 * 60);
 pub(crate) const CURSOR_PREFIX: &str = "offline:";
 
 #[derive(Clone)]
@@ -60,26 +63,13 @@ impl Archive {
         }))
     }
 
-    pub(crate) async fn watch(self, api: Api, mut connected: mpsc::Receiver<String>) {
-        let mut last_attempt: Option<tokio::time::Instant> = None;
-        while let Some(owner) = connected.recv().await {
-            if last_attempt.is_some_and(|last| last.elapsed() < MIN_DOWNLOAD_INTERVAL) {
-                continue;
-            }
-            last_attempt = Some(tokio::time::Instant::now());
-            if let Err(error) = self.download(&api, &owner).await {
-                log::debug!("refresh offline archive: {error}");
-            }
-        }
-    }
-
-    pub(crate) async fn download(&self, api: &Api, owner: &str) -> Result<()> {
+    async fn download(&self, api: &Api, owner: &str) -> Result<bool> {
         tokio::time::timeout(DOWNLOAD_TIMEOUT, self.download_pages(api, owner))
             .await
             .context("the offline snapshot download timed out")?
     }
 
-    async fn download_pages(&self, api: &Api, owner: &str) -> Result<()> {
+    async fn download_pages(&self, api: &Api, owner: &str) -> Result<bool> {
         let mut page = snapshot_page(api, None).await?;
         let Some(state) = page.state.take() else {
             bail!("the offline snapshot has no workspace");
@@ -91,30 +81,45 @@ impl Archive {
         {
             bail!("the offline snapshot does not match the signed-in workspace");
         }
+        let base = state.cursor;
+        let mut latest_page = base;
         let cache = self.clone();
         let cutoff = time_ns(&page.since).context("the offline snapshot has no retention date")?;
-        let mut stage = blocking(move || Staging::begin(cache, &state, cutoff)).await?;
+        let mut stage = blocking(move || Staging::begin(cache, state, cutoff)).await?;
         let mut seen = HashSet::new();
         loop {
+            if page.cursor < latest_page || time_ns(&page.since) != Some(cutoff) {
+                bail!("the offline snapshot changed while downloading");
+            }
+            latest_page = page.cursor;
             let next = page.next_cursor.take();
             stage = blocking(move || {
-                stage.append(page.items)?;
+                stage.append(page.items, page.cursor)?;
                 Ok(stage)
             })
             .await?;
             let Some(next) = next.filter(|value| !value.is_empty()) else {
-                return blocking(move || stage.publish()).await;
+                break;
             };
             if !seen.insert(next.clone()) {
                 bail!("the offline snapshot repeated a page");
             }
             page = snapshot_page(api, Some(&next)).await?;
         }
+        let Some(events) = read_replay(api, base).await? else {
+            bail!("the server could not replay changes made during the download");
+        };
+        blocking(move || {
+            let changed = stage.finish(&events, latest_page)?;
+            stage.publish()?;
+            Ok(changed)
+        })
+        .await
     }
 
     pub(crate) async fn snapshot(&self) -> Option<Snapshot> {
         let cache = self.clone();
-        blocking(move || cache.read(|_, snapshot| Ok(snapshot)))
+        blocking(move || cache.read(|_, projection| Ok(projection.snapshot)))
             .await
             .ok()
             .flatten()
@@ -133,8 +138,13 @@ impl Archive {
         let before = before.map(str::to_owned);
         blocking(move || {
             cache
-                .read(|db, snapshot| {
-                    if !snapshot.conversations.iter().any(|c| c.id == conversation) {
+                .read(|db, projection| {
+                    if !projection
+                        .snapshot
+                        .conversations
+                        .iter()
+                        .any(|c| c.id == conversation)
+                    {
                         return Ok(None);
                     }
                     let mut boundary_stmt = db.prepare_cached(
@@ -208,12 +218,22 @@ impl Archive {
         }
     }
 
-    fn read<T>(&self, read: impl FnOnce(&Connection, Snapshot) -> Result<T>) -> Result<Option<T>> {
+    fn read<T>(
+        &self,
+        read: impl FnOnce(&Connection, Projection) -> Result<T>,
+    ) -> Result<Option<T>> {
         let revoked = self.0.revoked.lock().unwrap();
         if *revoked || !self.0.path.is_file() {
             return Ok(None);
         }
         let db = Connection::open_with_flags(&self.0.path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let Some(projection) = self.load(&db)? else {
+            return Ok(None);
+        };
+        read(&db, projection).map(Some)
+    }
+
+    fn load(&self, db: &Connection) -> Result<Option<Projection>> {
         let payload: Option<Vec<u8>> = db
             .query_row(
                 "SELECT payload FROM workspace WHERE downloaded>=?1",
@@ -225,8 +245,7 @@ impl Archive {
             return Ok(None);
         };
         // A cache from another sign-in cannot authenticate with this key.
-        let snapshot = self.open::<Snapshot>(b"workspace", payload)?;
-        read(&db, snapshot).map(Some)
+        self.open(b"workspace", payload).map(Some)
     }
 
     fn seal(&self, kind: &[u8], value: &impl Serialize) -> Result<Vec<u8>> {
@@ -269,11 +288,11 @@ struct Staging {
     path: tempfile::TempPath,
     archive: Archive,
     cutoff: i64,
-    conversations: HashSet<String>,
+    projection: Projection,
 }
 
 impl Staging {
-    fn begin(archive: Archive, snapshot: &Snapshot, cutoff: i64) -> Result<Self> {
+    fn begin(archive: Archive, snapshot: Snapshot, cutoff: i64) -> Result<Self> {
         let dir = archive
             .0
             .path
@@ -291,50 +310,43 @@ impl Staging {
              PRAGMA synchronous=OFF;
              CREATE TABLE workspace(downloaded INTEGER NOT NULL, payload BLOB NOT NULL);
              CREATE TABLE messages(conversation TEXT NOT NULL, id TEXT NOT NULL,
-                 at INTEGER NOT NULL, position INTEGER NOT NULL, payload BLOB NOT NULL,
+                 at INTEGER NOT NULL, position INTEGER NOT NULL, payload BLOB NOT NULL, seq INTEGER NOT NULL,
                  PRIMARY KEY(conversation,id));
-             CREATE INDEX messages_history ON messages(conversation,at,position,id);",
+             CREATE INDEX messages_history ON messages(conversation,at,position,id);
+             CREATE INDEX messages_retention ON messages(at);",
         )?;
-        db.execute(
-            "INSERT INTO workspace VALUES (?1,?2)",
-            params![now_ns(), archive.seal(b"workspace", snapshot)?],
-        )?;
+        db.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(Self {
             db,
             path,
             archive,
             cutoff,
-            conversations: snapshot
-                .conversations
-                .iter()
-                .map(|c| c.id.clone())
-                .collect(),
+            projection: Projection::new(snapshot),
         })
     }
 
-    fn append(&mut self, items: Vec<Message>) -> Result<()> {
+    fn append(&mut self, items: Vec<Message>, seq: i64) -> Result<()> {
         let tx = self.db.transaction()?;
-        {
-            let mut insert =
-                tx.prepare_cached("INSERT OR REPLACE INTO messages VALUES (?1,?2,?3,?4,?5)")?;
-            for message in items {
-                if message.id.is_empty() || !self.conversations.contains(&message.conversation_id) {
-                    continue;
-                }
-                let Some(at) = time_ns(&message.created_at).filter(|at| *at >= self.cutoff) else {
-                    continue;
-                };
-                insert.execute(params![
-                    message.conversation_id,
-                    message.id,
-                    at,
-                    message.position.unwrap_or_default(),
-                    self.archive.seal(b"message", &message)?
-                ])?;
-            }
+        for message in items {
+            replay::put_message(&tx, &self.archive, &message, seq, self.cutoff)?;
         }
         tx.commit()?;
         Ok(())
+    }
+
+    fn finish(&mut self, events: &[Arc<ServerEvent>], latest_page: i64) -> Result<bool> {
+        let tx = self.db.transaction()?;
+        let changed = self
+            .projection
+            .apply(&tx, &self.archive, events)?
+            .context("the offline snapshot replay contained a gap")?;
+        if self.projection.snapshot.cursor < latest_page {
+            bail!("the offline snapshot replay was incomplete");
+        }
+        self.projection.retain_conversations(&tx)?;
+        self.projection.save(&tx, &self.archive)?;
+        tx.commit()?;
+        Ok(changed)
     }
 
     fn publish(self) -> Result<()> {
@@ -401,7 +413,7 @@ mod tests {
     use crate::client::runtime;
     use crate::config::ConfigDir;
     use crate::events::Update;
-    use crate::testing::{CANNED_COOKIE, CannedServer, Reply, SnapshotBuilder};
+    use crate::testing::{CANNED_COOKIE, CannedServer, Reply, SnapshotBuilder, frame, wait_live};
 
     fn message(id: &str, hours_ago: i64) -> Message {
         Message {
@@ -427,7 +439,7 @@ mod tests {
         server.route_fn("GET", "/api/v1/offline/snapshot", move |request| {
             let page = if request.query_param("before").as_deref() == Some("second") {
                 OfflineSnapshot {
-                    cursor: 7,
+                    cursor: 9,
                     items: vec![message("older", 2), message("expired", 180)],
                     since: since.clone(),
                     ..Default::default()
@@ -443,6 +455,20 @@ mod tests {
             };
             Reply::json(200, serde_json::to_value(page).unwrap())
         });
+        let mut out_of_date = message("older", 2);
+        out_of_date.text = "Old edit from replay".into();
+        server.route(
+            "GET",
+            "/api/v1/events/replay",
+            200,
+            json!({
+                "valid": true,
+                "items": [
+                    {"seq": 8, "type": "message.updated", "data": out_of_date},
+                    {"seq": 9, "type": "future.event", "data": {}}
+                ]
+            }),
+        );
         server.route("GET", "/api/v1/bootstrap", 503, json!({}));
         server.route("GET", "/api/v1/conversations/c/messages", 503, json!({}));
         let temp = tempfile::tempdir().unwrap();
@@ -460,6 +486,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(older.items[0].id, "older");
+            assert_eq!(older.items[0].text, "Private archive example older");
             assert!(older.next_cursor.is_none());
 
             let (client, mut updates) = Client::start(rt.clone(), api.clone());
@@ -467,7 +494,7 @@ mod tests {
                 while let Some(update) = updates.next().await {
                     if matches!(update, Update::Changed(changes) if changes.reset) {
                         assert_eq!(client.read().user.id, owner);
-                        assert_eq!(client.read().cursor, 7);
+                        assert_eq!(client.read().cursor, 9);
                         return;
                     }
                 }
@@ -497,17 +524,22 @@ mod tests {
             .channel("c", "general")
             .cursor(1)
             .build();
-        let mut first = Staging::begin(archive.clone(), &snapshot, retention_start()).unwrap();
-        first.append(vec![message("initial", 1)]).unwrap();
+        let mut first =
+            Staging::begin(archive.clone(), snapshot.clone(), retention_start()).unwrap();
+        first.append(vec![message("initial", 1)], 1).unwrap();
+        first.finish(&[], 1).unwrap();
         first.publish().unwrap();
 
         let later = Snapshot {
             cursor: 2,
             ..snapshot
         };
-        let interrupted = Staging::begin(archive.clone(), &later, retention_start()).unwrap();
+        let mut interrupted =
+            Staging::begin(archive.clone(), later.clone(), retention_start()).unwrap();
+        let gap = ServerEvent::decode(&frame(4, "message.created", &message("gap", 1))).unwrap();
+        assert!(interrupted.finish(&[Arc::new(gap)], 4).is_err());
         drop(interrupted);
-        let revoked = Staging::begin(archive.clone(), &later, retention_start()).unwrap();
+        let revoked = Staging::begin(archive.clone(), later, retention_start()).unwrap();
         rt.block_on(async {
             assert_eq!(archive.snapshot().await.unwrap().cursor, 1);
             let other_session = Archive::new(temp.path(), origin, "ircord_session=other");
@@ -520,5 +552,127 @@ mod tests {
         });
         revoked.publish().unwrap();
         assert!(!archive.0.path.exists());
+    }
+
+    #[test]
+    fn live_events_update_saved_messages_and_remove_revoked_conversations() {
+        let rt = runtime().unwrap();
+        let server = CannedServer::start(&rt);
+        let snapshot = SnapshotBuilder::new()
+            .channel("c", "general")
+            .cursor(7)
+            .build();
+        server.snapshot(&snapshot);
+        let original = message("initial", 1);
+        server.route(
+            "GET",
+            "/api/v1/offline/snapshot",
+            200,
+            json!({
+                "state": snapshot,
+                "cursor": 7,
+                "since": (chrono::Utc::now() - RETENTION).to_rfc3339(),
+                "items": [original]
+            }),
+        );
+        server.route(
+            "GET",
+            "/api/v1/events/replay",
+            200,
+            json!({"valid": true, "items": []}),
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let api = server
+            .api()
+            .with_offline_archive(&ConfigDir::at(temp.path()));
+        let archive = api.archive.clone().unwrap();
+        let (client, _updates) = Client::start(rt.clone(), api);
+        wait_live(&client);
+        let mut deleted = original;
+        deleted.text = "Message deleted".into();
+        deleted.deleted = Some(true);
+        let live = message("live", 0);
+        rt.block_on(async {
+            wait_for_cursor(&archive, 7).await;
+            server.push(frame(8, "message.created", &live));
+            server.push(frame(9, "message.updated", &deleted));
+            wait_for_cursor(&archive, 9).await;
+            let saved = archive.history("c", None, 10).await.unwrap();
+            assert_eq!(saved.items, vec![deleted, live]);
+            server.push(frame(10, "conversation.removed", &json!({"id": "c"})));
+            wait_for_cursor(&archive, 10).await;
+            assert!(archive.history("c", None, 10).await.is_none());
+        });
+        let remaining = archive
+            .read(|db, _| {
+                Ok(db.query_row("SELECT COUNT(*) FROM messages", [], |row| {
+                    row.get::<_, i64>(0)
+                })?)
+            })
+            .unwrap();
+        assert_eq!(remaining, Some(0));
+    }
+
+    #[test]
+    fn reconnect_replays_an_existing_archive_without_downloading_it_again() {
+        let rt = runtime().unwrap();
+        let server = CannedServer::start(&rt);
+        let old = SnapshotBuilder::new()
+            .channel("c", "general")
+            .cursor(7)
+            .build();
+        let current = Snapshot {
+            cursor: 8,
+            ..old.clone()
+        };
+        server.snapshot(&current);
+        let missed = message("missed", 0);
+        server.route(
+            "GET",
+            "/api/v1/events/replay",
+            200,
+            json!({
+                "valid": true,
+                "items": [{"seq": 8, "type": "message.created", "data": missed}]
+            }),
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let api = server
+            .api()
+            .with_offline_archive(&ConfigDir::at(temp.path()));
+        let archive = api.archive.clone().unwrap();
+        let mut stage = Staging::begin(archive.clone(), old, retention_start()).unwrap();
+        stage.finish(&[], 7).unwrap();
+        stage.publish().unwrap();
+        let (client, _updates) = Client::start(rt.clone(), api);
+        wait_live(&client);
+        rt.block_on(async {
+            wait_for_cursor(&archive, 8).await;
+            assert_eq!(
+                archive.history("c", None, 10).await.unwrap().items,
+                vec![missed]
+            );
+        });
+        let request = server.requests_to("GET", "/api/v1/events/replay");
+        assert_eq!(request[0].query_param("after").as_deref(), Some("7"));
+        assert!(
+            server
+                .requests_to("GET", "/api/v1/offline/snapshot")
+                .is_empty()
+        );
+    }
+
+    async fn wait_for_cursor(archive: &Archive, cursor: i64) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while archive
+                .snapshot()
+                .await
+                .is_none_or(|snapshot| snapshot.cursor < cursor)
+            {
+                tokio::time::sleep(Duration::from_millis(15)).await;
+            }
+        })
+        .await
+        .expect("the archive catches up to the expected cursor");
     }
 }

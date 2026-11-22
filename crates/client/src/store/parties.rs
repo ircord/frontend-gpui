@@ -23,13 +23,13 @@ use crate::format::mentions::fold;
 /// The topic this sub-state reports in [`Changes`], by conversation ID.
 pub const TOPIC: &str = "parties";
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct State {
     /// The newest revision seen for each group, by conversation ID.
     fences: HashMap<String, Fence>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Fence {
     revision: i64,
     removed: bool,

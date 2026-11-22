@@ -191,7 +191,11 @@ struct Envelope {
 impl ServerEvent {
     /// Decode one text frame. Only malformed JSON is an error.
     pub fn decode(text: &str) -> Result<Self, serde_json::Error> {
-        let raw: Value = serde_json::from_str(text)?;
+        Self::decode_value(serde_json::from_str(text)?)
+    }
+
+    /// Decode an event from the HTTP replay response or the event socket.
+    pub fn decode_value(raw: Value) -> Result<Self, serde_json::Error> {
         let envelope: Envelope = serde_json::from_value(raw.clone())?;
         Ok(Self::from_envelope(raw, envelope))
     }

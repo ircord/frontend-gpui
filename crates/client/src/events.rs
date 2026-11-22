@@ -21,9 +21,10 @@ use tokio::time::Instant;
 use futures::channel::mpsc::UnboundedSender;
 use ircord_contract::event::{Durable, ServerEvent, resume_frame};
 use ircord_contract::{Alert, Snapshot};
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, broadcast, mpsc};
 
 use crate::api::ApiError;
+use crate::archive::Signal;
 use crate::store::read_aloud::{self, Highlight};
 use crate::store::{Changes, Connection, Workspace};
 
@@ -94,6 +95,7 @@ pub struct Shared {
     pub tab: String,
     pub incarnation: String,
     pub read_aloud: AtomicBool,
+    pub(crate) archive: Option<broadcast::Sender<Signal>>,
 }
 
 impl Shared {
@@ -105,6 +107,18 @@ impl Shared {
         let mut store = self.store.write().unwrap();
         if store.connection.as_ref() != Some(&connection) {
             store.connection = Some(connection.clone());
+            if let Some(archive) = &self.archive {
+                let signal = match &connection {
+                    Connection::Live if !store.demo && !store.user.id.is_empty() => {
+                        Some(Signal::Live(store.user.id.clone()))
+                    }
+                    Connection::Offline { .. } => Some(Signal::Offline),
+                    _ => None,
+                };
+                if let Some(signal) = signal {
+                    let _ = archive.send(signal);
+                }
+            }
             drop(store);
             self.emit(Update::Connection(connection));
         }
@@ -280,11 +294,12 @@ async fn session<T: Transport>(
                     }
                     _ => {}
                 }
-                let (changes, highlight) = {
+                let (changes, highlight, record) = {
                     let mut store = shared.store.write().unwrap();
                     let cursor = store.cursor;
                     let now = now_ms();
                     let changes = store.apply(&event, now);
+                    let record = !store.demo && event.seq().is_some_and(|seq| seq > cursor);
                     let highlight = match &event {
                         ServerEvent::Durable {
                             seq,
@@ -298,10 +313,13 @@ async fn session<T: Transport>(
                         }
                         _ => None,
                     };
-                    (changes, highlight)
+                    (changes, highlight, record)
                 };
                 if changes.resync {
                     return End::Resync;
+                }
+                if record && let Some(archive) = &shared.archive {
+                    let _ = archive.send(Signal::Event(Arc::new(event)));
                 }
                 if !changes.is_empty() {
                     shared.emit(Update::Changed(changes));
@@ -426,6 +444,7 @@ mod tests {
             tab: "tab".into(),
             incarnation: "inc".into(),
             read_aloud: AtomicBool::new(false),
+            archive: None,
         });
         let (_out_tx, out_rx) = mpsc::unbounded_channel();
         // The fake answers Unauthorized once its scripted sockets run out, which ends the run.
