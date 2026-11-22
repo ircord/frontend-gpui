@@ -22,6 +22,7 @@ mod inbox_saved;
 mod link_previews;
 mod links_view;
 mod media;
+mod menu_order;
 mod message_actions;
 mod networks;
 mod notifications;

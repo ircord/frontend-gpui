@@ -5,6 +5,7 @@
 //! away or come back, and open your profile. The line under your name
 //! shows your presence and status. `/status` opens the same editor.
 
+use crate::menu_order;
 use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -37,7 +38,7 @@ pub fn init(cx: &mut App) {
             )
             .icon(IconName::Heart)
             .when(|ctx, _| ctx.network.is_some())
-            .order(0),
+            .order(menu_order::own::SET_STATUS),
         );
         menu.add(
             MenuItem::new(
@@ -51,7 +52,7 @@ pub fn init(cx: &mut App) {
             )
             .icon(IconName::CircleX)
             .when(|ctx, cx| me_status(ctx, cx).is_some_and(|(status, _)| status.is_some()))
-            .order(1),
+            .order(menu_order::own::CLEAR_STATUS),
         );
         menu.add(
             MenuItem::new(
@@ -62,7 +63,7 @@ pub fn init(cx: &mut App) {
             .icon(IconName::Moon)
             .when(|ctx, cx| me_status(ctx, cx).is_some_and(|(_, away)| !away))
             .unavailable_when(not_connected)
-            .order(10),
+            .order(menu_order::own::AWAY),
         );
         menu.add(
             MenuItem::new(
@@ -73,7 +74,7 @@ pub fn init(cx: &mut App) {
             .icon(IconName::Sun)
             .when(|ctx, cx| me_status(ctx, cx).is_some_and(|(_, away)| away))
             .unavailable_when(not_connected)
-            .order(10),
+            .order(menu_order::own::AWAY),
         );
         menu.add(
             MenuItem::new(
@@ -97,7 +98,7 @@ pub fn init(cx: &mut App) {
             )
             .icon(IconName::CircleUser)
             .when(|ctx, _| ctx.network.is_some())
-            .order(5),
+            .order(menu_order::own::VIEW_PROFILE),
         );
         r.self_line.add(Slot::new("status-line", self_line));
     });

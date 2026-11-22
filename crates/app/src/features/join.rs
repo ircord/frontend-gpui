@@ -8,6 +8,7 @@
 //! guide to it. The rules (sections, what is ticked, names) live in
 //! `ircord_client::api::channels`, tested there; this file draws them.
 
+use crate::menu_order;
 use crate::ui::focus::Reachable;
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
@@ -63,7 +64,7 @@ pub fn init(cx: &mut App) {
                 |n: &NetworkCtx, window, cx| open(&n.session, Some(&n.network), "", window, cx),
             )
             .icon(IconName::Plus)
-            .order(300),
+            .order(menu_order::network::JOIN_CHANNEL),
         );
         r.sidebar_footer
             .add(Slot::new("channel-guide-notice", notice).order(-10));

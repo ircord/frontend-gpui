@@ -95,7 +95,7 @@ pub(crate) fn toolbar(
             .icon(ui::icon::IconName::Ellipsis)
             .accessibility_label(t!("core-message-toolbar"))
             .tooltip(t!("core-message-toolbar"))
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
                 // The toolbar stays while its menu is open, though the
                 // pointer leaves the row for the menu.
                 let id = menu_ctx.message.clone();
@@ -109,7 +109,7 @@ pub(crate) fn toolbar(
                 .detach();
                 let items = registry::get(cx).message_menu.to_vec();
                 let items = ui::context_menu::visible(&items, &menu_ctx, cx);
-                ui::context_menu::fill(menu, items, menu_ctx.clone(), cx)
+                ui::context_menu::fill(menu, items, menu_ctx.clone(), window, cx)
             }),
     );
     bar.into_any_element()

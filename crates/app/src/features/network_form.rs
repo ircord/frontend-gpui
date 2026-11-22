@@ -9,6 +9,7 @@
 //! The form's rules live in `ircord_client::api::networks::Form`, tested
 //! there; this file draws it.
 
+use crate::menu_order;
 use crate::ui::focus::Reachable;
 use crate::ui::icon::IconName;
 use std::rc::Rc;
@@ -83,7 +84,7 @@ pub fn init(cx: &mut App) {
                 |n: &NetworkCtx, window, cx| change_self(n.clone(), SelfField::Nick, window, cx),
             )
             .icon(IconName::User)
-            .order(530)
+            .order(menu_order::network::CHANGE_NICK)
             .when(|n, cx| status(n, cx) == Some(NetworkStatus::Connected)),
         );
         menu.add(
@@ -95,7 +96,7 @@ pub fn init(cx: &mut App) {
                 },
             )
             .icon(IconName::CircleUser)
-            .order(531)
+            .order(menu_order::network::CHANGE_REALNAME)
             .when(|n, cx| {
                 with_network(&n.session, &n.network, cx, |n| {
                     n.status == NetworkStatus::Connected && n.features.setname
@@ -110,7 +111,7 @@ pub fn init(cx: &mut App) {
                 |n: &NetworkCtx, window, cx| open_edit(&n.session, &n.network, window, cx),
             )
             .icon(IconName::Settings2)
-            .order(520),
+            .order(menu_order::network::EDIT),
         );
         menu.add(
             MenuItem::new(
@@ -119,7 +120,7 @@ pub fn init(cx: &mut App) {
                 |n: &NetworkCtx, window, cx| open_add(&n.session, window, cx),
             )
             .icon(IconName::Plus)
-            .order(800),
+            .order(menu_order::network::ADD_NETWORK),
         );
     });
 }

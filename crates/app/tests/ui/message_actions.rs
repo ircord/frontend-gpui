@@ -555,11 +555,13 @@ fn every_menu_row_has_an_icon_and_groups_are_separated(cx: &mut TestAppContext) 
                 .map(|i| (i.id.to_string(), i.icon.is_some()))
                 .collect(),
         );
+        // The notification levels are a submenu of choices with a check
+        // mark beside the chosen one, as the web's.
         check(
             "conversation",
             r.conversation_menu
                 .iter()
-                .map(|i| (i.id.to_string(), i.icon.is_some()))
+                .map(|i| (i.id.to_string(), i.icon.is_some() || i.parent.is_some()))
                 .collect(),
         );
         check(

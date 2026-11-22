@@ -316,12 +316,12 @@ impl WorkspaceView {
             .icon(IconName::Ellipsis)
             .accessibility_label(t!("core-header-more"))
             .tooltip(t!("core-header-more"))
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
                 let client = menu_ctx.session.read(cx).client().cloned();
                 crate::sidebar::layout::watch_notification_settings(client, cx);
                 let items = registry::get(cx).conversation_menu.to_vec();
                 let items = ui::context_menu::visible(&items, &menu_ctx, cx);
-                ui::context_menu::fill(menu, items, menu_ctx.clone(), cx)
+                ui::context_menu::fill(menu, items, menu_ctx.clone(), window, cx)
             });
         div()
             .id("conversation-header")

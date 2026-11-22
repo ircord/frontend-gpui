@@ -17,6 +17,7 @@ pub mod images;
 pub mod loading;
 pub mod media;
 pub mod members;
+pub mod menu_order;
 pub mod message;
 pub mod notify;
 pub mod registry;

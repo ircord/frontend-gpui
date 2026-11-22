@@ -5,7 +5,11 @@
 //!
 //! Items group by their order's hundreds (`0..100`, `100..200`, …): a menu
 //! draws a separator where the hundreds change, and before the first
-//! destructive row that follows an ordinary one.
+//! destructive row that follows an ordinary one. The orders, and so the
+//! web's sequence of every menu, are in `crate::menu_order`.
+//!
+//! An entry registered [`MenuItem::under`] another goes into that entry's
+//! submenu, grouped the same way.
 
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
@@ -69,9 +73,14 @@ impl MenuTitle for MemberCtx {
 }
 
 impl MenuTitle for MessageCtx {
-    /// The message menu opens on the message itself: no title.
-    fn menu_title(&self, _: &App) -> Option<SharedString> {
-        None
+    /// The author's nick, as the web's message menu names it.
+    fn menu_title(&self, cx: &App) -> Option<SharedString> {
+        let client = self.session.read(cx).client()?.clone();
+        let w = client.read();
+        let network = w.conversation(&self.conversation)?.network_id.clone();
+        let message = w.message(&self.conversation, &self.message)?;
+        let author = people::person(&w, &message.sender_id, &network)?;
+        Some(author.nick.clone().into())
     }
 }
 
@@ -91,9 +100,74 @@ pub fn visible<C>(items: &[MenuItem<C>], ctx: &C, cx: &App) -> Vec<MenuItem<C>> 
         .map(|item| {
             let mut item = item.clone();
             item.reason = item.unavailable.as_ref().and_then(|why| why(ctx, cx));
+            if let Some(label) = &item.label_for {
+                item.label = label(ctx, cx);
+            }
+            item.checked = item.checked_when.as_ref().is_some_and(|c| c(ctx, cx));
+            item.disabled = item.disabled_when.as_ref().is_some_and(|d| d(ctx, cx));
             item
         })
         .collect()
+}
+
+/// Add `items` to `menu` under the title `ctx` gives. Each item's
+/// accessible name is its label, so a test finds it with `find_by_label`.
+/// An unavailable item is disabled and shows its reason under the label; a
+/// destructive one is drawn in the danger colour. Entries under another
+/// open from it as a submenu.
+pub fn fill<C: Clone + MenuTitle + 'static>(
+    mut menu: PopupMenu,
+    items: Vec<MenuItem<C>>,
+    ctx: C,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    if items.is_empty() {
+        return menu;
+    }
+    // The title row: not a menu item, so arrow keys pass over it.
+    if let Some(title) = ctx.menu_title(cx) {
+        menu = menu.item(PopupMenuItem::label(title)).separator();
+    }
+    let (top, nested): (Vec<_>, Vec<_>) = items.into_iter().partition(|i| i.parent.is_none());
+    rows(menu, top, nested, ctx, window, cx)
+}
+
+/// The rows of one menu level, with separators, opening a submenu for each
+/// entry that has entries under it.
+fn rows<C: Clone + 'static>(
+    mut menu: PopupMenu,
+    items: Vec<MenuItem<C>>,
+    nested: Vec<MenuItem<C>>,
+    ctx: C,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let breaks = separators(&items);
+    for (item, separate) in items.into_iter().zip(breaks) {
+        if separate {
+            menu = menu.separator();
+        }
+        let under: Vec<MenuItem<C>> = nested
+            .iter()
+            .filter(|n| n.parent.as_ref() == Some(&item.id))
+            .cloned()
+            .collect();
+        if under.is_empty() {
+            menu = menu.item(entry(item, ctx.clone(), cx));
+            continue;
+        }
+        let (ctx, rest) = (ctx.clone(), nested.clone());
+        let icon = item.icon.clone().map(Icon::new);
+        menu = menu.submenu_with_icon(
+            icon,
+            item.label.clone(),
+            window,
+            cx,
+            move |m, window, cx| rows(m, under.clone(), rest.clone(), ctx.clone(), window, cx),
+        );
+    }
+    menu
 }
 
 /// Where a menu draws separators: before each item whose group differs from
@@ -112,34 +186,10 @@ pub fn separators<C>(items: &[MenuItem<C>]) -> Vec<bool> {
     before
 }
 
-/// Add `items` to `menu` under the title `ctx` gives. Each item's
-/// accessible name is its label, so a test finds it with `find_by_label`.
-/// An unavailable item is disabled and shows its reason under the label; a
-/// destructive one is drawn in the danger colour.
-pub fn fill<C: Clone + MenuTitle + 'static>(
-    mut menu: PopupMenu,
-    items: Vec<MenuItem<C>>,
-    ctx: C,
-    cx: &App,
-) -> PopupMenu {
-    if items.is_empty() {
-        return menu;
-    }
-    // The title row: not a menu item, so arrow keys pass over it.
-    if let Some(title) = ctx.menu_title(cx) {
-        menu = menu.item(PopupMenuItem::label(title)).separator();
-    }
-    let breaks = separators(&items);
-    for (item, separate) in items.into_iter().zip(breaks) {
-        if separate {
-            menu = menu.separator();
-        }
-        menu = menu.item(entry(item, ctx.clone(), cx));
-    }
-    menu
-}
-
 fn entry<C: Clone + 'static>(item: MenuItem<C>, ctx: C, cx: &App) -> PopupMenuItem {
+    if item.heading {
+        return PopupMenuItem::label(item.label.clone());
+    }
     if let Some(reason) = item.reason.clone() {
         let label = item.label.clone();
         let id = ElementId::Name(format!("menu-unavailable-{}", item.id).into());
@@ -197,8 +247,10 @@ fn entry<C: Clone + 'static>(item: MenuItem<C>, ctx: C, cx: &App) -> PopupMenuIt
         }
         return entry;
     }
-    let mut entry =
-        PopupMenuItem::new(item.label.clone()).on_click(move |_, window, cx| run(&ctx, window, cx));
+    let mut entry = PopupMenuItem::new(item.label.clone())
+        .checked(item.checked)
+        .disabled(item.disabled)
+        .on_click(move |_, window, cx| run(&ctx, window, cx));
     if let Some(icon) = item.icon.clone() {
         entry = entry.icon(icon);
     }

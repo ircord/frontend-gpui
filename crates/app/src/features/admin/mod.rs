@@ -24,6 +24,7 @@ mod status;
 mod users;
 mod welcome;
 
+use crate::menu_order;
 use crate::ui::focus::Reachable;
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
@@ -91,7 +92,7 @@ pub fn init(cx: &mut App) {
                 |ctx: &SidebarCtx, _, cx| open(&ctx.session, cx),
             )
             .icon(IconName::Settings)
-            .order(80)
+            .order(menu_order::own::ADMINISTRATION)
             .when(|ctx: &SidebarCtx, cx: &App| is_owner(&ctx.session, cx)),
         );
         r.keys.add(KeyDefault::new(

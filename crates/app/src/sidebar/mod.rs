@@ -447,12 +447,12 @@ impl SidebarView {
             session: self.session.clone(),
             conversation: c.id.clone(),
         };
-        row.context_menu(move |menu, _, cx| {
+        row.context_menu(move |menu, window, cx| {
             let client = ctx.session.read(cx).client().cloned();
             layout::watch_notification_settings(client, cx);
             let items = registry::get(cx).conversation_menu.to_vec();
             let items = ui::context_menu::visible(&items, &ctx, cx);
-            ui::context_menu::fill(menu, items, ctx.clone(), cx)
+            ui::context_menu::fill(menu, items, ctx.clone(), window, cx)
         })
         .into_any_element()
     }
@@ -824,11 +824,14 @@ impl Render for SidebarView {
                             .icon(IconName::Ellipsis)
                             .accessibility_label(t!("sidebar-network-menu", network = n.name))
                             .tooltip(t!("sidebar-network-menu", network = n.name))
-                            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
-                                let items = registry::get(cx).network_menu.to_vec();
-                                let items = ui::context_menu::visible(&items, &ctx, cx);
-                                ui::context_menu::fill(menu, items, ctx.clone(), cx)
-                            }),
+                            .dropdown_menu_with_anchor(
+                                Anchor::TopRight,
+                                move |menu, window, cx| {
+                                    let items = registry::get(cx).network_menu.to_vec();
+                                    let items = ui::context_menu::visible(&items, &ctx, cx);
+                                    ui::context_menu::fill(menu, items, ctx.clone(), window, cx)
+                                },
+                            ),
                     ),
                 )
         });

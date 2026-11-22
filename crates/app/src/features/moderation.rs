@@ -23,6 +23,7 @@ use ircord_client::features::{Context as Allowed, MessageAction};
 use ircord_client::store::Connection;
 
 use crate::features::channel_settings::{choices, here, hint, send};
+use crate::menu_order;
 use crate::registry::{self, MemberCtx, MenuItem, MessageCtx};
 use crate::session::Session;
 use crate::ui::icon::IconName;
@@ -41,7 +42,7 @@ pub fn init(cx: &mut App) {
                 |ctx: &MemberCtx, w, cx| status(ctx, 'o', true, w, cx),
             )
             .icon(IconName::Star)
-            .order(700)
+            .order(menu_order::member::OP)
             .when(|ctx: &MemberCtx, cx| target(ctx, cx).is_some_and(|t| t.op && !t.has('@'))),
         );
         m.add(
@@ -51,7 +52,7 @@ pub fn init(cx: &mut App) {
                 |ctx: &MemberCtx, w, cx| status(ctx, 'o', false, w, cx),
             )
             .icon(IconName::StarOff)
-            .order(700)
+            .order(menu_order::member::OP)
             .when(|ctx: &MemberCtx, cx| target(ctx, cx).is_some_and(|t| t.op && t.has('@'))),
         );
         m.add(
@@ -61,7 +62,7 @@ pub fn init(cx: &mut App) {
                 |ctx: &MemberCtx, w, cx| status(ctx, 'v', true, w, cx),
             )
             .icon(IconName::Mic)
-            .order(710)
+            .order(menu_order::member::VOICE)
             .when(|ctx: &MemberCtx, cx| target(ctx, cx).is_some_and(|t| t.voice && !t.has('+'))),
         );
         m.add(
@@ -71,21 +72,21 @@ pub fn init(cx: &mut App) {
                 |ctx: &MemberCtx, w, cx| status(ctx, 'v', false, w, cx),
             )
             .icon(IconName::Minus)
-            .order(710)
+            .order(menu_order::member::VOICE)
             .when(|ctx: &MemberCtx, cx| target(ctx, cx).is_some_and(|t| t.voice && t.has('+'))),
         );
         m.add(
             MenuItem::new("moderation-kick", t!("channel-settings-menu-kick"), kick)
                 .icon(IconName::Close)
                 .danger()
-                .order(720)
+                .order(menu_order::member::KICK)
                 .when(|ctx: &MemberCtx, cx| target(ctx, cx).is_some_and(|t| t.kick)),
         );
         m.add(
             MenuItem::new("moderation-ban", t!("channel-settings-menu-ban"), ban)
                 .icon(IconName::Ban)
                 .danger()
-                .order(730)
+                .order(menu_order::member::BAN)
                 .when(|ctx: &MemberCtx, cx| target(ctx, cx).is_some_and(|t| t.ban)),
         );
         m.add(
@@ -100,7 +101,7 @@ pub fn init(cx: &mut App) {
             )
             .icon(IconName::Delete)
             .danger()
-            .order(740)
+            .order(menu_order::member::DELETE_RECENT)
             .when(|ctx: &MemberCtx, cx| target(ctx, cx).is_some_and(|t| t.delete)),
         );
 
@@ -116,7 +117,7 @@ pub fn init(cx: &mut App) {
                 },
             )
             .icon(IconName::Delete)
-            .order(91)
+            .order(menu_order::message::DELETE_OTHERS)
             .danger()
             .when(|ctx: &MessageCtx, cx: &App| !ctx.own && offered(ctx, cx))
             .unavailable_when(message_reason),

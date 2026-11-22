@@ -36,7 +36,9 @@ client; it never speaks IRC itself. Layout and commands are in
   `features` and `capabilities`, never on a version number.
 - In `crates/app` a feature edits no shared view: it fills its pre-created
   `features/<name>.rs` (or `settings/<name>.rs`) and adds menu items, slots,
-  panes, panels and keys through `registry.rs`. Every string a person reads
+  panes, panels and keys through `registry.rs`. A menu item's `.order(…)` comes from
+  `menu_order.rs`, which keeps every menu in the web client's order; place a
+  new entry there rather than picking a number. Every string a person reads
   goes through `t!("id")`, with the text in its own
   `crates/app/i18n/en/<area>.ftl` (IDs start with the file name; the `i18n`
   tests fail on a missing or unused ID). Colours come from `theme::get(cx)`.

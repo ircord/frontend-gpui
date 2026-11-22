@@ -360,10 +360,10 @@ impl Render for MembersView {
                         .on_click(move |_, window, cx| {
                             crate::features::profile::open(&click, window, cx)
                         })
-                        .context_menu(move |menu, _, cx| {
+                        .context_menu(move |menu, window, cx| {
                             let items = registry::get(cx).member_menu.to_vec();
                             let items = ui::context_menu::visible(&items, &ctx, cx);
-                            ui::context_menu::fill(menu, items, ctx.clone(), cx)
+                            ui::context_menu::fill(menu, items, ctx.clone(), window, cx)
                         }),
                 );
             }

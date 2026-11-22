@@ -10,6 +10,7 @@
 //! Opened from the network menu, the connection indicator and `/server`
 //! (and after commands whose answer lands here, such as `/whois`).
 
+use crate::menu_order;
 use crate::ui::focus::Reachable;
 use std::collections::{HashMap, HashSet};
 
@@ -48,7 +49,7 @@ pub fn init(cx: &mut App) {
                 |ctx: &NetworkCtx, _, cx| open(&ctx.session, &ctx.network, cx),
             )
             .icon(ui::icon::IconName::SquareTerminal)
-            .order(200),
+            .order(menu_order::network::SERVER_WINDOW),
         );
     });
     commands::on_view(cx, View::ServerWindow, |request, _, cx| {

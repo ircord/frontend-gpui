@@ -7,6 +7,7 @@
 //! saved copy with it. Its row at the top of the sidebar opens it.
 //! Follows the web client's `SavedPage.vue` and `queries/saved.ts`.
 
+use crate::menu_order;
 use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState, MoveDown, MoveUp};
@@ -72,7 +73,7 @@ pub fn init(cx: &mut App) {
                 },
             )
             .icon(IconName::BookOpen)
-            .order(45)
+            .order(menu_order::message::SAVE)
             .when(|ctx: &MessageCtx, cx: &App| saveable(ctx, cx) == Some(false)),
         );
         r.message_menu.add(
@@ -91,7 +92,7 @@ pub fn init(cx: &mut App) {
                 },
             )
             .icon(IconName::BookOpen)
-            .order(45)
+            .order(menu_order::message::SAVE)
             .when(|ctx: &MessageCtx, cx: &App| saveable(ctx, cx) == Some(true)),
         );
     });

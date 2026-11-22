@@ -10,6 +10,7 @@
 //! It opens from the conversation header's gallery button, the channel's
 //! menu and a key, and reads the list again each time it opens.
 
+use crate::menu_order;
 use crate::ui::focus::Reachable;
 use std::rc::Rc;
 
@@ -97,7 +98,7 @@ pub fn init(cx: &mut App) {
                 },
             )
             .icon(IconName::GalleryVerticalEnd)
-            .order(61)
+            .order(menu_order::conversation::GALLERY)
             .when(|ctx: &ConversationCtx, cx: &App| {
                 is_channel(&ctx.session, &ctx.conversation, cx)
             }),

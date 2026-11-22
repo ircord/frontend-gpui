@@ -487,10 +487,10 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
     }
     let ctx = view.ctx.clone();
     frame
-        .context_menu(move |menu, _, cx| {
+        .context_menu(move |menu, window, cx| {
             let items = registry::get(cx).message_menu.to_vec();
             let items = ui::context_menu::visible(&items, &ctx, cx);
-            ui::context_menu::fill(menu, items, ctx.clone(), cx)
+            ui::context_menu::fill(menu, items, ctx.clone(), window, cx)
         })
         .into_any_element()
 }

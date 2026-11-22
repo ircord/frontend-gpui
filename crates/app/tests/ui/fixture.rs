@@ -184,3 +184,39 @@ pub fn bootstrap(f: &Fixture, cx: &mut TestAppContext) {
                 .is_some_and(|t| t.loaded && t.entries.len() == 2)
     });
 }
+
+/// The rows of the open menu, top to bottom: each row's label, and `-` for a
+/// separator. The rows of an open submenu are left out; give `submenu` to
+/// read those instead.
+pub fn menu_rows(window: &gpui_kit::Window, submenu: bool) -> Vec<String> {
+    use gpui_kit::test::TestQueryExt;
+    use gpui_kit::{ElementId, Role};
+    let in_submenu = |path: &[ElementId]| {
+        path.iter()
+            .any(|id| *id == ElementId::Name("submenu".into()))
+    };
+    let items: Vec<_> = window
+        .find_all_by_role(Role::MenuItem)
+        .into_iter()
+        .filter(|i| i.visible() && in_submenu(i.path()) == submenu)
+        .collect();
+    let mut rows: Vec<(f32, String)> = Vec::new();
+    for item in &items {
+        let bounds = item.bounds();
+        let row = match item.label() {
+            Some(label) => label.to_string(),
+            // A row drawn by hand wraps a labelled element; a separator
+            // holds nothing.
+            None if items.iter().any(|other| {
+                other.label().is_some() && bounds.contains(&other.bounds().center())
+            }) =>
+            {
+                continue;
+            }
+            None => "-".to_string(),
+        };
+        rows.push((f32::from(bounds.origin.y), row));
+    }
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    rows.into_iter().map(|(_, row)| row).collect()
+}

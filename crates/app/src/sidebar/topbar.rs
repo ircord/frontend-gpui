@@ -17,6 +17,7 @@ use ircord_client::store::people;
 use ircord_client::store::sidebar_order::{self as order, Activity};
 
 use super::{glyph, network_label};
+use crate::menu_order;
 use crate::registry::{self, MenuItem, NetworkCtx, SidebarCtx};
 use crate::session::Session;
 use crate::theme;
@@ -39,12 +40,12 @@ pub fn init(cx: &mut App) {
         menu.add(
             settings("self-edit-profile", t!("sidebar-edit-profile"), "profile")
                 .icon(IconName::User)
-                .order(6),
+                .order(menu_order::own::EDIT_PROFILE),
         );
         menu.add(
             settings("self-preferences", t!("sidebar-preferences"), "appearance")
                 .icon(IconName::Settings2)
-                .order(100),
+                .order(menu_order::own::PREFERENCES),
         );
         menu.add(
             settings(
@@ -53,12 +54,12 @@ pub fn init(cx: &mut App) {
                 "notifications",
             )
             .icon(IconName::Bell)
-            .order(101),
+            .order(menu_order::own::NOTIFICATIONS),
         );
         menu.add(
             settings("self-account", t!("sidebar-account"), "account")
                 .icon(IconName::Settings)
-                .order(102),
+                .order(menu_order::own::ACCOUNT),
         );
         menu.add(
             MenuItem::new(
@@ -68,7 +69,7 @@ pub fn init(cx: &mut App) {
             )
             .icon(IconName::CircleX)
             .danger()
-            .order(1000),
+            .order(menu_order::own::LOG_OUT),
         );
     });
 }
@@ -209,10 +210,10 @@ pub fn bar(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyE
             )
             .child(div().truncate().max_w(px(160.)).child(network.name.clone()))
             .on_click(move |_, _, cx| select.update(cx, |s, cx| s.select_network(&id, cx)));
-        tabs = tabs.child(tab.context_menu(move |menu, _, cx| {
+        tabs = tabs.child(tab.context_menu(move |menu, window, cx| {
             let items = registry::get(cx).network_menu.to_vec();
             let items = ui::context_menu::visible(&items, &ctx, cx);
-            ui::context_menu::fill(menu, items, ctx.clone(), cx)
+            ui::context_menu::fill(menu, items, ctx.clone(), window, cx)
         }));
     }
     let add = {
@@ -320,10 +321,10 @@ pub fn bar(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyE
         .h(px(40.))
         .justify_start()
         .child(name)
-        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
             let items = registry::get(cx).self_menu.to_vec();
             let items = ui::context_menu::visible(&items, &self_ctx, cx);
-            ui::context_menu::fill(menu, items, self_ctx.clone(), cx)
+            ui::context_menu::fill(menu, items, self_ctx.clone(), window, cx)
         });
 
     div()

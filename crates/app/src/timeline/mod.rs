@@ -13,6 +13,7 @@ pub mod announce;
 pub mod export;
 pub mod rows;
 
+use crate::menu_order;
 use crate::ui::focus::Reachable;
 use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
@@ -121,7 +122,7 @@ pub fn init(cx: &mut App) {
                 },
             )
             .icon(IconName::EyeOff)
-            .order(70),
+            .order(menu_order::message::MARK_UNREAD),
         );
         r.conversation_menu.add(
             MenuItem::new(
@@ -132,7 +133,7 @@ pub fn init(cx: &mut App) {
                 },
             )
             .icon(IconName::Calendar)
-            .order(60),
+            .order(menu_order::conversation::JUMP_TO_DATE),
         );
         r.conversation_menu.add(
             MenuItem::new(
@@ -143,7 +144,7 @@ pub fn init(cx: &mut App) {
                 },
             )
             .icon(IconName::FileText)
-            .order(61),
+            .order(menu_order::conversation::EXPORT_LOG),
         );
         r.keys.add(
             KeyDefault::new(

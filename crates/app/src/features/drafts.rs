@@ -10,6 +10,7 @@
 //! `composer/drafts.rs`. The page opens from a row under the conversation
 //! list (while there are drafts), your own menu and a key.
 
+use crate::menu_order;
 use crate::ui::focus::Reachable;
 use std::cell::Cell;
 use std::time::Duration;
@@ -105,7 +106,7 @@ pub fn init(cx: &mut App) {
                 open(&ctx.session, cx)
             })
             .icon(IconName::FileText)
-            .order(50),
+            .order(menu_order::own::DRAFTS),
         );
         r.keys.add(KeyDefault::new(
             "drafts",

@@ -35,6 +35,8 @@ pub type Handler<C> = Rc<dyn Fn(&C, &mut Window, &mut App)>;
 pub type Predicate<C> = Rc<dyn Fn(&C, &App) -> bool>;
 /// Why an entry cannot be used right now, or `None` when it can.
 pub type Unavailable<C> = Rc<dyn Fn(&C, &App) -> Option<SharedString>>;
+/// The text of an entry for one context.
+pub type Label<C> = Rc<dyn Fn(&C, &App) -> SharedString>;
 pub type ElementFn = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 pub type Render<C> = Rc<dyn Fn(&C, &mut Window, &mut App) -> Option<AnyElement>>;
 
@@ -234,6 +236,20 @@ pub struct MenuItem<C> {
     pub unavailable: Option<Unavailable<C>>,
     /// The reason for one context, filled in by `ui::context_menu::visible`.
     pub reason: Option<SharedString>,
+    /// The ID of the entry whose submenu this entry is in (the notification
+    /// levels under "Notifications").
+    pub parent: Option<SharedString>,
+    /// A label row that is not an action (a submenu's heading).
+    pub heading: bool,
+    /// The label for one context, when it depends on it.
+    pub label_for: Option<Label<C>>,
+    /// Drawn with a check mark when this says so (the chosen level).
+    pub checked_when: Option<Predicate<C>>,
+    /// Shown but disabled, without a reason of its own, when this says so.
+    pub disabled_when: Option<Predicate<C>>,
+    /// For one context, filled in by `ui::context_menu::visible`.
+    pub checked: bool,
+    pub disabled: bool,
     pub run: Handler<C>,
 }
 
@@ -249,6 +265,13 @@ impl<C> Clone for MenuItem<C> {
             visible: self.visible.clone(),
             unavailable: self.unavailable.clone(),
             reason: self.reason.clone(),
+            parent: self.parent.clone(),
+            heading: self.heading,
+            label_for: self.label_for.clone(),
+            checked_when: self.checked_when.clone(),
+            disabled_when: self.disabled_when.clone(),
+            checked: self.checked,
+            disabled: self.disabled,
             run: self.run.clone(),
         }
     }
@@ -270,8 +293,48 @@ impl<C: 'static> MenuItem<C> {
             visible: Rc::new(|_, _| true),
             unavailable: None,
             reason: None,
+            parent: None,
+            heading: false,
+            label_for: None,
+            checked_when: None,
+            disabled_when: None,
+            checked: false,
+            disabled: false,
             run: Rc::new(run),
         }
+    }
+
+    /// A label row that is not an action, such as a submenu's heading.
+    pub fn heading(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Self {
+        let mut item = Self::new(id, label, |_, _, _| {});
+        item.heading = true;
+        item
+    }
+
+    /// Put the entry in the submenu of the entry `parent`, which opens the
+    /// submenu instead of running while anything is under it.
+    pub fn under(mut self, parent: impl Into<SharedString>) -> Self {
+        self.parent = Some(parent.into());
+        self
+    }
+
+    /// Label the entry for each context (a level's "Default (mentions)").
+    pub fn label_with(mut self, label: impl Fn(&C, &App) -> SharedString + 'static) -> Self {
+        self.label_for = Some(Rc::new(label));
+        self
+    }
+
+    /// Draw a check mark beside the entry when `checked` says so.
+    pub fn checked_when(mut self, checked: impl Fn(&C, &App) -> bool + 'static) -> Self {
+        self.checked_when = Some(Rc::new(checked));
+        self
+    }
+
+    /// Show the entry disabled when `disabled` says so; a heading in the
+    /// same menu says why.
+    pub fn disabled_when(mut self, disabled: impl Fn(&C, &App) -> bool + 'static) -> Self {
+        self.disabled_when = Some(Rc::new(disabled));
+        self
     }
 
     pub fn order(mut self, order: i32) -> Self {

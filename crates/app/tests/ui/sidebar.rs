@@ -278,27 +278,46 @@ fn the_conversation_menu(cx: &mut TestAppContext) {
         let w = session.client().unwrap().read();
         w.documents.notification_settings.is_loaded()
     });
-    menu(&f, cx, "conversation-d-bob", "Mute");
+    frame(&f, cx, |window, cx| {
+        window.hover("conversation-d-bob", cx);
+        window.right_click("conversation-d-bob", cx);
+    });
+    frame(&f, cx, |window, cx| {
+        let at = window.find_by_label("Notifications").bounds().center();
+        window.pointer_move(at, None, cx);
+    });
+    frame(&f, cx, |window, cx| {
+        let item = window.find_by_label("Nothing (mute)").bounds().center();
+        window.pointer_down(item, MouseButton::Left, cx);
+        window.pointer_up(item, MouseButton::Left, cx);
+    });
     let body = f
         .server
         .wait_for("PUT", "/api/v1/notifications/settings", WAIT)
         .json();
     assert_eq!(body["levels"], json!({"d-bob": "none"}));
 
-    // A channel's level is for its operators: shown, but disabled with why.
+    // A channel's level is for its operators: shown, but disabled, under a
+    // heading that says why.
     frame(&f, cx, |window, cx| {
         window.hover("conversation-c-general", cx);
         window.right_click("conversation-c-general", cx);
     });
-    frame(&f, cx, |window, _| {
-        let item = window.find("menu-unavailable-sidebar-level-none");
-        assert_eq!(item.label(), Some("Mute"));
-        assert_eq!(
-            item.description(),
-            Some("Only channel operators change a channel's notifications.")
-        );
+    frame(&f, cx, |window, cx| {
         assert!(window.find_by_label("Copy channel name").visible());
+        let at = window.find_by_label("Notifications").bounds().center();
+        window.pointer_move(at, None, cx);
     });
+    frame(&f, cx, |window, cx| {
+        assert!(window.find_by_label("Set by channel operators").visible());
+        let item = window.find_by_label("Nothing (mute)").bounds().center();
+        window.pointer_down(item, MouseButton::Left, cx);
+        window.pointer_up(item, MouseButton::Left, cx);
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    cx.run_until_parked();
+    let channel_settings = "/api/v1/conversations/c-general/channel-settings";
+    assert!(f.server.requests_to("PUT", channel_settings).is_empty());
     press(&f, cx, "escape");
 
     menu(&f, cx, "conversation-c-random", "Leave channel");

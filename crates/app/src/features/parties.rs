@@ -28,6 +28,7 @@ use ircord_client::api::{Api, ApiError};
 use ircord_client::contract::{Party, PartyConversionResultStatus, PartyState};
 use ircord_client::store::{Workspace, parties};
 
+use crate::menu_order;
 use crate::registry::{
     self, BannerCtx, ConversationCtx, HeaderCtx, MenuItem, Panel, PanelCtx, Slot,
 };
@@ -77,7 +78,7 @@ pub fn init(cx: &mut App) {
                 },
             )
             .icon(IconName::Info)
-            .order(130)
+            .order(menu_order::conversation::PARTY_DETAILS)
             .when(|ctx: &ConversationCtx, cx: &App| {
                 party_of(&ctx.session, &ctx.conversation, cx).is_some()
             }),
@@ -92,7 +93,7 @@ pub fn init(cx: &mut App) {
             )
             .icon(IconName::Close)
             .danger()
-            .order(900)
+            .order(menu_order::conversation::LEAVE)
             .when(|ctx: &ConversationCtx, cx: &App| {
                 party_of(&ctx.session, &ctx.conversation, cx).is_some()
             })

@@ -8,6 +8,7 @@
 //! server owners mark bots. Ignored people's messages are hidden from the
 //! timeline, and an empty direct conversation starts with the person.
 
+use crate::menu_order;
 use crate::ui::focus::Reachable;
 use std::rc::{Rc, Weak};
 
@@ -28,7 +29,9 @@ use ircord_client::store::people::{self, Device, Lookup};
 use ircord_client::store::{Changes, parse_time, timeline, topic};
 
 use crate::composer::ComposerView;
-use crate::registry::{self, ConversationCtx, MemberCtx, MenuItem, NetworkCtx, RowFilter, Slot};
+use crate::registry::{
+    self, ConversationCtx, MemberCtx, MenuItem, MessageCtx, NetworkCtx, RowFilter, Slot,
+};
 use crate::route::Route;
 use crate::session::{NO_PANEL, Session, SessionEvent};
 use crate::theme::{self, Theme};
@@ -83,7 +86,7 @@ pub fn init(cx: &mut App) {
         menu.add(
             MenuItem::new("people-profile", t!("people-menu-profile"), open)
                 .icon(IconName::CircleUser)
-                .order(0),
+                .order(menu_order::member::PROFILE),
         );
         menu.add(
             MenuItem::new(
@@ -103,7 +106,7 @@ pub fn init(cx: &mut App) {
             )
             .icon(IconName::Inbox)
             .when(|ctx, cx| resolve(ctx, cx).is_some_and(|p| !p.me))
-            .order(10),
+            .order(menu_order::member::MESSAGE),
         );
         menu.add(
             MenuItem::new(
@@ -122,7 +125,7 @@ pub fn init(cx: &mut App) {
                     && ctx.conversation == open
                     && resolve(ctx, cx).is_some_and(|p| !p.me)
             })
-            .order(20),
+            .order(menu_order::member::MENTION),
         );
         menu.add(
             MenuItem::new(
@@ -136,7 +139,7 @@ pub fn init(cx: &mut App) {
                 },
             )
             .icon(IconName::Copy)
-            .order(30),
+            .order(menu_order::member::COPY_NICK),
         );
         menu.add(
             MenuItem::new(
@@ -152,19 +155,19 @@ pub fn init(cx: &mut App) {
             )
             .icon(IconName::Copy)
             .when(|ctx, cx| resolve(ctx, cx).is_some_and(|p| people::address(&p.member).is_some()))
-            .order(31),
+            .order(menu_order::member::COPY_ADDRESS),
         );
         menu.add(
             MenuItem::new("people-ignore", t!("people-menu-ignore"), toggle_ignore)
                 .when(|ctx, cx| resolve(ctx, cx).is_some_and(|p| !p.me && !p.ignored))
                 .icon(IconName::EyeOff)
-                .order(40),
+                .order(menu_order::member::IGNORE),
         );
         menu.add(
             MenuItem::new("people-unignore", t!("people-menu-unignore"), toggle_ignore)
                 .when(|ctx, cx| resolve(ctx, cx).is_some_and(|p| !p.me && p.ignored))
                 .icon(IconName::Bell)
-                .order(40),
+                .order(menu_order::member::IGNORE),
         );
         menu.add(
             MenuItem::new(
@@ -183,7 +186,7 @@ pub fn init(cx: &mut App) {
                 },
             )
             .icon(IconName::Info)
-            .order(50),
+            .order(menu_order::member::WHOIS),
         );
         menu.add(
             MenuItem::new(
@@ -197,7 +200,7 @@ pub fn init(cx: &mut App) {
             )
             .icon(IconName::Plus)
             .when(|ctx, cx| resolve(ctx, cx).is_some_and(|p| !p.me))
-            .order(60),
+            .order(menu_order::member::INVITE),
         );
         menu.add(
             MenuItem::new(
@@ -210,7 +213,7 @@ pub fn init(cx: &mut App) {
                     .is_some_and(|p| p.owner && !p.me && p.member.role != MemberRole::Bot)
             })
             .icon(IconName::Bot)
-            .order(70),
+            .order(menu_order::member::BOT),
         );
         menu.add(
             MenuItem::new(
@@ -223,7 +226,7 @@ pub fn init(cx: &mut App) {
                     .is_some_and(|p| p.owner && !p.me && p.member.role == MemberRole::Bot)
             })
             .icon(IconName::Bot)
-            .order(70),
+            .order(menu_order::member::BOT),
         );
 
         r.network_menu.add(
@@ -233,7 +236,77 @@ pub fn init(cx: &mut App) {
                 |ctx: &NetworkCtx, window, cx| new_direct(&ctx.session, &ctx.network, window, cx),
             )
             .icon(IconName::Plus)
-            .order(15),
+            .order(menu_order::network::NEW_DIRECT),
+        );
+
+        // The web's people entries in the other menus: inviting someone to a
+        // channel, the other person's profile in a direct conversation, and
+        // the author of a message.
+        r.conversation_menu.add(
+            MenuItem::new(
+                "people-invite-someone",
+                t!("people-menu-invite-someone"),
+                |ctx: &ConversationCtx, window, cx| invite_someone(ctx, window, cx),
+            )
+            .icon(IconName::Plus)
+            .order(menu_order::conversation::INVITE)
+            .when(|ctx: &ConversationCtx, cx: &App| invitable(ctx, cx).is_some()),
+        );
+        r.conversation_menu.add(
+            MenuItem::new(
+                "people-direct-profile",
+                t!("people-menu-profile"),
+                |ctx: &ConversationCtx, window, cx| {
+                    if let Some(card) = partner(ctx, cx) {
+                        open(&card, window, cx);
+                    }
+                },
+            )
+            .icon(IconName::CircleUser)
+            .order(menu_order::conversation::PROFILE)
+            .when(|ctx: &ConversationCtx, cx: &App| partner(ctx, cx).is_some()),
+        );
+        r.message_menu.add(
+            MenuItem::new(
+                "people-mention-author",
+                t!("people-menu-mention"),
+                |ctx: &MessageCtx, window, cx| {
+                    if let Some(p) = author(ctx, cx).and_then(|card| resolve(&card, cx)) {
+                        mention(&p.member.nick, window, cx);
+                    }
+                },
+            )
+            .icon(IconName::Asterisk)
+            .order(menu_order::message::MENTION)
+            .label_with(|ctx: &MessageCtx, cx: &App| {
+                author(ctx, cx)
+                    .and_then(|card| resolve(&card, cx))
+                    .map(|p| t!("people-menu-mention-person", nick = p.member.nick).into())
+                    .unwrap_or_else(|| t!("people-menu-mention").into())
+            })
+            .when(|ctx: &MessageCtx, cx: &App| {
+                let open = ctx.session.read(cx).conversation.clone();
+                open.as_deref() == Some(ctx.conversation.as_str())
+                    && author(ctx, cx)
+                        .and_then(|card| resolve(&card, cx))
+                        .is_some_and(|p| !p.me)
+            }),
+        );
+        r.message_menu.add(
+            MenuItem::new(
+                "people-author-profile",
+                t!("people-menu-profile"),
+                |ctx: &MessageCtx, window, cx| {
+                    if let Some(card) = author(ctx, cx) {
+                        open(&card, window, cx);
+                    }
+                },
+            )
+            .icon(IconName::CircleUser)
+            .order(menu_order::message::PROFILE)
+            .when(|ctx: &MessageCtx, cx: &App| {
+                author(ctx, cx).is_some_and(|card| resolve(&card, cx).is_some())
+            }),
         );
 
         r.row_filters.add(RowFilter {
@@ -516,6 +589,73 @@ fn raw(session: &Entity<Session>, network: &str, line: String, window: &mut Wind
 }
 
 /// Invite them to one of your channels on the network they are not in.
+/// The other person in a direct conversation, as a member menu would see
+/// them.
+fn partner(ctx: &ConversationCtx, cx: &App) -> Option<MemberCtx> {
+    let client = ctx.session.read(cx).client()?.clone();
+    let w = client.read();
+    let member = people::direct_partner(&w, &ctx.conversation)?;
+    Some(MemberCtx {
+        session: ctx.session.clone(),
+        member: member.id.clone(),
+        conversation: Some(ctx.conversation.clone()),
+    })
+}
+
+/// Who wrote a message, as a member menu would see them.
+fn author(ctx: &MessageCtx, cx: &App) -> Option<MemberCtx> {
+    let client = ctx.session.read(cx).client()?.clone();
+    let w = client.read();
+    let message = w.message(&ctx.conversation, &ctx.message)?;
+    Some(MemberCtx {
+        session: ctx.session.clone(),
+        member: message.sender_id.clone(),
+        conversation: Some(ctx.conversation.clone()),
+    })
+}
+
+/// A channel you are in, as its network and its name for INVITE.
+fn invitable(ctx: &ConversationCtx, cx: &App) -> Option<(String, String)> {
+    let client = ctx.session.read(cx).client()?.clone();
+    let w = client.read();
+    let c = w.conversation(&ctx.conversation)?;
+    (c.kind == ConversationKind::Channel && c.party.is_none() && c.joined)
+        .then(|| (c.network_id.clone(), ircord_client::irc::channel_target(c)))
+}
+
+/// Pick someone and invite them to the channel.
+fn invite_someone(ctx: &ConversationCtx, window: &mut Window, cx: &mut App) {
+    let Some((network, channel)) = invitable(ctx, cx) else {
+        return;
+    };
+    let session = ctx.session.clone();
+    people_picker::open(
+        window,
+        cx,
+        Picker {
+            title: t!("people-invite-someone-title", channel = channel).into(),
+            session: session.clone(),
+            network: network.clone(),
+            purpose: ircord_client::api::people::Purpose::Dm,
+            conversation: None,
+        },
+        move |picked, window, cx| {
+            raw(
+                &session,
+                &network,
+                format!("INVITE {} {channel}", picked.nick),
+                window,
+                cx,
+            );
+            ui::toast::info(
+                window,
+                cx,
+                t!("people-invited", nick = picked.nick, channel = channel),
+            );
+        },
+    );
+}
+
 fn invite(
     session: &Entity<Session>,
     network: &str,

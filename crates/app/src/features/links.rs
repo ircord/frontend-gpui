@@ -20,6 +20,7 @@
 //! The channel gallery (`gallery.rs`) shares the list, the previews and the
 //! covers below.
 
+use crate::menu_order;
 use crate::ui::focus::Reachable;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -90,7 +91,7 @@ pub fn init(cx: &mut App) {
                 |ctx: &ConversationCtx, _, cx| open(&ctx.session, Some(&ctx.conversation), cx),
             )
             .icon(IconName::Globe)
-            .order(60)
+            .order(menu_order::conversation::LINKS)
             .when(|ctx: &ConversationCtx, cx: &App| {
                 is_channel(&ctx.session, &ctx.conversation, cx)
             }),

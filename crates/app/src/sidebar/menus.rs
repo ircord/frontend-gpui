@@ -20,6 +20,7 @@ use ircord_client::irc::{channel_rights_for, channel_target};
 use ircord_client::store::sidebar_order::{self as order, Level, Place, Section};
 use ircord_client::store::{Changes, Workspace};
 
+use crate::menu_order;
 use crate::registry::{self, ConversationCtx, MenuItem, NetworkCtx};
 use crate::session::Session;
 use crate::ui;
@@ -62,7 +63,7 @@ fn conversation_menu(m: &mut Registered) {
             |ctx: &ConversationCtx, _, cx| mark_read(&ctx.session, &ctx.conversation, cx),
         )
         .icon(IconName::Check)
-        .order(100)
+        .order(menu_order::conversation::MARK_READ)
         .when(|ctx: &ConversationCtx, cx: &App| {
             with_conversation(ctx, cx, |_, c| order::has_unread(c))
         }),
@@ -74,7 +75,7 @@ fn conversation_menu(m: &mut Registered) {
             |ctx: &ConversationCtx, _, cx| set_favourite(&ctx.session, &ctx.conversation, true, cx),
         )
         .icon(IconName::Star)
-        .order(110)
+        .order(menu_order::conversation::FAVOURITE)
         .when(|ctx: &ConversationCtx, cx: &App| with_conversation(ctx, cx, |_, c| !c.favorite)),
     );
     m.add(
@@ -86,52 +87,100 @@ fn conversation_menu(m: &mut Registered) {
             },
         )
         .icon(IconName::StarOff)
-        .order(110)
+        .order(menu_order::conversation::FAVOURITE)
         .when(|ctx: &ConversationCtx, cx: &App| with_conversation(ctx, cx, |_, c| c.favorite)),
     );
+    // Notifications opens the levels, as the web's submenu: a channel's are
+    // channel-wide and set by its operators, a heading says so.
+    m.add(
+        MenuItem::new(
+            "sidebar-notifications",
+            t!("sidebar-menu-notifications"),
+            |_: &ConversationCtx, _, _| {},
+        )
+        .icon(IconName::Bell)
+        .order(menu_order::conversation::NOTIFICATIONS),
+    );
+    use menu_order::conversation::level;
+    let under = "sidebar-notifications";
+    m.add(
+        MenuItem::heading("sidebar-level-heading", t!("sidebar-menu-level-everyone"))
+            .under(under)
+            .order(level::HEADING)
+            .label_with(|ctx: &ConversationCtx, cx: &App| {
+                if with_conversation(ctx, cx, can_set_level) {
+                    t!("sidebar-menu-level-everyone").into()
+                } else {
+                    t!("sidebar-menu-level-operators-only").into()
+                }
+            })
+            .when(|ctx: &ConversationCtx, cx: &App| {
+                with_conversation(ctx, cx, |_, c| order::channel_wide(c))
+            }),
+    );
     let levels = [
+        ("sidebar-level-default", level::DEFAULT, None, false),
         (
-            "sidebar-level-all",
-            t!("sidebar-menu-level-all"),
-            Some(Level::All),
+            "sidebar-level-channel-default",
+            level::CHANNEL_DEFAULT,
+            None,
+            true,
         ),
+        ("sidebar-level-all", level::ALL, Some(Level::All), false),
         (
             "sidebar-level-mentions",
-            t!("sidebar-menu-level-mentions"),
+            level::MENTIONS,
             Some(Level::Mentions),
+            false,
         ),
-        (
-            "sidebar-level-none",
-            t!("sidebar-menu-level-none"),
-            Some(Level::None),
-        ),
-        (
-            "sidebar-level-default",
-            t!("sidebar-menu-level-default"),
-            None,
-        ),
+        ("sidebar-level-none", level::NONE, Some(Level::None), false),
     ];
-    for (i, (id, label, level)) in levels.into_iter().enumerate() {
+    for (id, at, choice, channel_only) in levels {
         m.add(
-            MenuItem::new(id, label, move |ctx: &ConversationCtx, window, cx| {
-                set_level(&ctx.session, &ctx.conversation, level, window, cx)
+            MenuItem::new(
+                id,
+                level_label(choice),
+                move |ctx: &ConversationCtx, window, cx| {
+                    set_level(&ctx.session, &ctx.conversation, choice, window, cx)
+                },
+            )
+            .under(under)
+            .order(at)
+            .label_with(move |ctx: &ConversationCtx, cx: &App| match choice {
+                Some(_) => level_label(choice),
+                None => {
+                    let session = ctx.session.read(cx);
+                    let level = session
+                        .client()
+                        .and_then(|client| {
+                            let w = client.read();
+                            w.conversation(&ctx.conversation)
+                                .map(|c| order::default_level(&w, c))
+                        })
+                        .unwrap_or(Level::Mentions);
+                    let level = level_text(level);
+                    if channel_only {
+                        t!("sidebar-menu-level-channel-default", level = level).into()
+                    } else {
+                        t!("sidebar-menu-level-default", level = level).into()
+                    }
+                }
             })
-            .icon(if level == Some(Level::None) {
-                IconName::Bell
-            } else {
-                IconName::Check
-            })
-            .order(120 + i as i32)
             .when(move |ctx: &ConversationCtx, cx: &App| {
+                // The default for your own levels, the channel's default for
+                // a channel's; the levels themselves for both.
+                choice.is_some()
+                    || with_conversation(ctx, cx, |_, c| order::channel_wide(c) == channel_only)
+            })
+            .checked_when(move |ctx: &ConversationCtx, cx: &App| {
                 with_conversation(ctx, cx, |w, c| {
-                    // Your own levels show once the settings are read.
+                    // Your own levels show a choice once the settings are read.
                     (order::channel_wide(c) || w.documents.notification_settings.is_loaded())
-                        && chosen_level(w, c) != level
+                        && chosen_level(w, c) == choice
                 })
             })
-            .unavailable_when(|ctx: &ConversationCtx, cx: &App| {
-                let can = with_conversation(ctx, cx, can_set_level);
-                (!can).then(|| t!("sidebar-menu-level-operators").into())
+            .disabled_when(|ctx: &ConversationCtx, cx: &App| {
+                !with_conversation(ctx, cx, can_set_level)
             }),
         );
     }
@@ -142,7 +191,7 @@ fn conversation_menu(m: &mut Registered) {
             |ctx: &ConversationCtx, _, cx| step(&ctx.session, &ctx.conversation, -1, cx),
         )
         .icon(IconName::ArrowUp)
-        .order(140)
+        .order(menu_order::conversation::MOVE_UP)
         .when(|ctx: &ConversationCtx, cx: &App| {
             with_conversation(ctx, cx, |w, c| order::steps(w, c).0)
         }),
@@ -154,7 +203,7 @@ fn conversation_menu(m: &mut Registered) {
             |ctx: &ConversationCtx, _, cx| step(&ctx.session, &ctx.conversation, 1, cx),
         )
         .icon(IconName::ArrowDown)
-        .order(141)
+        .order(menu_order::conversation::MOVE_DOWN)
         .when(|ctx: &ConversationCtx, cx: &App| {
             with_conversation(ctx, cx, |w, c| order::steps(w, c).1)
         }),
@@ -170,7 +219,7 @@ fn conversation_menu(m: &mut Registered) {
             },
         )
         .icon(IconName::SortAscending)
-        .order(142)
+        .order(menu_order::conversation::SORT)
         .when(|ctx: &ConversationCtx, cx: &App| {
             with_conversation(ctx, cx, |w, c| {
                 order::custom(w, &c.network_id, order::section_of(c))
@@ -189,7 +238,7 @@ fn conversation_menu(m: &mut Registered) {
             },
         )
         .icon(IconName::Copy)
-        .order(300)
+        .order(menu_order::conversation::COPY_CHANNEL)
         .when(|ctx: &ConversationCtx, cx: &App| {
             with_conversation(ctx, cx, |_, c| order::channel_wide(c))
         }),
@@ -218,7 +267,7 @@ fn conversation_menu(m: &mut Registered) {
         )
         .icon(IconName::Close)
         .danger()
-        .order(900)
+        .order(menu_order::conversation::LEAVE)
         .when(|ctx: &ConversationCtx, cx: &App| {
             with_conversation(ctx, cx, |_, c| order::channel_wide(c) && c.joined)
         }),
@@ -231,7 +280,7 @@ fn conversation_menu(m: &mut Registered) {
         )
         .icon(IconName::Close)
         .danger()
-        .order(900)
+        .order(menu_order::conversation::LEAVE)
         .when(|ctx: &ConversationCtx, cx: &App| {
             with_conversation(ctx, cx, |_, c| {
                 c.kind == ConversationKind::Direct && c.party.is_none()
@@ -255,7 +304,7 @@ fn network_menu(m: &mut registry::List<MenuItem<NetworkCtx>>) {
             },
         )
         .icon(IconName::Check)
-        .order(100)
+        .order(menu_order::network::MARK_ALL_READ)
         .when(|ctx: &NetworkCtx, cx: &App| {
             let session = ctx.session.read(cx);
             session
@@ -268,7 +317,7 @@ fn network_menu(m: &mut registry::List<MenuItem<NetworkCtx>>) {
             set_connected(&ctx.session, &ctx.network, true, cx)
         })
         .icon(IconName::RefreshCw)
-        .order(500)
+        .order(menu_order::network::CONNECTION)
         .when(move |ctx: &NetworkCtx, cx: &App| {
             matches!(status(ctx, cx), Some(s) if s != NetworkStatus::Connected && s != NetworkStatus::Connecting)
         }),
@@ -280,7 +329,7 @@ fn network_menu(m: &mut registry::List<MenuItem<NetworkCtx>>) {
             |ctx: &NetworkCtx, _, cx| set_connected(&ctx.session, &ctx.network, false, cx),
         )
         .icon(IconName::Close)
-        .order(500)
+        .order(menu_order::network::CONNECTION)
         .when(move |ctx: &NetworkCtx, cx: &App| status(ctx, cx) == Some(NetworkStatus::Connecting)),
     );
     m.add(
@@ -290,7 +339,7 @@ fn network_menu(m: &mut registry::List<MenuItem<NetworkCtx>>) {
             |ctx: &NetworkCtx, _, cx| set_connected(&ctx.session, &ctx.network, false, cx),
         )
         .icon(IconName::Close)
-        .order(500)
+        .order(menu_order::network::CONNECTION)
         .when(move |ctx: &NetworkCtx, cx: &App| status(ctx, cx) == Some(NetworkStatus::Connected)),
     );
     m.add(
@@ -313,7 +362,7 @@ fn network_menu(m: &mut registry::List<MenuItem<NetworkCtx>>) {
             },
         )
         .icon(IconName::Copy)
-        .order(510),
+        .order(menu_order::network::COPY_ADDRESS),
     );
     m.add(
         MenuItem::new(
@@ -343,7 +392,7 @@ fn network_menu(m: &mut registry::List<MenuItem<NetworkCtx>>) {
         )
         .icon(IconName::Delete)
         .danger()
-        .order(900),
+        .order(menu_order::network::REMOVE),
     );
 }
 
@@ -417,6 +466,26 @@ fn chosen_level(w: &Workspace, c: &Conversation) -> Option<Level> {
     } else {
         order::own_level(w, c)
     }
+}
+
+/// A level's row in the Notifications submenu.
+fn level_label(level: Option<Level>) -> SharedString {
+    match level {
+        Some(Level::All) => t!("sidebar-menu-level-all").into(),
+        Some(Level::Mentions) => t!("sidebar-menu-level-mentions").into(),
+        Some(Level::None) => t!("sidebar-menu-level-none").into(),
+        None => SharedString::default(),
+    }
+}
+
+/// A level inside "Default (…)".
+fn level_text(level: Level) -> String {
+    match level {
+        Level::All => t!("sidebar-level-all"),
+        Level::Mentions => t!("sidebar-level-mentions"),
+        Level::None => t!("sidebar-level-none"),
+    }
+    .to_string()
 }
 
 /// Channel levels are channel-wide and set by operators; your own levels

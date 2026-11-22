@@ -11,6 +11,7 @@
 //! Other packages use [`react`] (E1's full emoji picker) and may replace the
 //! `react` menu entry by registering an entry with the same ID.
 
+use crate::menu_order;
 use crate::ui::focus::Reachable;
 use std::collections::HashMap;
 
@@ -95,7 +96,7 @@ fn register(r: &mut registry::Registry) {
             },
         )
         .icon(IconName::Undo2)
-        .order(10)
+        .order(menu_order::message::REPLY)
         .toolbar()
         .when(|ctx: &MessageCtx, cx: &App| offered(ctx, A::Replies, cx))
         .unavailable_when(|ctx: &MessageCtx, cx: &App| reason(ctx, A::Replies, cx)),
@@ -112,7 +113,7 @@ fn register(r: &mut registry::Registry) {
             },
         )
         .icon(IconName::ThumbsUp)
-        .order(20)
+        .order(menu_order::message::ADD_REACTION)
         .toolbar()
         .when(|ctx: &MessageCtx, cx: &App| offered(ctx, A::Reactions, cx))
         .unavailable_when(|ctx: &MessageCtx, cx: &App| reason(ctx, A::Reactions, cx)),
@@ -133,7 +134,7 @@ fn register(r: &mut registry::Registry) {
                     )
                 },
             )
-            .order(21 + i as i32)
+            .order(menu_order::message::QUICK_REACTIONS + i as i32)
             .when(|ctx: &MessageCtx, cx: &App| {
                 offered(ctx, A::Reactions, cx) && reason(ctx, A::Reactions, cx).is_none()
             }),
@@ -151,7 +152,7 @@ fn register(r: &mut registry::Registry) {
             },
         )
         .icon(IconName::Replace)
-        .order(30)
+        .order(menu_order::message::EDIT)
         .toolbar()
         .when(|ctx: &MessageCtx, cx: &App| offered(ctx, A::Edit, cx))
         .unavailable_when(|ctx: &MessageCtx, cx: &App| reason(ctx, A::Edit, cx)),
@@ -170,7 +171,7 @@ fn register(r: &mut registry::Registry) {
             },
         )
         .icon(IconName::Copy)
-        .order(40)
+        .order(menu_order::message::COPY_TEXT)
         .when(|ctx: &MessageCtx, cx: &App| with_message(ctx, cx, |_, _, _| ()).is_some()),
     );
     m.add(
@@ -186,7 +187,7 @@ fn register(r: &mut registry::Registry) {
             },
         )
         .icon(IconName::ExternalLink)
-        .order(41)
+        .order(menu_order::message::COPY_LINK)
         .when(|ctx: &MessageCtx, cx: &App| message_link(ctx, cx).is_some()),
     );
     m.add(
@@ -200,7 +201,7 @@ fn register(r: &mut registry::Registry) {
             },
         )
         .icon(IconName::Undo)
-        .order(50)
+        .order(menu_order::message::VERSIONS)
         .when(|ctx: &MessageCtx, cx: &App| {
             with_message(ctx, cx, |_, m, _| !earlier_versions(m).is_empty()).unwrap_or(false)
         }),
@@ -217,7 +218,7 @@ fn register(r: &mut registry::Registry) {
             },
         )
         .icon(IconName::Delete)
-        .order(90)
+        .order(menu_order::message::DELETE)
         .danger()
         .when(|ctx: &MessageCtx, cx: &App| ctx.own && offered(ctx, A::Redact, cx))
         .unavailable_when(|ctx: &MessageCtx, cx: &App| reason(ctx, A::Redact, cx)),

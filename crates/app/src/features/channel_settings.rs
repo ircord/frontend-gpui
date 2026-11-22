@@ -12,6 +12,7 @@
 //! what you may change follows your rank, and what you may not is shown
 //! read-only with the reason.
 
+use crate::menu_order;
 use crate::ui::focus::Reachable;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -72,7 +73,7 @@ pub fn init(cx: &mut App) {
                 },
             )
             .icon(IconName::Settings)
-            .order(400)
+            .order(menu_order::conversation::CHANNEL_SETTINGS)
             .when(|ctx: &ConversationCtx, cx| here(&ctx.session, &ctx.conversation, cx).is_some()),
         );
         m.add(
@@ -84,7 +85,7 @@ pub fn init(cx: &mut App) {
                 },
             )
             .icon(IconName::Ban)
-            .order(401)
+            .order(menu_order::conversation::BANS)
             .when(|ctx: &ConversationCtx, cx| {
                 here(&ctx.session, &ctx.conversation, cx).is_some_and(|h| h.rights.ban)
             }),
@@ -96,7 +97,7 @@ pub fn init(cx: &mut App) {
                 |ctx: &ConversationCtx, window, cx| edit_topic(ctx, window, cx),
             )
             .icon(IconName::FileText)
-            .order(402)
+            .order(menu_order::conversation::EDIT_TOPIC)
             .when(|ctx: &ConversationCtx, cx| {
                 here(&ctx.session, &ctx.conversation, cx).is_some_and(|h| h.rights.topic)
             }),

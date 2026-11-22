@@ -9,6 +9,7 @@
 //! tested there; this file draws it. [`mode_text`] names channel modes for
 //! the channel settings (CH2) too.
 
+use crate::menu_order;
 use crate::ui::focus::Reachable;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -43,7 +44,7 @@ pub fn init(cx: &mut App) {
                 |n: &NetworkCtx, window, cx| open(&n.session, &n.network, window, cx),
             )
             .icon(IconName::Plus)
-            .order(301),
+            .order(menu_order::network::CREATE_CHANNEL),
         );
     });
 }
