@@ -10,7 +10,7 @@
 //! the Server window shows them, and between two joins they would end
 //! every fold.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -30,6 +30,35 @@ const FOLD_GAP_MS: i64 = 60 * 1000;
 /// …spanning at most this long, and at most [`FOLD_MAX`] of them.
 const FOLD_SPAN_MS: i64 = 5 * 60 * 1000;
 const FOLD_MAX: usize = 50;
+
+/// Parsed message bodies, kept from one build to the next (package P2).
+/// Parsing is most of what a rebuild costs, and a body changes only when its
+/// text or attachments do, so each entry keeps the input it parsed and is
+/// reused only for that same input.
+#[derive(Debug, Default)]
+pub struct Bodies {
+    entries: HashMap<String, (String, Formatted)>,
+}
+
+impl Bodies {
+    /// The parsed body of `input` as message `id`'s body, from the cache when
+    /// the input is unchanged.
+    fn parsed(&mut self, id: &str, input: String) -> Formatted {
+        if let Some((text, body)) = self.entries.get(id)
+            && *text == input
+        {
+            return body.clone();
+        }
+        let body = format::parse(&input);
+        self.entries.insert(id.to_string(), (input, body.clone()));
+        body
+    }
+
+    /// Forget the bodies of messages no longer in `live`.
+    fn retain(&mut self, live: &HashSet<&str>) {
+        self.entries.retain(|id, _| live.contains(id.as_str()));
+    }
+}
 
 /// What the rows depend on beyond the workspace.
 #[derive(Debug, Clone, Copy, Default)]
@@ -428,9 +457,25 @@ fn people(names: &[String]) -> String {
 }
 
 pub fn build(w: &Workspace, conversation: &str, options: Options) -> Vec<Row> {
+    build_with(w, conversation, options, &mut Bodies::default())
+}
+
+/// [`build`], reusing the parsed bodies `bodies` holds from the last build.
+pub fn build_with(
+    w: &Workspace,
+    conversation: &str,
+    options: Options,
+    bodies: &mut Bodies,
+) -> Vec<Row> {
     let Some(timeline) = w.timelines.get(conversation) else {
         return vec![Row::Loading];
     };
+    let live: HashSet<&str> = timeline
+        .entries
+        .iter()
+        .map(|e| e.message.id.as_str())
+        .collect();
+    bodies.retain(&live);
     let network = w
         .conversation(conversation)
         .map(|c| c.network_id.clone())
@@ -555,7 +600,7 @@ pub fn build(w: &Workspace, conversation: &str, options: Options) -> Vec<Row> {
             None => true,
         };
         last = Some((m.sender_id.clone(), entry.at, m.kind));
-        let mut row = message_row(w, m, &network, header, time);
+        let mut row = message_row(w, m, &network, header, time, bodies);
         row.mention = !row.own && !row.deleted && mentions(&m.text, &nick, &words);
         row.focused = options.focused == Some(m.id.as_str());
         if row.mention || row.focused {
@@ -610,6 +655,7 @@ fn message_row(
     network: &str,
     header: bool,
     time: String,
+    bodies: &mut Bodies,
 ) -> MessageRow {
     let member = w.member(&m.sender_id, network);
     let sender_color = member
@@ -622,7 +668,7 @@ fn message_row(
         .into_iter()
         .chain(m.attachment.clone())
         .collect();
-    let body = format::parse(&without_urls(&m.text, &attachments));
+    let body = bodies.parsed(&m.id, without_urls(&m.text, &attachments));
     let mut images = Vec::new();
     let mut links: Vec<LinkCard> = Vec::new();
     if let Some(gif) = &m.gif {
@@ -893,6 +939,32 @@ mod tests {
                 next_cursor: older.map(str::to_string),
                 ..Default::default()
             },
+        );
+    }
+
+    #[test]
+    fn cached_bodies_follow_the_text() {
+        let mut w = workspace();
+        load(
+            &mut w,
+            vec![msg("1", "2026-11-20T12:01:00Z", "m-bob", "*plain* text")],
+            None,
+        );
+        let mut bodies = Bodies::default();
+        let first = build_with(&w, "c", Options::default(), &mut bodies);
+        assert_eq!(first, build(&w, "c", Options::default()));
+        // The same text is served from the cache.
+        let again = build_with(&w, "c", Options::default(), &mut bodies);
+        assert_eq!(again, first);
+        // An edited message is parsed again.
+        // An edit replaces the stored text of the same message.
+        w.timelines.get_mut("c").unwrap().entries[0].message.text = "changed _text_".into();
+        let edited = build_with(&w, "c", Options::default(), &mut bodies);
+        assert_eq!(edited, build(&w, "c", Options::default()));
+        assert!(
+            edited
+                .iter()
+                .any(|r| matches!(r, Row::Message(m) if m.body.text == "changed _text_"))
         );
     }
 

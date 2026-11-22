@@ -196,6 +196,24 @@ fn the_member_list_counts_filters_marks_and_hides(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_long_member_list_draws_only_the_rows_on_screen(cx: &mut TestAppContext) {
+    // Seventy more members make the list a virtual one (package P2).
+    let mut s = workspace();
+    for i in 0..70 {
+        let mut m = s.members[1].clone();
+        m.id = format!("m-x{i:02}");
+        m.nick = format!("extra{i:02}");
+        m.role = MemberRole::Member;
+        m.device = None;
+        s.conversations[0].member_ids.push(m.id.clone());
+        s.members.push(m);
+    }
+    let f = open(cx, s, |_| {});
+    assert!(shows(&f, cx, "member-m-bob"));
+    assert!(!shows(&f, cx, "member-m-x69"));
+}
+
+#[gpui_kit::test]
 fn the_card_looks_them_up_and_asks_their_client(cx: &mut TestAppContext) {
     let f = open(cx, workspace(), |server| {
         server.route(

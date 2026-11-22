@@ -593,6 +593,8 @@ pub struct TimelineView {
     glide: Option<Glide>,
     /// The id of the last glide started.
     glides: u64,
+    /// Parsed bodies, reused by the next rebuild.
+    bodies: rows::Bodies,
     _subscription: Subscription,
 }
 
@@ -621,11 +623,15 @@ impl TimelineView {
                     if changes.reset
                         || reading
                         || documents
-                        || open.as_ref().is_some_and(|id| {
-                            changes.timelines.contains(id) || changes.typing.contains(id)
-                        })
+                        || open
+                            .as_ref()
+                            .is_some_and(|id| changes.timelines.contains(id))
                     {
                         this.rebuild(cx);
+                    } else if open.as_ref().is_some_and(|id| changes.typing.contains(id)) {
+                        // The typing line reads the store when it draws; the
+                        // rows do not change.
+                        cx.notify();
                     }
                 }
                 SessionEvent::Selection | SessionEvent::Phase => this.rebuild(cx),
@@ -653,6 +659,7 @@ impl TimelineView {
             centre_queued: false,
             glide: None,
             glides: 0,
+            bodies: rows::Bodies::default(),
             _subscription: subscription,
         };
         view.install_scroll_handler(cx);
@@ -738,7 +745,7 @@ impl TimelineView {
                 if w.reading.focus_seq != self.jumped {
                     target = focused.clone().map(|m| (m, w.reading.focus_seq));
                 }
-                let mut rows = rows::build(
+                let mut rows = rows::build_with(
                     &w,
                     id,
                     rows::Options {
@@ -747,6 +754,7 @@ impl TimelineView {
                         expanded: Some(&self.expanded),
                         ..Default::default()
                     },
+                    &mut self.bodies,
                 );
                 if !filters.is_empty() {
                     rows.retain(|row| filters.iter().all(|f| (f.keep)(row, &w, cx)));
