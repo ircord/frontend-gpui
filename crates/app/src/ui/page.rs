@@ -43,6 +43,7 @@ pub struct Page {
     pub close: Option<(SharedString, OnClose)>,
     pub hints: Vec<Hint>,
     toolbar: Option<AnyElement>,
+    body_scroll: Option<ScrollHandle>,
     pub body: AnyElement,
 }
 
@@ -61,6 +62,7 @@ impl Page {
             close: None,
             hints: Vec::new(),
             toolbar: None,
+            body_scroll: None,
             body: body.into_any_element(),
         }
     }
@@ -102,6 +104,11 @@ impl Page {
     /// Controls that stay in view above the scrolling results.
     pub fn toolbar(mut self, toolbar: impl IntoElement) -> Self {
         self.toolbar = Some(toolbar.into_any_element());
+        self
+    }
+
+    pub fn body_scroll(mut self, scroll: &ScrollHandle) -> Self {
+        self.body_scroll = Some(scroll.clone());
         self
     }
 
@@ -239,6 +246,7 @@ impl Page {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .when_some(self.body_scroll, |body, scroll| body.track_scroll(&scroll))
                     .child(self.body),
             )
             .children(footer)

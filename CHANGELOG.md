@@ -14,6 +14,7 @@
 - On narrow windows, conversation search opens over the timeline and returns focus to its opener when dismissed.
 - An empty conversation search field offers shortcuts to filter by sender, mention, content type, or date.
 - Use the arrow keys to choose a typed search filter, then press Enter or Tab to apply it. Escape closes the suggestions first.
+- Search scrolls to the highlighted result as you use the arrow keys, with the search field and filters kept in view.
 - Settings opens over the workspace, so the view you were using stays in place.
 - The Settings header provides quick access to appearance sync on wider windows.
 - Profile cards display the chosen card background, use a taller banner, and open the Profile settings directly from Edit profile.

@@ -79,6 +79,23 @@ fn open(cx: &mut TestAppContext) -> Fixture {
     f
 }
 
+fn open_with_many_results(cx: &mut TestAppContext) -> Fixture {
+    let f = open_with(cx, true, |server| {
+        let items: Vec<_> = (0..24)
+            .map(|i| {
+                json!({
+                    "conversation": {"id": "c-general", "networkId": "n1", "kind": "channel",
+                                     "name": "general"},
+                    "message": message(&format!("m-{i}"), "c-general", "hello from the archives"),
+                })
+            })
+            .collect();
+        server.route("GET", "/api/v1/search", 200, json!({"items": items}));
+    });
+    bootstrap(&f, cx);
+    f
+}
+
 fn frame(
     f: &Fixture,
     cx: &mut TestAppContext,
@@ -269,6 +286,31 @@ fn arrow_keys_and_tab_accept_a_workspace_search_suggestion(cx: &mut TestAppConte
     frame(&f, cx, |window, cx| window.input("has:", cx));
     shows(&f, cx, "search-offers");
     assert_eq!(label(&f, cx, "search-offer-1").as_deref(), Some("GIF"));
+}
+
+#[gpui_kit::test]
+fn workspace_search_scrolls_to_the_selected_result(cx: &mut TestAppContext) {
+    let f = open_with_many_results(cx);
+    open_page(&f, cx, None);
+    frame(&f, cx, |window, cx| window.input("hello world", cx));
+    shows(&f, cx, "search-result-0");
+    frame(&f, cx, |window, cx| {
+        assert!(
+            !window
+                .try_find("search-result-23")
+                .is_some_and(|e| e.visible())
+        );
+        window.press("up", cx);
+    });
+    shows(&f, cx, "search-result-23");
+    frame(&f, cx, |window, cx| {
+        assert_eq!(window.find("search-result-23").selected(), Some(true));
+        let input = window.find("search-input");
+        assert_eq!(input.focused(), Some(true));
+        assert!(input.visible());
+        window.press("down", cx);
+    });
+    shows(&f, cx, "search-result-0");
 }
 
 #[gpui_kit::test]
@@ -473,6 +515,35 @@ fn conversation_search_dismisses_and_accepts_suggestions_from_the_keyboard(
     searched(&f, cx, "the selected conversation suggestion", |request| {
         param(request, "conversationId") == ["c-general"] && param(request, "has") == ["file"]
     });
+}
+
+#[gpui_kit::test]
+fn conversation_search_scrolls_to_the_selected_result(cx: &mut TestAppContext) {
+    let f = open_with_many_results(cx);
+    click(&f, cx, "search-conversation-toggle");
+    frame(&f, cx, |window, cx| window.input("hello world", cx));
+    shows(&f, cx, "conversation-search-result-0");
+    frame(&f, cx, |window, cx| {
+        assert!(
+            !window
+                .try_find("conversation-search-result-23")
+                .is_some_and(|e| e.visible())
+        );
+        window.press("up", cx);
+    });
+    shows(&f, cx, "conversation-search-result-23");
+    frame(&f, cx, |window, cx| {
+        assert_eq!(
+            window.find("conversation-search-result-23").selected(),
+            Some(true)
+        );
+        assert_eq!(
+            window.find("conversation-search-input").focused(),
+            Some(true)
+        );
+        window.press("down", cx);
+    });
+    shows(&f, cx, "conversation-search-result-0");
 }
 
 #[gpui_kit::test]

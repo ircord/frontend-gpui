@@ -979,6 +979,52 @@ fn result_row(
         .on_click(on_click)
 }
 
+/// Keep keyboard selection in view without scrolling on every redraw.
+#[derive(Default)]
+struct ResultScroll {
+    handle: ScrollHandle,
+    reveal: bool,
+}
+
+impl ResultScroll {
+    fn reset(&mut self) {
+        self.reveal = false;
+        self.handle.set_offset(Point::default());
+    }
+
+    fn reveal_row(&self, selected: bool) -> Option<impl IntoElement + use<>> {
+        if !self.reveal || !selected {
+            return None;
+        }
+        let handle = self.handle.clone();
+        Some(
+            canvas(
+                move |row, window, _| {
+                    let viewport = handle.bounds();
+                    let old = handle.offset();
+                    let delta =
+                        if row.top() < viewport.top() || row.size.height > viewport.size.height {
+                            viewport.top() - row.top()
+                        } else {
+                            (viewport.bottom() - row.bottom()).min(px(0.))
+                        };
+                    let y = (old.y + delta).clamp(-handle.max_offset().y, px(0.));
+                    if y != old.y {
+                        handle.set_offset(point(old.x, y));
+                        // The current frame has already laid out the viewport at the old offset.
+                        window.on_next_frame(|window, _| window.refresh());
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
+    }
+}
+
 /// The messages part: status, results and "load older".
 #[allow(clippy::too_many_arguments)]
 fn messages_part(
@@ -986,6 +1032,7 @@ fn messages_part(
     model: &Entity<SearchModel>,
     session: &Entity<Session>,
     selected: Option<usize>,
+    scroll: &ResultScroll,
     offset: usize,
     show_place: bool,
     empty_text: String,
@@ -1082,13 +1129,14 @@ fn messages_part(
         let session = session.clone();
         let model = model.clone();
         let r = result.clone();
+        let selected = selected == Some(offset + i);
         part = part.child(
             result_row(
                 format!("{prefix}-result-{i}"),
                 &w,
                 result,
                 show_place,
-                selected == Some(offset + i),
+                selected,
                 server.as_ref(),
                 look.colored_names,
                 look.clock_12h,
@@ -1098,6 +1146,9 @@ fn messages_part(
                     open_result(&session, &r, window, cx)
                 },
             )
+            .when_some(scroll.reveal_row(selected), |row, reveal| {
+                row.relative().child(reveal)
+            })
             .test_support(),
         );
     }
@@ -1389,6 +1440,7 @@ pub struct SearchPage {
     model: Entity<SearchModel>,
     input: Entity<InputState>,
     selected: usize,
+    result_scroll: ResultScroll,
     filter_selection: FilterSelection,
     recent: Vec<RecentSearch>,
     focus: bool,
@@ -1407,6 +1459,7 @@ impl SearchPage {
                 InputEvent::Change => {
                     field_changed(input, &this.model, false, window, cx);
                     this.selected = 0;
+                    this.result_scroll.reset();
                     this.filter_selection = FilterSelection::default();
                     cx.notify();
                 }
@@ -1432,6 +1485,7 @@ impl SearchPage {
             model,
             input,
             selected: 0,
+            result_scroll: ResultScroll::default(),
             filter_selection: FilterSelection::default(),
             recent,
             focus: true,
@@ -1709,6 +1763,7 @@ impl SearchPage {
                     &self.model,
                     &self.session,
                     selected,
+                    &self.result_scroll,
                     index,
                     true,
                     empty_text(&m.text, &m.filters, None),
@@ -1844,6 +1899,9 @@ impl SearchPage {
                     let item = item.clone();
                     view.update(cx, |v, cx| v.choose(item, window, cx));
                 }
+            })
+            .when_some(self.result_scroll.reveal_row(is_selected), |row, reveal| {
+                row.relative().child(reveal)
             })
             .into_any_element()
     }
@@ -2022,8 +2080,7 @@ impl Render for SearchPage {
             );
         }
         let toolbar = div()
-            .px_4()
-            .pb_3()
+            .id("search-page-root")
             .flex()
             .flex_col()
             .gap_2()
@@ -2073,10 +2130,8 @@ impl Render for SearchPage {
             .role(Role::ListBox)
             .aria_label(t!("search-results"))
             .child(self.render_list(&theme, cx));
-        let body = div()
-            .id("search-page-root")
-            .flex()
-            .flex_col()
+        self.result_scroll.reveal = false;
+        let toolbar = toolbar
             .capture_action(cx.listener(move |this, _: &MoveDown, window, cx| {
                 if choice_count > 0 && this.input.focus_handle(cx).is_focused(window) {
                     this.filter_selection.step(choice_count, false);
@@ -2084,6 +2139,7 @@ impl Render for SearchPage {
                     cx.notify();
                 } else if count > 0 {
                     this.selected = (this.selected + 1) % count;
+                    this.result_scroll.reveal = true;
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -2095,6 +2151,7 @@ impl Render for SearchPage {
                     cx.notify();
                 } else if count > 0 {
                     this.selected = (this.selected + count - 1) % count;
+                    this.result_scroll.reveal = true;
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -2122,12 +2179,12 @@ impl Render for SearchPage {
                     window.refresh();
                 }
                 cx.stop_propagation();
-            }))
-            .child(toolbar)
-            .child(list);
+            }));
         let session = self.session.clone();
-        ui::page::Page::new("search-page", t!("search-title"), body)
+        ui::page::Page::new("search-page", t!("search-title"), list)
             .description(t!("search-description"))
+            .toolbar(toolbar)
+            .body_scroll(&self.result_scroll.handle)
             .close(t!("search-return"), move |_, _, cx| {
                 ui::page::leave(&session, cx)
             })
@@ -2583,6 +2640,7 @@ pub struct ConversationSearch {
     query_scope: FocusHandle,
     quick_dismissed: bool,
     selected: usize,
+    result_scroll: ResultScroll,
     filter_selection: FilterSelection,
     _subscriptions: Vec<Subscription>,
 }
@@ -2607,6 +2665,7 @@ impl ConversationSearch {
                     field_changed(input, &this.model, true, window, cx);
                     this.quick_dismissed = false;
                     this.selected = 0;
+                    this.result_scroll.reset();
                     this.filter_selection = FilterSelection::default();
                     cx.notify();
                 }
@@ -2634,6 +2693,7 @@ impl ConversationSearch {
             query_scope,
             quick_dismissed: false,
             selected: 0,
+            result_scroll: ResultScroll::default(),
             filter_selection: FilterSelection::default(),
             _subscriptions: vec![field, changed, focus_in, focus_out],
         }
@@ -2802,6 +2862,7 @@ impl Render for ConversationSearch {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(&self.result_scroll.handle)
             .flex()
             .flex_col()
             .child(messages_part(
@@ -2809,12 +2870,14 @@ impl Render for ConversationSearch {
                 &self.model,
                 &self.session,
                 Some(self.selected),
+                &self.result_scroll,
                 0,
                 false,
                 empty_text(&text, &Filters::default(), Some(&place)),
                 &theme,
                 cx,
             ));
+        self.result_scroll.reveal = false;
         if !text.trim().is_empty() {
             list = list.child(
                 div().px_3().py_2().child(
@@ -2848,6 +2911,7 @@ impl Render for ConversationSearch {
                     cx.notify();
                 } else if count > 0 {
                     this.selected = (this.selected + 1) % count;
+                    this.result_scroll.reveal = true;
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -2859,6 +2923,7 @@ impl Render for ConversationSearch {
                     cx.notify();
                 } else if count > 0 {
                     this.selected = (this.selected + count - 1) % count;
+                    this.result_scroll.reveal = true;
                     cx.stop_propagation();
                     cx.notify();
                 }
