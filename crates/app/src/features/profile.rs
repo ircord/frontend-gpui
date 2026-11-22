@@ -468,6 +468,7 @@ pub fn new_direct(session: &Entity<Session>, network: &str, window: &mut Window,
             network: network.to_string(),
             purpose: ircord_client::api::people::Purpose::Dm,
             conversation: None,
+            except: Vec::new(),
         },
         move |picked, window, cx| {
             message(&network_id, picked.member.clone(), &picked.nick, window, cx)
@@ -638,6 +639,7 @@ fn invite_someone(ctx: &ConversationCtx, window: &mut Window, cx: &mut App) {
             network: network.clone(),
             purpose: ircord_client::api::people::Purpose::Dm,
             conversation: None,
+            except: Vec::new(),
         },
         move |picked, window, cx| {
             raw(

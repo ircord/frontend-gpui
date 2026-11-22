@@ -446,6 +446,7 @@ impl DetailsView {
                 network: party.network_id.clone(),
                 purpose: Purpose::Party,
                 conversation: None,
+                except: Vec::new(),
             },
             move |picked, window, cx| {
                 let name = picked.name.clone();

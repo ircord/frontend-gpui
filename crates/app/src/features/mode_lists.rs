@@ -90,6 +90,7 @@ impl ModeListView {
                     network,
                     purpose: Purpose::Mask,
                     conversation: Some(conversation.clone()),
+                    except: Vec::new(),
                 },
                 Rc::new(move |picked: &Picked, window, cx| {
                     this.update(cx, |v, cx| v.choose(picked, window, cx)).ok();

@@ -54,6 +54,9 @@ pub struct Picker {
     pub network: String,
     pub purpose: Purpose,
     pub conversation: Option<String>,
+    /// Member IDs left out of the list, such as people already in the
+    /// channel an invitation is for.
+    pub except: Vec<String>,
 }
 
 pub struct PeoplePicker {
@@ -61,6 +64,7 @@ pub struct PeoplePicker {
     network: String,
     purpose: Purpose,
     conversation: Option<String>,
+    except: Vec<String>,
     pub input: Entity<InputState>,
     selected: usize,
     /// What the server found for `searched`.
@@ -132,6 +136,7 @@ impl PeoplePicker {
             network: picker.network.clone(),
             purpose: picker.purpose,
             conversation: picker.conversation.clone(),
+            except: picker.except.clone(),
             input,
             selected: 0,
             remote: Vec::new(),
@@ -196,19 +201,29 @@ impl PeoplePicker {
             return Vec::new();
         };
         let w = client.read();
-        let mut options: Vec<Picked> = people::find_people(&w, &self.network, &query, LIMIT)
-            .into_iter()
-            .map(|m| Picked {
-                member: Some(m.id.clone()),
-                nick: m.nick.clone(),
-                name: people::name(m).to_string(),
-                account: (!m.account.is_empty()).then(|| m.account.clone()),
-                typed: false,
-            })
-            .collect();
+        // Asks for a few more than shown, so leaving people out still fills the list.
+        let mut options: Vec<Picked> =
+            people::find_people(&w, &self.network, &query, LIMIT + self.except.len())
+                .into_iter()
+                .filter(|m| !self.except.contains(&m.id))
+                .take(LIMIT)
+                .map(|m| Picked {
+                    member: Some(m.id.clone()),
+                    nick: m.nick.clone(),
+                    name: people::name(m).to_string(),
+                    account: (!m.account.is_empty()).then(|| m.account.clone()),
+                    typed: false,
+                })
+                .collect();
         let bare = query.trim_start_matches('@').to_lowercase();
         if self.searched.to_lowercase() == bare {
-            for p in self.remote.iter().filter(|p| p.eligible) {
+            for p in self.remote.iter().filter(|p| {
+                p.eligible
+                    && !p
+                        .member_id
+                        .as_ref()
+                        .is_some_and(|id| self.except.contains(id))
+            }) {
                 let nick = p.nickname.clone().unwrap_or_default();
                 let known = options.iter().any(|o| {
                     (p.member_id.is_some() && o.member == p.member_id)
@@ -243,8 +258,15 @@ impl PeoplePicker {
             .network(&self.network)
             .map(|n| nickname_limit(&n.isupport))
             .unwrap_or(32);
+        // A nick left out above is not offered as a typed one either.
+        let left_out = self
+            .except
+            .iter()
+            .filter_map(|id| w.member(id, &self.network))
+            .any(|m| m.nick.eq_ignore_ascii_case(typed));
         if !typed.is_empty()
             && nickname_error(typed, limit).is_none()
+            && !left_out
             && !options.iter().any(|o| o.nick.eq_ignore_ascii_case(typed))
             && matches!(self.purpose, Purpose::Dm | Purpose::Command | Purpose::Mask)
         {
