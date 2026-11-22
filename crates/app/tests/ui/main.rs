@@ -38,5 +38,6 @@ mod settings_messages;
 mod sidebar;
 mod text;
 mod timeline;
+mod updates;
 mod uploads;
 mod video;

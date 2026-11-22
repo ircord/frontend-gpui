@@ -18,6 +18,7 @@
 
 ### New
 
+- Settings → About has a Check for updates button, and a few seconds after start IRCord checks for a newer release and offers to download it and restart; Linux opens the release page instead, since a `.deb` cannot update itself.
 - Nickname arguments of commands such as `/kick` and `/invite` suggest people with their picture, presence and name, as the @ list does; `/invite` and the channel's Invite someone leave out the people already in the channel.
 - Message text size, the space between groups and the interface scale are sliders, as on the web, and Settings → About shows the IRCord server you are signed in to.
 - Typed emoticons such as :) :D :P and <3 turn into emoji when you finish the word. Press Backspace right away to keep the text.
