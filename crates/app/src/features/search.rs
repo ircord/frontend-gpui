@@ -1188,6 +1188,23 @@ fn offers_row(
     Some(row.into_any_element())
 }
 
+/// Start a filter at the end of the field, replacing any unfinished filter.
+fn start_filter(input: &Entity<InputState>, key: Key, window: &mut Window, cx: &mut App) {
+    let raw = input.read(cx).value().to_string();
+    let raw = match sf::active_token(&raw) {
+        Some(token) => sf::without_token(&raw, &token).to_string(),
+        None => raw,
+    };
+    let space = if raw.is_empty() || raw.ends_with(' ') {
+        ""
+    } else {
+        " "
+    };
+    let next = format!("{raw}{space}{}:", key.as_str());
+    input.update(cx, |i, cx| i.set_value(next, window, cx));
+    input.focus_handle(cx).focus(window, cx);
+}
+
 /// Turn the token being typed into `chip`.
 fn apply_offer(
     input: &Entity<InputState>,
@@ -1548,23 +1565,6 @@ impl SearchPage {
             .update(cx, |i, cx| i.set_value(entry.text.clone(), window, cx));
         self.model
             .update(cx, |m, cx| m.set_search(&entry.text, entry.filters, cx));
-        self.input.focus_handle(cx).focus(window, cx);
-    }
-
-    /// Start typing a filter: `from:` at the end of the field.
-    fn start(&mut self, key: Key, window: &mut Window, cx: &mut Context<Self>) {
-        let raw = self.input.read(cx).value().to_string();
-        let raw = match sf::active_token(&raw) {
-            Some(token) => sf::without_token(&raw, &token).to_string(),
-            None => raw,
-        };
-        let space = if raw.is_empty() || raw.ends_with(' ') {
-            ""
-        } else {
-            " "
-        };
-        let next = format!("{raw}{space}{}:", key.as_str());
-        self.input.update(cx, |i, cx| i.set_value(next, window, cx));
         self.input.focus_handle(cx).focus(window, cx);
     }
 
@@ -1949,7 +1949,9 @@ impl Render for SearchPage {
                     ElementId::Name(format!("search-quick-{}", key.as_str()).into()),
                     short,
                     &theme,
-                    cx.listener(move |this, _, window, cx| this.start(key, window, cx)),
+                    cx.listener(move |this, _, window, cx| {
+                        start_filter(&this.input, key, window, cx)
+                    }),
                 )
                 .test_support()
                 .reachable(&theme)
@@ -2489,6 +2491,8 @@ pub struct ConversationSearch {
     conversation: String,
     model: Entity<SearchModel>,
     input: Entity<InputState>,
+    query_scope: FocusHandle,
+    quick_dismissed: bool,
     selected: usize,
     _subscriptions: Vec<Subscription>,
 }
@@ -2511,6 +2515,7 @@ impl ConversationSearch {
             |this: &mut Self, input, event: &InputEvent, window, cx| match event {
                 InputEvent::Change => {
                     field_changed(input, &this.model, true, window, cx);
+                    this.quick_dismissed = false;
                     this.selected = 0;
                     cx.notify();
                 }
@@ -2523,14 +2528,22 @@ impl ConversationSearch {
             this.selected = this.selected.min(n.saturating_sub(1));
             cx.notify();
         });
+        let query_scope = cx.focus_handle();
+        let focus_in = cx.on_focus_in(&query_scope, window, |this, _, cx| {
+            this.quick_dismissed = false;
+            cx.notify();
+        });
+        let focus_out = cx.on_focus_out(&query_scope, window, |_, _, _, cx| cx.notify());
         model.update(cx, |model, cx| model.run(cx));
         Self {
             session,
             conversation,
             model,
             input,
+            query_scope,
+            quick_dismissed: false,
             selected: 0,
-            _subscriptions: vec![field, changed],
+            _subscriptions: vec![field, changed, focus_in, focus_out],
         }
     }
 
@@ -2556,6 +2569,68 @@ impl ConversationSearch {
         let query = self.model.read(cx).text.clone();
         open(&self.session, Some(&query), cx);
     }
+
+    fn shows_quick_filters(&self, window: &Window, cx: &App) -> bool {
+        !self.quick_dismissed
+            && self.query_scope.contains_focused(window, cx)
+            && self.input.read(cx).value().trim().is_empty()
+    }
+
+    fn quick_filters(theme: &Theme, cx: &Context<Self>) -> Deferred {
+        let mut menu = div()
+            .id("conversation-search-quick-filters")
+            .test_support()
+            .role(Role::Group)
+            .aria_label(t!("search-quick-filters"))
+            .absolute()
+            .top(relative(1.))
+            .left_0()
+            .right_0()
+            .occlude()
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .p_1()
+            .bg(theme.raised)
+            .border_1()
+            .border_color(theme.border)
+            .rounded(theme.radius)
+            .shadow_md()
+            .child(list_label(t!("search-filters"), theme).pt_1());
+        let quick = [
+            (Key::From, t!("search-from-label")),
+            (Key::Mentions, t!("search-mentions-label")),
+            (Key::Has, t!("search-has-label")),
+            (Key::On, t!("search-on-label")),
+        ];
+        for (key, label) in quick {
+            menu = menu.child(
+                text_button(
+                    ElementId::Name(format!("conversation-search-quick-{}", key.as_str()).into()),
+                    label,
+                    theme,
+                    cx.listener(move |this, _, window, cx| {
+                        start_filter(&this.input, key, window, cx)
+                    }),
+                )
+                .test_support()
+                .reachable(theme)
+                .bg(theme.raised),
+            );
+        }
+        menu = menu.child(
+            text_button(
+                "conversation-search-quick-more",
+                t!("search-more-filters"),
+                theme,
+                cx.listener(|this, _, window, cx| open_filters(&this.model, true, window, cx)),
+            )
+            .test_support()
+            .reachable(theme)
+            .bg(theme.raised),
+        );
+        deferred(menu)
+    }
 }
 
 fn place_name(session: &Entity<Session>, conversation: &str, cx: &App) -> String {
@@ -2568,13 +2643,13 @@ fn place_name(session: &Entity<Session>, conversation: &str, cx: &App) -> String
 
 impl Render for ConversationSearch {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let _ = window;
         let theme = theme::get(cx).clone();
         let place = place_name(&self.session, &self.conversation, cx);
         let m = self.model.read(cx);
         let count = m.results.len();
         let filters = m.filters.count();
         let text = m.text.clone();
+        let quick = self.shows_quick_filters(window, cx);
         let filters_label = if filters > 0 {
             t!("search-filters-on", count = filters)
         } else {
@@ -2588,14 +2663,21 @@ impl Render for ConversationSearch {
             .items_center()
             .gap_1()
             .child(
-                div().flex_1().min_w_0().child(
-                    Input::new(&self.input)
-                        .id("conversation-search-input")
-                        .aria_label(SharedString::from(t!(
-                            "search-conversation-field",
-                            place = place.clone()
-                        ))),
-                ),
+                div()
+                    .id("conversation-search-query")
+                    .track_focus(&self.query_scope)
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        Input::new(&self.input)
+                            .id("conversation-search-input")
+                            .aria_label(SharedString::from(t!(
+                                "search-conversation-field",
+                                place = place.clone()
+                            ))),
+                    )
+                    .when(quick, |d| d.child(Self::quick_filters(&theme, cx))),
             )
             .child(ui::icon::button(
                 "conversation-search-filters",
@@ -2684,7 +2766,13 @@ impl Render for ConversationSearch {
                 }
             }))
             .capture_action(cx.listener(|this, _: &Escape, window, cx| {
-                this.close(window, cx);
+                if this.shows_quick_filters(window, cx) {
+                    this.quick_dismissed = true;
+                    this.input.focus_handle(cx).focus(window, cx);
+                    cx.notify();
+                } else {
+                    this.close(window, cx);
+                }
                 cx.stop_propagation();
             }))
             .child(header)

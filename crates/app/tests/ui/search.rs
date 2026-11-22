@@ -381,13 +381,45 @@ fn searching_one_conversation_beside_it_with_server_history(cx: &mut TestAppCont
 fn escape_closes_the_conversation_search(cx: &mut TestAppContext) {
     let f = open(cx);
     click(&f, cx, "search-conversation-toggle");
-    shows(&f, cx, "conversation-search");
+    shows(&f, cx, "conversation-search-quick-filters");
+    frame(&f, cx, |window, cx| window.press("escape", cx));
+    frame(&f, cx, |window, _| {
+        assert!(window.find("conversation-search").visible());
+        assert!(
+            window
+                .try_find("conversation-search-quick-filters")
+                .is_none()
+        );
+    });
     frame(&f, cx, |window, cx| window.press("escape", cx));
     wait(cx, "the panel closed", |cx| {
         f.session.read(cx).panel.is_none()
     });
     frame(&f, cx, |window, _| {
         assert!(window.try_find("conversation-search").is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn conversation_search_offers_filters_when_the_field_is_empty(cx: &mut TestAppContext) {
+    let f = open(cx);
+    click(&f, cx, "search-conversation-toggle");
+    shows(&f, cx, "conversation-search-quick-has");
+    frame(&f, cx, |window, _| {
+        assert!(window.try_find("conversation-search-quick-in").is_none());
+    });
+    click(&f, cx, "conversation-search-quick-has");
+    shows(&f, cx, "conversation-search-offers");
+    frame(&f, cx, |window, _| {
+        assert!(
+            window
+                .try_find("conversation-search-quick-filters")
+                .is_none()
+        );
+        assert_eq!(
+            window.find("conversation-search-input").focused(),
+            Some(true)
+        );
     });
 }
 

@@ -8,6 +8,7 @@ search-field = Search conversations, people and messages
 search-filters = Filters
 search-filters-on = Filters, { $count } on
 search-quick-filters = Quick filters
+search-more-filters = More filters
 search-results = Results
 search-conversations = Conversations
 search-jump-to = Jump to

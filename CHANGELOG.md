@@ -7,6 +7,7 @@
 - Search in the sidebar opens the workspace search page directly.
 - Conversation search shows recent messages as soon as it opens and has more room for results in wide windows.
 - On narrow windows, conversation search opens over the timeline and returns focus to its opener when dismissed.
+- An empty conversation search field offers shortcuts to filter by sender, mention, content type, or date.
 - Settings opens over the workspace, so the view you were using stays in place.
 - The Settings header provides quick access to appearance sync on wider windows.
 - Profile cards display the chosen card background, use a taller banner, and open the Profile settings directly from Edit profile.
