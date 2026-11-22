@@ -264,18 +264,18 @@ pub fn custom(w: &Workspace, network_id: &str, section: Section) -> bool {
 }
 
 /// Every conversation of a network's section, in display order. Direct
-/// messages are listed by name.
+/// messages outside Favorites keep the workspace's conversation order.
 pub fn items<'a>(w: &'a Workspace, network_id: &str, section: Section) -> Vec<&'a Conversation> {
     let members: Vec<&Conversation> = w
         .conversations
         .iter()
         .filter(|c| c.network_id == network_id && section_of(c) == section)
         .collect();
-    let order = section
-        .sortable()
-        .then(|| stored(w, network_id, section))
-        .flatten();
-    order_items(members, order)
+    if section.sortable() {
+        order_items(members, stored(w, network_id, section))
+    } else {
+        members
+    }
 }
 
 /// The IDs of a section in display order.
@@ -819,6 +819,17 @@ mod tests {
             ]
         );
         assert!(views.iter().all(|v| !v.custom));
+    }
+
+    #[test]
+    fn direct_messages_keep_their_workspace_order() {
+        let mut w = workspace();
+        w.conversations
+            .push(conv("d2", "alice", ConversationKind::Direct, false));
+        assert_eq!(
+            names(&items(&w, "n1", Section::Directs)),
+            ["carol", "alice"]
+        );
     }
 
     #[test]
