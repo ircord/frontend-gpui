@@ -84,9 +84,11 @@ client; it never speaks IRC itself. Layout and commands are in
 
 ## Delivery
 
-The repository is local and private with no remote and no CI, so a change is
-delivered by passing this ladder in order and then landing on `main` locally.
-`cargo xtask ladder` runs steps 1 to 4.
+Changes are delivered by pull request on `ircord/frontend-gpui`. Pass this
+ladder locally before pushing, push the branch once, and open the pull request
+as a draft. The ladder is the gate: the repository has no CI on pull requests
+yet, so a draft runs nothing. Keep the pull request a draft until the maintainer
+marks it ready for review. `cargo xtask ladder` runs steps 1 to 4.
 
 1. `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings`.
 2. `cargo xtask contract --check`: the committed contract matches the backend
@@ -102,8 +104,9 @@ delivered by passing this ladder in order and then landing on `main` locally.
    says so.
 7. One line under `## Unreleased` in `CHANGELOG.md` for user-visible changes,
    in the style the other IRCord repositories use.
-8. Land on `main` locally. Nothing is pushed and no pull request is opened
-   until a remote exists.
+8. Push the branch once, with the ladder green on that exact commit, and open
+   a draft pull request against `main`. Do not push further commits to a branch
+   under review without a reason; each new commit restarts review.
 9. Bumping `gpui-kit` is its own change: re-apply the Windows patch, run the
    whole ladder, and have the result run once on Windows before it lands.
 
