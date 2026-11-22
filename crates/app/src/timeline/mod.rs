@@ -8,10 +8,17 @@
 //! line with a key to jump to it, the jump-to-present pill, marking a
 //! message unread, folded join and part runs, rows to retry history that
 //! failed to load, marked mentions, and exporting a conversation's log.
+//!
+//! Scrolling (package P6): a jump to a message puts it in the middle of the
+//! view ([`TimelineView::jump_to_row`]), and jump to present glides to the
+//! newest message unless reduced motion is on ([`glide`]).
 
 pub mod announce;
 pub mod export;
+mod glide;
 pub mod rows;
+
+use std::time::{Duration, Instant};
 
 use crate::menu_order;
 use crate::ui::focus::Reachable;
@@ -578,8 +585,27 @@ pub struct TimelineView {
     announcement: SharedString,
     /// An announcement waits for the pace.
     announce_waiting: bool,
+    /// A jump's row, to centre once the frame that lays it out is drawn.
+    centre: Option<usize>,
+    /// The centring frame is already scheduled.
+    centre_queued: bool,
+    /// A glide to the newest message, while it runs.
+    glide: Option<Glide>,
+    /// The id of the last glide started.
+    glides: u64,
     _subscription: Subscription,
 }
+
+/// One glide to the newest message. `id` tells its frames apart, so a frame
+/// left over from a glide that was stopped does nothing.
+struct Glide {
+    id: u64,
+    started: Instant,
+    last: Instant,
+}
+
+/// The time between two frames of a glide: about 60 a second.
+const GLIDE_FRAME: Duration = Duration::from_millis(16);
 
 impl TimelineView {
     pub fn new(session: Entity<Session>, cx: &mut Context<Self>) -> Self {
@@ -623,6 +649,10 @@ impl TimelineView {
             announcer: announce::Announcer::default(),
             announcement: SharedString::default(),
             announce_waiting: false,
+            centre: None,
+            centre_queued: false,
+            glide: None,
+            glides: 0,
             _subscription: subscription,
         };
         view.install_scroll_handler(cx);
@@ -635,9 +665,22 @@ impl TimelineView {
         self.list.set_scroll_handler(move |event, _window, cx| {
             let (range, count) = (event.visible_range.clone(), event.count);
             if let Some(this) = this.upgrade() {
+                // The list reports the range from before this wheel tick, so
+                // "newest in view" is read from the list once it has moved.
+                let later = this.clone();
+                cx.defer(move |cx| later.update(cx, |this, cx| this.sync_at_end(cx)));
                 this.update(cx, |this, cx| this.scrolled(range, count, cx));
             }
         });
+    }
+
+    /// Whether the newest row is in view, read from the list's own position.
+    fn sync_at_end(&mut self, cx: &mut Context<Self>) {
+        let at_end = self.gap_to_end() <= glide::ARRIVED;
+        if at_end != self.at_end {
+            self.at_end = at_end;
+            cx.notify();
+        }
     }
 
     /// Fetch the next page before the reader reaches an edge, and keep the
@@ -645,11 +688,6 @@ impl TimelineView {
     fn scrolled(&mut self, range: std::ops::Range<usize>, count: usize, cx: &mut Context<Self>) {
         if count == 0 {
             return;
-        }
-        let at_end = range.end >= count;
-        if at_end != self.at_end {
-            self.at_end = at_end;
-            cx.notify();
         }
         let session = self.session.read(cx);
         let (Some(client), Some(id)) = (session.client().cloned(), self.conversation.clone())
@@ -718,6 +756,10 @@ impl TimelineView {
             _ => Vec::new(),
         };
         let keys: Vec<String> = rows.iter().map(Row::key).collect();
+        if switched || detached != self.detached {
+            self.glide = None;
+            self.centre = None;
+        }
         if switched {
             self.conversation = conversation;
             self.hovered = None;
@@ -747,9 +789,7 @@ impl TimelineView {
             && let Some(ix) = rows::index_of(&rows, &message)
         {
             self.jumped = seq;
-            self.list.set_follow_mode(FollowMode::Normal);
-            self.list.scroll_to_reveal_item(ix);
-            self.at_end = false;
+            self.jump_to_row(ix, cx);
         }
         self.keys = keys;
         self.rows = Rc::new(rows);
@@ -816,18 +856,43 @@ impl TimelineView {
     /// Scroll to the "New messages" line, or say there is none.
     pub fn jump_to_unread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.rows.iter().position(|r| *r == Row::Unread) {
-            Some(ix) => {
-                self.list.set_follow_mode(FollowMode::Normal);
-                self.list.scroll_to_reveal_item(ix);
-                self.at_end = false;
-                cx.notify();
-            }
+            Some(ix) => self.jump_to_row(ix, cx),
             None => ui::toast::info(window, cx, t!("timeline-nothing-unread")),
         }
     }
 
+    /// Scroll so the row at `ix` is in the middle of the view. The list first
+    /// reveals the row, so it is laid out; the next frame then centres it
+    /// ([`Self::centre_now`]). Near the end of the history the list stops at
+    /// the bottom, as it cannot scroll past its last row.
+    fn jump_to_row(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.glide = None;
+        self.list.set_follow_mode(FollowMode::Normal);
+        self.list.scroll_to_reveal_item(ix);
+        self.centre = Some(ix);
+        self.at_end = false;
+        cx.notify();
+    }
+
+    /// Centre the pending jump's row. Runs once the frame that laid out the
+    /// reveal is drawn, so the row's bounds are current. A row that is not
+    /// laid out stays where the reveal put it.
+    fn centre_now(&mut self, cx: &mut Context<Self>) {
+        self.centre_queued = false;
+        let Some(ix) = self.centre.take() else {
+            return;
+        };
+        let Some(row) = self.list.bounds_for_item(ix) else {
+            return;
+        };
+        let view = self.list.viewport_bounds();
+        self.list.scroll_by(row.center().y - view.center().y);
+        cx.notify();
+    }
+
     /// Scroll to the newest message; a window into older history reads the
-    /// newest page first.
+    /// newest page first. Scrolled up, the view glides there unless reduced
+    /// motion is on.
     pub fn jump_to_present(&mut self, cx: &mut Context<Self>) {
         let session = self.session.read(cx);
         let (Some(client), Some(id)) = (session.client().cloned(), self.conversation.clone())
@@ -837,12 +902,70 @@ impl TimelineView {
         client.change(|w| w.clear_focus());
         if self.detached {
             present(&client, &id);
-        } else {
+        } else if self.at_end || theme::get(cx).reduced_motion {
+            self.glide = None;
             self.list.set_follow_mode(FollowMode::Tail);
             self.list.scroll_to_end();
             self.at_end = true;
             cx.notify();
+        } else {
+            self.start_glide(cx);
         }
+    }
+
+    /// Start a glide: the list stops following while it runs, and each frame
+    /// moves a share of the way to the end ([`glide::step`]).
+    fn start_glide(&mut self, cx: &mut Context<Self>) {
+        self.list.set_follow_mode(FollowMode::Normal);
+        self.glides += 1;
+        let now = Instant::now();
+        self.glide = Some(Glide {
+            id: self.glides,
+            started: now,
+            last: now,
+        });
+        self.glide_frame(cx);
+    }
+
+    /// One frame of the glide, then the next after [`GLIDE_FRAME`] on the
+    /// session's runtime (GPUI timers do not run in the headless tests).
+    fn glide_frame(&mut self, cx: &mut Context<Self>) {
+        let Some(glide) = self.glide.as_mut() else {
+            return;
+        };
+        let (id, now) = (glide.id, Instant::now());
+        let elapsed = now - glide.started;
+        let since_last = now - glide.last;
+        glide.last = now;
+        let gap = self.gap_to_end();
+        if glide::finished(gap, elapsed) {
+            self.glide = None;
+            self.list.set_follow_mode(FollowMode::Tail);
+            self.at_end = true;
+            cx.notify();
+            return;
+        }
+        self.list.scroll_by(px(glide::step(gap, since_last)));
+        cx.notify();
+        let runtime = self.session.read(cx).runtime.clone();
+        let paced = runtime.spawn(async { tokio::time::sleep(GLIDE_FRAME).await });
+        cx.spawn(async move |this, cx| {
+            let _ = paced.await;
+            this.update(cx, |this, cx| {
+                if this.glide.as_ref().is_some_and(|g| g.id == id) {
+                    this.glide_frame(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// How far the end of the history is below the view, in pixels.
+    fn gap_to_end(&self) -> f32 {
+        let end = self.list.max_offset_for_scrollbar().y;
+        let at = -self.list.scroll_px_offset_for_scrollbar().y;
+        f32::from(end - at)
     }
 
     fn retry(&mut self, newer: bool, cx: &mut Context<Self>) {
@@ -1355,7 +1478,15 @@ pub fn typing_text(names: &[String]) -> String {
 }
 
 impl Render for TimelineView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.centre.is_some() && !self.centre_queued {
+            // After this frame the list has laid out the reveal (`jump_to_row`).
+            self.centre_queued = true;
+            let view = cx.entity().downgrade();
+            window.on_next_frame(move |_, cx| {
+                view.update(cx, |this, cx| this.centre_now(cx)).ok();
+            });
+        }
         let theme = theme::get(cx).clone();
         let session = self.session.read(cx);
         let typing = match (session.client(), &self.conversation) {

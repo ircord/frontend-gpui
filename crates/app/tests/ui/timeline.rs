@@ -1,7 +1,8 @@
 //! Tests for package R1: reading the timeline against the canned server —
 //! a reply's quote jumping to an old message and the pill back to the
 //! present, the "New messages" line before the first unread row, marking a
-//! message unread, jumping to a date and exporting the log.
+//! message unread, jumping to a date and exporting the log. Package P6: a
+//! jump centres its message, and jump to present glides back.
 
 use std::time::Duration;
 
@@ -131,6 +132,134 @@ fn a_reply_jumps_to_an_old_message_and_the_pill_returns(cx: &mut TestAppContext)
         let w = session.client().unwrap().read();
         assert!(!w.timelines["c-general"].has_newer);
         assert_eq!(w.focused("c-general"), None);
+    });
+}
+
+/// `#general` holds m100..m119 as its newest page, and m119 replies to m40.
+/// A window around m40 is m1..m80, with newer history after it.
+fn serve_around_m40(server: &CannedServer) {
+    server.route_fn("GET", "/api/v1/conversations/*/messages", |r| {
+        if !r.path.ends_with("/c-general/messages") {
+            return Reply::json(200, json!({"items": [], "nextCursor": null}));
+        }
+        if r.query_param("around").is_some() {
+            let page = MessagePage {
+                items: (1..=80).map(numbered).collect(),
+                next_cursor: None,
+                has_newer: Some(true),
+                ..Default::default()
+            };
+            return Reply::json(200, serde_json::to_value(page).unwrap());
+        }
+        if r.query_param("before").is_some() {
+            return Reply::json(200, json!({"items": [], "nextCursor": null}));
+        }
+        let mut items: Vec<Message> = (100..120).map(numbered).collect();
+        items.last_mut().unwrap().reply_to = Some(ircord_client::contract::Reply {
+            id: "m40".into(),
+            nick: "bob".into(),
+            text: "message 40".into(),
+        });
+        let page = MessagePage {
+            items,
+            next_cursor: Some("older".into()),
+            ..Default::default()
+        };
+        Reply::json(200, serde_json::to_value(page).unwrap())
+    });
+}
+
+/// `#general` holds m1..m100 as its whole history: a timeline long enough to
+/// scroll up in, and not a window into older history.
+fn serve_long_history(server: &CannedServer) {
+    server.route_fn("GET", "/api/v1/conversations/*/messages", |r| {
+        if !r.path.ends_with("/c-general/messages") {
+            return Reply::json(200, json!({"items": [], "nextCursor": null}));
+        }
+        let page = MessagePage {
+            items: (1..=100).map(numbered).collect(),
+            ..Default::default()
+        };
+        Reply::json(200, serde_json::to_value(page).unwrap())
+    });
+}
+
+#[gpui_kit::test]
+fn a_jump_puts_the_message_in_the_middle_of_the_view(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, serve_around_m40);
+    wait(cx, "the newest page", |cx| timeline_has(&f, cx, "m119"));
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("reply-m119", cx);
+    })
+    .unwrap();
+    wait(cx, "the window around m40", |cx| {
+        timeline_has(&f, cx, "m40")
+    });
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        // The frame after the reveal centres the row: run it, then draw.
+        window.simulate_next_frame(cx);
+        window.render_frame(cx);
+        let row = window.find("message-m40").bounds();
+        let view = window.find("timeline").bounds();
+        let off = f32::from(row.center().y - view.center().y).abs();
+        assert!(off < 40.0, "the jumped-to row is {off} px from the middle");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn jump_to_present_glides_back_to_the_newest_message(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, serve_long_history);
+    wait(cx, "the whole history", |cx| timeline_has(&f, cx, "m100"));
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let up =
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(600.)));
+        window.scroll("timeline", up, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    // The app runs the wheel's deferred work once the event is handled; the
+    // pill follows from it on the next frame.
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert!(
+            !window
+                .try_find("message-m100")
+                .is_some_and(|row| row.visible()),
+            "the wheel moved the list up"
+        );
+        assert!(window.try_find("jump-present").is_some(), "scrolled up");
+        window.click("jump-present", cx);
+    })
+    .unwrap();
+    // The glide ends at the newest message, and the pill goes with it.
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        cx.run_until_parked();
+        let gone = cx
+            .update_window(f.window, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find("jump-present").is_none()
+            })
+            .unwrap();
+        if gone {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the glide did not end"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    frame(&f, cx, |window| {
+        assert!(window.find("message-m100").visible(), "back at the newest");
     });
 }
 
