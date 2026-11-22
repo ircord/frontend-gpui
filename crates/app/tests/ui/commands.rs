@@ -89,17 +89,19 @@ fn slash_suggests_commands_and_tab_takes_one(cx: &mut TestAppContext) {
     type_in(&f, cx, "/jo");
     assert!(shows(&f, cx, "suggestion-command-join"));
     press(&f, cx, "tab");
-    assert_eq!(text(&f, cx), "/join ");
+    assert_eq!(text(&f, cx), "/jo");
+    assert!(shows(&f, cx, "command-editor"));
     assert!(!shows(&f, cx, "composer-suggestions"));
-    // Guided entry names the argument being typed.
-    assert!(shows(&f, cx, "composer-guide"));
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
-        let found = window.find("composer-guide");
+        let found = window.find("command-editor-hint");
         let label = found.label().unwrap_or_default();
         assert!(label.contains("Choose or enter a channel."), "{label}");
     })
     .unwrap();
+    press(&f, cx, "escape");
+    assert!(!shows(&f, cx, "command-editor"));
+    assert_eq!(text(&f, cx), "/jo");
 }
 
 #[gpui_kit::test]
@@ -123,17 +125,79 @@ fn arrows_move_through_suggestions_and_escape_hides_them(cx: &mut TestAppContext
     })
     .unwrap();
     press(&f, cx, "enter");
-    assert_eq!(text(&f, cx), "/devoice ");
-    for _ in 0..2 {
-        press(&f, cx, "backspace");
-    }
-    assert_eq!(text(&f, cx), "/devoic");
+    assert!(shows(&f, cx, "command-editor"));
+    press(&f, cx, "escape");
+    assert_eq!(text(&f, cx), "/de");
+    type_in(&f, cx, "voic");
     // `/devoic`: one suggestion, hidden by Escape until the text changes.
     assert!(shows(&f, cx, "suggestion-command-devoice"));
     press(&f, cx, "escape");
     assert!(!shows(&f, cx, "composer-suggestions"));
     type_in(&f, cx, "e");
     assert!(shows(&f, cx, "composer-suggestions"));
+}
+
+#[gpui_kit::test]
+fn guided_join_validates_fields_and_sends_the_key_without_drafting_it(cx: &mut TestAppContext) {
+    let f = open(cx, snapshot(), |server| {
+        server.route(
+            "POST",
+            "/api/v1/conversations",
+            201,
+            json!({"id":"c-rust","networkId":"n1","kind":"channel","name":"rust","joined":true}),
+        );
+    });
+    type_in(&f, cx, "/j");
+    press(&f, cx, "space");
+    assert!(shows(&f, cx, "command-editor"));
+    press(&f, cx, "enter");
+    assert!(shows(&f, cx, "command-editor-error"));
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.input("#rust", cx);
+        window.click("command-argument-key", cx);
+        window.input("sample-key", cx);
+    })
+    .unwrap();
+    assert_eq!(text(&f, cx), "/j");
+    press(&f, cx, "enter");
+    let post = f
+        .server
+        .wait_for("POST", "/api/v1/conversations", WAIT)
+        .json();
+    assert_eq!(post["name"], "#rust");
+    assert_eq!(post["key"], "sample-key");
+    wait(cx, "the submitted draft to clear", |cx| {
+        ircord_app::features::drafts::text(&f.session, "c-general", cx).is_empty()
+    });
+}
+
+#[gpui_kit::test]
+fn guided_nick_suggestions_can_be_chosen_before_running_the_command(cx: &mut TestAppContext) {
+    let f = open(cx, snapshot(), |_| {});
+    type_in(&f, cx, "/kick");
+    press(&f, cx, "enter");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.input("bo", cx);
+    })
+    .unwrap();
+    assert!(shows(&f, cx, "command-option-bob"));
+    press(&f, cx, "tab");
+    assert!(!shows(&f, cx, "command-editor-suggestions"));
+    cx.update_window(f.window, |_, window, cx| {
+        window.input("Testing", cx);
+    })
+    .unwrap();
+    press(&f, cx, "enter");
+    let sent = f
+        .server
+        .wait_for("POST", "/api/v1/networks/n1/commands", WAIT)
+        .json();
+    assert_eq!(sent["line"], "KICK #general bob :Testing");
+    wait(cx, "the submitted draft to clear", |cx| {
+        ircord_app::features::drafts::text(&f.session, "c-general", cx).is_empty()
+    });
 }
 
 #[gpui_kit::test]

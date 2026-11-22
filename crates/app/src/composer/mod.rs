@@ -302,6 +302,15 @@ impl ComposerView {
     /// Put a suggestion in place of the text it replaces, the caret after it.
     pub fn apply(&mut self, suggestion: &Suggestion, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.text(cx);
+        if let SuggestionLook::Command { name } = suggestion.look
+            && text
+                .get(suggestion.replace.end..)
+                .is_some_and(|tail| tail.trim().is_empty())
+            && let Some(ctx) = self.ctx(cx)
+            && crate::features::commands::open_editor(&ctx, name, &text, window, cx)
+        {
+            return;
+        }
         let range =
             suggestion.replace.start.min(text.len())..suggestion.replace.end.min(text.len());
         if !text.is_char_boundary(range.start) || !text.is_char_boundary(range.end) {
@@ -381,6 +390,16 @@ impl ComposerView {
             return;
         };
         self.remember(cx);
+        if !m.modified() && (key.key == "space" || key.key_char.as_deref() == Some(" ")) {
+            let text = self.text(cx);
+            if self.input.read(cx).selected_range() == (text.len()..text.len())
+                && let Some(spec) = ircord_client::commands::args::exact(&text)
+                && crate::features::commands::open_editor(&ctx, spec.name, &text, window, cx)
+            {
+                cx.stop_propagation();
+                return;
+            }
+        }
         if key.key == "backspace" && !m.modified() && self.restore_typed(window, cx) {
             cx.stop_propagation();
             return;
@@ -500,6 +519,12 @@ impl ComposerView {
         if event.context_stack.iter().any(|c| c.contains("Input")) {
             return;
         }
+        if self
+            .ctx(cx)
+            .is_some_and(|ctx| crate::features::commands::editor_is_open(&ctx, cx))
+        {
+            return;
+        }
         let shown = {
             let session = self.session.read(cx);
             let joined = match (session.client(), &session.conversation) {
@@ -567,14 +592,18 @@ impl Render for ComposerView {
         }
         self.remember(cx);
         let slots = registry::get(cx);
-        let (above, buttons) = (
+        let (above, input, buttons) = (
             slots.composer.above.to_vec(),
+            slots.composer.input.to_vec(),
             slots.composer.buttons.to_vec(),
         );
         let above: Vec<AnyElement> = above
             .iter()
             .filter_map(|s| (s.render)(&ctx, window, cx))
             .collect();
+        if let Some(editor) = input.iter().find_map(|s| (s.render)(&ctx, window, cx)) {
+            return root.children(above).child(editor);
+        }
         let buttons: Vec<AnyElement> = buttons
             .iter()
             .filter_map(|s| (s.render)(&ctx, window, cx))
@@ -743,7 +772,7 @@ impl ComposerView {
                                 .child(detail),
                         )
                     }),
-                SuggestionLook::Stacked => row
+                SuggestionLook::Command { .. } => row
                     .flex()
                     .flex_col()
                     .child(

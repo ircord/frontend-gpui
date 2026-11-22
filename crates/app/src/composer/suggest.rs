@@ -8,13 +8,12 @@
 //! right.
 
 use gpui_kit::{App, SharedString};
-use ircord_client::commands::catalog::{self, Place};
+use ircord_client::commands::catalog;
 use ircord_client::commands::complete::{self, TokenKind};
 use ircord_client::features::Context as Allowed;
-use ircord_client::irc::channel_rights_for;
 use ircord_client::store::{Connection, people};
 
-use crate::features::commands::{args_text, description};
+use crate::features::commands::{args_text, description, place};
 use crate::registry::{ComposerCtx, Suggestion, SuggestionLook};
 
 /// How many people or channels the list shows.
@@ -40,12 +39,7 @@ pub fn commands(ctx: &ComposerCtx, text: &str, cx: &App) -> Vec<Suggestion> {
         &ctx.conversation,
         w.connection == Some(Connection::Live),
     );
-    let place = Place {
-        channel: allowed.conversation.is_some_and(|c| {
-            c.kind == ircord_client::contract::ConversationKind::Channel && c.party.is_none()
-        }),
-        operator: channel_rights_for(allowed.own_modes(), allowed.conversation, allowed.network).op,
-    };
+    let place = place(&allowed);
     let heading = SharedString::from(t!("composer-commands"));
     catalog::matching(&token.query, place)
         .into_iter()
@@ -63,7 +57,7 @@ pub fn commands(ctx: &ComposerCtx, text: &str, cx: &App) -> Vec<Suggestion> {
                 replace: token.range.clone(),
                 insert: format!("/{} ", spec.name),
                 heading: Some(heading.clone()),
-                look: SuggestionLook::Stacked,
+                look: SuggestionLook::Command { name: spec.name },
             }
         })
         .collect()

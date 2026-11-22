@@ -444,8 +444,8 @@ pub enum SuggestionLook {
     /// The label, then the detail on the same line.
     #[default]
     Inline,
-    /// The label in monospace, the detail on its own line below (commands).
-    Stacked,
+    /// The command and its syntax in monospace, with its description below.
+    Command { name: &'static str },
     /// A person: their picture, the label (their name), the detail (their
     /// `@nick`) at the right. `member` is the member's ID.
     Person { member: String },
@@ -552,6 +552,8 @@ impl SubmitHook {
 pub struct ComposerSlots {
     /// Above the box: the reply bar, the upload tray.
     pub above: List<Slot<ComposerCtx>>,
+    /// The first visible replacement for the normal message field and buttons.
+    pub input: List<Slot<ComposerCtx>>,
     /// Buttons beside the box: upload, emoji, GIF.
     pub buttons: List<Slot<ComposerCtx>>,
     pub suggestions: List<SuggestionProvider>,

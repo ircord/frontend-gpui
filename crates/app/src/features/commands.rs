@@ -17,12 +17,13 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::Client;
 use ircord_client::commands::args::{self, ArgError};
-use ircord_client::commands::catalog::Suggest;
+use ircord_client::commands::catalog::{self, Place, Suggest};
 use ircord_client::commands::complete;
 use ircord_client::commands::ignore::Notice;
 use ircord_client::commands::{self as cmd, NickError, Plan, Problem, View};
 use ircord_client::documents::NOTIFICATION_SETTINGS;
 use ircord_client::features::{Context as Allowed, Reason};
+use ircord_client::irc::channel_rights_for;
 use ircord_client::store::{Connection, people};
 
 use crate::composer::{self, FormatBold, FormatItalic, FormatUnderline};
@@ -35,6 +36,12 @@ use crate::session::Session;
 use crate::theme;
 use crate::ui;
 
+mod editor;
+
+pub(crate) use editor::{is_open as editor_is_open, open as open_editor};
+
+type CommandFinished = Rc<dyn Fn(bool, &mut Window, &mut App)>;
+
 /// What a view-opening command hands the view's package.
 #[derive(Clone)]
 pub struct ViewRequest {
@@ -46,6 +53,8 @@ pub struct ViewRequest {
     pub args: String,
     /// The original draft, including any whitespace removed in planning.
     pub draft: String,
+    /// Report whether an asynchronous command succeeded to its editor.
+    pub(super) finished: Option<CommandFinished>,
 }
 
 pub type ViewHandler = Rc<dyn Fn(&ViewRequest, &mut Window, &mut App)>;
@@ -125,8 +134,10 @@ fn arguments(ctx: &ComposerCtx, text: &str, cx: &App) -> Vec<Suggestion> {
 }
 
 pub fn init(cx: &mut App) {
+    cx.intercept_keystrokes(editor::key).detach();
     registry::register(cx, |r| {
         let c = &mut r.composer;
+        c.input.add(Slot::new("command-editor", editor::slot));
         c.suggestions.add(SuggestionProvider {
             id: "commands".into(),
             order: 0,
@@ -209,6 +220,15 @@ pub fn init(cx: &mut App) {
 
 // ---- Running commands ----
 
+pub(crate) fn place(context: &Allowed<'_>) -> Place {
+    Place {
+        channel: context.conversation.is_some_and(|c| {
+            c.kind == ircord_client::contract::ConversationKind::Channel && c.party.is_none()
+        }),
+        operator: channel_rights_for(context.own_modes(), context.conversation, context.network).op,
+    }
+}
+
 fn command_filter(
     ctx: &ComposerCtx,
     text: String,
@@ -217,6 +237,12 @@ fn command_filter(
 ) -> SendOutcome {
     if !text.trim_start().starts_with('/') {
         return SendOutcome::Continue(text);
+    }
+    if let Some(spec) = args::exact(&text)
+        && (spec.name == "status" || spec.fields.iter().any(|field| field.required))
+        && open_editor(ctx, spec.name, &text, window, cx)
+    {
+        return SendOutcome::Keep;
     }
     let Some(client) = ctx.session.read(cx).client().cloned() else {
         return SendOutcome::Continue(text);
@@ -243,10 +269,15 @@ fn command_filter(
         }
         Ok(Plan::Ignore { unignore, arg }) => ignore(ctx, &client, unignore, &arg, window, cx),
         Ok(plan) => {
-            run(ctx, &client, plan, text, window, cx);
+            run(ctx, &client, plan, CommandOrigin::Typed(text), window, cx);
             SendOutcome::Handled
         }
     }
+}
+
+enum CommandOrigin {
+    Typed(String),
+    Guided(CommandFinished),
 }
 
 /// Run a plan that talks to the server; on failure say why and put the
@@ -255,7 +286,7 @@ fn run(
     ctx: &ComposerCtx,
     client: &Rc<Client>,
     plan: Plan,
-    typed: String,
+    origin: CommandOrigin,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -271,26 +302,45 @@ fn run(
                 .await
                 .map_err(|e| e.to_string())
                 .and_then(|r| r.map_err(|e| e.to_string()));
-            let _ = acx.update(|window, cx| match result {
-                Err(e) => {
-                    ui::toast::error(window, cx, e);
-                    let composer = ctx.composer.clone();
-                    composer.update(cx, |c, cx| {
-                        if c.text(cx).is_empty() {
-                            c.set_text_at(&typed, typed.len(), window, cx);
-                        }
-                    });
+            let _ = acx.update(|window, cx| {
+                if !ctx
+                    .session
+                    .read(cx)
+                    .client()
+                    .is_some_and(|active| Rc::ptr_eq(active, &client))
+                {
+                    return;
                 }
-                Ok(done) => {
-                    if let Some(id) = &done.open {
-                        ctx.session
-                            .update(cx, |s, cx| s.select_conversation(id, cx));
-                        if let Some(text) = &done.send {
-                            client.send(id, text);
+                match result {
+                    Err(e) => match origin {
+                        CommandOrigin::Typed(typed) => {
+                            ui::toast::error(window, cx, e);
+                            if ctx.session.read(cx).conversation.as_deref()
+                                == Some(&ctx.conversation)
+                            {
+                                ctx.composer.update(cx, |c, cx| {
+                                    if c.text(cx).is_empty() {
+                                        c.set_text_at(&typed, typed.len(), window, cx);
+                                    }
+                                });
+                            }
                         }
-                    }
-                    if let Some(view) = then {
-                        open_view_quietly(&ctx, view, String::new(), window, cx);
+                        CommandOrigin::Guided(finished) => finished(false, window, cx),
+                    },
+                    Ok(done) => {
+                        if let CommandOrigin::Guided(finished) = origin {
+                            finished(true, window, cx);
+                        }
+                        if let Some(id) = &done.open {
+                            ctx.session
+                                .update(cx, |s, cx| s.select_conversation(id, cx));
+                            if let Some(text) = &done.send {
+                                client.send(id, text);
+                            }
+                        }
+                        if let Some(view) = then {
+                            open_view_quietly(&ctx, view, String::new(), window, cx);
+                        }
                     }
                 }
             });
@@ -315,6 +365,7 @@ fn request(ctx: &ComposerCtx, args: String, cx: &App) -> ViewRequest {
         network,
         args,
         draft: composer::typed(&ctx.composer, cx).0,
+        finished: None,
     }
 }
 
@@ -434,6 +485,9 @@ fn limit_filter(ctx: &ComposerCtx, text: String, window: &mut Window, cx: &mut A
 // ---- The bar above the box ----
 
 fn render_guide(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    if editor::is_open(ctx, cx) {
+        return None;
+    }
     let theme = theme::get(cx).clone();
     let (text, _) = composer::typed(&ctx.composer, cx);
     let mut column = div().flex().flex_col().gap_1().mb_1().text_sm();
@@ -654,6 +708,7 @@ fn arg_error_text(error: ArgError, field: &str) -> String {
         ArgError::Control => t!("commands-error-control", field = field),
         ArgError::Token => t!("commands-error-token", field = field),
         ArgError::MaxBytes => t!("commands-error-max-bytes", field = field),
+        ArgError::Order => t!("commands-error-order", field = field),
     }
 }
 

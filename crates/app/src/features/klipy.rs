@@ -458,12 +458,18 @@ fn send_gif_to(
 /// command was typed, even if you moved on meanwhile. One lookup per
 /// conversation at a time.
 fn gif_command(request: &ViewRequest, window: &mut Window, cx: &mut App) {
+    let fail = |message: &str, window: &mut Window, cx: &mut App| {
+        ui::toast::info(window, cx, message.to_string());
+        if let Some(finished) = &request.finished {
+            finished(false, window, cx);
+        }
+    };
     let query = request.args.trim().to_string();
     if query.is_empty() {
-        return ui::toast::info(window, cx, t!("emoji-gif-usage"));
+        return fail(t!("emoji-gif-usage"), window, cx);
     }
     let Some(klipy) = klipy(cx) else {
-        return ui::toast::info(window, cx, t!("emoji-gif-not-configured"));
+        return fail(t!("emoji-gif-not-configured"), window, cx);
     };
     let session = request.session.clone();
     let Some(client) = session.read(cx).client().cloned() else {
@@ -473,11 +479,12 @@ fn gif_command(request: &ViewRequest, window: &mut Window, cx: &mut App) {
     let lookup = (Rc::as_ptr(&client) as usize, conversation.clone());
     let lookups = &mut cx.default_global::<Expressions>().lookups;
     if lookups.contains_key(&lookup) {
-        return ui::toast::info(window, cx, t!("emoji-gif-pending"));
+        return fail(t!("emoji-gif-pending"), window, cx);
     }
     lookups.insert(lookup.clone(), query.clone());
     cx.refresh_windows();
     let draft = request.draft.clone();
+    let finished = request.finished.clone();
     let reply_mode = message_actions::mode(&conversation, cx);
     let search = query.clone();
     let task = session
@@ -497,9 +504,10 @@ fn gif_command(request: &ViewRequest, window: &mut Window, cx: &mut App) {
                 {
                     return;
                 }
-                match result {
+                let sent = match result {
                     Ok(Ok(page)) if page.items.is_empty() => {
-                        ui::toast::info(window, cx, t!("emoji-gif-no-match", query = query))
+                        ui::toast::info(window, cx, t!("emoji-gif-no-match", query = query));
+                        false
                     }
                     Ok(Ok(page)) => {
                         let gif = page.items[pick_random(page.items.len())].clone();
@@ -507,17 +515,29 @@ fn gif_command(request: &ViewRequest, window: &mut Window, cx: &mut App) {
                             Some(Mode::Reply { message, .. }) => Some(message.as_str()),
                             _ => None,
                         };
-                        if send_gif_to(&session, &conversation, gif, &query, reply, window, cx) {
-                            if reply.is_some()
-                                && message_actions::mode(&conversation, cx) == reply_mode
-                            {
-                                message_actions::take_reply(&conversation, cx);
-                            }
-                            drafts::clear_if_matches(&session, &conversation, &draft, window, cx);
+                        let sent =
+                            send_gif_to(&session, &conversation, gif, &query, reply, window, cx);
+                        if sent
+                            && reply.is_some()
+                            && message_actions::mode(&conversation, cx) == reply_mode
+                        {
+                            message_actions::take_reply(&conversation, cx);
                         }
+                        sent
                     }
-                    Ok(Err(e)) => ui::toast::error(window, cx, error_text(&e)),
-                    Err(e) => ui::toast::error(window, cx, e.to_string()),
+                    Ok(Err(e)) => {
+                        ui::toast::error(window, cx, error_text(&e));
+                        false
+                    }
+                    Err(e) => {
+                        ui::toast::error(window, cx, e.to_string());
+                        false
+                    }
+                };
+                if let Some(finished) = &finished {
+                    finished(sent, window, cx);
+                } else if sent {
+                    drafts::clear_if_matches(&session, &conversation, &draft, window, cx);
                 }
             })
             .ok();
@@ -638,7 +658,9 @@ fn toggle_gifs_from_key(window: &mut Window, cx: &mut App) {
     else {
         return;
     };
-    toggle(&ctx, Tab::Gifs, window, cx);
+    if !commands::editor_is_open(&ctx, cx) {
+        toggle(&ctx, Tab::Gifs, window, cx);
+    }
 }
 
 fn picker_slot(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
