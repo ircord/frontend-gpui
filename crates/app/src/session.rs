@@ -15,10 +15,11 @@ use ircord_client::client::sign_in;
 use ircord_client::config::{AppState, ConfigDir};
 use ircord_client::credentials::CredentialStore;
 use ircord_client::events::Update;
-use ircord_client::store::Changes;
+use ircord_client::store::{Changes, topic};
 use ircord_client::{Client, ServerAddress};
 use tokio::runtime::Runtime;
 
+use crate::notify::read_aloud;
 use crate::route::{History, Route};
 
 /// The panel ID that closes the right-hand panel, the member list beside a
@@ -68,6 +69,7 @@ pub struct Session {
     pub panel: Option<SharedString>,
     /// Alert IDs of shown notifications → the conversation each opens.
     pub alerts: HashMap<String, String>,
+    pub(crate) read_aloud: read_aloud::Reader,
     pub window_active: bool,
     pub state: AppState,
     /// Set while signing in or checking a server, to disable the form.
@@ -87,6 +89,7 @@ impl Session {
         cx: &mut Context<Self>,
     ) -> Self {
         let state = config.state();
+        let read_aloud = read_aloud::Reader::new(&config);
         let ticker = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -110,6 +113,7 @@ impl Session {
             history: History::default(),
             panel: None,
             alerts: HashMap::new(),
+            read_aloud,
             window_active: true,
             state,
             busy: false,
@@ -156,6 +160,8 @@ impl Session {
     }
 
     fn set_phase(&mut self, phase: Phase, cx: &mut Context<Self>) {
+        let old_client = self.client().cloned();
+        self.read_aloud.sync(None, old_client.as_deref());
         if !matches!(phase, Phase::SignedIn { .. }) {
             self.history = History::default();
             self.panel = None;
@@ -278,6 +284,9 @@ impl Session {
                 if changes.reset {
                     self.fix_selection(cx);
                 }
+                if changes.reset || changes.touches(topic::DOCUMENTS) {
+                    self.sync_read_aloud();
+                }
                 for notice in &changes.notices {
                     cx.emit(SessionEvent::Notice(notice.clone()));
                 }
@@ -301,6 +310,10 @@ impl Session {
                 cx.notify();
             }
             Update::Alert(alert) => crate::notify::show(self, alert, cx),
+            Update::ReadAloud(highlight) => {
+                self.read_aloud
+                    .incoming(highlight, &self.runtime, &self.credentials, cx);
+            }
             Update::SignedOut => {
                 if let Some(server) = self.server().cloned() {
                     if let Err(e) = self.credentials.clear(&server) {
@@ -312,6 +325,22 @@ impl Session {
                 }
             }
         }
+    }
+
+    fn sync_read_aloud(&mut self) {
+        let target = read_aloud::target(self);
+        let client = self.client().cloned();
+        self.read_aloud.sync(target, client.as_deref());
+    }
+
+    pub(crate) fn set_read_aloud(&mut self, enabled: bool, cx: &mut Context<Self>) -> bool {
+        let Some(target) = read_aloud::target(self) else {
+            return false;
+        };
+        let saved = self.read_aloud.change(&target, enabled, &self.config);
+        self.sync_read_aloud();
+        cx.notify();
+        saved.is_ok()
     }
 
     /// After a bootstrap: keep the selection if it still exists, else pick one.

@@ -28,6 +28,7 @@ pub mod notify_settings;
 pub mod outbox;
 pub mod parties;
 pub mod people;
+pub mod read_aloud;
 pub mod saved;
 pub mod server_log;
 pub mod sidebar_order;

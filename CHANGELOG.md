@@ -5,6 +5,7 @@
 ### New
 
 - Configure a speech service and play a Read Aloud sample in Notifications settings. The speech key stays in this device’s credential store.
+- Read Aloud can speak new highlights on this device through your chosen speech service. It respects ignored senders, muted conversations and quiet hours.
 
 ### Improved
 

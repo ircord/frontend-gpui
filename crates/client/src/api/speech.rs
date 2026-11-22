@@ -32,6 +32,7 @@ pub enum Error {
 }
 
 /// A validated endpoint with the configured model and voice.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Endpoint {
     url: Url,
     model: String,

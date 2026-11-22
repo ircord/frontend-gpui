@@ -7,6 +7,7 @@ use gpui_kit::TestSupportExt;
 use gpui_kit::component::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::api::speech::{self, Endpoint};
@@ -14,6 +15,7 @@ use ircord_client::contract::SpeechService;
 use ircord_client::store::topic;
 use ircord_platform::audio::Track;
 
+use crate::notify::read_aloud;
 use crate::session::{Session, SessionEvent};
 use crate::theme;
 use crate::ui;
@@ -154,12 +156,7 @@ impl ReadAloudView {
     }
 
     fn scope(&self, endpoint: &Endpoint, cx: &App) -> Option<String> {
-        let session = self.session.read(cx);
-        let server = session.server()?.origin();
-        let client = session.client()?;
-        let w = client.read();
-        let account = &w.user.id;
-        (!account.is_empty()).then(|| format!("{server}\n{account}\n{}", endpoint.origin()))
+        read_aloud::scope_for(self.session.read(cx), endpoint)
     }
 
     fn change_key(&mut self, clear: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -304,6 +301,9 @@ impl Render for ReadAloudView {
         let theme = theme::get(cx).clone();
         let loaded = self.sync(window, cx);
         let disabled = !loaded || self.task.is_some() || self.sample.is_some();
+        let session = self.session.read(cx);
+        let enabled = session.read_aloud.enabled();
+        let configured = read_aloud::target(session).is_some();
         let fields = [
             ("speech-url", t!("speech-url"), &self.url),
             ("speech-model", t!("speech-model"), &self.model),
@@ -314,6 +314,32 @@ impl Render for ReadAloudView {
             .flex()
             .flex_col()
             .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(div().child(t!("speech-read-highlights")))
+                    .child(
+                        Switch::new("speech-read-highlights")
+                            .checked(enabled)
+                            .disabled(!configured)
+                            .accessibility_label(t!("speech-read-highlights"))
+                            .on_click(cx.listener(|this, enabled, _, cx| {
+                                let enabled = *enabled;
+                                let ok = this
+                                    .session
+                                    .update(cx, |session, cx| session.set_read_aloud(enabled, cx));
+                                if ok {
+                                    this.notice = None;
+                                    cx.notify();
+                                } else {
+                                    this.say(Err(t!("speech-preference-unavailable").into()), cx);
+                                }
+                            })),
+                    ),
+            )
             .child(
                 div()
                     .text_sm()

@@ -1,4 +1,11 @@
 speech-read-aloud = Read Aloud
+speech-read-highlights = Read highlights aloud on this device
+speech-preference-unavailable = Couldn’t save the Read Aloud setting on this device.
+speech-highlight-failed = Read Aloud couldn’t play a highlight. Check the speech service in Notifications settings.
+speech-someone = Someone
+speech-sent-gif = sent a GIF
+speech-channel-line = { $sender } in { $channel }: { $body }
+speech-direct-line = { $sender }: { $body }
 speech-keywords = speech, text to speech, voice, highlights, TTS
 speech-service-help = Configure the speech service for your account and play a sample. The API key stays on this device.
 speech-url = Speech service URL
