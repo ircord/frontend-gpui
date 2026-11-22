@@ -24,9 +24,6 @@ use windows::core::{HSTRING, IInspectable, Interface, Result};
 
 use super::{Frame, State, Video};
 
-/// Set to true once a person has watched video play on Windows (see the plan).
-pub const PROVEN: bool = false;
-
 struct Shared {
     frame: Option<Frame>,
     failed: bool,

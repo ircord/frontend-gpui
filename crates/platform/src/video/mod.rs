@@ -44,23 +44,30 @@ pub trait Video {
 
 /// Whether this build can play video on this machine.
 ///
-/// `IRCORD_VIDEO=0` turns video off; `IRCORD_VIDEO=1` turns it on where the
-/// backend exists but nobody has watched it play yet (`PROVEN` is false).
+/// Windows: always on, with no switch (the captain's ruling); a video that
+/// fails shows its card and logs why. Elsewhere `IRCORD_VIDEO=0` turns video
+/// off, and `IRCORD_VIDEO=1` turns it on where the backend exists but nobody
+/// has watched it play yet (macOS `PROVEN` is false).
 pub fn available() -> bool {
-    let choice = std::env::var("IRCORD_VIDEO").ok();
-    if choice.as_deref() == Some("0") {
-        return false;
-    }
-    #[allow(unused_variables)]
-    let forced = choice.as_deref() == Some("1");
     #[cfg(windows)]
-    return forced || windows::PROVEN;
-    #[cfg(target_os = "macos")]
-    return forced || macos::PROVEN;
-    #[cfg(target_os = "linux")]
-    return linux::available();
-    #[allow(unreachable_code)]
-    false
+    {
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        let choice = std::env::var("IRCORD_VIDEO").ok();
+        if choice.as_deref() == Some("0") {
+            return false;
+        }
+        #[allow(unused_variables)]
+        let forced = choice.as_deref() == Some("1");
+        #[cfg(target_os = "macos")]
+        return forced || macos::PROVEN;
+        #[cfg(target_os = "linux")]
+        return linux::available();
+        #[allow(unreachable_code)]
+        false
+    }
 }
 
 /// Open `url` (http or https), paused, with pictures at most `width` by
