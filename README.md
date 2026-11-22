@@ -58,10 +58,10 @@ accepts Microsoft's licence for them. They are used for linking only.
 
 ## Running it
 
-Releases on GitHub carry the installers below. Without a code-signing
-certificate, Windows warns about an unknown publisher on the first run of the
-setup ("More info", then "Run anyway"), and macOS asks once as described
-under macOS.
+Releases on GitHub will carry the installers below once the first is
+published. Without a code-signing certificate, Windows warns about an unknown
+publisher on the first run of the setup ("More info", then "Run anyway"), and
+macOS asks once as described under macOS.
 
 **Windows 10 or 11.** Run `IRCord-GPUI-Windows-x64-setup.exe`; it installs
 for the current user, with a Start menu entry, and needs no administrator.
