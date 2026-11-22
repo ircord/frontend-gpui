@@ -1,0 +1,17 @@
+[package]
+name = "ircord-dev"
+description = "Native development launcher for IRCord"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+hot-reload = ["ircord-app/hot-reload"]
+
+[[bin]]
+name = "ircord-dev"
+path = "src/main.rs"
+required-features = ["hot-reload"]
+
+[dependencies]
+ircord-app = { path = "../app" }

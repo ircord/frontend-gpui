@@ -10,7 +10,7 @@
 //!   channel operators' requests to be listed in it.
 //! - Emoji (`emoji.rs`): who may manage the emoji catalog.
 //!
-//! Only owners see the entry (a row under the conversation list, your own
+//! Only owners see the entry (a shield in the network bar, your own
 //! menu, a key). Whether you are one is asked of the server
 //! (`/administration/access`) when the client connects and again a minute
 //! later at most, and at once when the server refuses a request, which it
@@ -78,13 +78,11 @@ pub fn init(cx: &mut App) {
             PaneKind::Page(PAGE.into()),
             |ctx: &PaneCtx, window, cx| view(ctx, window, cx).into_any_element(),
         ));
-        r.sidebar_footer.add(
-            Slot::new("administration", |ctx: &SidebarCtx, _, cx| {
+        r.topbar_actions
+            .add(Slot::new("administration", |ctx: &SidebarCtx, _, cx| {
                 check(&ctx.session, cx);
-                is_owner(&ctx.session, cx).then(|| sidebar_row(&ctx.session, cx))
-            })
-            .order(-10),
-        );
+                is_owner(&ctx.session, cx).then(|| toolbar_button(&ctx.session, cx))
+            }));
         r.self_menu.add(
             MenuItem::new(
                 "administration",
@@ -233,7 +231,7 @@ pub(crate) fn recheck(client: &Rc<Client>, cx: &mut App) {
     }
 }
 
-fn sidebar_row(session: &Entity<Session>, cx: &App) -> AnyElement {
+fn toolbar_button(session: &Entity<Session>, cx: &App) -> AnyElement {
     let theme = theme::get(cx);
     let active = showing(session, cx);
     let session = session.clone();
@@ -245,20 +243,23 @@ fn sidebar_row(session: &Entity<Session>, cx: &App) -> AnyElement {
         .reachable(theme)
         .aria_label(t!("admin-title"))
         .aria_selected(active)
-        .mx_2()
-        .px_2()
-        .py_1()
-        .rounded_md()
+        .size(px(32.))
+        .flex_none()
+        .rounded_full()
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.main)
         .flex()
         .items_center()
-        .gap_2()
-        .text_sm()
+        .justify_center()
         .cursor_pointer()
-        .text_color(if active { theme.text } else { theme.muted })
+        .tooltip(ui::tooltip::text(t!("admin-title")))
         .when(active, |d| d.bg(theme.selected))
         .hover(move |d| d.bg(hover))
-        .child(ui::icon::icon(IconName::Settings, theme.muted))
-        .child(div().flex_1().truncate().child(t!("admin-title")))
+        .child(ui::icon::icon(
+            ui::icon::LucideIcon::ShieldCheck,
+            theme.muted,
+        ))
         .on_click(move |_, _, cx| open(&session, cx))
         .into_any_element()
 }

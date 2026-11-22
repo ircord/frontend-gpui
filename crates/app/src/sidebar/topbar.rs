@@ -26,7 +26,7 @@ use crate::ui::focus::Reachable;
 use crate::ui::icon::IconName;
 
 /// The bar's height.
-pub const HEIGHT: f32 = 48.;
+pub const HEIGHT: f32 = 40.;
 
 /// Register your menu's entries for settings and signing out.
 pub fn init(cx: &mut App) {
@@ -74,14 +74,46 @@ pub fn init(cx: &mut App) {
     });
 }
 
-/// The bar, for the session's client.
-pub fn bar(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyElement {
+/// Keep space for the native traffic lights above the workspace controls.
+pub fn frame(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyElement {
+    let draggable = cfg!(target_os = "macos") && !window.is_fullscreen();
+    div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .when(draggable, |d| {
+            d.child(
+                div()
+                    .h(px(crate::MAC_TITLEBAR_HEIGHT))
+                    .on_mouse_down(MouseButton::Left, drag_window),
+            )
+        })
+        .child(bar(session, window, cx, draggable))
+        .into_any_element()
+}
+
+fn drag_window(event: &MouseDownEvent, window: &mut Window, _: &mut App) {
+    // AppKit needs the original mouse-down event to begin a native window drag.
+    if event.click_count == 2 {
+        window.titlebar_double_click();
+    } else {
+        window.start_window_move();
+    }
+}
+
+fn bar(
+    session: &Entity<Session>,
+    window: &mut Window,
+    cx: &mut App,
+    draggable: bool,
+) -> AnyElement {
     let theme = theme::get(cx).clone();
     let s = session.read(cx);
     let Some(client) = s.client().cloned() else {
         return div().into_any_element();
     };
     let selected = s.network.clone();
+    let server = s.server().map(|server| server.url().clone());
     let (can_back, can_forward) = (s.history.can_go_back(), s.history.can_go_forward());
     let self_ctx = SidebarCtx {
         session: session.clone(),
@@ -93,11 +125,18 @@ pub fn bar(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyE
         .to_vec()
         .iter()
         .find_map(|slot| (slot.render)(&self_ctx, window, cx));
+    let actions: Vec<_> = registry::get(cx)
+        .topbar_actions
+        .to_vec()
+        .iter()
+        .filter_map(|slot| (slot.render)(&self_ctx, window, cx))
+        .collect();
     let w = client.read();
 
     let nav = |id: &'static str, icon, label: &'static str, enabled: bool, back: bool| {
         let session = session.clone();
         div()
+            .when(draggable, |d| d.block_mouse_except_scroll())
             .when(!enabled, |d| d.opacity(0.4))
             .child(ui::icon::button(
                 id,
@@ -125,6 +164,7 @@ pub fn bar(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyE
         .items_center()
         .gap_1()
         .min_w_0()
+        .when(draggable, |d| d.block_mouse_except_scroll())
         .overflow_x_scroll();
     for network in &w.networks {
         let activity = order::network_activity(&w, &network.id);
@@ -192,7 +232,7 @@ pub fn bar(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyE
             .border_1()
             .when(active, |d| {
                 d.bg(theme.selected)
-                    .border_color(theme.border)
+                    .border_color(theme.accent.opacity(0.4))
                     .text_color(theme.text)
                     .font_weight(FontWeight::SEMIBOLD)
             })
@@ -218,19 +258,36 @@ pub fn bar(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyE
     }
     let add = {
         let session = session.clone();
-        ui::icon::button(
-            "add-network",
-            IconName::Plus,
-            t!("sidebar-add-network"),
-            &theme,
-            move |_, window, cx| crate::features::network_form::open_add(&session, window, cx),
-        )
+        div()
+            .id("add-network")
+            .when(draggable, |d| d.block_mouse_except_scroll())
+            .test_support()
+            .role(Role::Button)
+            .reachable(&theme)
+            .aria_label(t!("sidebar-add-network"))
+            .tooltip(ui::tooltip::text(t!("sidebar-add-network")))
+            .size(px(32.))
+            .flex_none()
+            .rounded_full()
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.main)
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|d| d.bg(theme.hover))
+            .child(ui::icon::icon(IconName::Plus, theme.muted))
+            .on_click(move |_, window, cx| {
+                crate::features::network_form::open_add(&session, window, cx)
+            })
     };
 
     let settings = {
         let session = session.clone();
         div()
             .id("open-settings")
+            .when(draggable, |d| d.block_mouse_except_scroll())
             .test_support()
             .role(Role::Button)
             .reachable(&theme)
@@ -259,11 +316,19 @@ pub fn bar(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyE
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| w.user.nick.clone());
     let me = people::me(&w, selected.as_deref());
-    let presence = match network.map(|n| n.status) {
-        Some(NetworkStatus::Connected) if me.status == MemberStatus::Away => theme.away,
-        Some(NetworkStatus::Connected) => theme.online,
-        _ => theme.offline,
-    };
+    let mut profile = me.clone();
+    if let Some(server) = server.as_ref()
+        && people::picture_url(profile.avatar_url.as_deref(), server).is_none()
+    {
+        profile.avatar_url = w
+            .members
+            .get(&me.id)
+            .and_then(|member| member.avatar_url.clone())
+            .or_else(|| w.user.avatar_url.clone());
+    }
+    if network.is_none_or(|network| network.status != NetworkStatus::Connected) {
+        profile.status = MemberStatus::Offline;
+    }
     let self_line = self_line.unwrap_or_else(|| {
         div()
             .text_xs()
@@ -272,25 +337,17 @@ pub fn bar(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyE
             .child(w.user.account.clone())
             .into_any_element()
     });
-    let picture = div()
-        .relative()
-        .flex_none()
-        .child(
-            ui::avatar::avatar(&nick, Some(theme.selected), px(24.), &theme)
-                .text_xs()
-                .text_color(theme.text),
-        )
-        .child(
-            div()
-                .absolute()
-                .bottom(px(-2.))
-                .right(px(-2.))
-                .size(px(10.))
-                .rounded_full()
-                .border_2()
-                .border_color(theme.main)
-                .bg(presence),
-        );
+    let picture = ui::avatar::person(
+        ui::avatar::Person {
+            member: &profile,
+            name: &nick,
+            server: server.as_ref(),
+            presence: true,
+            key: "self-avatar",
+        },
+        px(28.),
+        &theme,
+    );
     let name = div()
         .flex()
         .items_center()
@@ -315,10 +372,14 @@ pub fn bar(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyE
     drop(w);
     let me_button = Button::new("self-menu")
         .ghost()
+        .rounded(px(17.))
+        .border_1()
+        .border_color(theme.border.opacity(0.6))
+        .bg(theme.raised.opacity(0.42))
         .accessibility_label(t!("sidebar-self-menu"))
         .tooltip(t!("sidebar-self-menu"))
         .max_w(px(220.))
-        .h(px(40.))
+        .h(px(34.))
         .justify_start()
         .child(name)
         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
@@ -337,8 +398,11 @@ pub fn bar(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyE
         .px_2()
         .flex()
         .items_center()
-        .gap_1()
+        .gap_1p5()
         .bg(theme.sidebar)
+        .when(draggable, |d| {
+            d.on_mouse_down(MouseButton::Left, drag_window)
+        })
         .child(nav(
             "nav-back",
             IconName::ArrowLeft,
@@ -353,11 +417,19 @@ pub fn bar(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> AnyE
             can_forward,
             false,
         ))
-        .child(div().w(px(4.)))
         .child(tabs)
         .child(add)
         .child(div().flex_1())
+        .children(actions.into_iter().map(|action| {
+            div()
+                .when(draggable, |d| d.block_mouse_except_scroll())
+                .child(action)
+        }))
         .child(settings)
-        .child(me_button)
+        .child(
+            div()
+                .when(draggable, |d| d.block_mouse_except_scroll())
+                .child(me_button),
+        )
         .into_any_element()
 }

@@ -27,9 +27,7 @@ use crate::features::links::{
     self, List, ago, author, cover_view, covered, is_channel, jump, picture, place, preview, still,
 };
 use crate::features::viewer::{self, Media};
-use crate::registry::{
-    self, ConversationCtx, HeaderCtx, KeyDefault, MenuItem, Panel, PanelCtx, Slot,
-};
+use crate::registry::{self, ConversationCtx, KeyDefault, MenuItem, Panel, PanelCtx};
 use crate::route::Route;
 use crate::session::{Session, SessionEvent};
 use crate::sidebar::layout;
@@ -62,31 +60,6 @@ pub fn init(cx: &mut App) {
             .add(Panel::new(PANEL, |ctx: &PanelCtx, window, cx| {
                 panel(ctx, window, cx)
             }));
-        r.header_buttons.add(
-            Slot::new("gallery", |ctx: &HeaderCtx, _, cx| {
-                let conversation = ctx.route.conversation()?;
-                if !is_channel(&ctx.session, conversation, cx) {
-                    return None;
-                }
-                let session = ctx.session.clone();
-                let open = session.read(cx).panel.as_deref() == Some(PANEL);
-                Some(
-                    ui::icon::button(
-                        "gallery-toggle",
-                        IconName::GalleryVerticalEnd,
-                        if open {
-                            t!("links-view-gallery-close")
-                        } else {
-                            t!("links-view-gallery")
-                        },
-                        theme::get(cx),
-                        move |_, _, cx| toggle(&session, !open, cx),
-                    )
-                    .into_any_element(),
-                )
-            })
-            .order(85),
-        );
         r.conversation_menu.add(
             MenuItem::new(
                 "gallery",

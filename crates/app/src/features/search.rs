@@ -18,9 +18,11 @@ use std::time::Duration;
 
 use chrono::{Local, NaiveDate};
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{
     Backspace, Escape, Input, InputEvent, InputState, MoveDown, MoveUp,
 };
+use gpui_kit::component::{Selectable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::commands::{self as cmd, Plan};
@@ -68,15 +70,30 @@ pub fn init(cx: &mut App) {
             Slot::new("search-conversation", |ctx: &HeaderCtx, _, cx| {
                 let session = ctx.session.clone();
                 let open = session.read(cx).panel.as_deref() == Some(PANEL);
+                let theme = theme::get(cx);
                 Some(
-                    ui::icon::button(
-                        "search-conversation-toggle",
-                        IconName::Search,
-                        t!("search-in-conversation"),
-                        theme::get(cx),
-                        move |_, window, cx| toggle_panel(&session, !open, window, cx),
-                    )
-                    .into_any_element(),
+                    Button::new("search-conversation-toggle")
+                        .ghost()
+                        .small()
+                        .selected(open)
+                        .rounded(px(16.))
+                        .size(px(32.))
+                        .bg(if open {
+                            theme.selected
+                        } else {
+                            theme.raised.opacity(0.45)
+                        })
+                        .border_1()
+                        .border_color(if open {
+                            theme.accent.opacity(0.35)
+                        } else {
+                            theme.border.opacity(0.55)
+                        })
+                        .icon(IconName::Search)
+                        .accessibility_label(t!("search-in-conversation"))
+                        .tooltip(t!("search-in-conversation"))
+                        .on_click(move |_, window, cx| toggle_panel(&session, !open, window, cx))
+                        .into_any_element(),
                 )
             })
             .order(90),

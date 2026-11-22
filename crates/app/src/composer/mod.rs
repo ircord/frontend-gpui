@@ -39,7 +39,7 @@ use crate::session::{Session, SessionEvent};
 use crate::theme::{self, Theme};
 use crate::ui;
 use crate::ui::focus::Reachable;
-use crate::ui::icon::IconName;
+use crate::ui::icon::LucideIcon;
 
 gpui_kit::actions!(
     composer,
@@ -142,7 +142,8 @@ impl ComposerView {
                         }
                         cx.notify();
                     }
-                    _ => {}
+                    InputEvent::Focus | InputEvent::Blur => cx.notify(),
+                    InputEvent::PressEnter { .. } => {}
                 },
             ),
             cx.observe_global::<Tokens>(|this, cx| this.input.update(cx, tokenize)),
@@ -530,7 +531,7 @@ impl Render for ComposerView {
                 cx.listener(|this, _: &FormatUnderline, window, cx| this.wrap("__", window, cx)),
             )
             .px_4()
-            .pb_4();
+            .pb_3();
         let Some((name, true)) = target else {
             return root
                 .text_sm()
@@ -567,16 +568,25 @@ impl Render for ComposerView {
             root = root.child(self.suggestion_list(suggestions, selected, &theme, cx));
         }
         let has_text = !self.text(cx).trim().is_empty();
+        let message_look = crate::message::layout::settings(cx);
+        let font = crate::message::layout::message_font(&message_look, &theme);
+        let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
+        let border = if focused {
+            theme.control_border.blend(theme.accent.opacity(0.65))
+        } else {
+            theme.control_border.opacity(0.7)
+        };
         root.child(
             div()
+                .min_h(px(48.))
                 .rounded(theme.radius_large)
                 .border_1()
-                .border_color(theme.control_border)
+                .border_color(border)
                 .bg(theme.input)
                 .shadow_sm()
-                .pl_3()
-                .pr_1p5()
-                .py_1p5()
+                .pl(px(14.))
+                .pr(px(10.))
+                .py(px(4.))
                 .flex()
                 .items_end()
                 .gap_1()
@@ -586,16 +596,27 @@ impl Render for ComposerView {
                         .test_support()
                         .flex_1()
                         .min_w_0()
-                        .py_0p5()
                         .child(
                             Textarea::new(&self.input)
                                 .token(draw_token)
                                 .appearance(false)
+                                .p_0()
+                                .font_family(font)
+                                .text_size(px(message_look.size as f32))
+                                .line_height(relative(1.375))
                                 .aria_label(t!("composer-label", target = name)),
                         ),
                 )
-                .children(buttons)
-                .child(self.send_button(has_text, &theme, cx)),
+                .child(
+                    div()
+                        .h(px(38.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .children(buttons)
+                        .child(self.send_button(has_text, &theme, cx)),
+                ),
         )
     }
 }
@@ -780,10 +801,10 @@ impl ComposerView {
                     .id("composer-send-filled")
                     .test_support()
                     .flex()
-                    .child(ui::icon::icon(IconName::ArrowUp, ink))
+                    .child(ui::icon::icon(LucideIcon::Send, ink))
                     .into_any_element()
             } else {
-                ui::icon::icon(IconName::ArrowUp, ink).into_any_element()
+                ui::icon::icon(LucideIcon::Send, ink).into_any_element()
             })
             .on_click(cx.listener(|this, _, window, cx| {
                 let text = this.text(cx);

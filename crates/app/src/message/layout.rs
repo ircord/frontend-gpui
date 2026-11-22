@@ -149,6 +149,14 @@ pub fn settings(cx: &App) -> Look {
     look
 }
 
+pub fn message_font(look: &Look, theme: &Theme) -> SharedString {
+    theme
+        .message_font
+        .clone()
+        .or_else(|| look.family().map(Into::into))
+        .unwrap_or_else(|| theme.font.clone())
+}
+
 thread_local! {
     /// The clock [`look`] saw last, for the timeline's rows, which are built
     /// from the workspace alone right after it.
@@ -257,14 +265,10 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
         }
     };
     let text = |d: Div| -> Div {
-        let d = d.text_size(px(look.size as f32));
-        match theme.message_font.clone() {
-            Some(family) => d.font_family(family),
-            None => match look.family() {
-                Some(family) => d.font_family(family),
-                None => d,
-            },
-        }
+        d.text_size(px(look.size as f32))
+            .line_height(relative(1.375))
+            .font_family(message_font(&look, theme))
+            .font_weight(FontWeight::NORMAL)
     };
 
     let reply = m.reply.as_ref().map(|(nick, quoted)| {
@@ -417,13 +421,14 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
         Layout::Cozy | Layout::Compact => {
             let compact = look.layout == Layout::Compact;
             let avatar = if compact { 24. } else { 40. };
-            let mut column = text(div()).flex_1().min_w_0().flex().flex_col().gap_0p5();
+            let mut column = div().flex_1().min_w_0().flex().flex_col();
             if m.header {
                 column = column.child(
                     div()
                         .flex()
                         .items_baseline()
                         .gap_2()
+                        .line_height(px(21.))
                         .child(person(
                             div()
                                 .font_weight(FontWeight::SEMIBOLD)
@@ -436,13 +441,17 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                         ))
                         .child(
                             div()
-                                .text_xs()
+                                .text_size(px(12.))
                                 .text_color(theme.faint)
                                 .child(m.time.clone()),
                         ),
                 );
             }
-            column = column.children(reply).children(body).children(extras);
+            column = column.children(reply);
+            if let Some(body) = body {
+                column = column.child(text(div()).min_w_0().flex().flex_col().child(body));
+            }
+            column = column.children(extras);
             let gutter = if m.header {
                 let face = match &member {
                     Some(member) => ui::avatar::person(
@@ -458,11 +467,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                     ),
                     None => ui::avatar::avatar(&m.sender, None, px(avatar), theme),
                 };
-                person(
-                    face.mt_0p5(),
-                    format!("sender-avatar-{}", m.id),
-                    m.sender.clone(),
-                )
+                person(face, format!("sender-avatar-{}", m.id), m.sender.clone())
             } else {
                 // Grouped rows keep the text column, with no time.
                 div().w(px(avatar)).flex_none().into_any_element()
@@ -473,11 +478,11 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                 look.spacing as f32
             };
             frame = frame
-                .py(px(if compact { 1. } else { 2. }))
+                .py(px(1.))
                 .when(m.header, |d| d.pt(px(space.max(2.))))
                 .flex()
                 .when(compact, |d| d.gap_2p5())
-                .when(!compact, |d| d.gap_4())
+                .when(!compact, |d| d.gap_3p5())
                 .child(gutter)
                 .child(column);
         }

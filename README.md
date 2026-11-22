@@ -40,6 +40,7 @@ Everything that compiles runs in a Docker image built from
 | `cargo xtask build windows` | cross-build `dist/ircord.exe`, with its icon and version |
 | `cargo xtask build linux` | build `dist/ircord`, `dist/ircord-video` and `dist/ircord-linux-x86_64.tar.gz` |
 | `cargo xtask build macos` | on a Mac only: build `dist/IRCord GPUI.app` (see below) |
+| `cargo xtask dev` | run the native app and apply supported Rust edits while it is running |
 | `cargo xtask package windows` | the Windows build, then its setup, `dist/IRCord-GPUI-Windows-x64-setup.exe` |
 | `cargo xtask package linux` | the Linux build, then `dist/IRCord-GPUI-Linux-x64.deb` |
 | `cargo xtask package macos` | on an Apple Silicon Mac: the bundle, `dist/IRCord-GPUI-macOS-Apple-Silicon.dmg` and the updater's `.app.tar.gz` |
@@ -57,6 +58,23 @@ SDK libraries (about 1 GB, cached in `~/.cache/cargo-xwin`); `cargo-xwin`
 accepts Microsoft's licence for them. They are used for linking only.
 
 ## Running it
+
+### Development with hot reload
+
+Install [Dioxus CLI 0.7.10](https://github.com/DioxusLabs/dioxus/releases/tag/v0.7.10)
+and run `cargo xtask dev` from the repository root. If multiple tools supply
+`dx`, set `IRCORD_DX` to the absolute path of the Dioxus executable. Quit
+your other GPUI instance first so the development build can use your saved
+session. Leave the dev command running while editing Rust code.
+
+The development launcher has its own package so the watcher recompiles the
+UI library for a hot patch. GPUI applies compatible view changes in the
+running app. Changes to types, native window setup and controls registered
+at startup can require a restart. In the interactive terminal, press `r`
+to force a full build. Use `cargo xtask dev --restart` to rebuild and
+replace the app on each edit. Press Ctrl+C to stop the watcher and app.
+
+### Installers
 
 Releases on GitHub will carry the installers below once the first is
 published. Without a code-signing certificate, Windows warns about an unknown

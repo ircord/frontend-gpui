@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
-use gpui_kit::{AppContext, Entity, MouseButton, ScrollDelta, TestAppContext, point, px};
+use gpui_kit::{AppContext, Entity, MouseButton, ScrollDelta, TestAppContext, point, px, size};
 use ircord_app::Screen;
 use ircord_app::composer::ComposerView;
 use ircord_app::timeline::rows::Row;
@@ -177,7 +177,12 @@ fn the_member_list_counts_filters_marks_and_hides(cx: &mut TestAppContext) {
         s.members.push(m);
     }
     let f = open(cx, s, |_| {});
-    assert_eq!(label(&f, cx, "member-count"), "1 of 14 online");
+    frame(&f, cx, |window, _| {
+        assert_eq!(
+            window.find("member-list").description(),
+            Some("1 of 14 online")
+        );
+    });
     assert_eq!(label(&f, cx, "member-status-m-bob"), "🌴 On holiday");
     assert!(shows(&f, cx, "member-bot-m-eve"));
     assert!(shows(&f, cx, "member-device-m-eve"));
@@ -189,10 +194,55 @@ fn the_member_list_counts_filters_marks_and_hides(cx: &mut TestAppContext) {
     type_text(&f, cx, "zzz");
     assert!(shows(&f, cx, "member-no-matches"));
 
-    click(&f, cx, "hide-members");
+    click(&f, cx, "members-toggle");
     assert!(!shows(&f, cx, "member-list"));
     click(&f, cx, "members-toggle");
     assert!(shows(&f, cx, "member-list"));
+}
+
+#[gpui_kit::test]
+fn members_open_over_chat_below_the_docking_width(cx: &mut TestAppContext) {
+    let f = open(cx, workspace(), |_| {});
+    assert!(shows(&f, cx, "resize-panel"));
+    cx.simulate_window_resize(f.window, size(px(1000.), px(720.)));
+    assert!(!shows(&f, cx, "member-list"));
+    let mut chat_width = px(0.);
+    frame(&f, cx, |window, _| {
+        chat_width = window.find("timeline").bounds().size.width;
+    });
+
+    click(&f, cx, "members-toggle");
+    frame(&f, cx, |window, _| {
+        assert!(window.find("members-drawer").visible());
+        assert!(window.find("member-list").visible());
+        assert_eq!(window.find("hide-members").focused(), Some(true));
+        assert_eq!(window.find("timeline").bounds().size.width, chat_width);
+        assert!(window.try_find("resize-panel").is_none());
+    });
+    frame(&f, cx, |window, cx| window.press("tab", cx));
+    frame(&f, cx, |window, _| {
+        assert_eq!(window.find("member-m-bob").focused(), Some(true));
+    });
+    frame(&f, cx, |window, cx| window.press("escape", cx));
+    assert!(!shows(&f, cx, "members-drawer"));
+    frame(&f, cx, |window, _| {
+        assert_eq!(window.find("members-toggle").focused(), Some(true))
+    });
+
+    click(&f, cx, "members-toggle");
+    click(&f, cx, "members-scrim");
+    assert!(!shows(&f, cx, "members-drawer"));
+    click(&f, cx, "members-toggle");
+    cx.simulate_window_resize(f.window, size(px(1200.), px(720.)));
+    assert!(!shows(&f, cx, "members-drawer"));
+    assert!(shows(&f, cx, "resize-panel"));
+
+    click(&f, cx, "members-toggle");
+    cx.simulate_window_resize(f.window, size(px(1000.), px(720.)));
+    click(&f, cx, "members-toggle");
+    click(&f, cx, "hide-members");
+    cx.simulate_window_resize(f.window, size(px(1200.), px(720.)));
+    assert!(!shows(&f, cx, "member-list"));
 }
 
 #[gpui_kit::test]
