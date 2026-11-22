@@ -78,6 +78,11 @@ impl History {
         self.current.as_ref()
     }
 
+    /// The route visible behind a modal settings route.
+    pub fn previous(&self) -> Option<&Route> {
+        self.back.last()
+    }
+
     /// Go to `route`. Returns false if it is already showing.
     pub fn push(&mut self, route: Route) -> bool {
         if self.current.as_ref() == Some(&route) {

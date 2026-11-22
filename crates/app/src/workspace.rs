@@ -608,7 +608,9 @@ impl WorkspaceView {
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
-        let route = self.session.read(cx).route();
+        let session = self.session.read(cx);
+        let settings_open = session.route() == Some(Route::Settings);
+        let route = session.workspace_route();
         let compact = window.viewport_size().width < members::DRAWER_BREAKPOINT;
         let drawer = window.use_keyed_state("member-drawer", cx, |_, cx| MembersDrawer {
             conversation: None,
@@ -722,6 +724,7 @@ impl Render for WorkspaceView {
             .child(div().flex_1().min_h_0().flex().child(main).children(panel));
         div()
             .id("workspace")
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -743,6 +746,52 @@ impl Render for WorkspaceView {
                         body.child(self.members_drawer(&drawer, &theme, window, cx))
                     }),
             )
+            .when(settings_open, |workspace| {
+                let settings = self.route_pane(&Route::Settings, &theme, window, cx);
+                let session = self.session.clone();
+                let top = if cfg!(target_os = "macos") && !window.is_fullscreen() {
+                    px(crate::MAC_TITLEBAR_HEIGHT)
+                } else {
+                    px(0.)
+                };
+                workspace.child(
+                    div()
+                        .absolute()
+                        .top(top)
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .p_6()
+                        .child(
+                            div()
+                                .id("settings-scrim")
+                                .test_support()
+                                .absolute()
+                                .inset_0()
+                                .occlude()
+                                .bg(black().opacity(0.55))
+                                .on_click(move |_, _, cx| crate::settings::close(&session, cx)),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .max_w(px(1052.))
+                                .h_full()
+                                .max_h(px(836.))
+                                .occlude()
+                                .rounded(theme.radius_large)
+                                .overflow_hidden()
+                                .bg(theme.main)
+                                .border_1()
+                                .border_color(theme.border.opacity(0.65))
+                                .shadow(frame_shadows(&theme))
+                                .child(settings),
+                        ),
+                )
+            })
     }
 }
 

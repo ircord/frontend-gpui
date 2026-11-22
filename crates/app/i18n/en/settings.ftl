@@ -1,6 +1,7 @@
 # The settings shell, Account and About (package S0).
 
 settings-title = Settings
+settings-close = Close settings
 settings-empty = No settings yet.
 
 # The sample messages at the top of Appearance and Messages

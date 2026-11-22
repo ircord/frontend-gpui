@@ -1,4 +1,4 @@
-//! The settings page: the registered sections listed under their group
+//! The settings dialog: the registered sections listed under their group
 //! headings on the left, the open one on the right, a search over every
 //! section's rows, and whether the latest change is saved.
 //!
@@ -11,7 +11,7 @@
 //! show their saving state here by themselves; a setting kept on this device
 //! calls [`saved`] once it is written.
 //!
-//! The page opens from Settings in the top bar, with [`open`], or with N1's
+//! The dialog opens from Settings in the top bar, with [`open`], or with N1's
 //! Ctrl+, (Cmd+, on a Mac); Escape goes back to where it was opened from.
 //! As on the web, each section is listed with its icon on a soft tint, and
 //! Log out sits at the foot of the list.
@@ -34,6 +34,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::TestSupportExt;
+use gpui_kit::base::FocusTrapElement;
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -79,6 +80,11 @@ pub fn open(session: &Entity<Session>, row: Option<&str>, cx: &mut App) {
         cx.set_global(Pending(pending));
     }
     session.update(cx, |s, cx| s.navigate(Route::Settings, cx));
+}
+
+/// Dismiss Settings and return to the workspace route behind it.
+pub fn close(session: &Entity<Session>, cx: &mut App) {
+    session.update(cx, Session::close_settings);
 }
 
 /// A row to land on once the view exists.
@@ -220,8 +226,10 @@ pub struct SettingsView {
     scroll: ScrollHandle,
     /// A change on this device was just written.
     flash: Option<Task<()>>,
-    /// The page itself, focused when it is entered so Escape reaches it.
+    /// The dialog scope, focused when it opens.
     focus: FocusHandle,
+    opener: Option<FocusHandle>,
+    visible: bool,
     /// Focus the page at the next draw: it was just entered.
     focus_pending: bool,
     _subscriptions: Vec<Subscription>,
@@ -248,11 +256,19 @@ impl SettingsView {
                 |this, session, event: &SessionEvent, window, cx| {
                     if let SessionEvent::Route = event {
                         let here = session.read(cx).route() == Some(Route::Settings);
-                        this.focus_pending = here;
-                        // Leaving: a focus left on the hidden page would keep
-                        // the app's keys from reaching the window.
-                        if !here && this.focus.contains_focused(window, cx) {
-                            window.blur(cx);
+                        if here != this.visible {
+                            this.visible = here;
+                            this.focus_pending = here;
+                            if !here {
+                                let opener = this.opener.take();
+                                if this.focus.contains_focused(window, cx) {
+                                    if let Some(opener) = opener {
+                                        opener.focus(window, cx);
+                                    } else {
+                                        window.blur(cx);
+                                    }
+                                }
+                            }
                         }
                     }
                     if let SessionEvent::Changed(changes) = event
@@ -274,6 +290,8 @@ impl SettingsView {
             scroll,
             flash: None,
             focus: cx.focus_handle(),
+            opener: None,
+            visible: true,
             focus_pending: true,
             _subscriptions: subscriptions,
         }
@@ -311,10 +329,7 @@ impl SettingsView {
 
     /// Escape: back to where the page was opened from.
     fn leave(&mut self, cx: &mut Context<Self>) {
-        let session = self.session.clone();
-        if session.read(cx).route() == Some(Route::Settings) {
-            session.update(cx, |s, cx| s.go_back(cx));
-        }
+        close(&self.session, cx);
     }
 
     fn flash_saved(&mut self, cx: &mut Context<Self>) {
@@ -374,6 +389,7 @@ impl Render for SettingsView {
         let query = self.query.read(cx).value().to_string();
         let hover_bg = theme.hover;
         if std::mem::take(&mut self.focus_pending) {
+            self.opener = window.focused(cx);
             self.focus.focus(window, cx);
         }
 
@@ -531,6 +547,7 @@ impl Render for SettingsView {
                     .into_any_element(),
             }
         };
+        let session = self.session.clone();
         let mut page = ui::page::Page::new(
             "settings",
             t!("settings-title"),
@@ -539,13 +556,18 @@ impl Render for SettingsView {
                 .flex()
                 .child(nav)
                 .child(div().flex_1().min_w_0().h_full().child(content)),
-        );
+        )
+        .close(t!("settings-close"), move |_, _, cx| close(&session, cx));
         if let Some(state) = self.save_state(cx) {
             page = page.action(save_indicator(&state, &theme));
         }
         div()
+            .id("settings-dialog")
+            .test_support()
+            .role(Role::Dialog)
+            .aria_label(t!("settings-title"))
+            .a11y_synthetic_children(|tree| tree.parent_node().set_modal())
             .size_full()
-            .track_focus(&self.focus)
             .capture_action(cx.listener(|this, _: &Escape, _, cx| {
                 this.leave(cx);
                 cx.stop_propagation();
@@ -558,6 +580,7 @@ impl Render for SettingsView {
                 }),
             )
             .child(page.render(&theme))
+            .focus_trap("settings-dialog", &self.focus)
     }
 }
 

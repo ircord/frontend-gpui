@@ -5,6 +5,7 @@
 ### Improved
 
 - Search in the sidebar opens the workspace search page directly.
+- Settings opens over the workspace, so the view you were using stays in place.
 
 - The desktop workspace, message list and composer follow the web layout and use your chosen theme, fonts and density.
 - On narrow windows, members open over the conversation. Resize the sidebars from their edges or with the arrow keys, and double-click an edge to reset its width.

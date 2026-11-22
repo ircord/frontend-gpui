@@ -409,6 +409,32 @@ impl Session {
             .or_else(|| self.conversation.clone().map(Route::Conversation))
     }
 
+    /// The workspace route visible while Settings is open.
+    pub fn workspace_route(&self) -> Option<Route> {
+        match self.route() {
+            Some(Route::Settings) => self
+                .history
+                .previous()
+                .cloned()
+                .or_else(|| self.conversation.clone().map(Route::Conversation)),
+            route => route,
+        }
+    }
+
+    /// Dismiss Settings, including when it was opened from an empty workspace.
+    pub(crate) fn close_settings(&mut self, cx: &mut Context<Self>) {
+        if self.route() != Some(Route::Settings) {
+            return;
+        }
+        if self.history.can_go_back() {
+            self.go_back(cx);
+        } else {
+            self.history.retain(|route| *route != Route::Settings);
+            cx.emit(SessionEvent::Route);
+            cx.notify();
+        }
+    }
+
     /// Show `route` in the main pane.
     pub fn navigate(&mut self, route: Route, cx: &mut Context<Self>) {
         if let Route::Conversation(id) = &route {

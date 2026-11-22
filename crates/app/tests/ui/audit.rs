@@ -181,10 +181,11 @@ fn audit_settings(cx: &mut TestAppContext, part: usize, parts: usize) {
         })
         .unwrap();
         cx.run_until_parked();
-        problems.extend(
-            cx.update_window(f.window, |_, window, cx| audit(&section, window, cx))
-                .unwrap(),
-        );
+        problems.extend(cx.update_window(f.window, |_, window, cx| {
+            audit_where(&section, window, cx, |path| {
+                path.iter().any(|id| matches!(id, ElementId::Name(name) if name.as_ref() == "settings-dialog"))
+            })
+        }).unwrap());
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
