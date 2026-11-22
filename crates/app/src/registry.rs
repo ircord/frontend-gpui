@@ -554,6 +554,8 @@ pub struct ComposerSlots {
     pub above: List<Slot<ComposerCtx>>,
     /// The first visible replacement for the normal message field and buttons.
     pub input: List<Slot<ComposerCtx>>,
+    /// Floating elements anchored to the message field's rectangle.
+    pub overlays: List<Slot<ComposerCtx>>,
     /// Buttons beside the box: upload, emoji, GIF.
     pub buttons: List<Slot<ComposerCtx>>,
     pub suggestions: List<SuggestionProvider>,

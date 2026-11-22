@@ -1,11 +1,15 @@
 # Text for package E1. IDs start with `emoji-`.
 emoji-picker = Emoji and GIFs
+emoji-resize = Resize picker
+emoji-resize-help = Drag or use the arrow keys to resize. Double-click to reset.
 emoji-open-emoji = Emoji
 emoji-open-gifs = GIFs
 emoji-tab-emoji = Emoji
 emoji-tab-gifs = GIFs
 emoji-search-emoji = Search emoji
 emoji-search-gifs = Search Klipy
+emoji-search-saved = Search saved GIFs
+emoji-clear-search = Clear search
 emoji-groups = Emoji groups
 emoji-group-frequent = Frequently used
 emoji-group-workspace = This server

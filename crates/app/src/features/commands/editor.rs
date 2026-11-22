@@ -119,11 +119,7 @@ pub(crate) fn open(
     {
         watch_settings(&client, cx);
     }
-    if klipy::open_tab(cx).is_some() {
-        // The picker restores focus to the composer, which may still be
-        // borrowed by the shortcut or send filter that opened this editor.
-        window.defer(cx, klipy::close);
-    }
+    klipy::dismiss(cx);
     let id = ctx.composer.entity_id();
     let editor = cx.new(|cx| Editor::new(ctx, &client, network, spec, draft, window, cx));
     cx.default_global::<Editors>().0.insert(id, editor);

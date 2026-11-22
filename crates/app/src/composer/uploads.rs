@@ -604,9 +604,15 @@ fn remember_composer(ctx: &ComposerCtx, cx: &mut App) {
 }
 
 /// The attachment menu beside the box also opens GIFs and slash commands.
-fn attach_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+fn attach_button(ctx: &ComposerCtx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     remember_composer(ctx, cx);
     let ctx = ctx.clone();
+    let trigger = window
+        .use_keyed_state("composer-attach-trigger", cx, |_, cx| {
+            cx.focus_handle().tab_stop(true)
+        })
+        .read(cx)
+        .clone();
     Some(
         Button::new("composer-attach")
             .ghost()
@@ -614,6 +620,7 @@ fn attach_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Optio
             .size(px(30.))
             .rounded_full()
             .icon(LucideIcon::Paperclip)
+            .track_focus(&trigger)
             .accessibility_label(t!("uploads-menu"))
             .tooltip(t!("uploads-menu"))
             .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _, cx| {
@@ -630,6 +637,7 @@ fn attach_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Optio
                     };
                 let (session, conversation) = (ctx.session.clone(), ctx.conversation.clone());
                 let gif = ctx.clone();
+                let trigger = trigger.clone();
                 let composer = ctx.composer.clone();
                 menu.item(
                     PopupMenuItem::new(upload)
@@ -647,7 +655,9 @@ fn attach_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Optio
                     PopupMenuItem::new(t!("uploads-menu-gif"))
                         .icon(LucideIcon::Image)
                         .action(Box::new(Gifs))
-                        .on_click(move |_, window, cx| klipy::toggle(&gif, Tab::Gifs, window, cx)),
+                        .on_click(move |_, window, cx| {
+                            klipy::toggle_from(&gif, Tab::Gifs, trigger.clone(), window, cx)
+                        }),
                 )
                 .item(
                     PopupMenuItem::new(t!("uploads-menu-command"))

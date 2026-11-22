@@ -516,7 +516,11 @@ impl ComposerView {
         if ch.is_empty() || ch.chars().any(|c| c.is_control() || c.is_whitespace()) {
             return;
         }
-        if event.context_stack.iter().any(|c| c.contains("Input")) {
+        if event
+            .context_stack
+            .iter()
+            .any(|c| c.contains("Input") || c.contains(expressions::KEY_CONTEXT))
+        {
             return;
         }
         if self
@@ -592,9 +596,10 @@ impl Render for ComposerView {
         }
         self.remember(cx);
         let slots = registry::get(cx);
-        let (above, input, buttons) = (
+        let (above, input, overlays, buttons) = (
             slots.composer.above.to_vec(),
             slots.composer.input.to_vec(),
+            slots.composer.overlays.to_vec(),
             slots.composer.buttons.to_vec(),
         );
         let above: Vec<AnyElement> = above
@@ -605,6 +610,10 @@ impl Render for ComposerView {
             return root.children(above).child(editor);
         }
         let buttons: Vec<AnyElement> = buttons
+            .iter()
+            .filter_map(|s| (s.render)(&ctx, window, cx))
+            .collect();
+        let overlays: Vec<AnyElement> = overlays
             .iter()
             .filter_map(|s| (s.render)(&ctx, window, cx))
             .collect();
@@ -630,6 +639,9 @@ impl Render for ComposerView {
         };
         root.child(
             div()
+                .id("composer-field")
+                .test_support()
+                .relative()
                 .min_h(px(48.))
                 .rounded(theme.radius_large)
                 .border_1()
@@ -686,7 +698,8 @@ impl Render for ComposerView {
                         })
                         .children(buttons)
                         .when(sendable, |row| row.child(self.send_button(&theme, cx))),
-                ),
+                )
+                .children(overlays),
         )
     }
 }

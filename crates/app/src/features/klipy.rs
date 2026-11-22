@@ -5,7 +5,7 @@
 //!   `emotes.updated` names a new version; the picker library (saved GIFs,
 //!   use counts, skin tone) is the watched `library` document;
 //! - custom `:name:` in messages draw as pictures (`message/emoji.rs`);
-//! - the composer gets GIF and emoji buttons and the picker above the box
+//! - the composer gets GIF and emoji buttons and a floating picker above the box
 //!   (`composer/expressions.rs`); Ctrl+G (N1's `Gifs` key) opens the GIFs;
 //! - `:na` in the box suggests emoji;
 //! - "React" in the message menu opens the full emoji picker;
@@ -18,9 +18,11 @@
 
 use crate::ui::focus::Reachable;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::rc::Rc;
 
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::WindowExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::Client;
@@ -42,20 +44,22 @@ use crate::features::message_actions::{self, Mode};
 use crate::features::shortcuts::Gifs;
 use crate::message::emoji as pictures;
 use crate::registry::{self, ComposerCtx, MessageCtx, Slot, Suggestion, SuggestionProvider};
+use crate::route::Route;
 use crate::session::{Session, SessionEvent};
 use crate::sidebar::layout;
 use crate::theme;
 use crate::ui;
+
+mod popover;
 
 /// Suggestions `:na` offers at most.
 const SUGGESTIONS: usize = 8;
 
 #[derive(Default)]
 struct Expressions {
-    /// The open picker over a composer, and its conversation.
-    open: Option<(String, Entity<PickerView>)>,
+    open: Option<Opened>,
     /// The composer last drawn, for the GIF key.
-    composer: Option<ComposerCtx>,
+    composer: Option<(WeakEntity<Session>, WeakEntity<ComposerView>)>,
     /// Clients whose library this module watches.
     watched: HashSet<usize>,
     /// Account and conversation pairs with a `/gif` lookup running.
@@ -64,12 +68,43 @@ struct Expressions {
     klipy: Option<(String, String)>,
 }
 
+#[derive(Clone)]
+struct Opened {
+    composer: WeakEntity<ComposerView>,
+    session: EntityId,
+    conversation: String,
+    view: Entity<PickerView>,
+    return_to: ReturnFocus,
+}
+
+#[derive(Clone)]
+enum ReturnFocus {
+    Trigger(FocusHandle),
+    Draft { range: Range<usize>, reversed: bool },
+}
+
+impl Opened {
+    fn belongs_to(&self, ctx: &ComposerCtx) -> bool {
+        self.composer.entity_id() == ctx.composer.entity_id()
+            && self.conversation == ctx.conversation
+    }
+}
+
 impl Global for Expressions {}
 
 pub fn init(cx: &mut App) {
     cx.default_global::<Expressions>();
     cx.observe_new::<Session>(|_, _, cx| {
         cx.subscribe_self(|session: &mut Session, event: &SessionEvent, cx| {
+            if matches!(event, SessionEvent::Selection | SessionEvent::Phase)
+                && cx.try_global::<Expressions>().and_then(|e| e.open.as_ref()).is_some_and(|open| {
+                    open.session == cx.entity_id()
+                        && (matches!(event, SessionEvent::Phase)
+                            || !matches!(session.route(), Some(Route::Conversation(id)) if id == open.conversation))
+                })
+            {
+                dismiss(cx);
+            }
             let SessionEvent::Changed(changes) = event else {
                 return;
             };
@@ -95,7 +130,7 @@ pub fn init(cx: &mut App) {
         r.inline_renderers.add(pictures::renderer());
         let c = &mut r.composer;
         c.tokens.add(pictures::token_provider());
-        c.above.add(Slot::new("expressions", picker_slot).order(20));
+        c.overlays.add(Slot::new("expressions", popover::slot));
         c.above
             .add(Slot::new("gif-lookup", lookup_status).order(30));
         c.buttons.add(Slot::new("gif", gif_button).order(20));
@@ -227,11 +262,8 @@ pub fn animate(w: &Workspace) -> bool {
 }
 
 fn refresh_picker(cx: &mut App) {
-    let open = cx
-        .try_global::<Expressions>()
-        .and_then(|e| e.open.as_ref().map(|(_, v)| v.clone()));
-    if let Some(view) = open {
-        view.update(cx, |_, cx| cx.notify());
+    if let Some(open) = opened(cx) {
+        open.view.update(cx, |_, cx| cx.notify());
     }
     cx.refresh_windows();
 }
@@ -578,31 +610,44 @@ fn pick_random(len: usize) -> usize {
 
 // ---- The picker over the composer ----
 
-fn remember(ctx: &ComposerCtx, cx: &mut App) {
-    cx.default_global::<Expressions>().composer = Some(ctx.clone());
-}
-
-fn open_view(cx: &App) -> Option<(String, Entity<PickerView>)> {
+fn opened(cx: &App) -> Option<Opened> {
     cx.try_global::<Expressions>()?.open.clone()
 }
 
 /// Whether the picker is open over the composer, and on which tab.
 pub fn open_tab(cx: &App) -> Option<Tab> {
-    open_view(cx).map(|(_, v)| v.read(cx).tab)
+    opened(cx).map(|open| open.view.read(cx).tab)
 }
 
-/// Open the picker on `tab` over the composer, switch it to `tab`, or close
-/// it when it already shows `tab`.
-pub fn toggle(ctx: &ComposerCtx, tab: Tab, window: &mut Window, cx: &mut App) {
-    if let Some((conversation, view)) = open_view(cx)
-        && conversation == ctx.conversation
+/// Open the picker from a toolbar control and return to it on Escape.
+pub(crate) fn toggle_from(
+    ctx: &ComposerCtx,
+    tab: Tab,
+    trigger: FocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    toggle(ctx, tab, ReturnFocus::Trigger(trigger), window, cx);
+}
+
+fn toggle(ctx: &ComposerCtx, tab: Tab, return_to: ReturnFocus, window: &mut Window, cx: &mut App) {
+    if let Some(open) = opened(cx)
+        && open.belongs_to(ctx)
     {
-        if view.read(cx).tab == tab {
+        if let ReturnFocus::Trigger(_) = &return_to {
+            cx.global_mut::<Expressions>()
+                .open
+                .as_mut()
+                .unwrap()
+                .return_to = return_to;
+        }
+        if open.view.read(cx).tab == tab {
             return close(window, cx);
         }
-        view.update(cx, |v, cx| v.set_tab(tab, window, cx));
-        let input = view.read(cx).search.clone();
-        input.update(cx, |s, cx| s.focus(window, cx));
+        open.view.update(cx, |v, cx| {
+            v.set_tab(tab, window, cx);
+            v.focus_search(window, cx);
+        });
         return;
     }
     let purpose = Purpose::Composer {
@@ -611,96 +656,128 @@ pub fn toggle(ctx: &ComposerCtx, tab: Tab, window: &mut Window, cx: &mut App) {
     };
     let session = ctx.session.clone();
     let view = cx.new(|cx| PickerView::new(session, purpose, tab, window, cx));
-    let input = view.read(cx).search.clone();
-    cx.default_global::<Expressions>().open = Some((ctx.conversation.clone(), view));
-    input.update(cx, |s, cx| s.focus(window, cx));
+    view.read(cx).search.focus_handle(cx).focus(window, cx);
+    cx.default_global::<Expressions>().open = Some(Opened {
+        composer: ctx.composer.downgrade(),
+        session: ctx.session.entity_id(),
+        conversation: ctx.conversation.clone(),
+        view,
+        return_to,
+    });
     cx.refresh_windows();
 }
 
-/// Close the picker over the composer and give the box the focus back.
-pub fn close(window: &mut Window, cx: &mut App) {
-    let e = cx.default_global::<Expressions>();
-    if e.open.take().is_none() {
+/// Allow the outside click or navigation to set its own focus.
+pub(crate) fn dismiss(cx: &mut App) {
+    if cx.default_global::<Expressions>().open.take().is_some() {
+        cx.refresh_windows();
+    }
+}
+
+pub(crate) fn close(window: &mut Window, cx: &mut App) {
+    let Some(open) = cx.default_global::<Expressions>().open.take() else {
         return;
-    }
-    let composer = e.composer.as_ref().map(|c| c.composer.clone());
-    if let Some(composer) = composer {
-        focus_box(&composer, window, cx);
+    };
+    match open.return_to {
+        ReturnFocus::Trigger(handle) => handle.focus(window, cx),
+        ReturnFocus::Draft { range, reversed } => {
+            if let Some(composer) = open.composer.upgrade() {
+                let input = composer.read(cx).input.clone();
+                input.update(cx, |s, cx| {
+                    s.set_selected_range_with_direction(range, reversed, cx);
+                    s.focus(window, cx);
+                });
+            }
+        }
     }
     cx.refresh_windows();
 }
 
-fn focus_box(composer: &Entity<ComposerView>, window: &mut Window, cx: &mut App) {
-    let input = composer.read(cx).input.clone();
-    input.update(cx, |s, cx| s.focus(window, cx));
+/// A pick continues in the draft, including the caret moved by an insertion.
+pub(crate) fn picked(window: &mut Window, cx: &mut App) {
+    if let Some(open) = opened(cx) {
+        dismiss(cx);
+        if let Some(composer) = open.composer.upgrade() {
+            composer.read(cx).input.focus_handle(cx).focus(window, cx);
+        }
+    }
 }
 
-/// Escape in the picker's search closes the picker (the field takes the key
-/// before the picker sees it).
+/// Escape from any picker control takes precedence over the global Mark read key.
 fn on_key(event: &KeystrokeEvent, window: &mut Window, cx: &mut App) {
     let key = &event.keystroke;
     if key.key != "escape" || key.modifiers.modified() {
         return;
     }
-    let Some((_, view)) = open_view(cx) else {
-        return;
-    };
-    let search = view.read(cx).search.clone();
-    if search.read(cx).focus_handle(cx).is_focused(window) {
+    if opened(cx).is_some()
+        && event
+            .context_stack
+            .iter()
+            .any(|c| c.contains(expressions::KEY_CONTEXT))
+    {
         close(window, cx);
+        cx.stop_propagation();
     }
 }
 
 fn toggle_gifs_from_key(window: &mut Window, cx: &mut App) {
-    let Some(ctx) = cx
+    let Some((session, composer)) = cx
         .try_global::<Expressions>()
-        .and_then(|e| e.composer.clone())
+        .and_then(|e| e.composer.as_ref())
+        .and_then(|(session, composer)| Some((session.upgrade()?, composer.upgrade()?)))
     else {
         return;
     };
-    if !commands::editor_is_open(&ctx, cx) {
-        toggle(&ctx, Tab::Gifs, window, cx);
+    let Some(Route::Conversation(conversation)) = session.read(cx).route() else {
+        return;
+    };
+    if window.has_active_dialog(cx)
+        || !session.read(cx).client().is_some_and(|c| {
+            c.read()
+                .conversation(&conversation)
+                .is_some_and(|c| c.joined)
+        })
+    {
+        return;
     }
-}
-
-fn picker_slot(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    remember(ctx, cx);
-    let (conversation, view) = open_view(cx)?;
-    if conversation != ctx.conversation {
-        return None;
+    let ctx = ComposerCtx {
+        session,
+        conversation,
+        composer,
+    };
+    if commands::editor_is_open(&ctx, cx) {
+        return;
     }
-    let theme = theme::get(cx).clone();
-    Some(
-        div()
-            .flex()
-            .justify_end()
-            .pb_1()
-            .child(
-                div()
-                    .w(px(expressions::WIDTH))
-                    .max_w_full()
-                    .h(px(expressions::HEIGHT))
-                    .p_2()
-                    .rounded_lg()
-                    .bg(theme.sidebar)
-                    .border_1()
-                    .border_color(theme.hover)
-                    .shadow_md()
-                    .child(view),
-            )
-            .into_any_element(),
-    )
+    let input = ctx.composer.read(cx).input.read(cx);
+    let (range, reversed) = if input.focus_handle(cx).is_focused(window) {
+        (input.selected_range(), input.is_selection_reversed())
+    } else {
+        let end = input.value().len();
+        (end..end, false)
+    };
+    toggle(
+        &ctx,
+        Tab::Gifs,
+        ReturnFocus::Draft { range, reversed },
+        window,
+        cx,
+    );
 }
 
 fn text_button(
     id: &'static str,
     glyph: AnyElement,
     label: SharedString,
-    expanded: bool,
     ctx: &ComposerCtx,
     tab: Tab,
-    cx: &App,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
+    let expanded = is_open_on(ctx, tab, cx);
+    let trigger = window
+        .use_keyed_state((id, 0_usize), cx, |_, cx| cx.focus_handle().tab_stop(true))
+        .read(cx)
+        .clone();
     let theme = theme::get(cx).clone();
     let ctx = ctx.clone();
     let hover = theme.hover;
@@ -709,6 +786,7 @@ fn text_button(
         .test_support()
         .role(Role::Button)
         .reachable(&theme)
+        .with_focus(&trigger)
         .aria_label(label.clone())
         .aria_expanded(expanded)
         .tooltip(ui::tooltip::text(label))
@@ -724,13 +802,13 @@ fn text_button(
         .when(expanded, |d| d.bg(theme.selected))
         .hover(move |d| d.bg(hover))
         .child(glyph)
-        .on_click(move |_, window, cx| toggle(&ctx, tab, window, cx))
+        .on_click(move |_, window, cx| toggle_from(&ctx, tab, trigger.clone(), window, cx))
         .into_any_element()
 }
 
-fn gif_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    remember(ctx, cx);
-    let expanded = is_open_on(ctx, Tab::Gifs, cx);
+fn gif_button(ctx: &ComposerCtx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    cx.default_global::<Expressions>().composer =
+        Some((ctx.session.downgrade(), ctx.composer.downgrade()));
     Some(text_button(
         "composer-gif",
         div()
@@ -744,15 +822,14 @@ fn gif_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<A
             .child("GIF")
             .into_any_element(),
         t!("emoji-open-gifs").into(),
-        expanded,
         ctx,
         Tab::Gifs,
+        window,
         cx,
     ))
 }
 
-fn emoji_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let expanded = is_open_on(ctx, Tab::Emoji, cx);
+fn emoji_button(ctx: &ComposerCtx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     Some(text_button(
         "composer-emoji",
         gpui_kit::component::Icon::default()
@@ -761,16 +838,15 @@ fn emoji_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option
             .text_color(theme::get(cx).muted)
             .into_any_element(),
         t!("emoji-open-emoji").into(),
-        expanded,
         ctx,
         Tab::Emoji,
+        window,
         cx,
     ))
 }
 
 fn is_open_on(ctx: &ComposerCtx, tab: Tab, cx: &App) -> bool {
-    open_view(cx)
-        .is_some_and(|(conversation, v)| conversation == ctx.conversation && v.read(cx).tab == tab)
+    opened(cx).is_some_and(|open| open.belongs_to(ctx) && open.view.read(cx).tab == tab)
 }
 
 // ---- Reacting with any emoji ----
