@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext, ClipboardItem, TestAppContext, point, px};
+use gpui_kit::{AppContext, ClipboardItem, MouseButton, TestAppContext, point, px};
 use ircord_app::theme;
 use ircord_client::store::appearance::{self as look, Device, Mode};
 use ircord_client::testing::{CannedServer, Reply};
@@ -94,6 +94,31 @@ fn theme_cards_reflow_when_the_window_narrows(cx: &mut TestAppContext) {
     wait(cx, "three themes fit on one row", same_row);
     cx.simulate_window_resize(f.window, gpui_kit::size(px(760.), px(800.)));
     wait(cx, "the themes wrap into more rows", |cx| !same_row(cx));
+}
+
+#[gpui_kit::test]
+fn light_and_dark_variants_can_be_chosen_independently(cx: &mut TestAppContext) {
+    let f = signed_in(
+        cx,
+        json!({"mode": "dark", "schemeDark": "github-dark", "schemeLight": "ircord-light"}),
+        json!([]),
+    );
+    open_at(&f, cx, "appearance-scheme-variants");
+    click(&f, cx, "appearance-light-variant");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let item = window.find_by_label("Hibiki Paper").bounds().center();
+        window.pointer_down(item, MouseButton::Left, cx);
+        window.pointer_up(item, MouseButton::Left, cx);
+    })
+    .unwrap();
+    wait(cx, "the separate light palette was saved", |_| {
+        saved_appearances(&f).last().is_some_and(|s| {
+            s["mode"] == "dark"
+                && s["schemeDark"] == "github-dark"
+                && s["schemeLight"] == "hibiki-light"
+        })
+    });
 }
 
 /// Click `id`, scrolling the settings page down until it is wholly in view.

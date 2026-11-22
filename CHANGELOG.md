@@ -18,6 +18,7 @@
 - The Appearance and Messages previews reflect your selected message layout, font, spacing, clock and name colors.
 - Themes and interface fonts appear in grids that adapt to the window width, with a sample in each font.
 - Appearance groups the System, Dark and Light choices and shows when settings are saved only on this device.
+- Pick separate theme variants for dark and light mode, and open the palette source from Appearance.
 
 - The desktop workspace, message list and composer follow the web layout and use your chosen theme, fonts and density.
 - On narrow windows, members open over the conversation. Resize the sidebars from their edges or with the arrow keys, and double-click an edge to reset its width.

@@ -14,7 +14,9 @@ use std::rc::Rc;
 
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::Disableable;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -36,7 +38,7 @@ use crate::ui;
 
 pub fn init(cx: &mut App) {
     registry::register(cx, |r| {
-        let rows: [(&str, &'static str, &'static str, &'static str); 11] = [
+        let rows: [(&str, &'static str, &'static str, &'static str); 12] = [
             (
                 "appearance-sync",
                 t!("appearance-sync"),
@@ -54,6 +56,12 @@ pub fn init(cx: &mut App) {
                 t!("appearance-scheme"),
                 t!("appearance-scheme-help"),
                 t!("appearance-scheme-keywords"),
+            ),
+            (
+                "appearance-scheme-variants",
+                t!("appearance-scheme-variants"),
+                t!("appearance-scheme-variants-help"),
+                t!("appearance-scheme-variants-keywords"),
             ),
             (
                 "appearance-accent",
@@ -297,6 +305,13 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
             "appearance-scheme",
             t!("appearance-scheme"),
             schemes(&current, mode, compiled.theme.is_some(), &theme, window, cx),
+            &theme,
+        ))
+        .child(block(
+            ctx,
+            "appearance-scheme-variants",
+            t!("appearance-scheme-variants"),
+            scheme_variants(&current, mode, compiled.theme.is_some()),
             &theme,
         ))
         .child(block(
@@ -892,9 +907,6 @@ fn schemes(
                 .into_any_element(),
         );
     }
-    let variants: Vec<_> = look::family(chosen.family)
-        .map(|f| f.variants.iter().filter(|s| s.mode == mode).collect())
-        .unwrap_or_default();
     div()
         .flex()
         .flex_col()
@@ -912,53 +924,80 @@ fn schemes(
             window,
             cx,
         ))
-        .when(variants.len() > 1 && !theme_in_use, |d| {
-            let mut list = div()
-                .id("appearance-variants")
-                .test_support()
-                .role(Role::RadioGroup)
-                .aria_label(t!("appearance-scheme-variant"))
+}
+
+fn scheme_label(scheme: &look::Scheme) -> SharedString {
+    let family = look::family(scheme.family).map(|f| f.name);
+    match family {
+        Some(family) if family != scheme.name => format!("{family} {}", scheme.name).into(),
+        _ => scheme.name.into(),
+    }
+}
+
+fn scheme_variants(current: &Look, mode: Mode, theme_in_use: bool) -> impl IntoElement + use<> {
+    let source = current.scheme(mode).source;
+    let controls = [
+        (
+            Mode::Dark,
+            "appearance-dark-variant",
+            t!("appearance-scheme-dark-variant"),
+        ),
+        (
+            Mode::Light,
+            "appearance-light-variant",
+            t!("appearance-scheme-light-variant"),
+        ),
+    ];
+    div()
+        .flex()
+        .flex_wrap()
+        .items_end()
+        .gap_3()
+        .children(controls.map(|(mode, element_id, label)| {
+            let active = current.scheme(mode);
+            div()
+                .w(px(220.))
+                .max_w_full()
                 .flex()
-                .flex_wrap()
-                .items_center()
+                .flex_col()
                 .gap_1()
+                .child(div().text_sm().child(label))
                 .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme.muted)
-                        .mr_2()
-                        .child(t!("appearance-scheme-variant")),
-                );
-            for variant in variants {
-                let id = variant.id;
-                list = list.child(
-                    option(
-                        format!("appearance-variant-{id}"),
-                        variant.name,
-                        variant.id == chosen.id,
-                        theme,
-                    )
-                    .test_support()
-                    .reachable(theme)
-                    .on_click(move |_, _, cx| {
-                        appearance::edit(cx, |a| {
-                            match mode {
-                                Mode::Dark => a.scheme_dark = Some(id.into()),
-                                Mode::Light => a.scheme_light = Some(id.into()),
-                            }
-                            a.theme = None;
-                        });
-                    }),
-                );
-            }
-            d.child(list)
-        })
-        .when(!chosen.source.is_empty() && !theme_in_use, |d| {
+                    Button::new(element_id)
+                        .justify_start()
+                        .w_full()
+                        .label(scheme_label(active))
+                        .accessibility_label(label)
+                        .dropdown_caret(true)
+                        .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, _| {
+                            look::schemes().filter(|scheme| scheme.mode == mode).fold(
+                                menu.max_h(px(290.)),
+                                |menu, scheme| {
+                                    menu.item(
+                                        PopupMenuItem::new(scheme_label(scheme))
+                                            .checked(scheme.id == active.id)
+                                            .on_click(move |_, _, cx| {
+                                                appearance::edit(cx, |a| match mode {
+                                                    Mode::Dark => {
+                                                        a.scheme_dark = Some(scheme.id.into())
+                                                    }
+                                                    Mode::Light => {
+                                                        a.scheme_light = Some(scheme.id.into())
+                                                    }
+                                                });
+                                            }),
+                                    )
+                                },
+                            )
+                        }),
+                )
+        }))
+        .when(!theme_in_use && !source.is_empty(), |d| {
             d.child(
-                div()
-                    .text_xs()
-                    .text_color(theme.faint)
-                    .child(t!("appearance-scheme-source", source = chosen.source)),
+                Button::new("appearance-scheme-source")
+                    .link()
+                    .label(t!("appearance-scheme-source"))
+                    .on_click(move |_, _, cx| cx.open_url(source)),
             )
         })
 }
