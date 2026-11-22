@@ -52,19 +52,22 @@ pub fn init(cx: &mut App) {
             {
                 session.navigate(Route::Page(SETUP_PAGE.into()), cx);
             }
-            // A network added elsewhere (another device) while the set-up
-            // waits untouched, or the one just set up: go to it, which
-            // leaves the page once it has a conversation to show.
+            // Stay on set-up while the first network connects. A channel can
+            // arrive for the network configured here or on another device.
             if let SessionEvent::Changed(changes) = event
                 && changes.sidebar
                 && session.route() == Some(Route::Page(SETUP_PAGE.into()))
                 && let Some(Setup(form)) = cx.try_global::<Setup>()
                 && !form.read(cx).dirty(cx)
-                && let Some(first) = session
-                    .client()
-                    .and_then(|c| c.read().networks.first().map(|n| n.id.clone()))
+                && let Some(first) = session.client().and_then(|c| {
+                    let workspace = c.read();
+                    let network = workspace.networks.first()?;
+                    workspace
+                        .network_conversation(&network.id, None)
+                        .map(|c| c.id.clone())
+                })
             {
-                session.select_network(&first, cx);
+                session.select_conversation(&first, cx);
             }
         })
         .detach();
@@ -796,14 +799,12 @@ impl NetworkFormView {
                 this.saving = false;
                 match result {
                     Ok(Ok(network)) => {
-                        let id = network.id.clone();
                         let name = network.name.clone();
                         client.change(|w| nets::saved(w, network));
                         match this.place {
                             Place::Dialog => ui::dialog::close(window, cx),
                             Place::Setup => {
                                 this.done = Some(name);
-                                this.session.update(cx, |s, cx| s.select_network(&id, cx));
                             }
                         }
                     }

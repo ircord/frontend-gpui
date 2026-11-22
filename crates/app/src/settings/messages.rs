@@ -24,7 +24,7 @@ use ircord_client::contract::{
     ClientPreferencesEvents, ConversationKind, Startup, StartupMode,
 };
 use ircord_client::documents::{APPEARANCE, PREFERENCES};
-use ircord_client::store::{Workspace, topic};
+use ircord_client::store::{Workspace, can_restore_channel, topic};
 
 use crate::message::layout::{self, Layout, Look, SIZE, SPACING, SPACING_STEP};
 use crate::registry::{self, SettingsCtx, SettingsRow, SettingsSection};
@@ -174,13 +174,7 @@ pub fn startup_channels(w: &Workspace) -> Vec<(String, String)> {
     let mut out: Vec<_> = w
         .conversations
         .iter()
-        .filter(|c| {
-            c.kind == ConversationKind::Channel
-                && c.party.is_none()
-                && c.joined
-                && c.kicked.is_none()
-                && w.network(&c.network_id).is_some()
-        })
+        .filter(|c| can_restore_channel(c) && w.network(&c.network_id).is_some())
         .map(|c| (c.network_id.clone(), c.id.clone(), c.name.clone()))
         .collect();
     out.sort();

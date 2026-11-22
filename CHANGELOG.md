@@ -33,6 +33,7 @@
 - Appearance groups the System, Dark and Light choices and shows when settings are saved only on this device.
 - Pick separate theme variants for dark and light mode, and open the palette source from Appearance.
 - Direct messages use the same sidebar order as the web client.
+- Switching networks returns to the last channel you viewed on that network, even after restarting IRCord.
 - The collapsed sidebar still gives you access to Search, Inbox, Saved messages, Drafts, Links and Server.
 - In the collapsed sidebar, channels show numbers and direct messages show avatars and presence. Both keep their conversation menus.
 

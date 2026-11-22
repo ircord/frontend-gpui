@@ -15,7 +15,7 @@ use ircord_client::client::sign_in;
 use ircord_client::config::{AppState, ConfigDir};
 use ircord_client::credentials::CredentialStore;
 use ircord_client::events::Update;
-use ircord_client::store::{Changes, topic};
+use ircord_client::store::{Changes, can_restore_channel, topic};
 use ircord_client::{Client, ServerAddress};
 use tokio::runtime::Runtime;
 
@@ -395,7 +395,7 @@ impl Session {
             self.history.replace(Route::Conversation(id.clone()));
         }
         if changed {
-            self.save_state();
+            self.save_selection(&client);
             cx.emit(SessionEvent::Selection);
         }
     }
@@ -404,15 +404,26 @@ impl Session {
         let Some(client) = self.client().cloned() else {
             return;
         };
-        let first = client.read().sidebar(network).first().map(|c| c.id.clone());
-        self.network = Some(network.to_string());
-        self.conversation = None;
-        match first {
-            Some(id) => self.select_conversation(&id, cx),
-            None => {
+        let workspace = client.read();
+        if workspace.network(network).is_none() {
+            return;
+        }
+        let last = self
+            .state
+            .last_channel(client.api().server(), &workspace.user.id, network);
+        let target = workspace
+            .network_conversation(network, last)
+            .map(|c| c.id.clone());
+        drop(workspace);
+        if let Some(id) = target {
+            self.select_conversation(&id, cx);
+        } else {
+            if self.network.as_deref() == Some(network) && self.conversation.take().is_some() {
+                self.report_activity();
                 cx.emit(SessionEvent::Selection);
                 cx.notify();
             }
+            self.navigate(Route::ServerWindow(network.to_string()), cx);
         }
     }
 
@@ -431,7 +442,7 @@ impl Session {
         if self.window_active {
             client.mark_read(id);
         }
-        self.save_state();
+        self.save_selection(&client);
         self.report_activity();
         cx.emit(SessionEvent::Selection);
         cx.notify();
@@ -477,9 +488,8 @@ impl Session {
             self.select_conversation(id, cx);
             return;
         }
-        if self.history.push(route) {
-            cx.emit(SessionEvent::Route);
-            cx.notify();
+        if self.history.push(route.clone()) {
+            self.show(route, cx);
         }
     }
 
@@ -508,10 +518,18 @@ impl Session {
                 if self.window_active {
                     client.mark_read(id);
                 }
-                self.save_state();
+                self.save_selection(&client);
                 self.report_activity();
                 cx.emit(SessionEvent::Selection);
             }
+        }
+        if let Route::ServerWindow(network) = route
+            && self.network.as_deref() != Some(network.as_str())
+        {
+            self.network = Some(network);
+            self.conversation = None;
+            self.report_activity();
+            cx.emit(SessionEvent::Selection);
         }
         cx.emit(SessionEvent::Route);
         cx.notify();
@@ -564,8 +582,27 @@ impl Session {
         self.set_phase(Phase::SignIn { server }, cx);
     }
 
-    fn save_state(&mut self) {
+    fn save_selection(&mut self, client: &Client) {
         self.state.last_conversation = self.conversation.clone();
+        let workspace = client.read();
+        if let Some(channel) = self
+            .conversation
+            .as_deref()
+            .and_then(|id| workspace.conversation(id))
+            .filter(|c| can_restore_channel(c))
+        {
+            self.state.remember_channel(
+                client.api().server(),
+                &workspace.user.id,
+                &channel.network_id,
+                &channel.id,
+            );
+        }
+        drop(workspace);
+        self.save_state();
+    }
+
+    fn save_state(&self) {
         if let Err(e) = self.config.save_state(&self.state) {
             log::warn!("save state: {e}");
         }

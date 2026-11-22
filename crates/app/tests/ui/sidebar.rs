@@ -126,6 +126,55 @@ fn saved_order(server: &CannedServer, n: usize) -> Value {
 }
 
 #[gpui_kit::test]
+fn network_tabs_reopen_the_last_channel_and_show_the_server_for_an_empty_network(
+    cx: &mut TestAppContext,
+) {
+    let f = open(cx, |server| {
+        let mut s = workspace();
+        let mut empty = s.networks[0].clone();
+        empty.id = "n3".into();
+        empty.name = "Empty".into();
+        s.networks.push(empty);
+        server.snapshot(&s);
+    });
+
+    click(&f, cx, "conversation-c-random");
+    click(&f, cx, "conversation-d-bob");
+    cx.update(|cx| assert_eq!(open_conversation(&f, cx).as_deref(), Some("d-bob")));
+    click(&f, cx, "network-n2");
+    cx.update(|cx| assert_eq!(open_conversation(&f, cx).as_deref(), Some("c-lobby")));
+    click(&f, cx, "network-n1");
+    cx.update(|cx| {
+        let session = f.session.read(cx);
+        assert_eq!(
+            session.route(),
+            Some(Route::Conversation("c-random".into()))
+        );
+        let saved = session.config.state();
+        let server = f.server.address();
+        assert_eq!(saved.last_channel(&server, "u-me", "n1"), Some("c-random"));
+        assert_eq!(saved.last_channel(&server, "u-me", "n2"), Some("c-lobby"));
+    });
+
+    click(&f, cx, "network-n3");
+    frame(&f, cx, |window, cx| {
+        assert_eq!(window.find("network-n3").selected(), Some(true));
+        assert_eq!(
+            f.session.read(cx).route(),
+            Some(Route::ServerWindow("n3".into()))
+        );
+        assert!(open_conversation(&f, cx).is_none());
+    });
+    f.session.update(cx, |s, cx| s.go_back(cx));
+    f.session.update(cx, |s, cx| s.go_forward(cx));
+    cx.update(|cx| {
+        let session = f.session.read(cx);
+        assert_eq!(session.network.as_deref(), Some("n3"));
+        assert!(session.conversation.is_none());
+    });
+}
+
+#[gpui_kit::test]
 fn the_rail_draws_patterns_and_dots_only_for_problems(cx: &mut TestAppContext) {
     let f = open(cx, |_| {});
     frame(&f, cx, |window, _| {
