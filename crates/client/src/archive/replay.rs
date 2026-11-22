@@ -18,7 +18,7 @@ use crate::api::Api;
 use crate::events::now_ms;
 use crate::store::{Workspace, parties};
 
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 2;
 pub(crate) const EVENT_BUFFER: usize = 512;
 const BATCH_SIZE: usize = 100;
 const BATCH_WAIT: Duration = Duration::from_millis(50);
@@ -150,6 +150,7 @@ impl Archive {
                 tx.execute("UPDATE workspace SET downloaded=?1", [now_ns()])?;
             }
             tx.commit()?;
+            archive.0.media_changed.notify_one();
             Ok(Some(history_changed))
         })
         .await
@@ -341,19 +342,23 @@ pub(super) fn put_message(
     let Some(at) = time_ns(&message.created_at).filter(|at| *at >= cutoff) else {
         return Ok(());
     };
-    db.prepare_cached(
-        "INSERT INTO messages VALUES (?1,?2,?3,?4,?5,?6)
+    let changed = db
+        .prepare_cached(
+            "INSERT INTO messages VALUES (?1,?2,?3,?4,?5,?6)
          ON CONFLICT(conversation,id) DO UPDATE SET at=excluded.at,position=excluded.position,
             payload=excluded.payload,seq=excluded.seq WHERE excluded.seq>=messages.seq",
-    )?
-    .execute(params![
-        message.conversation_id,
-        message.id,
-        at,
-        message.position.unwrap_or_default(),
-        archive.seal(b"message", message)?,
-        seq
-    ])?;
+        )?
+        .execute(params![
+            message.conversation_id,
+            message.id,
+            at,
+            message.position.unwrap_or_default(),
+            archive.seal(b"message", message)?,
+            seq
+        ])?;
+    if changed != 0 {
+        super::media::store_refs(db, archive, message)?;
+    }
     Ok(())
 }
 

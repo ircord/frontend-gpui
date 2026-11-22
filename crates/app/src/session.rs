@@ -167,6 +167,7 @@ impl Session {
             self.panel = None;
         }
         self.phase = phase;
+        crate::images::set_media_session(self.client().map(|client| client.api().clone()), cx);
         self.busy = false;
         cx.emit(SessionEvent::Phase);
         cx.notify();

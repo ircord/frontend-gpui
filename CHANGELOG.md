@@ -8,6 +8,7 @@
 - Read Aloud can speak new highlights on this device through your chosen speech service. It respects ignored senders, muted conversations and quiet hours.
 - Open your workspace and read saved messages while the server is unavailable, after IRCord has downloaded your recent history.
 - Search and filter saved messages when the server is unavailable, then open a match in its conversation.
+- Recent message images and GIFs are downloaded for offline viewing, including in the image viewer.
 
 ### Improved
 

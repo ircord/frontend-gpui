@@ -70,6 +70,7 @@ struct Context {
     animate: bool,
     /// The server's origin, for media named by a path on it.
     origin: Option<String>,
+    media_reader: Option<crate::images::MediaReader>,
 }
 
 fn context(ctx: &MessageCtx, cx: &mut App) -> Option<Context> {
@@ -123,6 +124,7 @@ fn context(ctx: &MessageCtx, cx: &mut App) -> Option<Context> {
         sensitivity,
         animate,
         origin,
+        media_reader: crate::images::media_reader(cx),
     })
 }
 
@@ -381,10 +383,11 @@ impl Draw<'_> {
     /// The picture itself: playing, or held on its first frame.
     fn picture(&self, key: &str, media: &Media, fit: ObjectFit) -> AnyElement {
         let playing = !media.is_gif() || self.context.animate || self.hovered == Some(key);
+        let uri = crate::images::media_uri(&media.url, self.context.media_reader.as_ref());
         let source = if playing {
-            ImageSource::from(SharedUri::from(media.url.clone()))
+            ImageSource::from(SharedUri::from(uri.to_string()))
         } else {
-            crate::images::still(media.url.clone().into())
+            crate::images::still(uri)
         };
         img(source).size_full().object_fit(fit).into_any_element()
     }

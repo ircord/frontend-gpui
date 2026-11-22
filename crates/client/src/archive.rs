@@ -19,6 +19,7 @@ use serde::de::DeserializeOwned;
 use crate::api::{Api, ApiError};
 
 mod history;
+mod media;
 mod replay;
 mod search;
 pub(crate) use replay::{EVENT_BUFFER, Signal};
@@ -36,6 +37,8 @@ pub(crate) struct Archive(Arc<Cache>);
 struct Cache {
     path: PathBuf,
     key: aead::LessSafeKey,
+    media_key: hmac::Key,
+    media_changed: tokio::sync::Notify,
     /// Serialize access to the final file and fence a sync after sign-out.
     revoked: Mutex<bool>,
 }
@@ -59,9 +62,15 @@ impl Archive {
             .collect();
         let key = aead::UnboundKey::new(&aead::CHACHA20_POLY1305, tag.as_ref())
             .expect("HMAC-SHA256 supplies a 32-byte key");
+        let media = hmac::sign(
+            &cookie_key,
+            format!("ircord-offline-media-v1:{origin}").as_bytes(),
+        );
         Self(Arc::new(Cache {
             path: config.join("offline").join(format!("{file}.sqlite3")),
             key: aead::LessSafeKey::new(key),
+            media_key: hmac::Key::new(hmac::HMAC_SHA256, media.as_ref()),
+            media_changed: tokio::sync::Notify::new(),
             revoked: Mutex::new(false),
         }))
     }
@@ -131,11 +140,17 @@ impl Archive {
     pub(crate) async fn forget(&self) {
         let cache = self.clone();
         if let Err(error) = blocking(move || {
-            *cache.0.revoked.lock().unwrap() = true;
-            match fs::remove_file(&cache.0.path) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
-                _ => Ok(()),
+            let mut revoked = cache.0.revoked.lock().unwrap();
+            *revoked = true;
+            let mut result = Ok(());
+            for path in [&cache.0.path, &cache.media_path()] {
+                if let Err(error) = fs::remove_file(path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    result = Err(error.into());
+                }
             }
+            result
         })
         .await
         {
@@ -174,12 +189,15 @@ impl Archive {
     }
 
     fn seal(&self, kind: &[u8], value: &impl Serialize) -> Result<Vec<u8>> {
+        self.seal_bytes(kind, serde_json::to_vec(value)?)
+    }
+
+    fn seal_bytes(&self, kind: &[u8], mut bytes: Vec<u8>) -> Result<Vec<u8>> {
         let mut nonce = [0; aead::NONCE_LEN];
         use rand::SecureRandom;
         rand::SystemRandom::new()
             .fill(&mut nonce)
             .map_err(|_| anyhow::anyhow!("could not obtain randomness for the offline archive"))?;
-        let mut bytes = serde_json::to_vec(value)?;
         self.0
             .key
             .seal_in_place_append_tag(
@@ -193,7 +211,11 @@ impl Archive {
         Ok(sealed)
     }
 
-    fn open<T: DeserializeOwned>(&self, kind: &[u8], mut sealed: Vec<u8>) -> Result<T> {
+    fn open<T: DeserializeOwned>(&self, kind: &[u8], sealed: Vec<u8>) -> Result<T> {
+        Ok(serde_json::from_slice(&self.open_bytes(kind, sealed)?)?)
+    }
+
+    fn open_bytes(&self, kind: &[u8], mut sealed: Vec<u8>) -> Result<Vec<u8>> {
         let nonce = sealed
             .get(..aead::NONCE_LEN)
             .context("truncated offline data")?;
@@ -204,7 +226,9 @@ impl Archive {
             .key
             .open_within(nonce, aead::Aad::from(kind), &mut sealed, aead::NONCE_LEN..)
             .map_err(|_| anyhow::anyhow!("the offline archive could not be authenticated"))?;
-        Ok(serde_json::from_slice(bytes)?)
+        let size = bytes.len();
+        sealed.truncate(size);
+        Ok(sealed)
     }
 }
 
@@ -241,6 +265,7 @@ impl Staging {
              CREATE INDEX messages_retention ON messages(at);",
         )?;
         db.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        media::create_refs(&db)?;
         Ok(Self {
             db,
             path,
@@ -283,6 +308,7 @@ impl Staging {
         let revoked = archive.0.revoked.lock().unwrap();
         if !*revoked {
             path.persist(&archive.0.path)?;
+            archive.0.media_changed.notify_one();
         }
         Ok(())
     }

@@ -123,6 +123,20 @@ impl Api {
         }
     }
 
+    /// Read a file saved for a retained message in this session, or load its public URL.
+    pub async fn fetch_chat_file(
+        &self,
+        url: &str,
+        max: usize,
+    ) -> Result<(u16, Option<String>, Vec<u8>), String> {
+        if let Some(archive) = &self.archive
+            && let Some((content_type, bytes)) = archive.media(url, max).await
+        {
+            return Ok((200, content_type, bytes));
+        }
+        fetch(url, max).await
+    }
+
     pub fn server(&self) -> &ServerAddress {
         &self.server
     }

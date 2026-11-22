@@ -332,6 +332,7 @@ impl Client {
         } else {
             (None, None)
         };
+        let media_events = archive_sender.as_ref().map(broadcast::Sender::subscribe);
         let shared = Arc::new(Shared {
             store: Arc::new(RwLock::new(Workspace::default())),
             updates: from_events,
@@ -368,6 +369,9 @@ impl Client {
         let mut tasks = vec![events, reporter, forwarder];
         if let (Some(archive), Some(archive_events)) = (api.archive.clone(), archive_events) {
             tasks.push(runtime.spawn(archive.watch(api.clone(), archive_events)));
+        }
+        if let (Some(archive), Some(media_events)) = (api.archive.clone(), media_events) {
+            tasks.push(runtime.spawn(archive.watch_media(api.clone(), media_events)));
         }
         let client = Client {
             runtime,

@@ -291,7 +291,7 @@ pub fn run() {
         init(cx);
         #[cfg(target_os = "macos")]
         install_app_menu(cx);
-        cx.set_http_client(Arc::new(images::ImageClient::new(runtime.clone())));
+        images::ImageClient::install(runtime.clone(), cx);
         let session = cx.new(|cx| Session::new(runtime, config, credentials, cx));
         notify::install(session.clone(), cx);
         if use_tray && let Err(e) = tray::install(session.clone(), cx) {

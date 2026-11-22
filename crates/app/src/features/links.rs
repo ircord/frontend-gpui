@@ -454,11 +454,12 @@ pub(crate) fn picture(r: &LinkMediaResponse) -> Option<Media> {
 }
 
 /// A picture filling its box, a GIF held on its first frame.
-pub(crate) fn still(media: &Media) -> AnyElement {
+pub(crate) fn still(media: &Media, cx: &App) -> AnyElement {
+    let uri = crate::images::media_uri(&media.url, crate::images::media_reader(cx).as_ref());
     let source = if media.is_gif() {
-        crate::images::still(media.url.clone().into())
+        crate::images::still(uri)
     } else {
-        ImageSource::from(SharedUri::from(media.url.clone()))
+        ImageSource::from(SharedUri::from(uri.to_string()))
     };
     img(source)
         .size_full()
@@ -1182,7 +1183,7 @@ impl LinksView {
             (None, _, Some(media)) => div()
                 .size_full()
                 .relative()
-                .child(still(media))
+                .child(still(media, cx))
                 .child(open_mark(
                     overlaid.then(|| (site.clone(), title.clone())),
                     widget,
