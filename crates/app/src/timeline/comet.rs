@@ -32,6 +32,8 @@ const BURST: u32 = 26;
 const SPARK_LIFE: f32 = 1.15;
 /// How long a replaced comet takes to fade, apart from its sparks.
 const SETTLE: f32 = 0.15;
+/// How long the landing ring takes to spread: until the effect ends.
+const LANDING_RING: f32 = attract::ATTRACT_MS as f32 / 1000. - LANDS;
 /// A spark's fall, in px per second squared.
 const GRAVITY: f32 = 280.;
 
@@ -213,19 +215,16 @@ pub fn head(row: Bounds<Pixels>, t: f32) -> Option<Point<Pixels>> {
     })
 }
 
-/// The avatar's centre and radius, or a stand-in at the row's left when
-/// the head of the group is not drawn (scrolled away above).
-fn origin(row: Bounds<Pixels>, avatar: Option<Bounds<Pixels>>) -> (f32, f32, f32) {
+/// The avatar's centre and radius. Without one in view (its row scrolled
+/// away above, or a layout that draws no pictures) the comet lands where
+/// it took off, the outline's top left corner, whatever the layout.
+fn origin(track: &Track, avatar: Option<Bounds<Pixels>>) -> (f32, f32, f32) {
     match avatar {
         Some(a) => {
             let r = f(a.size.width) / 2.;
             (f(a.left()) + r, f(a.top()) + f(a.size.height) / 2., r)
         }
-        None => (
-            f(row.left()) + 36.,
-            f(row.top()) + f(row.size.height) / 2.,
-            0.,
-        ),
+        None => (track.x, track.y, 0.),
     }
 }
 
@@ -303,7 +302,8 @@ pub fn shapes(
     let settle = replaced.map_or(1., |at| (1. - (t - at) / SETTLE).clamp(0., 1.));
     // Sparks and bursts born after this are never made.
     let shed_until = replaced.unwrap_or(f32::INFINITY);
-    let (ox, oy, r) = origin(row, avatar);
+    let track = Track::new(row);
+    let (ox, oy, r) = origin(&track, avatar);
     let steady = e * settle;
 
     // The ring that stays around the avatar while the comet plays.
@@ -311,7 +311,6 @@ pub fn shapes(
         out.ring(ox, oy, r + 4., 2., pal.accent.opacity(0.9 * steady));
     }
 
-    let track = Track::new(row);
     let length = track.length();
     let outline = track.bounds();
     out.fill(outline, 7., pal.accent.opacity(0.07 * steady));
@@ -390,16 +389,17 @@ pub fn shapes(
     }
 
     // A ring leaves the avatar at take-off, after the first lap and at
-    // landing.
+    // landing. The landing ring lives until the effect ends, so it has
+    // faded by then and nothing pops when the layer goes.
     for pass in [0., LAP, LANDS] {
-        let age = (t - pass) / 0.55;
+        // The landing ring stays bright while everything else fades out.
+        let (life, big, strength) = if pass == LANDS {
+            (LANDING_RING, 22., e.max(0.4))
+        } else {
+            (0.55, 12., e)
+        };
+        let age = (t - pass) / life;
         if (0. ..1.).contains(&age) {
-            // The landing ring stays bright while the effect fades out.
-            let (big, strength) = if pass == LANDS {
-                (22., e.max(0.4))
-            } else {
-                (12., e)
-            };
             out.ring(
                 ox,
                 oy,
@@ -413,7 +413,8 @@ pub fn shapes(
     let age = t - LANDS;
     if age >= 0. && LANDS < shed_until {
         for n in 0..BURST {
-            let life = 0.3 + 0.12 * noise(n, 21);
+            // Gone by the time the effect ends.
+            let life = 0.28 + 0.12 * noise(n, 21);
             if age > life {
                 continue;
             }
@@ -614,13 +615,33 @@ mod tests {
     }
 
     #[test]
-    fn with_its_avatar_out_of_view_it_lands_at_the_rows_left() {
-        let shapes = shapes(row(), None, at(LANDS + 0.05), &pal());
-        assert!(
-            dots(&shapes)
+    fn with_no_avatar_in_view_it_lands_where_it_took_off() {
+        // The outline's top left corner, in any layout.
+        let near = |t: f32| {
+            dots(&shapes(row(), None, at(t), &pal()))
                 .iter()
-                .any(|b| (f(b.center().x) - 36.).abs() < 30.),
-            "the burst is near the row's left"
+                .filter(|b| {
+                    let (x, y) = (f(b.center().x) - 5., f(b.center().y) - 101.);
+                    (x * x + y * y).sqrt() < 16.
+                })
+                .count()
+        };
+        assert!(near(LANDS + 0.05) >= BURST as usize - 2);
+        assert!(near(LANDS + 0.05) > near(LANDS - 0.1) + 10);
+    }
+
+    #[test]
+    fn nothing_is_left_to_pop_when_it_ends() {
+        let alpha = |s: &Shape| match s {
+            Shape::Fill { color, .. }
+            | Shape::Outline { color, .. }
+            | Shape::Glow { color, .. } => color.a,
+            Shape::Streak { from, to, .. } => from.a.max(to.a),
+        };
+        let last = shapes(row(), Some(avatar()), at(2.999), &pal());
+        assert!(
+            last.iter().all(|s| alpha(s) < 0.02),
+            "still showing at 2.999 s: {last:?}"
         );
     }
 

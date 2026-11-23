@@ -105,6 +105,15 @@ struct Reading {
 
 impl Global for Reading {}
 
+/// The `/attract` comets the timeline on screen drew in its last frame,
+/// oldest first: whose rows they play on and how far into each they were.
+pub fn comets(cx: &App) -> Vec<(attract::Target, comet::Moment)> {
+    cx.try_global::<Reading>()
+        .and_then(|r| r.view.as_ref()?.upgrade())
+        .map(|view| view.read(cx).comets.clone())
+        .unwrap_or_default()
+}
+
 /// Rebuild the timeline's rows now, as after a change to how they look that
 /// no workspace change announces (an appearance kept on this device).
 pub fn refresh(cx: &mut App) {
@@ -606,6 +615,8 @@ pub struct TimelineView {
     attracts: u64,
     /// Where the rows the comets play on were painted in this frame.
     stage: attract::Stage,
+    /// The comets the last frame drew, oldest first ([`comets`]).
+    comets: Vec<(attract::Target, comet::Moment)>,
     _subscription: Subscription,
 }
 
@@ -692,6 +703,7 @@ impl TimelineView {
             settling: None,
             attracts: 0,
             stage: attract::Stage::default(),
+            comets: Vec::new(),
             _subscription: subscription,
         };
         view.install_scroll_handler(cx);
@@ -1073,11 +1085,29 @@ impl TimelineView {
     /// rate; `attract_frame` keeps the effect going and ends it where frames
     /// are not drawn on their own (the headless tests).
     fn render_comet(&mut self, theme: &Theme, window: &mut Window) -> Option<AnyElement> {
-        if theme.reduced_motion {
-            self.settling = None;
+        self.comets = self.comets_now(theme);
+        if self.comets.is_empty() {
             return None;
         }
-        let playing = self.attract.as_ref()?;
+        window.request_animation_frame();
+        Some(comet::layer(
+            self.stage.clone(),
+            self.comets.clone(),
+            comet::Palette::new(theme),
+            px(TYPING_LINE),
+        ))
+    }
+
+    /// The comets to draw now, oldest first; a replaced one is dropped once
+    /// its sparks have landed.
+    fn comets_now(&mut self, theme: &Theme) -> Vec<(attract::Target, comet::Moment)> {
+        if theme.reduced_motion {
+            self.settling = None;
+            return Vec::new();
+        }
+        let Some(playing) = self.attract.as_ref() else {
+            return Vec::new();
+        };
         let moment = |p: &Playing, replaced: Option<Duration>| comet::Moment {
             t: attract::seconds(p.started.elapsed()),
             replaced: replaced.map(attract::seconds),
@@ -1091,20 +1121,14 @@ impl TimelineView {
         }
         let now = moment(playing, None);
         if now.done() {
-            return None;
+            return Vec::new();
         }
         let mut comets = Vec::new();
         if let Some((p, at)) = &self.settling {
             comets.push((p.target.clone(), moment(p, Some(*at))));
         }
         comets.push((playing.target.clone(), now));
-        window.request_animation_frame();
-        Some(comet::layer(
-            self.stage.clone(),
-            comets,
-            comet::Palette::new(theme),
-            px(TYPING_LINE),
-        ))
+        comets
     }
 
     /// How far the end of the history is below the view, in pixels.

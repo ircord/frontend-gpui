@@ -7,9 +7,9 @@
 //! through the app's own form, captures the workspace, checks the sign-in is
 //! in the keyring, types a server emoji into the message box, plays a test
 //! video sent to the channel (printing the app's resident memory 2 s and
-//! 32 s after it starts), sends `/attract` and captures the comet three
-//! times while it plays and once after it ends, then restarts the app to show it signs in from
-//! there, and opens Settings → Emotes → Discover (emoji.gg's emoji, read by
+//! 32 s after it starts), sends `/attract` and captures the comet five
+//! times while it plays (the last two around its landing) and once after it
+//! ends, then restarts the app to show it signs in from there, and opens Settings → Emotes → Discover (emoji.gg's emoji, read by
 //! the backend over the internet).
 //! Screenshots and the app's logs land in `target/capture/`; look at them.
 //!
@@ -171,6 +171,11 @@ sleep 0.6
 shot 10-attract-comet-2
 sleep 0.9
 shot 10-attract-comet-3
+# The landing: the burst and the landing ring live from 2.6 to 3 s.
+sleep 0.15
+shot 10-attract-comet-4
+sleep 0.1
+shot 10-attract-comet-5
 sleep 4
 shot 10-attract-over
 
