@@ -11,6 +11,7 @@ text-message-link-here = Message
 text-open-channel = Open { $channel }
 text-join-channel = Join { $channel }
 text-open-link = Open { $url }
+text-open-masked-link = { $text }: opens { $url }
 text-mention = Mention of { $name }
 text-code = Code
 text-code-language = { $language } code

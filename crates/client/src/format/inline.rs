@@ -5,10 +5,16 @@
 //! Whether an `@word` is a pill depends on who is in the conversation, so
 //! this only finds the candidates; the app keeps those naming a member or a
 //! group ([`super::mentions::group_mention`]).
+//!
+//! Masked links, `[text](url)`, are found per paragraph ([`masked_links`]):
+//! inside fenced code they stay as typed, so the blocks come first.
 
 use std::ops::Range;
 
+use url::Url;
+
 use super::Formatted;
+use super::blocks::Mapped;
 use super::mentions::is_nick_char;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +97,278 @@ fn channel_at(text: &str, at: usize) -> Option<(Range<usize>, Token)> {
     Some((at..end, Token::Channel(text[at..end].to_string())))
 }
 
+// ---- Masked links ---------------------------------------------------------
+
+/// A paragraph with its masked links, `[text](url)`, drawn as their words.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Masked {
+    /// The paragraph without the brackets and addresses of its masked links.
+    pub text: Mapped,
+    /// Its formatting and links; a masked link's words open its address.
+    pub formatted: Formatted,
+    /// Where the masked links' words are in `text`.
+    pub masked: Vec<Range<usize>>,
+}
+
+/// Finds `[text](url)` in a paragraph and draws it as `text` opening `url`.
+///
+/// Only absolute `http`, `https` and `mailto` addresses are masked, never
+/// inside monospace. When the words themselves name an address or a domain
+/// other than the link's host, the link is not masked: the typed text stays
+/// and its address is an ordinary link. The message itself is unchanged, so
+/// plain IRC readers see `[text](url)`. `text` may hold formatting, nested
+/// brackets and `\]`; the address may hold balanced parentheses; a space
+/// between `]` and `(` makes no link.
+pub fn masked_links(text: &Mapped, source: &Formatted) -> Masked {
+    let plain = text.formatted(source);
+    let s = plain.text.as_str();
+    let b = s.as_bytes();
+    let mono: Vec<Range<usize>> = plain
+        .runs
+        .iter()
+        .filter(|(_, st)| st.mono)
+        .map(|(r, _)| r.clone())
+        .collect();
+    let mut keep = vec![true; s.len()];
+    let mut found: Vec<Found> = Vec::new();
+    let mut i = 0;
+    while let Some(off) = s[i..].find('[') {
+        let open = i + off;
+        i = open + 1;
+        if escaped(b, open) {
+            continue;
+        }
+        let Some((close, address, end)) = bracketed(b, open) else {
+            continue;
+        };
+        if mono.iter().any(|m| m.start < end && open < m.end) {
+            continue;
+        }
+        let url = &s[address.clone()];
+        let Some(host) = target_host(url) else {
+            continue;
+        };
+        let words = &s[open + 1..close];
+        let shown: String = unescape(words);
+        if shown.trim().is_empty() {
+            continue;
+        }
+        i = end;
+        if names_other_host(&shown, &host) {
+            found.push(Found {
+                span: open..end,
+                words: None,
+                address,
+                url: url.to_string(),
+            });
+            continue;
+        }
+        keep[open] = false;
+        keep[close..end].iter_mut().for_each(|k| *k = false);
+        let mut j = open + 1;
+        while j < close {
+            if b[j] == b'\\' && matches!(b.get(j + 1), Some(b'[' | b']' | b'\\')) {
+                keep[j] = false;
+                j += 1;
+            }
+            j += 1;
+        }
+        found.push(Found {
+            span: open..end,
+            words: Some(open + 1..close),
+            address,
+            url: url.to_string(),
+        });
+    }
+    if found.is_empty() {
+        return Masked {
+            text: text.clone(),
+            formatted: plain,
+            masked: Vec::new(),
+        };
+    }
+    // Each byte's place in the masked text.
+    let mut place = Vec::with_capacity(s.len() + 1);
+    let mut kept = Mapped::default();
+    for (k, &byte_kept) in keep.iter().enumerate() {
+        place.push(kept.at.len());
+        if byte_kept {
+            kept.at.push(text.at[k]);
+        }
+    }
+    place.push(kept.at.len());
+    kept.text = s
+        .char_indices()
+        .filter(|(k, _)| keep[*k])
+        .map(|(_, c)| c)
+        .collect();
+    let moved = |r: &Range<usize>| place[r.start]..place[r.end];
+    let mut formatted = kept.formatted(source);
+    let spans: Vec<Range<usize>> = found.iter().map(|f| moved(&f.span)).collect();
+    formatted
+        .links
+        .retain(|(r, _)| !spans.iter().any(|s| r.start < s.end && s.start < r.end));
+    let mut masked = Vec::new();
+    for Found {
+        words,
+        address,
+        url,
+        ..
+    } in found
+    {
+        let range = match words {
+            Some(words) => {
+                masked.push(moved(&words));
+                moved(&words)
+            }
+            None => moved(&address),
+        };
+        formatted.links.push((range, url));
+    }
+    formatted.links.sort_by_key(|(r, _)| r.start);
+    Masked {
+        text: kept,
+        formatted,
+        masked,
+    }
+}
+
+/// A `[words](address)` found in a paragraph.
+struct Found {
+    span: Range<usize>,
+    /// The words, when the link is masked.
+    words: Option<Range<usize>>,
+    address: Range<usize>,
+    url: String,
+}
+
+/// Whether the byte at `at` follows an odd number of backslashes.
+fn escaped(b: &[u8], at: usize) -> bool {
+    b[..at].iter().rev().take_while(|&&c| c == b'\\').count() % 2 == 1
+}
+
+/// `[words](address)` from the `[` at `open`, on one line: where the
+/// matching `]` is, the address and the end after its `)`.
+fn bracketed(b: &[u8], open: usize) -> Option<(usize, Range<usize>, usize)> {
+    let mut depth = 0usize;
+    let mut j = open;
+    let close = loop {
+        match *b.get(j)? {
+            b'\\' => j += 1,
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    break j;
+                }
+            }
+            b'\n' => return None,
+            _ => {}
+        }
+        j += 1;
+    };
+    if b.get(close + 1) != Some(&b'(') {
+        return None;
+    }
+    let start = close + 2;
+    let mut depth = 1usize;
+    let mut k = start;
+    loop {
+        match *b.get(k)? {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            c if c.is_ascii_whitespace() => return None,
+            _ => {}
+        }
+        k += 1;
+    }
+    (k > start).then_some((close, start..k, k + 1))
+}
+
+fn unescape(words: &str) -> String {
+    let mut out = String::with_capacity(words.len());
+    let mut chars = words.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\'
+            && let Some(&next) = chars.peek()
+            && matches!(next, '[' | ']' | '\\')
+        {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The host a masked link may open: an absolute `http` or `https` URL's
+/// host, or a `mailto` address's domain. `None` for anything else.
+fn target_host(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    match parsed.scheme() {
+        "http" | "https" => Some(parsed.host_str()?.to_string()),
+        "mailto" => {
+            let address = parsed.path().split('?').next()?;
+            let (user, domain) = address.rsplit_once('@')?;
+            if user.is_empty() {
+                return None;
+            }
+            normal_host(domain)
+        }
+        _ => None,
+    }
+}
+
+/// A host name as `Url` writes it: lowercase, IDNs in punycode.
+fn normal_host(host: &str) -> Option<String> {
+    Url::parse(&format!("http://{host}/"))
+        .ok()?
+        .host_str()
+        .map(str::to_string)
+}
+
+/// Whether any word of a link's text looks like an address or a domain
+/// whose host is not `host`.
+fn names_other_host(words: &str, host: &str) -> bool {
+    words
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| "\"'()[]{}<>,.;:!?*".contains(c)))
+        .filter_map(word_host)
+        .any(|h| h != host)
+}
+
+/// The host a word names: `https://a.example/x` and `mailto:b@a.example`
+/// (an address of any scheme: an empty host when it names none), and bare
+/// `a.example`, `a.example/x` and `b@a.example`. `None` for other words.
+fn word_host(word: &str) -> Option<String> {
+    let lower = word.to_ascii_lowercase();
+    if lower.contains("://") || lower.starts_with("mailto:") {
+        let host = Url::parse(word).ok().and_then(|u| match u.scheme() {
+            "mailto" => target_host(word),
+            _ => u.host_str().map(str::to_string),
+        });
+        return Some(host.unwrap_or_default());
+    }
+    let name = word.rsplit_once('@').map_or(word, |(_, d)| d);
+    let name = &name[..name.find(['/', ':', '?', '#']).unwrap_or(name.len())];
+    let labels: Vec<&str> = name.split('.').collect();
+    let dotted = labels.len() >= 2
+        && labels
+            .iter()
+            .all(|l| !l.is_empty() && l.chars().all(|c| c.is_alphanumeric() || c == '-'))
+        && labels
+            .last()
+            .is_some_and(|tld| tld.chars().count() >= 2 && tld.chars().all(char::is_alphabetic));
+    if !dotted {
+        return None;
+    }
+    Some(normal_host(name).unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +410,91 @@ mod tests {
                 "irc://irc.libera.chat/#rust".into(),
                 Token::Link("irc://irc.libera.chat/#rust".into())
             )]
+        );
+    }
+
+    /// What a paragraph shows and the links a click opens, as the app draws it.
+    fn masked(text: &str) -> (String, Vec<(String, String)>, Masked) {
+        let source = parse(text);
+        let m = masked_links(&Mapped::new(&source.text), &source);
+        let links = tokens(&m.formatted)
+            .into_iter()
+            .filter_map(|(r, t)| match t {
+                Token::Link(url) => Some((m.formatted.text[r].to_string(), url)),
+                _ => None,
+            })
+            .collect();
+        (m.formatted.text.clone(), links, m)
+    }
+
+    /// The masked-link cases both clients share.
+    #[test]
+    fn masked_link_cases() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            name: String,
+            text: String,
+            visible: String,
+            links: Vec<(String, String)>,
+        }
+        let cases: Vec<Case> =
+            serde_json::from_str(include_str!("testdata/masked-links.json")).unwrap();
+        assert!(cases.len() > 20);
+        for case in cases {
+            let (visible, links, _) = masked(&case.text);
+            assert_eq!(visible, case.visible, "{}", case.name);
+            assert_eq!(links, case.links, "{}", case.name);
+        }
+    }
+
+    #[test]
+    fn masked_links_keep_formatting_and_sources() {
+        let (visible, _, m) = masked("go [\x02bold\x02 docs](https://example.com) now");
+        assert_eq!(visible, "go bold docs now");
+        assert_eq!(m.masked, vec![3..12]);
+        let bold = m.formatted.runs.iter().find(|(_, s)| s.bold).unwrap();
+        assert_eq!(bold.0, 3..7);
+        // " now" still comes from the end of the source text.
+        assert_eq!(
+            m.text.at.last(),
+            Some(
+                &(parse("go [\x02bold\x02 docs](https://example.com) now")
+                    .text
+                    .len()
+                    - 1)
+            )
+        );
+        assert_eq!(m.text.project(&(0..2)), Some(0..2));
+    }
+
+    #[test]
+    fn masked_links_in_list_items_and_not_in_code() {
+        use crate::format::blocks::{Block, message_blocks};
+        let source = parse("- [docs](https://example.com)\n```\n[a](https://example.com)\n```");
+        let blocks = message_blocks(&Mapped::new(&source.text), false);
+        let Block::List(list) = &blocks[0] else {
+            panic!("{blocks:?}")
+        };
+        let item = masked_links(&list.items[0].text, &source);
+        assert_eq!(item.formatted.text, "docs");
+        assert_eq!(
+            item.formatted.links,
+            vec![(0..4, "https://example.com".to_string())]
+        );
+        let Block::Code { code, .. } = &blocks[1] else {
+            panic!("{blocks:?}")
+        };
+        assert_eq!(code.text, "[a](https://example.com)");
+    }
+
+    /// The box sends `[text](url)` as typed, with emphasis inside as IRC codes,
+    /// so plain IRC readers see the brackets and the address.
+    #[test]
+    fn masked_links_travel_as_typed() {
+        use crate::format::markdown::markdown_to_irc;
+        assert_eq!(
+            markdown_to_irc("[**the** docs](https://example.com/a_b_c)"),
+            "[\x02the\x02 docs](https://example.com/a_b_c)"
         );
     }
 }
