@@ -186,9 +186,17 @@ fn a_pasted_picture_joins_the_batch_and_text_pastes_as_usual(cx: &mut TestAppCon
 
 #[gpui_kit::test]
 fn a_stalled_upload_says_so(cx: &mut TestAppContext) {
-    let f = open_with(cx, true, |s| {
+    // The server takes the file and never answers (until the test lets go of
+    // it), so the stall watchdog is the only way out however slow the machine
+    // is; a reply on a timer would race the watchdog.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let held = std::sync::Mutex::new(held);
+    let f = open_with(cx, true, move |s| {
         server(s, Some(false));
-        uploads_answer(s, Duration::from_millis(1500));
+        s.route_fn("POST", "/api/v1/uploads", move |_| {
+            let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(60));
+            Reply::problem(503, "The upload server went away.")
+        });
     });
     bootstrap(&f, cx);
     cx.update(|cx| Uploads::set_stall(cx, Duration::from_millis(200)));
@@ -213,6 +221,7 @@ fn a_stalled_upload_says_so(cx: &mut TestAppContext) {
             .requests_to("POST", "/api/v1/conversations/c-general/messages")
             .is_empty()
     );
+    drop(release);
 }
 
 #[gpui_kit::test]

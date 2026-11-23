@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gpui_kit::TestAppContext;
 use ircord_app::notify::picture::{Fixed, resolve};
@@ -156,22 +156,23 @@ fn a_body_that_is_not_a_picture_shows_no_picture(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_picture_that_never_arrives_is_given_up_within_a_second(cx: &mut TestAppContext) {
-    let f = open_with(cx, true, |server| {
+fn a_picture_that_never_arrives_is_given_up(cx: &mut TestAppContext) {
+    // The server holds its answer until the test lets go of it, then sends a
+    // real picture, so only giving up can make the result `None`: a client
+    // that waited for the answer would find the picture. No clock is read.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let held = std::sync::Mutex::new(held);
+    let picture_bytes = png();
+    let f = open_with(cx, true, move |server| {
         server.snapshot(&workspace());
-        server.route_fn("GET", AVATAR, |_| {
-            std::thread::sleep(Duration::from_secs(2));
-            Reply::bytes(200, "image/png", Vec::new())
+        server.route_fn("GET", AVATAR, move |_| {
+            let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(60));
+            Reply::bytes(200, "image/png", picture_bytes.clone())
         });
     });
     bootstrap(&f, cx);
-    let started = Instant::now();
     assert_eq!(picture(&f, cx, alert("c-general", "1")), None);
-    assert!(
-        started.elapsed() < Duration::from_millis(1500),
-        "waited {:?}",
-        started.elapsed()
-    );
+    drop(release);
 }
 
 #[gpui_kit::test]

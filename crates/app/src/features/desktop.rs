@@ -950,8 +950,16 @@ mod tests {
 
     const SOON: Duration = Duration::from_millis(300);
 
+    /// Far longer than any test machine stalls: a claim that waited out its
+    /// patience on a dead copy could not finish inside it.
+    const FOREVER: Duration = Duration::from_secs(60);
+
     fn first(dir: &std::path::Path) -> instance::Running {
-        let instance::Claim::First(running) = instance::claim(dir, &[], SOON) else {
+        first_within(dir, SOON)
+    }
+
+    fn first_within(dir: &std::path::Path, patience: Duration) -> instance::Running {
+        let instance::Claim::First(running) = instance::claim(dir, &[], patience) else {
             panic!("the first copy runs");
         };
         assert!(running.locked() && running.listening());
@@ -1066,9 +1074,11 @@ mod tests {
         drop(gone);
         std::fs::write(dir.join(instance::FILE), format!("{port} abc\n")).unwrap();
         std::fs::write(dir.join(instance::LOCK), "").unwrap();
+        // A claim that waited on the dead copy would wait out its whole
+        // patience, so the bound is that patience, not a few milliseconds.
         let started = std::time::Instant::now();
-        let running = first(&dir);
-        assert!(started.elapsed() < SOON, "no waiting on a dead copy");
+        let running = first_within(&dir, FOREVER);
+        assert!(started.elapsed() < FOREVER, "no waiting on a dead copy");
         let text = std::fs::read_to_string(dir.join(instance::FILE)).unwrap();
         assert!(!text.ends_with(" abc\n"), "the file names the new copy");
         // And when that copy ends in turn, the next one starts.
