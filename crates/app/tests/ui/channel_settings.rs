@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, open_with, snapshot, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 const COMMANDS: &str = "/api/v1/networks/n1/commands";
 
 /// The fixture's workspace with you as `modes` in #general, which has the

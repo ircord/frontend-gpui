@@ -12,7 +12,7 @@ use ircord_client::contract::*;
 use ircord_client::testing::{CannedServer, Reply};
 use serde_json::json;
 
-use crate::fixture::{Fixture, bootstrap, message, open_with, snapshot, wait};
+use crate::fixture::{Fixture, bootstrap, held_reply, message, open_with, snapshot, wait};
 
 /// The server accepts pictures and PDFs up to 1 MB; `#general` is not
 /// sensitive, unless `nsfw`.
@@ -186,9 +186,13 @@ fn a_pasted_picture_joins_the_batch_and_text_pastes_as_usual(cx: &mut TestAppCon
 
 #[gpui_kit::test]
 fn a_stalled_upload_says_so(cx: &mut TestAppContext) {
-    let f = open_with(cx, true, |s| {
+    // The server takes the file and does not answer until the test lets go of
+    // it, so the stall watchdog is the only way out however slow the machine
+    // is; a reply on a timer would race the watchdog.
+    let (release, held) = held_reply(|| Reply::problem(503, "The upload server went away."));
+    let f = open_with(cx, true, move |s| {
         server(s, Some(false));
-        uploads_answer(s, Duration::from_millis(1500));
+        s.route_fn("POST", "/api/v1/uploads", held);
     });
     bootstrap(&f, cx);
     cx.update(|cx| Uploads::set_stall(cx, Duration::from_millis(200)));
@@ -213,6 +217,7 @@ fn a_stalled_upload_says_so(cx: &mut TestAppContext) {
             .requests_to("POST", "/api/v1/conversations/c-general/messages")
             .is_empty()
     );
+    drop(release);
 }
 
 #[gpui_kit::test]
@@ -263,9 +268,25 @@ fn a_refused_upload_shows_the_servers_reason(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn removing_an_uploading_file_cancels_it(cx: &mut TestAppContext) {
-    let f = open_with(cx, true, |s| {
+    // The upload is still in flight when the test cancels it: the server holds
+    // its answer until the cancel is done.
+    let (release, held) = held_reply(|| {
+        Reply::json(
+            201,
+            json!({"id": "u1", "url": "/files/u1/tok/f1.png", "name": "f1.png",
+                   "size": 4, "contentType": "image/png", "width": 10, "height": 10}),
+        )
+    });
+    let f = open_with(cx, true, move |s| {
         server(s, Some(false));
-        uploads_answer(s, Duration::from_millis(800));
+        s.route_fn("POST", "/api/v1/uploads", held);
+        s.route_fn("POST", "/api/v1/conversations/*/messages", |request| {
+            Reply::json(
+                200,
+                json!({"clientId": request.json()["clientId"], "conversationId": "c-general",
+                       "state": "queued"}),
+            )
+        });
     });
     bootstrap(&f, cx);
     add(&f, cx, vec![png("one.png")]);
@@ -288,6 +309,7 @@ fn removing_an_uploading_file_cancels_it(cx: &mut TestAppContext) {
     })
     .unwrap();
     assert!(pending(cx).is_empty());
+    drop(release);
     std::thread::sleep(Duration::from_millis(1200));
     cx.run_until_parked();
     assert!(

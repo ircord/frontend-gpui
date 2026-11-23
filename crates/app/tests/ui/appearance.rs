@@ -297,11 +297,9 @@ fn a_personal_theme_is_used_and_another_imported(cx: &mut TestAppContext) {
         "colors": {}, "background": null, "css": "body { color: red }", "madeWith": "web"});
     cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(file.to_string())));
     click(&f, cx, "appearance-themes-import-paste");
-    let saved = f.server.wait_for(
-        "PUT",
-        "/api/v1/app/themes/*",
-        std::time::Duration::from_secs(5),
-    );
+    let saved = f
+        .server
+        .wait_for("PUT", "/api/v1/app/themes/*", crate::fixture::HANG_GUARD);
     let body = saved.json();
     assert_eq!(body["theme"]["name"], "Copied");
     assert_eq!(body["expected"], Value::Null);
@@ -353,11 +351,9 @@ fn a_theme_css_sets_the_root_variables_until_the_switch_is_off(cx: &mut TestAppC
     // Switched off: the account is saved with CSS off and the accent is the scheme's.
     // The switch itself is not reported visible to the harness, so the setter it calls runs here.
     cx.update(|cx| ircord_app::theme::appearance::set_custom_css(cx, false));
-    let saved = f.server.wait_for(
-        "PATCH",
-        "/api/v1/app/themes",
-        std::time::Duration::from_secs(5),
-    );
+    let saved = f
+        .server
+        .wait_for("PATCH", "/api/v1/app/themes", crate::fixture::HANG_GUARD);
     assert_eq!(saved.json()["customCss"], false);
     wait(cx, "the scheme's accent without the CSS", |cx| {
         theme::get(cx).accent != theme::hex(0xff0000)

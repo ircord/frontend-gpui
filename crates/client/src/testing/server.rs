@@ -343,7 +343,15 @@ async fn serve(mut stream: TcpStream, state: Arc<Mutex<State>>, frames: broadcas
             .map(|r| r.handler.clone())
     };
     let reply = match reply {
-        Some(handler) => handler(&request),
+        // A handler may block (a reply held back, a slow server): off the
+        // runtime's workers, or it strands the client's own tasks and timers
+        // queued behind it.
+        Some(handler) => {
+            let asked = request.clone();
+            tokio::task::spawn_blocking(move || handler(&asked))
+                .await
+                .unwrap_or_else(|_| Reply::problem(500, "the canned handler panicked"))
+        }
         None => Reply::problem(
             404,
             &format!("no canned route for {} {}", request.method, request.path),

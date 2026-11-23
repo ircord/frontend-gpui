@@ -16,7 +16,7 @@ use serde_json::json;
 
 use crate::fixture::{Fixture, message, open_with, snapshot, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 const SEND: &str = "/api/v1/conversations/c-general/messages";
 
 /// A short quote of about 300 characters in paragraphs, copied on Windows,

@@ -157,9 +157,33 @@ pub fn message(id: &str, conversation: &str, text: &str) -> Message {
     }
 }
 
-/// Run GPUI until `condition` holds, for up to five seconds.
+/// How long a test waits for something to happen before it calls the wait
+/// hung. A passing test never gets near it; it is long because a loaded
+/// machine, such as a CI runner or a parallel build, can run a test far slower
+/// than a developer's, and a failing test reports only after it.
+pub const HANG_GUARD: Duration = Duration::from_secs(30);
+
+/// A reply the server holds back until the test lets go of it, so no timer
+/// decides whether the reply or the client's own deadline comes first.
+/// Drop the returned sender to release it; a held reply is also released after
+/// a minute, so a test that forgets cannot hang the run.
+pub fn held_reply(
+    reply: impl Fn() -> Reply + Send + Sync + 'static,
+) -> (
+    std::sync::mpsc::Sender<()>,
+    impl Fn(&ircord_client::testing::Recorded) -> Reply + Send + Sync + 'static,
+) {
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let held = std::sync::Mutex::new(held);
+    (release, move |_| {
+        let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(60));
+        reply()
+    })
+}
+
+/// Run GPUI until `condition` holds, or fail after [`HANG_GUARD`].
 pub fn wait(cx: &mut TestAppContext, what: &str, condition: impl Fn(&mut gpui_kit::App) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG_GUARD;
     loop {
         cx.run_until_parked();
         if cx.update(|cx| condition(cx)) {
