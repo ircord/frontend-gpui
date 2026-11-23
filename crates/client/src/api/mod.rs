@@ -21,6 +21,7 @@ use crate::address::ServerAddress;
 pub mod admin;
 mod app_data;
 pub mod auth;
+mod backdrop;
 pub mod channels;
 mod conversations;
 mod devices;

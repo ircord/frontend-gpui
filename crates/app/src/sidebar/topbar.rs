@@ -108,6 +108,7 @@ fn bar(
     draggable: bool,
 ) -> AnyElement {
     let theme = theme::get(cx).clone();
+    let shell = theme::backdrop::shell(&theme, cx);
     let s = session.read(cx);
     let Some(client) = s.client().cloned() else {
         return div().into_any_element();
@@ -399,7 +400,9 @@ fn bar(
         .flex()
         .items_center()
         .gap_1p5()
-        .bg(theme.sidebar)
+        .bg(shell)
+        .relative()
+        .children(theme::backdrop::panel(&theme, Corners::default(), cx))
         .when(draggable, |d| {
             d.on_mouse_down(MouseButton::Left, drag_window)
         })

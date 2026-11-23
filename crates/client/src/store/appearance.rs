@@ -857,6 +857,137 @@ pub struct Compiled {
     /// What the theme's CSS set on the root, when it was applied
     /// ([`compile_with_css`]); `None` when not applied.
     pub css: Option<CssVariables>,
+    /// The picture the theme in use draws behind the app, when it has one.
+    pub backdrop: Option<Backdrop>,
+}
+
+/// Where a theme's picture is drawn (`placement` in the theme document).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackdropPlacement {
+    /// Behind the open conversation only.
+    Conversation,
+    /// Behind the whole app; the shell's own surfaces turn translucent.
+    App,
+}
+
+/// How the picture fills its area (`fit`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackdropFit {
+    Cover,
+    Contain,
+    Tile,
+}
+
+/// Where the picture sits when it does not fill its area (`position`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackdropPosition {
+    Center,
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+/// A personal theme's background, as the web draws it
+/// (`backgroundDeclarations` in `shared/themes.ts`): the dim and the panel
+/// opacity are already raised to the floors that keep text readable on the
+/// picture's measured tones.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Backdrop {
+    /// An upload on the server: `/files/…` or `/api/v1/uploads/…`.
+    pub path: String,
+    pub placement: BackdropPlacement,
+    pub fit: BackdropFit,
+    pub position: BackdropPosition,
+    /// How much of the main surface's colour covers the picture, 0 to 1.
+    pub dim: f32,
+    /// Blur radius in pixels.
+    pub blur: f32,
+    /// How much the shell's surfaces cover an app-wide picture, 0 to 1.
+    pub panel: f32,
+}
+
+/// Whether `path` is an upload on the server a theme may name
+/// (`instanceFilePath` in `shared/themes.ts`): no query, no host.
+pub fn is_upload_path(path: &str) -> bool {
+    let segment = |s: &str, max: usize, extra: &str| {
+        (1..=max).contains(&s.len())
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || extra.contains(c))
+    };
+    if let Some(rest) = path.strip_prefix("/files/") {
+        let parts: Vec<&str> = rest.split('/').collect();
+        return matches!(parts.as_slice(), [a, b, c]
+            if segment(a, 80, "_-") && segment(b, 200, "_-") && segment(c, 400, "._~%$&+,:;=@-"));
+    }
+    path.strip_prefix("/api/v1/uploads/")
+        .is_some_and(|id| segment(id, 80, "-"))
+}
+
+/// The lowest dim and panel opacity (as fractions) that keep text readable
+/// over a picture with these dark and light tones (`backgroundFloors`).
+fn backdrop_floors(tokens: &Tokens, tones: Option<[u32; 2]>) -> (f32, f32) {
+    let Some(tones) = tones else {
+        return (0.60, 0.85);
+    };
+    let readable = |surface: u32| {
+        contrast(tokens.text, surface) >= 4.5
+            && contrast(tokens.body, surface) >= 4.5
+            && contrast(tokens.muted, surface) >= 3.
+    };
+    let lowest = |min: u32, max: u32, cover: u32| {
+        (min..=max)
+            .step_by(5)
+            .find(|percent| {
+                tones
+                    .iter()
+                    .all(|tone| readable(mix(*tone, cover, f64::from(*percent) / 100.)))
+            })
+            .unwrap_or(max)
+    };
+    (
+        lowest(0, 90, tokens.main) as f32 / 100.,
+        lowest(40, 100, tokens.sidebar) as f32 / 100.,
+    )
+}
+
+/// The backdrop `theme` asks for, when it names a usable picture.
+pub fn theme_backdrop(theme: &Theme, tokens: &Tokens) -> Option<Backdrop> {
+    use ircord_contract::{
+        ThemeBackgroundFit as F, ThemeBackgroundPlacement as P, ThemeBackgroundPosition as Q,
+    };
+    let background = theme.background.as_ref()?;
+    let path = background.url.as_deref().filter(|u| is_upload_path(u))?;
+    let tones = match background.tones.as_deref() {
+        Some([dark, light]) => parse_hex(dark).zip(parse_hex(light)).map(|(d, l)| [d, l]),
+        _ => None,
+    };
+    let (dim_floor, panel_floor) = backdrop_floors(tokens, tones);
+    let percent = |value: Option<i64>, min: i64, max: i64, default: i64| {
+        value.map_or(default, |v| v.clamp(min, max)) as f32 / 100.
+    };
+    Some(Backdrop {
+        path: path.to_string(),
+        placement: match background.placement {
+            Some(P::App) => BackdropPlacement::App,
+            _ => BackdropPlacement::Conversation,
+        },
+        fit: match background.fit {
+            Some(F::Contain) => BackdropFit::Contain,
+            Some(F::Tile) => BackdropFit::Tile,
+            _ => BackdropFit::Cover,
+        },
+        position: match background.position {
+            Some(Q::Top) => BackdropPosition::Top,
+            Some(Q::Bottom) => BackdropPosition::Bottom,
+            Some(Q::Left) => BackdropPosition::Left,
+            Some(Q::Right) => BackdropPosition::Right,
+            _ => BackdropPosition::Center,
+        },
+        dim: percent(background.dim, 0, 90, 55).max(dim_floor),
+        blur: background.blur.map_or(0, |b| b.clamp(0, 20)) as f32,
+        panel: percent(background.panel_opacity, 40, 100, 85).max(panel_floor),
+    })
 }
 
 /// Compile `look` for `mode` (`compileAppearance`). `themes` is the account's
@@ -921,6 +1052,7 @@ pub fn compile_with_css(
         }
         css = Some(vars);
     }
+    let backdrop = theme.and_then(|t| theme_backdrop(t, &tokens));
     Compiled {
         mode,
         scheme,
@@ -933,6 +1065,7 @@ pub fn compile_with_css(
         reduced_motion: look.reduced_motion(system_reduced),
         theme: theme.and_then(|t| t.id.clone()),
         css,
+        backdrop,
     }
 }
 
@@ -1430,6 +1563,59 @@ mod tests {
                 .font,
             Some(AppearanceFont::Inter)
         );
+    }
+
+    #[test]
+    fn only_an_upload_on_the_server_can_be_a_background() {
+        // The web's `instanceFilePath`.
+        let file = format!("/files/{}/{}/castle.webp", "a".repeat(32), "b".repeat(48));
+        for ok in [file.as_str(), "/api/v1/uploads/abc-123"] {
+            assert!(is_upload_path(ok), "{ok}");
+        }
+        for other in [
+            "https://tracker.example/files/a/b/c.png",
+            "//tracker.example/files/a/b/c.png",
+            "/files/a/b/c.png?x=1",
+            "/files/a/b/c.png#x",
+            "/files/a/b",
+            "/files/a/b/c/d.png",
+            "/api/v1/uploads/",
+            "/api/v1/uploads/a/b",
+            "/avatars/fox.webp",
+            "",
+        ] {
+            assert!(!is_upload_path(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn a_background_is_raised_to_the_floors_that_keep_text_readable() {
+        let mut theme = new_theme(&Look::default(), "Pic", "test", "now");
+        let tokens = scheme_tokens(Look::default().scheme(Mode::Dark), None);
+        assert_eq!(theme_backdrop(&theme, &tokens), None, "no background");
+        theme.background = Some(ThemeBackground {
+            url: Some("/api/v1/uploads/abc".into()),
+            dim: Some(5),
+            panel_opacity: Some(40),
+            blur: Some(99),
+            ..Default::default()
+        });
+        // Without measured tones the floors are the web's safe guess.
+        let b = theme_backdrop(&theme, &tokens).unwrap();
+        assert_eq!((b.dim, b.panel, b.blur), (0.60, 0.85, 20.));
+        assert_eq!(b.placement, BackdropPlacement::Conversation);
+        assert_eq!(b.fit, BackdropFit::Cover);
+        // A very light picture needs more cover than a dark one under light text.
+        let tones = |dark: &str, light: &str| Some(vec![dark.to_string(), light.to_string()]);
+        theme.background.as_mut().unwrap().tones = tones("#000000", "#000000");
+        let dark = theme_backdrop(&theme, &tokens).unwrap();
+        theme.background.as_mut().unwrap().tones = tones("#ffffff", "#ffffff");
+        let light = theme_backdrop(&theme, &tokens).unwrap();
+        assert!(dark.dim <= light.dim && dark.panel <= light.panel);
+        assert!(light.dim > dark.dim);
+        // The theme's own unusable address draws nothing.
+        theme.background.as_mut().unwrap().url = Some("https://x.example/a.png".into());
+        assert_eq!(theme_backdrop(&theme, &tokens), None);
     }
 
     #[test]

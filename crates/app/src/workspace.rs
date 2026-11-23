@@ -18,6 +18,7 @@ use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::{ConversationKind, MemberStatus, NetworkStatus};
+use ircord_client::store::appearance::BackdropPlacement;
 use ircord_client::store::{Connection, parties, people};
 
 use crate::composer::ComposerView;
@@ -698,6 +699,15 @@ impl Render for WorkspaceView {
         let panel = self
             .panel(&route, !compact, window, cx)
             .map(|panel| crate::sidebar::side_panel(panel, window, cx));
+        let backdrop = theme::backdrop::get(cx);
+        let app_wide = backdrop
+            .as_ref()
+            .is_some_and(|b| b.spec.placement == BackdropPlacement::App);
+        let corners = Corners {
+            top_left: theme.radius_large,
+            top_right: theme.radius_large,
+            ..Default::default()
+        };
         let card = div()
             .id("workspace-card")
             .relative()
@@ -711,8 +721,17 @@ impl Render for WorkspaceView {
             .border_1()
             .border_b_0()
             .border_color(theme.border.opacity(0.65))
-            .bg(theme.main)
-            .shadow(frame_shadows(&theme))
+            .map(|d| match &backdrop {
+                // Over an app-wide picture the card is the main colour at the
+                // dim, so the picture shows through; its shadow would too.
+                Some(b) if app_wide => d.child(theme::backdrop::frosted_card(b, &theme, corners)),
+                other => d
+                    .bg(theme.main)
+                    .shadow(frame_shadows(&theme))
+                    .when_some(other.as_ref(), |d, b| {
+                        d.child(theme::backdrop::layer(b, theme.main, b.spec.dim, corners))
+                    }),
+            })
             .when(theme.hibiki && header.is_some(), |d| {
                 d.child(ambient_light(&theme, window, cx))
             })
@@ -725,6 +744,14 @@ impl Render for WorkspaceView {
             .flex_col()
             .bg(theme.sidebar)
             .text_color(theme.text)
+            .when_some(backdrop.as_ref().filter(|_| app_wide), |d, b| {
+                d.child(theme::backdrop::layer(
+                    b,
+                    theme.sidebar,
+                    b.spec.panel,
+                    Corners::default(),
+                ))
+            })
             .child(crate::sidebar::topbar::frame(&self.session, window, cx))
             .child(
                 div()

@@ -738,6 +738,7 @@ impl SidebarView {
         selected: Option<&str>,
         layout: &order::Layout,
         theme: &Theme,
+        frost: Option<AnyElement>,
     ) -> Div {
         let mut column = div()
             .id("folded-list")
@@ -818,7 +819,13 @@ impl SidebarView {
             .flex()
             .flex_col()
             .items_center()
-            .bg(theme.sidebar)
+            .bg(if frost.is_some() {
+                hsla(0., 0., 0., 0.)
+            } else {
+                theme.sidebar
+            })
+            .relative()
+            .children(frost)
             .child(div().h(px(48.)).flex().items_center().child(restore))
             .child(column)
     }
@@ -861,10 +868,20 @@ impl Render for SidebarView {
         let w = client.read();
         let network = selected_network.as_deref().and_then(|id| w.network(id));
 
+        let shell = theme::backdrop::shell(&theme, cx);
         if !layout.show_list {
             let folded = network
-                .map(|n| self.folded(&w, &n.id, selected.as_deref(), &layout, &theme))
-                .unwrap_or_else(|| div().w(px(FOLDED)).h_full().bg(theme.sidebar));
+                .map(|n| {
+                    self.folded(
+                        &w,
+                        &n.id,
+                        selected.as_deref(),
+                        &layout,
+                        &theme,
+                        theme::backdrop::panel(&theme, Corners::default(), cx),
+                    )
+                })
+                .unwrap_or_else(|| div().w(px(FOLDED)).h_full().bg(shell));
             return div()
                 .id("sidebar")
                 .track_focus(&self.focus)
@@ -1051,7 +1068,9 @@ impl Render for SidebarView {
                     .flex_none()
                     .flex()
                     .flex_col()
-                    .bg(theme.sidebar)
+                    .bg(shell)
+                    .relative()
+                    .children(theme::backdrop::panel(&theme, Corners::default(), cx))
                     .child(search)
                     .child(
                         div()
