@@ -15,6 +15,7 @@
 ### Fixed
 
 - Text pasted on Windows sends again instead of failing with "invalid message (maximum 4000 characters / 4096 UTF-8 bytes)": its line breaks go out as the server expects, and a long multi-line paste goes out as one message the server splits within the network's limits, as in the web client.
+- The member list draws the profile frame a person picked around their picture, and shows you with the name colour and frame of your profile on that network, as the timeline does, instead of the account's older copy.
 - A message that fails to send stays in the conversation as one row of yours, in red with the reason and Retry, Move to draft, Copy text and Remove from outbox under it, as the web client shows it, instead of a second block over the message box.
 
 ## v0.1.1 — 2026-11-22

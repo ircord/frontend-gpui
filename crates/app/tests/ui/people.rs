@@ -399,6 +399,112 @@ fn the_card_frames_their_picture_in_their_accent(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_member_list_draws_the_frame_they_picked_without_moving_the_row(cx: &mut TestAppContext) {
+    let mut s = workspace();
+    for m in &mut s.members {
+        if m.id == "m-bob" {
+            m.avatar_frame = Some("ring".into());
+            m.status_text = None;
+            m.status_emoji = None;
+        }
+        if m.id == "m-eve" {
+            m.device = None;
+        }
+    }
+    let f = open(cx, s, |_| {});
+    let (mut band, mut framed_row, mut plain_row) = (px(0.), px(0.), px(0.));
+    frame(&f, cx, |window, _| {
+        band = window
+            .find("avatar-frame-member-m-bob-ring")
+            .bounds()
+            .size
+            .width;
+        framed_row = window.find("member-m-bob").bounds().size.height;
+        plain_row = window.find("member-m-eve").bounds().size.height;
+    });
+    // The band is 5 px wide around the 28 px picture, and overflows its slot:
+    // a framed row is as tall as any other.
+    assert_eq!(band, px(38.));
+    assert_eq!(framed_row, plain_row);
+    assert!(!shows(&f, cx, "avatar-frame-member-m-eve-none"));
+}
+
+#[gpui_kit::test]
+fn you_are_your_network_profile_in_the_member_list(cx: &mut TestAppContext) {
+    let mut s = workspace();
+    // The roster copy of you has no frame; your profile on the network does.
+    let mut me = s.members[0].clone();
+    me.id = "u-me".into();
+    me.nick = "ircord".into();
+    me.account = "me".into();
+    me.avatar_url = None;
+    me.avatar_frame = None;
+    me.name_color = None;
+    let mut profile = me.clone();
+    profile.avatar_frame = Some("ring".into());
+    profile.name_color = Some("#ff8800".into());
+    s.members.push(me);
+    s.conversations[0].member_ids.push("u-me".into());
+    s.networks[0].profile = Some(profile.clone());
+    let f = open(cx, s, |_| {});
+    wait_for(&f, cx, "avatar-frame-member-u-me-ring");
+    cx.update(|cx| {
+        let theme = ircord_app::theme::get(cx);
+        let look = ircord_app::members::look(&profile, false, false, theme);
+        let chosen = ircord_app::theme::hex(
+            ircord_app::ui::avatar::name_color(&profile, false, theme).unwrap(),
+        );
+        assert_eq!(look.name, chosen);
+        assert_ne!(look.name, theme.text);
+    });
+}
+
+#[gpui_kit::test]
+fn the_member_list_looks_as_the_timeline_does(cx: &mut TestAppContext) {
+    use ircord_app::members::look;
+    use ircord_app::ui::avatar::name_color as timeline;
+    use ircord_client::store::people::AvatarFrame;
+    let mut s = workspace();
+    for m in &mut s.members {
+        if m.id == "m-bob" {
+            m.name_color = Some("#ff8800".into());
+            m.avatar_frame = Some("gold".into());
+            m.profile_accent_color = Some("#22d3ee".into());
+        }
+        if m.id == "m-eve" {
+            m.status = MemberStatus::Offline;
+        }
+    }
+    let members = s.members.clone();
+    let f = open(cx, s, |_| {});
+    wait_for(&f, cx, "member-m-eve");
+    cx.update(|cx| {
+        let theme = ircord_app::theme::get(cx);
+        let find = |id: &str| members.iter().find(|m| m.id == id).unwrap();
+        let (bob, eve) = (find("m-bob"), find("m-eve"));
+        // Online, a name has the colour the timeline gives it, with coloured
+        // names on or off when they chose one.
+        let hex = ircord_app::theme::hex;
+        assert_eq!(
+            look(bob, false, false, theme).name,
+            hex(timeline(bob, false, theme).unwrap())
+        );
+        assert_eq!(
+            look(bob, true, false, theme).name,
+            hex(timeline(bob, true, theme).unwrap())
+        );
+        // As on the web, offline and ignored names are faint.
+        assert_eq!(look(eve, true, false, theme).name, theme.faint);
+        assert_eq!(look(bob, true, true, theme).name, theme.faint);
+        // The frame they picked, in their accent.
+        let (kind, color) = look(bob, true, false, theme).frame.unwrap();
+        assert_eq!(kind, AvatarFrame::Gold);
+        assert_eq!(color, hex(0x22d3ee));
+        assert!(look(eve, true, false, theme).frame.is_none());
+    });
+}
+
+#[gpui_kit::test]
 fn a_name_in_the_timeline_opens_the_card(cx: &mut TestAppContext) {
     let f = open(cx, workspace(), |server| {
         server.route(
