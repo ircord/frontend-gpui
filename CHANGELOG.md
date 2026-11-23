@@ -5,15 +5,12 @@
 ### New
 
 - A `mermaid` code block in a message draws as its diagram (flowchart, sequence, class, state, ER, gantt, pie, git graph, mind map, timeline, quadrant, XY chart and journey), drawn in the app without a browser or any network request, with Show fullscreen (at full size, scrolling when larger than the window), Show source and Copy source. Other diagram types, and a diagram that cannot be read, show their source as code with a line saying why.
+- Messages show Markdown tables as a grid, headings, horizontal rules and task-list boxes, as the web client does; plain IRC clients still see the Markdown text. Editing a message keeps its bold, italic and other formatting as Markdown instead of dropping it.
+- Masked links, `[text](https://…)`, show their text as a link and the real address on hover. Text that names another site is not masked: the typed text and its real address stay.
 
 ### Improved
 
 - Channel activity also covers operator, half-operator, voice and other status changes handed to people: Hide drops them, Fold folds them into the run of joins and parts ("2 status changes"), Show lists them. Channel-wide modes and bans stay visible, as in the web client.
-
-### New
-
-- Messages show Markdown tables as a grid, headings, horizontal rules and task-list boxes, as the web client does; plain IRC clients still see the Markdown text. Editing a message keeps its bold, italic and other formatting as Markdown instead of dropping it.
-- Masked links, `[text](https://…)`, show their text as a link and the real address on hover. Text that names another site is not masked: the typed text and its real address stay.
 
 ### Fixed
 

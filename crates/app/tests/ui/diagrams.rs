@@ -40,7 +40,7 @@ fn history() -> Vec<Message> {
 /// One diagram wider and taller than the screen.
 fn grid() -> Vec<Message> {
     // Four rows of eight steps, each label long enough to wrap onto
-    // several lines. Kept small: the layout has two seconds, and the test
+    // several lines. Kept small: the layout has a deadline, and the test
     // build lays out without optimisation while every other test runs.
     let grid = (0..4)
         .map(|r| {
@@ -99,7 +99,7 @@ fn open_on(cx: &mut TestAppContext, items: Vec<Message>) -> Fixture {
 /// Draw until `id` is on screen: the layout and the picture are made off
 /// the main thread, and the picture's width comes from the frame before.
 fn drawn(f: &Fixture, cx: &mut TestAppContext, id: &'static str) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         cx.run_until_parked();
         let found = cx
@@ -150,11 +150,136 @@ fn a_fence_is_a_picture_no_wider_than_the_message(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_broken_fence_shows_its_source_and_a_note(cx: &mut TestAppContext) {
-    let f = open(cx);
+    let f = open_on(
+        cx,
+        vec![
+            message(
+                "1",
+                "c-general",
+                "```mermaid\nflowchart TD\n  A[unterminated --> B\n```",
+            ),
+            message("2", "c-general", "```rust\nfn main() {}\n```"),
+        ],
+    );
     drawn(&f, cx, "diagram-1-0-note");
     cx.update_window(f.window, |_, window, _| {
         assert!(window.try_find("code-1-0").is_some());
         assert!(window.try_find("diagram-1-0").is_none());
+        let note = window.find("diagram-1-0-note");
+        assert!(
+            note.label()
+                .is_some_and(|l| l.starts_with("The diagram could not be read")),
+            "{:?}",
+            note.label()
+        );
+        // Any other fenced language stays an ordinary code block.
+        assert!(window.try_find("code-2-0").is_some());
+        assert!(window.try_find("diagram-2-0").is_none());
+        assert!(window.try_find("diagram-2-0-note").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_new_size_or_scale_draws_anew_and_frees_the_old_picture(cx: &mut TestAppContext) {
+    let f = open(cx);
+    drawn(&f, cx, "diagram-2-0-picture");
+    let (old, first) = cx
+        .update_window(f.window, |_, window, cx| {
+            window.render_frame(cx);
+            let old = ircord_app::message::diagram::held_pictures(cx);
+            let frame = window.find("diagram-2-0").bounds();
+            let picture = window.find("diagram-2-0-picture").bounds();
+            (old, (frame, picture, window.viewport_size()))
+        })
+        .unwrap();
+    assert!(!old.is_empty());
+    // Half the scale and twice the width: the same device width as before
+    // (the cache once keyed on that and drew the old, narrower picture).
+    let (frame, picture, viewport) = first;
+    let inset = frame.size.width - picture.size.width; // borders and padding, under 8 px of rounding
+    let target = picture.size.width * 2.;
+    cx.simulate_window_scale_factor_change(f.window, 1.0);
+    let mut width = viewport.width;
+    for _ in 0..8 {
+        cx.simulate_window_resize(f.window, gpui_kit::size(width, viewport.height));
+        cx.run_until_parked();
+        let frame = cx
+            .update_window(f.window, |_, window, cx| {
+                window.render_frame(cx);
+                window.render_frame(cx);
+                window.find("diagram-2-0").bounds()
+            })
+            .unwrap();
+        let room = frame.size.width - inset;
+        if room >= target && room < target + px(8.) {
+            break;
+        }
+        width += target + px(4.) - room;
+    }
+    // Back to where it started, drawn again; then both changes at once,
+    // with no frame between them.
+    cx.simulate_window_scale_factor_change(f.window, 2.0);
+    cx.simulate_window_resize(f.window, viewport);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        cx.run_until_parked();
+        let back = cx
+            .update_window(f.window, |_, window, cx| {
+                window.render_frame(cx);
+                window.render_frame(cx);
+                window
+                    .try_find("diagram-2-0-picture")
+                    .is_some_and(|p| p.bounds().size.width == picture.size.width)
+            })
+            .unwrap();
+        if back {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never drawn again at scale 2");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    cx.simulate_window_scale_factor_change(f.window, 1.0);
+    cx.simulate_window_resize(f.window, gpui_kit::size(width, viewport.height));
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        cx.run_until_parked();
+        let shown = cx
+            .update_window(f.window, |_, window, cx| {
+                window.render_frame(cx);
+                window.render_frame(cx);
+                let frame = window.find("diagram-2-0").bounds();
+                window.try_find("diagram-2-0-picture").map(|p| {
+                    let p = p.bounds();
+                    assert!(p.right() <= frame.right(), "{p:?} runs past {frame:?}");
+                    p.size.width
+                })
+            })
+            .unwrap();
+        if shown == Some(target) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the picture is {shown:?} wide at scale 1, not {target:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    cx.update_window(f.window, |_, window, cx| {
+        // The pictures replaced since (another message's may not have been
+        // drawn again yet) are out of the sprite atlas.
+        let now = ircord_app::message::diagram::held_pictures(cx);
+        let replaced: Vec<_> = old
+            .iter()
+            .filter(|o| now.iter().all(|n| n.id != o.id))
+            .collect();
+        assert!(!replaced.is_empty(), "the wide diagram was not drawn anew");
+        for image in replaced {
+            assert!(
+                !window.has_image_atlas_entry(image),
+                "a replaced picture stays in the sprite atlas"
+            );
+        }
     })
     .unwrap();
 }
@@ -169,6 +294,16 @@ fn the_toggle_shows_the_source_and_the_audit_passes(cx: &mut TestAppContext) {
         })
         .unwrap();
     assert!(problems.is_empty(), "{problems:#?}");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("diagram-3-0-copy", cx);
+    })
+    .unwrap();
+    let copied = cx.read_from_clipboard().and_then(|c| c.text());
+    assert_eq!(
+        copied.as_deref(),
+        Some("flowchart TD\n  A[Start] -->|scrolled into view| B{Ready?}\n  B -->|yes| C[Draw]")
+    );
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
         window.click("diagram-3-0-toggle", cx);

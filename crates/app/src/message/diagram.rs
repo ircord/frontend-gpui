@@ -44,8 +44,10 @@ const MAX_PIXELS: usize = 40_000_000;
 const MAX_PICTURE_PIXELS: f32 = 8_000_000.;
 /// The same for the fullscreen picture, which is drawn at natural size.
 const MAX_FULLSCREEN_PIXELS: f32 = 16_000_000.;
-/// Layouts kept; past it the cache starts again.
+/// Layouts kept; past it the half asked for longest ago is forgotten.
 const MAX_LAYOUTS: usize = 128;
+/// Label widths kept per font; past it the cache starts again.
+const MAX_WIDTHS: usize = 4096;
 /// The picture's height inside the frame before it scrolls, as code does.
 const MAX_HEIGHT: f32 = 24.;
 
@@ -77,22 +79,20 @@ pub fn render(
     let picture = match (&laid, showing_source) {
         (Some(laid), false) if width.get() > 0. => {
             let shown = fitted(laid, width.get());
-            Some(picture_for(
-                key,
-                laid,
-                shown,
-                MAX_PICTURE_PIXELS,
-                window,
-                cx,
-            ))
+            Some(picture_for(key, Use::Message, laid, shown, window, cx))
         }
         _ => None,
     };
+    let kind = layout::diagram_type(source)
+        .unwrap_or("mermaid")
+        .to_string();
+    let picture_label: SharedString = t!("text-diagram-picture", kind = kind).into();
     let fullscreen = laid.map(|laid| (key, laid));
     let shown = Shown {
         width,
         showing_source,
         picture,
+        picture_label,
         fullscreen,
     };
     Ok(frame(id, source, theme, mono, shown))
@@ -133,6 +133,7 @@ fn hash(value: &impl Hash) -> u64 {
 fn note(e: &DiagramError) -> SharedString {
     match e {
         DiagramError::TooLong => t!("text-diagram-too-long").into(),
+        DiagramError::TooLarge => t!("text-diagram-too-large").into(),
         DiagramError::Unsupported => t!("text-diagram-unsupported").into(),
         DiagramError::Timeout => t!("text-diagram-timeout").into(),
         DiagramError::Parse(error) => {
@@ -162,13 +163,31 @@ enum Layout {
 enum Picture {
     Pending,
     Ready(Arc<RenderImage>, Size<Pixels>),
+    Failed,
+}
+
+/// Where a picture is shown. Each diagram keeps one picture per use: the
+/// one for its current size there.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Use {
+    Message,
+    Fullscreen,
+}
+
+/// The picture a diagram has for one use, and the logical width and scale
+/// it was asked for.
+struct Entry {
+    shown: f32,
+    scale: f32,
+    picture: Picture,
 }
 
 #[derive(Default)]
 struct Diagrams {
-    layouts: HashMap<u64, Layout>,
-    /// By layout and device width.
-    pictures: HashMap<(u64, u32), Picture>,
+    /// Layouts, with the tick each was last asked for.
+    layouts: HashMap<u64, (Layout, u64)>,
+    tick: u64,
+    pictures: HashMap<(u64, Use), Entry>,
     /// Device pixels held by the ready pictures.
     pixels: usize,
     /// Diagrams whose source is shown in place of the picture.
@@ -177,17 +196,69 @@ struct Diagrams {
 
 impl Global for Diagrams {}
 
+impl Diagrams {
+    /// Forget the picture under `at`, handing back its image so the caller
+    /// takes it out of the windows' sprite atlas too.
+    fn remove(&mut self, at: &(u64, Use)) -> Option<Arc<RenderImage>> {
+        match self.pictures.remove(at)?.picture {
+            Picture::Ready(image, _) => {
+                self.pixels = self.pixels.saturating_sub(pixels(&image));
+                Some(image)
+            }
+            _ => None,
+        }
+    }
+}
+
+fn pixels(image: &RenderImage) -> usize {
+    let size = image.size(0);
+    size.width.0.max(0) as usize * size.height.0.max(0) as usize
+}
+
+/// Take pictures out of GPUI's sprite atlas, where they would otherwise stay
+/// for the life of the process.
+fn drop_images(images: Vec<Arc<RenderImage>>, mut window: Option<&mut Window>, cx: &mut App) {
+    for image in images {
+        cx.drop_image(image, window.as_deref_mut());
+    }
+}
+
 fn layout_for(key: u64, source: &str, look: &DiagramTheme, cx: &mut App) -> Layout {
     let diagrams = cx.default_global::<Diagrams>();
-    if let Some(known) = diagrams.layouts.get(&key) {
+    diagrams.tick += 1;
+    let tick = diagrams.tick;
+    if let Some((known, used)) = diagrams.layouts.get_mut(&key) {
+        *used = tick;
         return known.clone();
     }
+    let mut dropped = Vec::new();
     if diagrams.layouts.len() >= MAX_LAYOUTS {
-        diagrams.layouts.clear();
+        // Forget the half asked for longest ago, and their pictures; what
+        // is on screen was asked for in the last frames.
+        let mut ages: Vec<u64> = diagrams.layouts.values().map(|(_, used)| *used).collect();
+        ages.sort_unstable();
+        let cut = ages[ages.len() / 2];
+        let old: Vec<u64> = diagrams
+            .layouts
+            .iter()
+            .filter(|(_, (_, used))| *used < cut)
+            .map(|(k, _)| *k)
+            .collect();
+        for k in old {
+            diagrams.layouts.remove(&k);
+            for use_ in [Use::Message, Use::Fullscreen] {
+                dropped.extend(diagrams.remove(&(k, use_)));
+            }
+        }
     }
-    diagrams.layouts.insert(key, Layout::Pending);
+    diagrams.layouts.insert(key, (Layout::Pending, tick));
+    drop_images(dropped, None, cx);
     let (source, look) = (source.to_string(), look.clone());
-    let task = cx.background_spawn(async move { lay_out(&source, &look) });
+    let task = cx.background_spawn(async move {
+        // A panic in the layout must not leave the frame drawing forever.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lay_out(&source, &look)))
+            .unwrap_or_else(|_| Err(DiagramError::Failed("the layout panicked".into())))
+    });
     cx.spawn(async move |cx| {
         let laid = task.await;
         cx.update(|cx| {
@@ -195,7 +266,9 @@ fn layout_for(key: u64, source: &str, look: &DiagramTheme, cx: &mut App) -> Layo
                 Ok(laid) => Layout::Ready(Arc::new(laid)),
                 Err(e) => Layout::Failed(e),
             };
-            cx.default_global::<Diagrams>().layouts.insert(key, state);
+            if let Some(entry) = cx.default_global::<Diagrams>().layouts.get_mut(&key) {
+                entry.0 = state;
+            }
             cx.refresh_windows();
         });
     })
@@ -214,53 +287,95 @@ fn fitted(laid: &Laid, available: f32) -> f32 {
     }
 }
 
-/// The picture shown `shown` pixels wide, drawn for the window's scale in
-/// at most `max_pixels` device pixels.
+/// The picture of layout `key` for `use_`, shown `shown` pixels wide and
+/// drawn for the window's scale. A picture for another size or scale is
+/// replaced, and taken out of the sprite atlas.
 fn picture_for(
     key: u64,
+    use_: Use,
     laid: &Arc<Laid>,
     shown: f32,
-    max_pixels: f32,
-    window: &Window,
+    window: &mut Window,
     cx: &mut App,
 ) -> Picture {
+    let max_pixels = match use_ {
+        Use::Message => MAX_PICTURE_PIXELS,
+        Use::Fullscreen => MAX_FULLSCREEN_PIXELS,
+    };
+    let scale = window.scale_factor();
     let height = laid.height * shown / laid.width;
-    let mut scale = window.scale_factor();
+    let mut raster = scale;
     let device = shown * height * scale * scale;
     if device > max_pixels {
-        scale *= (max_pixels / device).sqrt();
+        raster *= (max_pixels / device).sqrt();
     }
     let (w, h) = (
-        (shown * scale).round().max(1.) as u32,
-        (height * scale).round().max(1.) as u32,
+        (shown * raster).round().max(1.) as u32,
+        (height * raster).round().max(1.) as u32,
     );
     let size = size(px(shown), px(height));
+    let at = (key, use_);
     let diagrams = cx.default_global::<Diagrams>();
-    if let Some(known) = diagrams.pictures.get(&(key, w)) {
-        return known.clone();
+    if let Some(entry) = diagrams.pictures.get(&at)
+        && entry.shown == shown
+        && entry.scale == scale
+    {
+        return entry.picture.clone();
     }
-    diagrams.pictures.insert((key, w), Picture::Pending);
+    let old: Vec<_> = diagrams.remove(&at).into_iter().collect();
+    diagrams.pictures.insert(
+        at,
+        Entry {
+            shown,
+            scale,
+            picture: Picture::Pending,
+        },
+    );
+    drop_images(old, Some(window), cx);
     let laid = laid.clone();
-    let task = cx.background_spawn(async move { rasterise(&laid, w, h) });
+    let task = cx.background_spawn(async move {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rasterise(&laid, w, h)))
+            .ok()
+            .flatten()
+    });
     cx.spawn(async move |cx| {
         let picture = task.await;
         cx.update(|cx| {
             let diagrams = cx.default_global::<Diagrams>();
-            let Some(picture) = picture else {
-                diagrams.pictures.remove(&(key, w));
-                return;
-            };
-            let pixels = (w * h) as usize;
-            if diagrams.pixels + pixels > MAX_PIXELS {
-                diagrams
-                    .pictures
-                    .retain(|_, p| matches!(p, Picture::Pending));
-                diagrams.pixels = 0;
-            }
-            diagrams.pixels += pixels;
-            diagrams
+            let current = diagrams
                 .pictures
-                .insert((key, w), Picture::Ready(picture, size));
+                .get(&at)
+                .is_some_and(|e| e.shown == shown && e.scale == scale);
+            let mut dropped = Vec::new();
+            match picture {
+                // Asked for another size meanwhile, or forgotten.
+                Some(image) if !current => dropped.push(image),
+                None if !current => {}
+                None => {
+                    if let Some(entry) = diagrams.pictures.get_mut(&at) {
+                        entry.picture = Picture::Failed;
+                    }
+                }
+                Some(image) => {
+                    let new = pixels(&image);
+                    if diagrams.pixels + new > MAX_PIXELS {
+                        let others: Vec<_> = diagrams
+                            .pictures
+                            .iter()
+                            .filter(|(k, e)| **k != at && matches!(e.picture, Picture::Ready(..)))
+                            .map(|(k, _)| *k)
+                            .collect();
+                        for k in others {
+                            dropped.extend(diagrams.remove(&k));
+                        }
+                    }
+                    diagrams.pixels += new;
+                    if let Some(entry) = diagrams.pictures.get_mut(&at) {
+                        entry.picture = Picture::Ready(image, size);
+                    }
+                }
+            }
+            drop_images(dropped, None, cx);
             cx.refresh_windows();
         });
     })
@@ -366,6 +481,9 @@ impl Fonts {
             }
             let key = (text.to_string(), is_bold);
             let mut widths = widths.lock().unwrap_or_else(|e| e.into_inner());
+            if widths.len() >= MAX_WIDTHS {
+                widths.clear();
+            }
             let em = *widths.entry(key).or_insert_with(|| {
                 let face = if is_bold { &bold } else { &regular };
                 face.as_ref()
@@ -403,6 +521,8 @@ struct Shown {
     width: Rc<Cell<f32>>,
     showing_source: bool,
     picture: Option<Picture>,
+    /// What the picture shows, for a screen reader ("flowchart diagram").
+    picture_label: SharedString,
     /// The laid-out diagram, once there is one to open fullscreen.
     fullscreen: Option<(u64, Arc<Laid>)>,
 }
@@ -415,6 +535,7 @@ fn frame(id: &str, source: &str, theme: &Theme, mono: SharedString, shown: Shown
         width,
         showing_source,
         picture,
+        picture_label,
         fullscreen,
     } = shown;
     let copy = {
@@ -452,22 +573,27 @@ fn frame(id: &str, source: &str, theme: &Theme, mono: SharedString, shown: Shown
         )
     };
     let fullscreen = fullscreen.map(|(key, laid)| {
+        let label = picture_label.clone();
         ui::icon::button(
             ElementId::Name(format!("{id}-fullscreen").into()),
             ui::icon::IconName::Maximize,
             t!("text-diagram-fullscreen"),
             theme,
-            move |_, window, cx| open_fullscreen(key, laid.clone(), window, cx),
+            move |_, window, cx| open_fullscreen(key, laid.clone(), label.clone(), window, cx),
         )
     });
     let content: AnyElement = if showing_source {
+        // Selectable, as every other text of a message.
         div()
             .id(ElementId::Name(format!("{id}-source").into()))
             .test_support()
             .font_family(mono)
             .text_sm()
             .whitespace_nowrap()
-            .child(source.to_string())
+            .child(super::body::RichText::new(
+                ElementId::Name(format!("{id}-source-text").into()),
+                source.to_string(),
+            ))
             .into_any_element()
     } else {
         match picture {
@@ -475,10 +601,17 @@ fn frame(id: &str, source: &str, theme: &Theme, mono: SharedString, shown: Shown
                 .id(ElementId::Name(format!("{id}-picture").into()))
                 .test_support()
                 .role(Role::Image)
-                .aria_label(t!("text-diagram"))
+                .aria_label(picture_label)
                 .w(size.width)
                 .h(size.height)
                 .child(img(ImageSource::Render(image)).w(size.width).h(size.height))
+                .into_any_element(),
+            Some(Picture::Failed) => div()
+                .id(ElementId::Name(format!("{id}-failed").into()))
+                .test_support()
+                .text_xs()
+                .text_color(theme.faint)
+                .child(t!("text-diagram-failed"))
                 .into_any_element(),
             _ => div()
                 .text_xs()
@@ -540,32 +673,53 @@ fn frame(id: &str, source: &str, theme: &Theme, mono: SharedString, shown: Shown
 /// image viewer opens a picture: it scrolls both ways when it is larger,
 /// and Escape closes it. The picture is drawn for this size, not enlarged
 /// from the message's.
-fn open_fullscreen(key: u64, laid: Arc<Laid>, window: &mut Window, cx: &mut App) {
+fn open_fullscreen(
+    key: u64,
+    laid: Arc<Laid>,
+    label: SharedString,
+    window: &mut Window,
+    cx: &mut App,
+) {
     use gpui_kit::component::WindowExt;
     let size = window.viewport_size();
     let width = (size.width - px(64.)).max(px(320.));
     window.open_dialog(cx, move |dialog, window, cx| {
-        dialog
-            .width(width)
-            .title(t!("text-diagram"))
-            .child(stage(key, &laid, window, cx))
+        dialog.width(width).title(t!("text-diagram")).child(stage(
+            key,
+            &laid,
+            label.clone(),
+            window,
+            cx,
+        ))
     });
 }
 
-fn stage(key: u64, laid: &Arc<Laid>, window: &mut Window, cx: &mut App) -> AnyElement {
+fn stage(
+    key: u64,
+    laid: &Arc<Laid>,
+    label: SharedString,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     use gpui_kit::TestSupportExt;
     let theme = crate::theme::get(cx).clone();
     let height = (window.viewport_size().height - px(220.)).max(px(200.));
-    let picture = match picture_for(key, laid, laid.width, MAX_FULLSCREEN_PIXELS, window, cx) {
+    let picture = match picture_for(key, Use::Fullscreen, laid, laid.width, window, cx) {
         Picture::Ready(image, size) => div()
             .id("diagram-viewer-picture")
             .test_support()
             .role(Role::Image)
-            .aria_label(t!("text-diagram"))
+            .aria_label(label)
             .flex_none()
             .w(size.width)
             .h(size.height)
             .child(img(ImageSource::Render(image)).w(size.width).h(size.height))
+            .into_any_element(),
+        Picture::Failed => div()
+            .m_auto()
+            .text_xs()
+            .text_color(theme.faint)
+            .child(t!("text-diagram-failed"))
             .into_any_element(),
         Picture::Pending => div()
             .m_auto()
@@ -587,4 +741,20 @@ fn stage(key: u64, laid: &Arc<Laid>, window: &mut Window, cx: &mut App) -> AnyEl
         .when(fits, |d| d.items_center().justify_center())
         .child(picture)
         .into_any_element()
+}
+
+/// The pictures held now, for tests that check they leave the sprite atlas.
+#[doc(hidden)]
+pub fn held_pictures(cx: &App) -> Vec<Arc<RenderImage>> {
+    cx.try_global::<Diagrams>()
+        .map(|d| {
+            d.pictures
+                .values()
+                .filter_map(|e| match &e.picture {
+                    Picture::Ready(image, _) => Some(image.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }

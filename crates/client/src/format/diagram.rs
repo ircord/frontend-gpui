@@ -23,14 +23,20 @@ use merman::{
 /// Sources longer than this many bytes are not drawn.
 pub const MAX_SOURCE: usize = 8192;
 
-/// How long one diagram may take to lay out.
-pub const DEADLINE: Duration = Duration::from_secs(2);
+/// How long one diagram may take to lay out. An unoptimised build (tests,
+/// development) lays out several times slower, so it waits longer.
+pub const DEADLINE: Duration = if cfg!(debug_assertions) {
+    Duration::from_secs(10)
+} else {
+    Duration::from_secs(2)
+};
 
 /// The diagram types drawn, by the keyword a source starts with. The other
 /// Mermaid types (C4, sankey, block, architecture…) are not yet readable in
 /// a host theme and show their source.
 pub const SUPPORTED: &[&str] = &[
     "flowchart",
+    "flowchart-elk",
     "graph",
     "sequenceDiagram",
     "classDiagram",
@@ -86,6 +92,8 @@ pub struct Diagram {
 pub enum DiagramError {
     #[error("the diagram is longer than {MAX_SOURCE} bytes")]
     TooLong,
+    #[error("the diagram is too large to draw")]
+    TooLarge,
     #[error("this diagram type is not supported")]
     Unsupported,
     #[error("{0}")]
@@ -96,9 +104,11 @@ pub enum DiagramError {
     Failed(String),
 }
 
-/// The keyword a source starts with, past front matter, `%%` comments and
-/// blank lines.
+/// The keyword a source starts with, past a byte-order mark, front matter,
+/// `%%` comments and blank lines.
 pub fn diagram_type(source: &str) -> Option<&str> {
+    // Mermaid skips a byte-order mark, as a pasted file may start with one.
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
     let mut lines = source.lines().map(str::trim);
     let mut in_front_matter = false;
     let mut first = true;
@@ -182,40 +192,47 @@ fn render_with(
             Err(DiagramError::Timeout)
         }
         Err(RenderError::Parse(e)) => Err(DiagramError::Parse(e.to_string())),
+        Err(RenderError::ResourceLimitExceeded(_)) => Err(DiagramError::TooLarge),
         Err(e) => Err(failed(e)),
     }
 }
 
 /// `svg` without any `href` that leaves the document: a `click` link
 /// comes out as an `<a>` to its address, and an image node may carry one.
-/// Only `#fragment` references (markers, gradients) stay.
+/// Only `#fragment` references (markers, gradients) stay. The attribute may
+/// carry any namespace prefix (`xlink:href`, `xl:href`) and whitespace
+/// around its `=`, as XML allows.
 fn strip_references(svg: &str) -> String {
+    let is_name = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.');
     let mut out = String::with_capacity(svg.len());
     let mut rest = svg;
-    while let Some(at) = rest.find("href=") {
+    while let Some(at) = rest.find("href") {
         let before = &rest[..at];
-        let name_start = if before.ends_with("xlink:") {
-            at - "xlink:".len()
-        } else {
-            at
+        // A prefix such as `xlink:` belongs to the attribute's name.
+        let name_start = match before.strip_suffix(':') {
+            Some(head) => head.trim_end_matches(is_name).len(),
+            None => at,
         };
-        let value_start = at + "href=".len();
-        let quote = rest[value_start..].chars().next();
-        let is_attribute =
-            rest[..name_start].ends_with(char::is_whitespace) && matches!(quote, Some('"' | '\''));
-        if !is_attribute {
-            out.push_str(&rest[..value_start]);
-            rest = &rest[value_start..];
+        let after = &rest[at + "href".len()..];
+        let value = after
+            .trim_start()
+            .strip_prefix('=')
+            .map(str::trim_start)
+            .filter(|v| v.starts_with(['"', '\'']));
+        let (true, Some(value)) = (rest[..name_start].ends_with(char::is_whitespace), value) else {
+            out.push_str(&rest[..at + "href".len()]);
+            rest = after;
             continue;
-        }
-        let quote = quote.unwrap_or('"');
-        let Some(len) = rest[value_start + 1..].find(quote) else {
+        };
+        let value_start = rest.len() - value.len();
+        let quote = value.chars().next().unwrap_or('"');
+        let Some(len) = value[1..].find(quote) else {
             // An unterminated value: nothing after it is kept.
             out.push_str(rest[..name_start].trim_end());
             return out;
         };
         let end = value_start + 1 + len + 1;
-        if rest[value_start + 1..].starts_with('#') {
+        if value[1..].starts_with('#') {
             out.push_str(&rest[..end]);
         } else {
             out.push_str(rest[..name_start].trim_end());
@@ -400,6 +417,46 @@ mod tests {
     }
 
     #[test]
+    fn a_render_past_its_deadline_is_a_timeout() {
+        let control = OperationControl::new().with_deadline(Duration::ZERO);
+        let r = render_with("flowchart TD\n  A --> B", &theme(), measure(), control);
+        assert_eq!(r, Err(DiagramError::Timeout));
+    }
+
+    #[test]
+    fn the_theme_colours_and_bold_labels_reach_the_layout() {
+        let svg = draw(FAMILIES[0].1).unwrap().svg.to_ascii_lowercase();
+        let t = theme();
+        assert!(
+            svg.contains(&t.text),
+            "the text colour {} is not in the drawing",
+            t.text
+        );
+        assert!(
+            svg.contains(&t.node),
+            "the node colour {} is not in the drawing",
+            t.node
+        );
+        // Some family measures a bold label (titles, class names); the
+        // measure must be told so.
+        let bold = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = bold.clone();
+        let measure: Measure = Arc::new(move |text, size, is_bold| {
+            if is_bold {
+                seen.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            text.chars().count() as f64 * size * 0.5
+        });
+        for (_, source) in FAMILIES {
+            let _ = render(source, &t, measure.clone());
+        }
+        assert!(
+            bold.load(std::sync::atomic::Ordering::Relaxed),
+            "no label was measured bold"
+        );
+    }
+
+    #[test]
     fn a_cancelled_render_is_not_a_timeout() {
         let control = OperationControl::new();
         control.cancel();
@@ -414,6 +471,9 @@ mod tests {
             Some("graph")
         );
         assert_eq!(diagram_type("  pie title Pets"), Some("pie"));
+        assert_eq!(diagram_type("\u{feff}flowchart TD"), Some("flowchart"));
+        assert!(draw("\u{feff}flowchart TD\n  A --> B").is_ok());
+        assert!(draw("flowchart-elk LR\n  A --> B").is_ok());
         assert_eq!(diagram_type("\n\n"), None);
         assert!(is_diagram(Some("Mermaid")));
         assert!(!is_diagram(Some("rust")));
@@ -476,6 +536,12 @@ mod tests {
             r##"<svg><a><use href="#m"/></a><image/></svg>"##
         );
         assert_eq!(strip_references("no links"), "no links");
+        // Any namespace prefix, and whitespace around `=`.
+        let svg = r##"<svg><image xl:href="file:///x"/><image xlink:href = "file:///y"/><a href ='https://z'>t</a><use xlink:href = "#k"/></svg>"##;
+        assert_eq!(
+            strip_references(svg),
+            r##"<svg><image/><image/><a>t</a><use xlink:href = "#k"/></svg>"##
+        );
     }
 
     /// Whether any `<image …>` element carries an `href`.

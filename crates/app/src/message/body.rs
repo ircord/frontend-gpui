@@ -478,6 +478,7 @@ impl Body<'_> {
                     div()
                         .id(ElementId::Name(format!("{id}-note").into()))
                         .test_support()
+                        .aria_label(why.clone())
                         .text_xs()
                         .text_color(self.theme.faint)
                         .child(why),
