@@ -145,12 +145,37 @@ fn headings_rules_and_task_boxes_are_drawn(cx: &mut TestAppContext) {
         let small = window.find("heading-3-2").bounds();
         assert!(px(big.size.height) > px(medium.size.height));
         assert!(px(medium.size.height) > px(small.size.height));
-        // The task list is a list whose boxed items say their state.
+        // A rule is drawn: a line between the last heading and the list.
+        let rule = at(window, "rule-3-0".into());
+        assert!(window.find("rule-3-0").visible());
+        assert!(px(rule.size.height) >= 1.);
+        assert!(px(rule.origin.y) > px(small.origin.y));
+        assert!(px(rule.origin.y) < px(at(window, "list-3-0".into()).origin.y));
+        // The task list is a list whose boxes say their state.
         assert!(window.find("list-3-0").visible());
         assert!(window.find_by_label("To do").visible());
         assert!(window.find_by_label("Done").visible());
-        // The box is no control, so the keyboard has nothing new to reach.
         assert_eq!(window.find_all_by_label("To do").len(), 1);
+        // The item itself carries no label, so it reads as its own text.
+        assert!(window.find("list-3-0-0").visible());
+    })
+    .unwrap();
+    // The boxes are no control, so the keyboard has nothing new to reach, and
+    // the link in a table cell is reachable.
+    let problems = cx
+        .update_window(f.window, |_, window, cx| {
+            crate::audit::audit("text blocks", window, cx)
+        })
+        .unwrap();
+    assert!(problems.is_empty(), "{problems:?}");
+}
+
+#[gpui_kit::test]
+fn a_one_row_table_is_named_in_the_singular(cx: &mut TestAppContext) {
+    let f = open(cx);
+    cx.update_window(f.window, |_, window, _| {
+        assert!(window.find_by_label("Table, 3 columns, 2 rows").visible());
+        assert!(window.find_by_label("Table, 2 columns, 1 row").visible());
     })
     .unwrap();
 }

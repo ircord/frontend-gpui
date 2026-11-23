@@ -626,7 +626,7 @@ fn save_edit(ctx: &ComposerCtx, message: &str, text: String, window: &mut Window
                     let _ = cx.update(|window, cx| {
                         if box_text(cx).is_empty() && mode(&conversation, cx).is_none() {
                             start_edit(&conversation, &message, window, cx);
-                            set_box(&text, window, cx);
+                            set_box(&format::markdown::irc_to_markdown(&text), window, cx);
                         }
                     });
                 }

@@ -8,7 +8,7 @@
 
 ### New
 
-- Messages show Markdown tables as a grid, headings, horizontal rules and task-list boxes, as the web client does; plain IRC clients still see the Markdown text. Editing a message gives back the Markdown you typed.
+- Messages show Markdown tables as a grid, headings, horizontal rules and task-list boxes, as the web client does; plain IRC clients still see the Markdown text. Editing a message keeps its bold, italic and other formatting as Markdown instead of dropping it.
 
 ### Fixed
 
@@ -39,7 +39,6 @@
 - Joins after a reconnect fold into one line again instead of showing every person twice, and the timeline looks like the web client's: a "Today" pill between days, a channel's name and topic at the start of its history, and mentions marked in amber.
 - A jump to a message puts it in the middle of the timeline, and "Jump to present" glides back to the newest message instead of jumping, as the web client does (it jumps when reduced motion is on).
 - Exported themes say they were made with IRCord GPUI, not IRCord desktop.
-
 
 ### New
 

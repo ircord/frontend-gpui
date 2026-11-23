@@ -721,3 +721,32 @@ fn a_failed_reply_or_gif_cannot_move_to_the_draft(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn a_failed_edit_gives_back_the_markdown_you_typed(cx: &mut TestAppContext) {
+    let f = open(cx, |server| {
+        server.route_fn("PATCH", "/api/v1/conversations/*/messages/*", |_| {
+            Reply::json(500, json!({"error": "no"}))
+        });
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("composer-input", cx);
+        window.press("up", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.input(", **fixed**", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    wait(cx, "the edit to come back to the box", |cx| {
+        matches!(
+            message_actions::mode("c-general", cx),
+            Some(Mode::Edit { .. })
+        ) && message_actions::box_text(cx) == "my words, **fixed**"
+    });
+}

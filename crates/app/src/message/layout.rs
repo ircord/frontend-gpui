@@ -321,8 +321,17 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
         },
         _ => m.clone(),
     };
-    let body = (!(m.body.text.trim().is_empty() && !m.attachments.is_empty()))
-        .then(|| body::render(&spoken, &view.ctx, theme, &inline, window, cx));
+    let body = (!(m.body.text.trim().is_empty() && !m.attachments.is_empty())).then(|| {
+        body::render(
+            &spoken,
+            &view.ctx,
+            theme,
+            &inline,
+            look.size as f32,
+            window,
+            cx,
+        )
+    });
     let extras: Vec<AnyElement> = reactions::render(m, &view.ctx, theme, window, cx)
         .into_iter()
         .chain(attachments::render(m, &view.ctx, theme, window, cx))

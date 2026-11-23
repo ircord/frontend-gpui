@@ -42,6 +42,7 @@ pub fn render(
     ctx: &MessageCtx,
     theme: &Theme,
     inline: &[InlineRenderer],
+    size: f32,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -78,7 +79,8 @@ pub fn render(
         lists: 0,
         tables: 0,
         headings: 0,
-        size: crate::message::layout::settings(cx).size as f32,
+        rules: 0,
+        size,
         mono: cx.theme().mono_font_family.clone(),
     };
     let blocks = message_blocks(&Mapped::new(&m.body.text), m.action);
@@ -223,6 +225,7 @@ struct Body<'a> {
     lists: usize,
     tables: usize,
     headings: usize,
+    rules: usize,
     /// The message text size in pixels, which headings scale.
     size: f32,
     mono: SharedString,
@@ -257,11 +260,17 @@ impl Body<'_> {
             Block::List(list) => self.list(list, 0, window, cx),
             Block::Table(table) => self.table(table, window, cx),
             Block::Heading { level, text } => self.heading(*level, text, window, cx),
-            Block::Rule => div()
-                .h(px(1.))
-                .my_1()
-                .bg(self.theme.border)
-                .into_any_element(),
+            Block::Rule => {
+                let n = self.rules;
+                self.rules += 1;
+                div()
+                    .id(ElementId::Name(format!("rule-{}-{n}", self.m.id).into()))
+                    .test_support()
+                    .h(px(1.))
+                    .my_1()
+                    .bg(self.theme.border)
+                    .into_any_element()
+            }
         }
     }
 
@@ -305,11 +314,19 @@ impl Body<'_> {
         let theme = self.theme;
         let columns = table.align.len();
         let rows = table.rows.len() + 1;
+        let columns_label = match columns {
+            1 => t!("text-table-column").to_string(),
+            n => t!("text-table-columns", count = n),
+        };
+        let rows_label = match table.rows.len() {
+            1 => t!("text-table-row").to_string(),
+            n => t!("text-table-rows", count = n),
+        };
         let mut grid = div()
             .id(ElementId::Name(id.clone().into()))
             .test_support()
             .role(Role::Table)
-            .aria_label(t!("text-table", columns = columns, rows = table.rows.len()))
+            .aria_label(t!("text-table", columns = columns_label, rows = rows_label))
             .grid()
             .grid_cols_max_content(columns as u16)
             .min_w_0()
@@ -375,11 +392,20 @@ impl Body<'_> {
             } else {
                 ["•", "◦", "▪"][depth % 3].to_string()
             };
-            // A task's box is decoration: its state is in the item's label,
-            // so it is no checkbox for the keyboard to reach.
+            // A task's box is decoration that names its state; it is no
+            // checkbox, so the keyboard has nothing to reach and the item
+            // still reads as its own text.
             let marker_cell = match item.checked {
                 Some(done) => div().flex_none().min_w(px(18.)).flex().justify_end().child(
                     div()
+                        .id(ElementId::Name(format!("{list_id}-{i}-box").into()))
+                        .test_support()
+                        .role(Role::Image)
+                        .aria_label(if done {
+                            t!("text-task-done")
+                        } else {
+                            t!("text-task-todo")
+                        })
                         .size(px(14.))
                         .mt(px(2.))
                         .rounded_sm()
@@ -409,20 +435,16 @@ impl Body<'_> {
             for child in &item.children {
                 content = content.child(self.list(child, depth + 1, window, cx));
             }
-            let mut row = div()
-                .id(ElementId::Name(format!("{list_id}-{i}").into()))
-                .test_support()
-                .role(Role::ListItem)
-                .flex()
-                .gap_1();
-            if let Some(done) = item.checked {
-                row = row.aria_label(if done {
-                    t!("text-task-done")
-                } else {
-                    t!("text-task-todo")
-                });
-            }
-            column = column.child(row.child(marker_cell).child(content));
+            column = column.child(
+                div()
+                    .id(ElementId::Name(format!("{list_id}-{i}").into()))
+                    .test_support()
+                    .role(Role::ListItem)
+                    .flex()
+                    .gap_1()
+                    .child(marker_cell)
+                    .child(content),
+            );
         }
         column.into_any_element()
     }
