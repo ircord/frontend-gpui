@@ -118,11 +118,26 @@ fn has_label(f: &Fixture, cx: &mut TestAppContext, label: &str) -> bool {
 }
 
 fn label(f: &Fixture, cx: &mut TestAppContext, id: &'static str) -> String {
-    let mut text = String::new();
-    frame_do(f, cx, |window, _| {
-        text = window.find(id).label().unwrap_or_default().to_string()
-    });
-    text
+    // The model can be ready a frame or more before the window has swapped
+    // its loading screen for the app, so wait for the row to be drawn.
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        cx.run_until_parked();
+        let mut text = None;
+        frame_do(f, cx, |window, _| {
+            text = window
+                .try_find(id)
+                .map(|e| e.label().unwrap_or_default().to_string())
+        });
+        if let Some(text) = text {
+            return text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {id} to be drawn"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 fn select(f: &Fixture, cx: &mut TestAppContext, id: &str) {

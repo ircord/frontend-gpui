@@ -1,6 +1,11 @@
 //! The build container: an image from `tools/build.Dockerfile`, tagged by the
-//! file's hash, with the host's cargo registry and the cargo-xwin download
-//! cache mounted so repeated builds reuse them.
+//! file's hash, with the host's cargo registry, the cargo-xwin download cache
+//! and an sccache directory mounted so repeated builds reuse them.
+//!
+//! sccache caches compiled dependencies across checkouts: inside the container
+//! every checkout is `/work`, so the same crate compiles to the same cache key
+//! in any pool slot. It saves a checkout that has never built, or one after a
+//! dependency bump, most of its compile time; a warm `target/` gains nothing.
 //!
 //! Only the Microsoft CRT and SDK cargo-xwin downloads are shared between
 //! containers. Its cache root also holds a `clang-cl` link to the image's own
@@ -58,10 +63,12 @@ pub fn base_args(root: &Path) -> Result<Vec<String>> {
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".cargo"));
     let xwin_download = home().join(".cache/cargo-xwin").join("xwin");
+    let sccache_dir = home().join(".cache/sccache");
     for dir in [
         cargo_home.join("registry"),
         cargo_home.join("git"),
         xwin_download.clone(),
+        sccache_dir.clone(),
     ] {
         std::fs::create_dir_all(&dir)?;
     }
@@ -94,6 +101,11 @@ pub fn base_args(root: &Path) -> Result<Vec<String>> {
         "/work".into(),
     ];
     args.extend(xwin_cache_args(&xwin_download));
+    // A CI runner starts with an empty cache and nothing restores one, so
+    // there sccache would only write files nobody reads.
+    if std::env::var_os("GITHUB_ACTIONS").is_none() {
+        args.extend(sccache_args(&sccache_dir));
+    }
     if let Ok(filter) = std::env::var("RUST_LOG") {
         args.push("-e".into());
         args.push(format!("RUST_LOG={filter}"));
@@ -115,6 +127,31 @@ fn xwin_cache_args(download: &Path) -> Vec<String> {
         format!("type=tmpfs,destination={XWIN_CACHE_DIR},tmpfs-mode=1777"),
         "-v".into(),
         format!("{}:{XWIN_CACHE_DIR}/xwin", download.display()),
+    ]
+}
+
+/// Where sccache keeps its cache in the container.
+const SCCACHE_DIR: &str = "/sccache";
+
+/// The most the shared sccache directory may hold. Each container runs its own
+/// sccache server and counts the size alone, so with several containers
+/// writing at once the directory can pass the cap a little before the next
+/// one evicts.
+const SCCACHE_SIZE: &str = "10G";
+
+/// sccache as cargo's compiler wrapper, with the host's cache directory
+/// mounted. It leaves incremental builds (the workspace crates in dev) alone
+/// and caches the dependencies. Not used on GitHub Actions (see `base_args`).
+fn sccache_args(dir: &Path) -> Vec<String> {
+    vec![
+        "-e".into(),
+        format!("SCCACHE_DIR={SCCACHE_DIR}"),
+        "-e".into(),
+        format!("SCCACHE_CACHE_SIZE={SCCACHE_SIZE}"),
+        "-e".into(),
+        "RUSTC_WRAPPER=sccache".into(),
+        "-v".into(),
+        format!("{}:{SCCACHE_DIR}", dir.display()),
     ]
 }
 

@@ -1,6 +1,7 @@
 # Build environment for ircord-gpui: the Linux packages GPUI needs, clang,
 # lld and llvm-rc for the Windows cross-build, cargo-xwin, and cargo-packager
-# with NSIS for the installers. `cargo xtask` builds this image on first use
+# with NSIS for the installers, and sccache so checkouts share compiled
+# dependencies. `cargo xtask` builds this image on first use
 # and runs every compile step inside it.
 FROM rust:1.99-bookworm
 
@@ -37,5 +38,6 @@ RUN rustup component add rustfmt clippy \
     && rustup target add x86_64-pc-windows-msvc aarch64-apple-darwin x86_64-apple-darwin \
     && cargo install cargo-xwin --locked --version 0.23.1 \
     && cargo install cargo-packager --locked --version 0.11.8 \
+    && cargo install sccache --locked --version 0.19.0 --no-default-features \
     && rm -rf /usr/local/cargo/registry /usr/local/cargo/git \
     && chmod -R a+rwX /usr/local/cargo /usr/local/rustup
