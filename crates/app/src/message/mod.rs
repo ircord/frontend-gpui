@@ -4,6 +4,7 @@
 //! hover toolbar (registered items marked `toolbar`).
 
 pub mod attachments;
+pub mod attract;
 pub mod body;
 pub mod diagram;
 pub mod emoji;
@@ -30,6 +31,8 @@ pub struct MessageView {
     pub ctx: MessageCtx,
     /// Under the pointer: show the toolbar.
     pub hovered: bool,
+    /// `/attract` is playing on this row, its avatar or both.
+    pub attract: Option<crate::timeline::attract::Fx>,
     #[allow(clippy::type_complexity)]
     pub on_hover: Rc<dyn Fn(bool, &mut Window, &mut App)>,
 }

@@ -9,6 +9,7 @@ mod shell;
 
 mod admin;
 mod appearance;
+mod attract;
 mod audio_card;
 mod audit;
 mod channel_settings;

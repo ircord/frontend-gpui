@@ -7,7 +7,8 @@
 //! through the app's own form, captures the workspace, checks the sign-in is
 //! in the keyring, types a server emoji into the message box, plays a test
 //! video sent to the channel (printing the app's resident memory 2 s and
-//! 32 s after it starts), then restarts the app to show it signs in from
+//! 32 s after it starts), sends `/attract` and captures the shine while it
+//! plays and after it ends, then restarts the app to show it signs in from
 //! there, and opens Settings → Emotes → Discover (emoji.gg's emoji, read by
 //! the backend over the internet).
 //! Screenshots and the app's logs land in `target/capture/`; look at them.
@@ -147,6 +148,26 @@ echo "resident memory at 2 s: app $(rss "$APP") kB, helper $(rss "$HELPER") kB" 
 sleep 30
 echo "resident memory at 32 s: app $(rss "$APP") kB, helper $(rss "$HELPER") kB" | tee -a "$OUT/video-memory.txt"
 shot 8-video-ended
+
+# /attract: the newest of your messages shines and its group's avatar
+# sparkles for three seconds, then stops. The first Return takes the
+# suggested command, the second sends it.
+for n in 1 2; do
+  curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+    -d "{\"clientId\":\"capture-attract-$n\",\"text\":\"attract test $n\"}" \
+    "$SERVER/api/v1/conversations/$CONVERSATION/messages"
+done
+sleep 3
+xdotool windowfocus --sync "$WIN"
+xdotool type --delay 30 "/attract"
+sleep 1
+xdotool key Return
+sleep 0.5
+xdotool key Return
+sleep 1
+shot 10-attract-playing
+sleep 5
+shot 10-attract-over
 
 # A fresh start signs in from the keyring alone.
 stop_app 1

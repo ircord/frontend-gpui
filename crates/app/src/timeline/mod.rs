@@ -14,6 +14,7 @@
 //! newest message unless reduced motion is on ([`glide`]).
 
 pub mod announce;
+pub mod attract;
 pub mod export;
 mod glide;
 pub mod rows;
@@ -33,7 +34,7 @@ use ircord_client::api::ApiError;
 use ircord_client::client::PAGE_SIZE;
 use ircord_client::contract::Message;
 use ircord_client::store::timeline::{AROUND_SIZE, NEWER_SIZE, TOPIC};
-use ircord_client::store::{Changes, SendState, Workspace, people};
+use ircord_client::store::{Changes, SendState, Workspace, people, topic};
 
 use crate::message::{self, MessageView};
 use crate::registry::{self, ConversationCtx, KeyDefault, MenuItem, MessageCtx};
@@ -595,6 +596,10 @@ pub struct TimelineView {
     glides: u64,
     /// Parsed bodies, reused by the next rebuild.
     bodies: rows::Bodies,
+    /// `/attract`, while it plays on the open conversation.
+    attract: Option<Playing>,
+    /// The id of the last attract started.
+    attracts: u64,
     _subscription: Subscription,
 }
 
@@ -604,6 +609,14 @@ struct Glide {
     id: u64,
     started: Instant,
     last: Instant,
+}
+
+/// One `/attract` playing. `id` tells its frames apart from those of an
+/// attract it replaced.
+struct Playing {
+    id: u64,
+    target: attract::Target,
+    started: Instant,
 }
 
 /// The time between two frames of a glide: about 60 a second.
@@ -633,6 +646,12 @@ impl TimelineView {
                         // rows do not change.
                         cx.notify();
                     }
+                    let attracted = open
+                        .as_ref()
+                        .is_some_and(|id| changes.touches_id(topic::ATTRACT, id));
+                    if attracted {
+                        this.start_attract(cx);
+                    }
                 }
                 SessionEvent::Selection | SessionEvent::Phase => this.rebuild(cx),
                 _ => {}
@@ -660,6 +679,8 @@ impl TimelineView {
             glide: None,
             glides: 0,
             bodies: rows::Bodies::default(),
+            attract: None,
+            attracts: 0,
             _subscription: subscription,
         };
         view.install_scroll_handler(cx);
@@ -770,6 +791,7 @@ impl TimelineView {
         }
         if switched {
             self.conversation = conversation;
+            self.attract = None;
             self.hovered = None;
             self.expanded.clear();
             self.list.reset(rows.len());
@@ -969,6 +991,63 @@ impl TimelineView {
         .detach();
     }
 
+    /// Play the newest `/attract` of the open conversation: it sparkles on
+    /// the message it points at for [`attract::ATTRACT_MS`], and never moves
+    /// the scroll position. One that arrives while another plays restarts it.
+    fn start_attract(&mut self, cx: &mut Context<Self>) {
+        let (Some(conversation), Some(client)) = (
+            self.conversation.clone(),
+            self.session.read(cx).client().cloned(),
+        ) else {
+            return;
+        };
+        let Some(sent) = client.read().reading.attract(&conversation).cloned() else {
+            return;
+        };
+        let Some(target) = attract::resolve(&self.rows, &sent.message_id, &sent.member_id) else {
+            return;
+        };
+        self.attracts += 1;
+        self.attract = Some(Playing {
+            id: self.attracts,
+            target,
+            started: Instant::now(),
+        });
+        self.attract_frame(cx);
+    }
+
+    /// Draw the attract once, then again after a frame (or, with reduced
+    /// motion, once it is over): on the session's runtime, as GPUI's timers
+    /// do not run in the headless tests.
+    fn attract_frame(&mut self, cx: &mut Context<Self>) {
+        let Some(playing) = self.attract.as_ref() else {
+            return;
+        };
+        let (id, elapsed) = (playing.id, playing.started.elapsed());
+        cx.notify();
+        if attract::over(elapsed) {
+            self.attract = None;
+            return;
+        }
+        let wait = if theme::get(cx).reduced_motion {
+            Duration::from_millis(attract::ATTRACT_MS).saturating_sub(elapsed)
+        } else {
+            attract::FRAME
+        };
+        let runtime = self.session.read(cx).runtime.clone();
+        let paced = runtime.spawn(async move { tokio::time::sleep(wait).await });
+        cx.spawn(async move |this, cx| {
+            let _ = paced.await;
+            this.update(cx, |this, cx| {
+                if this.attract.as_ref().is_some_and(|p| p.id == id) {
+                    this.attract_frame(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// How far the end of the history is below the view, in pixels.
     fn gap_to_end(&self) -> f32 {
         let end = self.list.max_offset_for_scrollbar().y;
@@ -1134,6 +1213,11 @@ impl TimelineView {
                 };
                 let id = m.id.clone();
                 let hovered = self.hovered.as_deref() == Some(id.as_str());
+                let reduced = theme.reduced_motion;
+                let attract = self
+                    .attract
+                    .as_ref()
+                    .and_then(|p| attract::fx(&p.target, &m.id, p.started.elapsed(), reduced));
                 let this = cx.entity().downgrade();
                 message::render(
                     MessageView {
@@ -1145,6 +1229,7 @@ impl TimelineView {
                             own: m.own,
                         },
                         hovered,
+                        attract,
                         on_hover: Rc::new(move |over, _, cx| {
                             if let Some(this) = this.upgrade() {
                                 this.update(cx, |this, cx| this.set_hovered(&id, over, cx));
