@@ -10,6 +10,7 @@ mod capture;
 mod container;
 mod contract;
 mod dev;
+mod installer_paths;
 mod integration;
 mod macos;
 mod package;
@@ -31,7 +32,7 @@ usage: cargo xtask <command>
   package windows      build dist/IRCord-GPUI-Windows-x64-setup.exe in the build container
   package macos        build the .dmg and the updater's .app.tar.gz in dist/ (on a Mac)
   check                fmt, clippy, contract check and tests: what CI runs on a pull request
-  ladder               the whole local ladder: check, then both installers
+  ladder               the local ladder: check, compile checks, and the installers when the change needs them
   release-assets <version> <installers> <out> <owner/repo>
                        sign the installers, write latest.json and SHA256SUMS (publish job)
   image-tag            print the build image's name (CI builds the image under it)
@@ -78,12 +79,43 @@ fn main() -> Result<()> {
     }
 }
 
+/// `check`, then the app's compile checks for Linux and Windows, then the
+/// installers only for a change that makes CI build them (see
+/// `installer_paths`).
 fn ladder(root: &std::path::Path) -> Result<()> {
     check(root)?;
-    step("cargo xtask package windows");
-    package::windows(root)?;
-    step("cargo xtask package linux");
-    package::linux(root)?;
+    step("cargo check, app without test features");
+    container::run(
+        root,
+        &["cargo", "check", "-p", "ircord-app", "--bin", "ircord"],
+    )?;
+    step("cargo xwin check, app for Windows");
+    container::run(
+        root,
+        &[
+            "cargo",
+            "xwin",
+            "check",
+            "--target",
+            container::WINDOWS_TARGET,
+            "-p",
+            "ircord-app",
+            "--bin",
+            "ircord",
+        ],
+    )?;
+    match installer_paths::needed(root)? {
+        Some(why) => {
+            println!("\ninstallers needed: {why}");
+            step("cargo xtask package windows");
+            package::windows(root)?;
+            step("cargo xtask package linux");
+            package::linux(root)?;
+        }
+        None => println!(
+            "\nno installer path changed against main: installers skipped (CI builds them for such changes)"
+        ),
+    }
     println!("\nladder passed");
     Ok(())
 }

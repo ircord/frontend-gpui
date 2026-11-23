@@ -23,6 +23,7 @@ on:
       - tools/**
       - vendor/**
       - xtask/**
+      - Cargo.toml
       - Cargo.lock
 
 permissions:

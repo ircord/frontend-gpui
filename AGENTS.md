@@ -90,8 +90,8 @@ Changes are delivered by pull request on `ircord/frontend-gpui`. Pass this
 ladder locally before pushing, push the branch once, and open the pull request
 as a draft. The ladder is the gate: a draft runs no CI. Marking it ready runs
 `check.yaml` (steps 1 to 3), and `build-installers.yaml` as well when it
-touches `.github/`, `crates/platform/`, `packaging/`, `tools/`, `vendor/`,
-`xtask/` or `Cargo.lock`. Keep the pull request a draft until the maintainer
+touches a path under `pull_request: paths:` in that workflow, the one list
+(`cargo xtask ladder` reads it too). Keep the pull request a draft until the maintainer
 marks it ready for review. `cargo xtask ladder` runs steps 1 to 4,
 `cargo xtask check` steps 1 to 3.
 
@@ -99,8 +99,12 @@ marks it ready for review. `cargo xtask ladder` runs steps 1 to 4,
 2. `cargo xtask contract --check`: the committed contract matches the backend
    checkout it names (`IRCORD_BACKEND`, default `../ircord-backend`).
 3. `cargo test --workspace`: contract, client and headless UI tests.
-4. `cargo xtask package windows` and `cargo xtask package linux`: the setup
-   `.exe` and the `.deb` exist in `dist/`.
+4. `cargo check -p ircord-app --bin ircord` and the same with `cargo xwin
+   check` for Windows: the app compiles without test features and for
+   Windows. When the change against `main` touches a path that makes CI build
+   the installers (the `pull_request` paths in `build-installers.yaml`),
+   `cargo xtask package windows` and `cargo xtask package linux` as well: the
+   setup `.exe` and the `.deb` exist in `dist/`. `cargo xtask ladder` decides.
 5. For changes to the client's networking, `cargo xtask integration`: the
    client against a real backend and IRC server in disposable containers.
 6. For a change a user can see: run it against a disposable local backend

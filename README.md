@@ -35,7 +35,7 @@ Everything that compiles runs in a Docker image built from
 
 | Command | What it does |
 | --- | --- |
-| `cargo xtask ladder` | `check`, then the Windows and Linux installers |
+| `cargo xtask ladder` | `check`, compile checks of the app for Linux and Windows, then the Windows and Linux installers when the change touches a path that makes CI build them |
 | `cargo xtask check` | fmt, clippy (and `crates/platform` for macOS and Windows), contract check and tests: what CI runs on a pull request |
 | `cargo xtask build windows` | cross-build `dist/ircord.exe`, with its icon and version |
 | `cargo xtask build linux` | build `dist/ircord`, `dist/ircord-video` and `dist/ircord-linux-x86_64.tar.gz` |
@@ -56,6 +56,12 @@ The backend checkout is `../ircord-backend` unless `IRCORD_BACKEND` names
 another. The first Windows build downloads Microsoft's C runtime and Windows
 SDK libraries (about 1 GB, cached in `~/.cache/cargo-xwin`); `cargo-xwin`
 accepts Microsoft's licence for them. They are used for linking only.
+
+Compiled dependencies are cached by sccache in `~/.cache/sccache` (capped at
+10 GB), shared by every checkout on the machine, so a checkout that has never
+built, or one after a dependency bump, reuses what another checkout compiled;
+proc macros, build scripts and the workspace crates still compile. A checkout
+whose `target/` is up to date gains nothing from it. CI does not use it.
 
 ## Running it
 
