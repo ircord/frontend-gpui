@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, open_with, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 fn line(id: &str, kind: &str, command: &str, text: &str) -> Value {
     json!({"id": id, "networkId": "n1", "kind": kind, "command": command, "params": [],

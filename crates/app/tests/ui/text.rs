@@ -14,7 +14,7 @@ use serde_json::json;
 
 use crate::fixture::{Fixture, message, open_with, snapshot, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 /// The server's origin in the fixture is the canned server's; message links
 /// are built on it.

@@ -125,7 +125,7 @@ fn shows(f: &Fixture, cx: &mut TestAppContext, id: &'static str) {
 /// The aria label of the About page's update status line, once it reads
 /// `text`.
 fn status_reads(f: &Fixture, cx: &mut TestAppContext, text: &str) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + crate::fixture::HANG_GUARD;
     loop {
         cx.run_until_parked();
         let shown = cx

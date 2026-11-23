@@ -950,8 +950,10 @@ mod tests {
 
     const SOON: Duration = Duration::from_millis(300);
 
-    /// Far longer than any test machine stalls: a claim that waited out its
-    /// patience on a dead copy could not finish inside it.
+    /// Far longer than any test machine stalls. A claim that treats a dead
+    /// copy as running waits out its patience and ends in `Unreachable`, which
+    /// `first_within` rejects; one that waits and then still starts cannot
+    /// finish inside it either.
     const FOREVER: Duration = Duration::from_secs(60);
 
     fn first(dir: &std::path::Path) -> instance::Running {
@@ -1069,16 +1071,25 @@ mod tests {
         let dir = temp();
         // A copy that crashed: its file names a port nobody listens on, and
         // its lock went with the process.
+        // The port is still held here, but by the test: nothing may contact
+        // it, which `accept` below sees without reading a clock.
         let gone = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        gone.set_nonblocking(true).unwrap();
         let port = gone.local_addr().unwrap().port();
-        drop(gone);
         std::fs::write(dir.join(instance::FILE), format!("{port} abc\n")).unwrap();
         std::fs::write(dir.join(instance::LOCK), "").unwrap();
-        // A claim that waited on the dead copy would wait out its whole
-        // patience, so the bound is that patience, not a few milliseconds.
+        // The claim must neither wait on the dead copy (a wait as long as its
+        // patience fails the bound) nor try its port (a delay of any length,
+        // such as a connect that times out on Windows, shows as a connection).
         let started = std::time::Instant::now();
         let running = first_within(&dir, FOREVER);
         assert!(started.elapsed() < FOREVER, "no waiting on a dead copy");
+        assert_eq!(
+            gone.accept().map(|_| ()).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "the dead copy's port is not tried"
+        );
+        drop(gone);
         let text = std::fs::read_to_string(dir.join(instance::FILE)).unwrap();
         assert!(!text.ends_with(" abc\n"), "the file names the new copy");
         // And when that copy ends in turn, the next one starts.

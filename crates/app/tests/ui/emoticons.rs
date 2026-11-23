@@ -13,7 +13,7 @@ use gpui_kit::{AppContext, TestAppContext};
 use crate::emoji::serve;
 use crate::fixture::{Fixture, open_with, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 /// One thing the person does in the box: typing text, or pressing a key.
 enum Step {

@@ -344,7 +344,7 @@ async fn serve(mut stream: TcpStream, state: Arc<Mutex<State>>, frames: broadcas
     };
     let reply = match reply {
         // A handler may block (a reply held back, a slow server): off the
-        // runtime's two workers, or it strands the client's own timers
+        // runtime's workers, or it strands the client's own tasks and timers
         // queued behind it.
         Some(handler) => {
             let asked = request.clone();

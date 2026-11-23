@@ -155,7 +155,7 @@ fn signing_out_returns_to_the_sign_in_screen(cx: &mut TestAppContext) {
     });
 }
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 fn draw(
     f: &crate::fixture::Fixture,

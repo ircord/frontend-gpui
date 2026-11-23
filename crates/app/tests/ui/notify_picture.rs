@@ -8,7 +8,6 @@ use std::cell::RefCell;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
 
 use gpui_kit::TestAppContext;
 use ircord_app::notify::picture::{Fixed, resolve};
@@ -16,7 +15,7 @@ use ircord_client::contract::{Alert, Snapshot};
 use ircord_client::testing::Reply;
 use serde_json::json;
 
-use crate::fixture::{Fixture, bootstrap, open_with, snapshot, wait};
+use crate::fixture::{Fixture, bootstrap, held_reply, open_with, snapshot, wait};
 
 const AVATAR: &str = "/files/bob/avatar.png";
 
@@ -157,18 +156,15 @@ fn a_body_that_is_not_a_picture_shows_no_picture(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_picture_that_never_arrives_is_given_up(cx: &mut TestAppContext) {
-    // The server holds its answer until the test lets go of it, then sends a
-    // real picture, so only giving up can make the result `None`: a client
-    // that waited for the answer would find the picture. No clock is read.
-    let (release, held) = std::sync::mpsc::channel::<()>();
-    let held = std::sync::Mutex::new(held);
+    // The server holds its answer until the test ends, so the client can only
+    // answer by giving up: a client that waited would hang, and the fixture's
+    // wait fails. The held answer is a real picture, so a hold that ended
+    // early could not pass for a give-up.
     let picture_bytes = png();
+    let (release, held) = held_reply(move || Reply::bytes(200, "image/png", picture_bytes.clone()));
     let f = open_with(cx, true, move |server| {
         server.snapshot(&workspace());
-        server.route_fn("GET", AVATAR, move |_| {
-            let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(60));
-            Reply::bytes(200, "image/png", picture_bytes.clone())
-        });
+        server.route_fn("GET", AVATAR, held);
     });
     bootstrap(&f, cx);
     assert_eq!(picture(&f, cx, alert("c-general", "1")), None);

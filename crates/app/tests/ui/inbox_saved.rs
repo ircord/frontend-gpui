@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, open_with, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 /// Open the app signed in, with `setup`'s routes, and wait until it is live
 /// with `#general`'s history shown.

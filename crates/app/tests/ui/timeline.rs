@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::fixture::{Fixture, bootstrap, message, open_with, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 fn at(i: u32) -> String {
     format!("2026-11-{:02}T10:{:02}:00Z", 1 + i / 60, i % 60)

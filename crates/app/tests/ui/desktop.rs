@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::fixture::{Fixture, bootstrap, open, open_with, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 fn signed_in(cx: &mut TestAppContext, setup: impl FnOnce(&CannedServer)) -> Fixture {
     let f = open_with(cx, true, setup);

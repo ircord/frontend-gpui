@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, bootstrap, open_with, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 fn me(extra: Value) -> Value {
     let mut m = json!({"id": "p-me", "account": "me", "nick": "me", "displayName": "me",
