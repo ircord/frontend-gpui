@@ -1,6 +1,7 @@
 //! `/attract` in the timeline: the command is sent, and the event that
-//! answers it (or someone else's) makes the message shine and its avatar
-//! sparkle for three seconds, then stops.
+//! answers it (or someone else's) sends a comet round the message and onto
+//! its group's avatar for three seconds, then stops. With reduced motion the
+//! row and avatar are marked instead, for as long.
 
 use std::time::{Duration, Instant};
 
@@ -101,27 +102,41 @@ fn the_command_is_sent_and_the_event_plays_on_the_message_and_its_groups_avatar(
     // The server answers with the event; messages 1 and 2 are one group.
     attract_event(&f, "2", "m-bob");
     wait_for(&f, cx, "attract-row-2", true);
-    // The shine travels: it is further along 400 ms later.
-    let shine_x = |f: &Fixture, cx: &mut TestAppContext| {
-        cx.run_until_parked();
-        cx.update_window(f.window, |_, window, cx| {
+    // The comet's layer lies over the row, which shows no static marks.
+    assert!(drawn(&f, cx, "attract-comet"), "the comet plays");
+    // The picture stays where it was, and the comet takes off from it.
+    let (face, marker) = cx
+        .update_window(f.window, |_, window, cx| {
             window.render_frame(cx);
-            f32::from(window.find("attract-shine-2").bounds().origin.x)
+            (
+                window.find("sender-avatar-1").bounds(),
+                window.find("attract-avatar-1").bounds(),
+            )
         })
-        .unwrap()
-    };
-    let before = shine_x(&f, cx);
-    std::thread::sleep(Duration::from_millis(400));
-    let after = shine_x(&f, cx);
+        .unwrap();
+    assert_eq!(face, marker, "the avatar's place is its picture's");
+    assert!(!drawn(&f, cx, "attract-tint-2") && !drawn(&f, cx, "attract-ring-1"));
+    let (layer, row) = cx
+        .update_window(f.window, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window.find("attract-comet").bounds(),
+                window.find("attract-row-2").bounds(),
+            )
+        })
+        .unwrap();
     assert!(
-        after > before + 100.,
-        "the shine moved from {before} to {after}"
+        layer.contains(&row.origin) && row.size.width > gpui_kit::px(100.),
+        "the comet's layer {layer:?} covers the row {row:?}"
     );
     assert!(
         drawn(&f, cx, "attract-avatar-1"),
-        "the group's head sparkles"
+        "the comet lands on the group's head"
     );
-    assert!(!drawn(&f, cx, "attract-row-1"), "only the message shines");
+    assert!(
+        !drawn(&f, cx, "attract-row-1"),
+        "only the message is lapped"
+    );
     assert!(
         !drawn(&f, cx, "attract-avatar-2"),
         "a continuation has no avatar"
@@ -130,6 +145,31 @@ fn the_command_is_sent_and_the_event_plays_on_the_message_and_its_groups_avatar(
     // It ends by itself.
     wait_for(&f, cx, "attract-row-2", false);
     assert!(!drawn(&f, cx, "attract-avatar-1"));
+    assert!(!drawn(&f, cx, "attract-comet"));
+}
+
+#[gpui_kit::test]
+fn with_reduced_motion_the_row_and_avatar_are_marked_and_nothing_moves(cx: &mut TestAppContext) {
+    let f = open(cx);
+    cx.update(|cx| {
+        let mut theme = ircord_app::theme::get(cx).clone();
+        theme.reduced_motion = true;
+        ircord_app::theme::set(theme, cx);
+    });
+    let started = Instant::now();
+    attract_event(&f, "2", "m-bob");
+    wait_for(&f, cx, "attract-tint-2", true);
+    assert!(
+        drawn(&f, cx, "attract-ring-1"),
+        "the group's head is ringed"
+    );
+    assert!(!drawn(&f, cx, "attract-comet"), "no comet");
+    // The marks stay for the effect's three seconds, then go.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(drawn(&f, cx, "attract-tint-2"));
+    wait_for(&f, cx, "attract-tint-2", false);
+    assert!(started.elapsed() >= Duration::from_millis(2900));
+    assert!(!drawn(&f, cx, "attract-ring-1"));
 }
 
 #[gpui_kit::test]
@@ -167,6 +207,7 @@ fn a_second_attract_restarts_the_first(cx: &mut TestAppContext) {
         !drawn(&f, cx, "attract-row-1"),
         "it moved to the new message"
     );
+    assert!(drawn(&f, cx, "attract-comet"));
     // 2 s after the first it would have ended; the new one plays its own 3 s.
     std::thread::sleep(Duration::from_millis(1500));
     assert!(drawn(&f, cx, "attract-row-2"));

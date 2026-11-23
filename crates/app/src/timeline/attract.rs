@@ -1,36 +1,39 @@
-//! `/attract`: a sparkle on the avatar and a shine across the message, for
-//! three seconds, as the web client draws it (`shared/utils/attract.ts`,
-//! `presence.css`). This file is the part with no window: which rows play and
-//! how far into each pulse the effect is. The view starts and ends it and
-//! the message layout draws it.
+//! `/attract`: for three seconds a comet laps the message's row, sheds
+//! sparks that fall over the rows below, and lands on its sender's avatar
+//! with a burst (`comet`). This file says which rows play and keeps where
+//! they were painted; the view starts and ends the effect.
 //!
-//! The effect is three pulses of a third of `ATTRACT_MS` each. With reduced
-//! motion the pulses are left out and the static marks stay (the tint, the
-//! bar and the ring), as the web does.
+//! With reduced motion nothing moves: the row keeps a tint with a bar on
+//! the left and the avatar a ring, as the web client does.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Duration;
+
+use gpui_kit::{Bounds, Pixels};
 
 use super::rows::Row;
 
 /// How long the effect lasts; the backend coalesces what it receives for as
 /// long.
 pub const ATTRACT_MS: u64 = 3000;
-/// How many pulses the effect makes.
-const PULSES: u64 = 3;
-/// The time between two redrawn frames: about 30 a second.
+/// The time between two frames the view asks for itself: about 30 a second.
+/// While the comet moves the window also draws at the display's own rate.
 pub const FRAME: Duration = Duration::from_millis(33);
 
 /// The rows an attract plays on, by message ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
-    /// The row that shines.
+    /// The row the comet laps.
     pub row: String,
-    /// The row whose avatar sparkles: the head of `row`'s group.
+    /// The row whose avatar the comet leaves and lands on: the head of
+    /// `row`'s group.
     pub avatar: String,
 }
 
-/// The row that shines and the row whose avatar sparkles. A grouped
-/// continuation has no avatar, so the sparkle goes to the head of its group.
+/// The row the comet laps and the row whose avatar it lands on. A grouped
+/// continuation has no avatar, so the comet lands on the head of its group.
 /// When the exact message is not loaded, `member`'s newest loaded message
 /// stands in; with none, nothing plays.
 pub fn resolve(rows: &[Row], message: &str, member: &str) -> Option<Target> {
@@ -62,26 +65,75 @@ pub fn resolve(rows: &[Row], message: &str, member: &str) -> Option<Target> {
     })
 }
 
+/// Where the rows and avatars an attract plays on were painted in this
+/// frame, by message ID. Each row and avatar that plays reports its place
+/// while it is painted (`message::attract`), and the comet layer over the
+/// timeline, painted after the rows, reads them. One per timeline, so two
+/// windows never mix their places.
+#[derive(Clone, Default)]
+pub struct Stage(Rc<RefCell<Places>>);
+
+/// What a [`Stage`] holds for one frame.
+#[derive(Debug, Default)]
+pub struct Places {
+    pub rows: HashMap<String, Bounds<Pixels>>,
+    pub avatars: HashMap<String, Bounds<Pixels>>,
+}
+
+impl Stage {
+    /// The row of message `id` was painted at `bounds`.
+    pub fn row(&self, id: &str, bounds: Bounds<Pixels>) {
+        self.0.borrow_mut().rows.insert(id.to_owned(), bounds);
+    }
+
+    /// The avatar on message `id` was painted at `bounds`.
+    pub fn avatar(&self, id: &str, bounds: Bounds<Pixels>) {
+        self.0.borrow_mut().avatars.insert(id.to_owned(), bounds);
+    }
+
+    /// The places of this frame, leaving the stage empty for the next.
+    pub fn take(&self) -> Places {
+        std::mem::take(&mut *self.0.borrow_mut())
+    }
+}
+
+impl std::fmt::Debug for Stage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Stage")
+    }
+}
+
+impl PartialEq for Stage {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 /// What a message row draws of the effect.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Fx {
-    /// The row shines.
+    /// The comet laps this row.
     pub row: bool,
-    /// The avatar sparkles.
+    /// The comet takes off from and lands on this avatar.
     pub avatar: bool,
-    /// How far into the pulse the effect is, from 0 to 1. `None` with
-    /// reduced motion: only the static marks show.
-    pub pulse: Option<f32>,
+    /// Where the row reports its place, while the comet moves. `None` with
+    /// reduced motion: the row and avatar show the static marks instead.
+    pub stage: Option<Stage>,
+    /// An attract that was replaced and is letting its sparks land: the
+    /// row only reports its place.
+    pub settling: bool,
 }
 
 /// The effect on the message `id` after `elapsed`, or `None` when it plays
-/// on neither its row nor its avatar, or is over.
-pub fn fx(target: &Target, id: &str, elapsed: Duration, reduced: bool) -> Option<Fx> {
+/// on neither its row nor its avatar, or is over. `stage` is `None` with
+/// reduced motion.
+pub fn fx(target: &Target, id: &str, elapsed: Duration, stage: Option<&Stage>) -> Option<Fx> {
     let (row, avatar) = (target.row == id, target.avatar == id);
     ((row || avatar) && !over(elapsed)).then(|| Fx {
         row,
         avatar,
-        pulse: (!reduced).then(|| pulse(elapsed)),
+        stage: stage.cloned(),
+        settling: false,
     })
 }
 
@@ -90,46 +142,36 @@ pub fn over(elapsed: Duration) -> bool {
     elapsed.as_millis() as u64 >= ATTRACT_MS
 }
 
-/// How far into the current pulse `elapsed` is.
-pub fn pulse(elapsed: Duration) -> f32 {
-    let cycle = (ATTRACT_MS / PULSES) as f32;
-    (elapsed.as_millis() as f32 % cycle) / cycle
+/// Seconds into the effect.
+pub fn seconds(elapsed: Duration) -> f32 {
+    elapsed.as_secs_f32()
 }
 
-/// The ring around the avatar spreads and fades: `(spread in px, opacity)`.
-pub fn ring(pulse: f32) -> (f32, f32) {
-    let t = (pulse / 0.7).min(1.);
-    (10. * t, 1. - t)
+/// Fades the whole effect in over its first 100 ms and out over its last
+/// 350 ms, so nothing pops.
+pub fn envelope(t: f32) -> f32 {
+    let end = ATTRACT_MS as f32 / 1000.;
+    (t / 0.1).clamp(0., 1.) * ((end - t) / 0.35).clamp(0., 1.)
 }
 
-/// The twinkles around the avatar: `(opacity, scale)`.
-pub fn twinkle(pulse: f32) -> (f32, f32) {
-    let opacity = if pulse < 0.3 {
-        pulse / 0.3
-    } else if pulse < 0.7 {
-        1. - (pulse - 0.3) / 0.4
-    } else {
-        0.
-    };
-    (opacity, 0.6 + 0.55 * (pulse / 0.7).min(1.))
-}
-
-/// The shine across the row: where its centre is, as a share of the row's
-/// width (it enters from the left and leaves at the right), and its opacity.
-pub fn shine(pulse: f32) -> (f32, f32) {
-    let sweep = (pulse / 0.8).min(1.);
-    let opacity = if pulse < 0.8 {
-        1.
-    } else {
-        1. - (pulse - 0.8) / 0.2
-    };
-    (-0.3 + 1.6 * sweep, opacity)
+/// A number from 0 to 1 for particle `n` of stream `salt`: the same every
+/// frame, so particles keep no state and a frame never depends on the one
+/// before.
+pub fn noise(n: u32, salt: u32) -> f32 {
+    let mut x = n.wrapping_mul(0x9E37_79B9) ^ salt.wrapping_mul(0x85EB_CA6B);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x2C1B_3C6D);
+    x ^= x >> 12;
+    x = x.wrapping_mul(0x297A_2D39);
+    x ^= x >> 15;
+    (x & 0xFFFF) as f32 / 65535.
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::timeline::rows::MessageRow;
+    use gpui_kit::px;
     use std::rc::Rc;
 
     fn row(id: &str, sender: &str, header: bool) -> Row {
@@ -172,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn the_shine_is_on_the_message_and_the_sparkle_on_the_head_of_its_group() {
+    fn the_comet_laps_the_message_and_lands_on_the_head_of_its_group() {
         let rows = vec![
             Row::Loading,
             row("a", "m-bob", true),
@@ -205,7 +247,8 @@ mod tests {
             row: "c".into(),
             avatar: "a".into(),
         };
-        let on = |id: &str, at: u64| fx(&target, id, ms(at), false);
+        let stage = Stage::default();
+        let on = |id: &str, at: u64| fx(&target, id, ms(at), Some(&stage));
         assert_eq!(on("b", 0), None);
         let (row, avatar) = (on("c", 10).unwrap(), on("a", 10).unwrap());
         assert!(row.row && !row.avatar && avatar.avatar && !avatar.row);
@@ -215,40 +258,54 @@ mod tests {
     }
 
     #[test]
-    fn reduced_motion_keeps_the_marks_and_drops_the_pulses() {
+    fn reduced_motion_keeps_the_marks_and_has_no_stage() {
         let target = Target {
             row: "a".into(),
             avatar: "a".into(),
         };
-        let still = fx(&target, "a", ms(500), true).unwrap();
-        assert!(still.row && still.avatar && still.pulse.is_none());
-        assert!(fx(&target, "a", ms(500), false).unwrap().pulse.is_some());
-        assert_eq!(fx(&target, "a", ms(3000), true), None);
+        let still = fx(&target, "a", ms(500), None).unwrap();
+        assert!(still.row && still.avatar && still.stage.is_none());
+        assert!(
+            fx(&target, "a", ms(500), Some(&Stage::default()))
+                .unwrap()
+                .stage
+                .is_some()
+        );
+        assert_eq!(fx(&target, "a", ms(3000), None), None);
     }
 
     #[test]
-    fn three_pulses_make_the_effect() {
-        assert_eq!(pulse(ms(0)), 0.);
-        assert!((pulse(ms(500)) - 0.5).abs() < 1e-6);
-        assert!(pulse(ms(1000)) < 1e-6, "the second pulse starts");
-        assert!((pulse(ms(2500)) - 0.5).abs() < 1e-6);
+    fn the_stage_holds_one_frame() {
+        let stage = Stage::default();
+        let at = Bounds::new(
+            gpui_kit::point(px(1.), px(2.)),
+            gpui_kit::size(px(3.), px(4.)),
+        );
+        stage.row("a", at);
+        stage.avatar("b", at);
+        let places = stage.take();
+        assert_eq!((places.rows["a"], places.avatars["b"]), (at, at));
+        assert!(stage.take().rows.is_empty(), "the next frame starts empty");
+        assert_eq!(stage.clone(), stage);
+        assert_ne!(Stage::default(), stage);
     }
 
     #[test]
-    fn each_part_follows_the_webs_keyframes() {
-        // The ring starts solid and gone by 70 %.
-        assert_eq!(ring(0.), (0., 1.));
-        assert_eq!(ring(0.7), (10., 0.));
-        assert_eq!(ring(0.9), (10., 0.));
-        // The twinkle peaks at 30 % and is gone by 70 %.
-        assert_eq!(twinkle(0.).0, 0.);
-        assert!((twinkle(0.3).0 - 1.).abs() < 1e-6);
-        assert!(twinkle(0.7).0.abs() < 1e-6);
-        assert!((twinkle(0.).1 - 0.6).abs() < 1e-6 && (twinkle(0.7).1 - 1.15).abs() < 1e-6);
-        // The shine crosses the row by 80 %, then fades.
-        assert_eq!(shine(0.), (-0.3, 1.));
-        let (centre, opacity) = shine(0.8);
-        assert!((centre - 1.3).abs() < 1e-6 && opacity == 1.);
-        assert!(shine(0.99).1 < 0.1);
+    fn it_fades_in_and_out() {
+        assert_eq!(envelope(0.), 0.);
+        assert!((envelope(0.05) - 0.5).abs() < 1e-6);
+        assert_eq!(envelope(1.5), 1.);
+        assert!(envelope(2.9) < 1. && envelope(2.9) > 0.);
+        assert_eq!(envelope(3.), 0.);
+    }
+
+    #[test]
+    fn noise_is_the_same_every_frame_and_spread() {
+        assert_eq!(noise(7, 3), noise(7, 3));
+        let all: Vec<f32> = (0..1000).map(|n| noise(n, 9)).collect();
+        assert!(all.iter().all(|v| (0. ..=1.).contains(v)));
+        let mean = all.iter().sum::<f32>() / all.len() as f32;
+        assert!((mean - 0.5).abs() < 0.05, "mean {mean}");
+        assert!(all.iter().any(|v| *v < 0.1) && all.iter().any(|v| *v > 0.9));
     }
 }
