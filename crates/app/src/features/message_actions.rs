@@ -437,7 +437,7 @@ pub fn start_edit(conversation: &str, message: &str, window: &mut Window, cx: &m
         let Some(m) = w.message(conversation, message) else {
             return;
         };
-        format::parse(&m.text).text
+        format::markdown::irc_to_markdown(&m.text)
     };
     let draft = match mode(conversation, cx) {
         Some(Mode::Edit { draft, .. }) => draft,

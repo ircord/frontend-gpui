@@ -6,6 +6,10 @@
 
 - Channel activity also covers operator, half-operator, voice and other status changes handed to people: Hide drops them, Fold folds them into the run of joins and parts ("2 status changes"), Show lists them. Channel-wide modes and bans stay visible, as in the web client.
 
+### New
+
+- Messages show Markdown tables as a grid, headings, horizontal rules and task-list boxes, as the web client does; plain IRC clients still see the Markdown text. Editing a message gives back the Markdown you typed.
+
 ### Fixed
 
 - Text pasted on Windows sends again instead of failing with "invalid message (maximum 4000 characters / 4096 UTF-8 bytes)": its line breaks go out as the server expects, and a long multi-line paste goes out as one message the server splits within the network's limits, as in the web client.
@@ -35,6 +39,7 @@
 - Joins after a reconnect fold into one line again instead of showing every person twice, and the timeline looks like the web client's: a "Today" pill between days, a channel's name and topic at the start of its history, and mentions marked in amber.
 - A jump to a message puts it in the middle of the timeline, and "Jump to present" glides back to the newest message instead of jumping, as the web client does (it jumps when reduced motion is on).
 - Exported themes say they were made with IRCord GPUI, not IRCord desktop.
+
 
 ### New
 

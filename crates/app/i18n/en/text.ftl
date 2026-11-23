@@ -16,3 +16,6 @@ text-code = Code
 text-code-language = { $language } code
 text-code-copy = Copy code
 text-code-copied = Code copied
+text-table = Table, { $columns } columns, { $rows } rows
+text-task-done = Done
+text-task-todo = To do
