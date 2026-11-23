@@ -476,7 +476,11 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                     ),
                     None => ui::avatar::avatar(&m.sender, None, px(avatar), theme),
                 };
-                person(face, format!("sender-avatar-{}", m.id), m.sender.clone())
+                let face = person(face, format!("sender-avatar-{}", m.id), m.sender.clone());
+                match view.attract.filter(|fx| fx.avatar) {
+                    Some(fx) => super::attract::avatar(face, fx, avatar, &m.id, theme),
+                    None => face,
+                }
             } else {
                 // Grouped rows keep the text column, with no time.
                 div().w(px(avatar)).flex_none().into_any_element()
@@ -495,6 +499,9 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                 .child(gutter)
                 .child(column);
         }
+    }
+    if let Some(fx) = view.attract.filter(|fx| fx.row) {
+        frame = frame.child(super::attract::row(fx, &m.id, theme));
     }
     if view.hovered || super::menu_open(&view.ctx, cx) {
         frame = frame.child(toolbar(&view.ctx, theme, window, cx));
