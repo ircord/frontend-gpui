@@ -101,7 +101,22 @@ fn the_command_is_sent_and_the_event_plays_on_the_message_and_its_groups_avatar(
     // The server answers with the event; messages 1 and 2 are one group.
     attract_event(&f, "2", "m-bob");
     wait_for(&f, cx, "attract-row-2", true);
-    assert!(drawn(&f, cx, "attract-shine-2"), "the shine moves");
+    // The shine travels: it is further along 400 ms later.
+    let shine_x = |f: &Fixture, cx: &mut TestAppContext| {
+        cx.run_until_parked();
+        cx.update_window(f.window, |_, window, cx| {
+            window.render_frame(cx);
+            f32::from(window.find("attract-shine-2").bounds().origin.x)
+        })
+        .unwrap()
+    };
+    let before = shine_x(&f, cx);
+    std::thread::sleep(Duration::from_millis(400));
+    let after = shine_x(&f, cx);
+    assert!(
+        after > before + 100.,
+        "the shine moved from {before} to {after}"
+    );
     assert!(
         drawn(&f, cx, "attract-avatar-1"),
         "the group's head sparkles"
@@ -128,8 +143,14 @@ fn someone_elses_attract_for_a_message_that_is_not_loaded_picks_their_newest(
     // A person with no message here makes nothing play.
     wait_for(&f, cx, "attract-row-2", false);
     attract_event(&f, "not-loaded", "m-eve");
-    cx.run_until_parked();
-    std::thread::sleep(Duration::from_millis(200));
+    crate::fixture::wait(cx, "the attract is stored", |cx| {
+        f.session.read(cx).client().is_some_and(|c| {
+            c.read()
+                .reading
+                .attract("c-general")
+                .is_some_and(|a| a.member_id == "m-eve")
+        })
+    });
     assert!(!drawn(&f, cx, "attract-row-1"));
     assert!(!drawn(&f, cx, "attract-row-2"));
 }

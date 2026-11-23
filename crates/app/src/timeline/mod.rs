@@ -34,7 +34,7 @@ use ircord_client::api::ApiError;
 use ircord_client::client::PAGE_SIZE;
 use ircord_client::contract::Message;
 use ircord_client::store::timeline::{AROUND_SIZE, NEWER_SIZE, TOPIC};
-use ircord_client::store::{Changes, SendState, Touched, Workspace, people, topic};
+use ircord_client::store::{Changes, SendState, Workspace, people, topic};
 
 use crate::message::{self, MessageView};
 use crate::registry::{self, ConversationCtx, KeyDefault, MenuItem, MessageCtx};
@@ -646,13 +646,9 @@ impl TimelineView {
                         // rows do not change.
                         cx.notify();
                     }
-                    let attracted =
-                        open.as_ref()
-                            .is_some_and(|id| match changes.topics.get(topic::ATTRACT) {
-                                Some(Touched::All) => true,
-                                Some(Touched::Ids(ids)) => ids.contains(id),
-                                None => false,
-                            });
+                    let attracted = open
+                        .as_ref()
+                        .is_some_and(|id| changes.touches_id(topic::ATTRACT, id));
                     if attracted {
                         this.start_attract(cx);
                     }

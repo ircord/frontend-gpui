@@ -43,7 +43,6 @@ pub struct State {
     pub focus_seq: u64,
     /// Conversation → the message the last `attract` pointed at.
     attracts: HashMap<String, Attract>,
-    attract_seq: u64,
 }
 
 /// What an `attract` event pointed at: the message to make sparkle, and
@@ -52,8 +51,6 @@ pub struct State {
 pub struct Attract {
     pub message_id: String,
     pub member_id: String,
-    /// Counts events, so a second attract while one plays can be told apart.
-    pub seq: u64,
 }
 
 impl State {
@@ -76,14 +73,11 @@ enum Line {
 pub(super) fn apply(w: &mut Workspace, event: &ServerEvent, _now_ms: i64) -> Changes {
     let event = match event {
         ServerEvent::Attract(a) => {
-            w.reading.attract_seq += 1;
-            let seq = w.reading.attract_seq;
             w.reading.attracts.insert(
                 a.conversation_id.clone(),
                 Attract {
                     message_id: a.message_id.clone(),
                     member_id: a.member_id.clone(),
-                    seq,
                 },
             );
             return Changes::default();
@@ -570,7 +564,6 @@ mod tests {
         attract(&mut w, "m2");
         let second = w.reading.attract("c-a").unwrap();
         assert_eq!(second.message_id, "m2");
-        assert!(second.seq > first.seq);
         assert!(w.reading.attract("c-b").is_none());
     }
 
