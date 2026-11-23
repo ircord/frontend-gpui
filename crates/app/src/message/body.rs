@@ -21,12 +21,13 @@ use std::rc::Rc;
 
 use gpui_kit::base::{TextSelectionHandle, TextSelectionRegistration, TextSelectionRun};
 use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::ConversationKind;
 use ircord_client::format::blocks::{Align, Block, List, Mapped, Table, message_blocks};
 use ircord_client::format::highlight::{Kind, highlight};
-use ircord_client::format::inline::{Token, tokens};
+use ircord_client::format::inline::{Masked, Token, masked_links, tokens};
 use ircord_client::format::links::{MessageLink, parse_message_link};
 use ircord_client::format::mentions::{fold, group_mention};
 use ircord_client::format::{Color as IrcColor, Formatted};
@@ -209,6 +210,8 @@ struct Piece {
     action: Option<Action>,
     /// Drawn over the piece's place (an emoji picture).
     element: Option<ElementFn>,
+    /// The address a masked link opens, shown on hover instead of the label.
+    address: Option<SharedString>,
 }
 
 struct Body<'a> {
@@ -534,7 +537,11 @@ impl Body<'_> {
         self.paragraphs += 1;
         let id = format!("text-{}-{n}", self.m.id);
         let theme = self.theme;
-        let f = text.formatted(&self.m.body);
+        // `[text](url)` shows its words; the rest of the paragraph is
+        // placed through the text without its brackets and addresses.
+        let masked = masked_for(&id, text, &self.m.body, window, cx);
+        let text = &masked.text;
+        let f = masked.formatted;
         let mut spans = highlights_for(&f, theme);
         spans.extend(
             self.extra
@@ -546,6 +553,25 @@ impl Body<'_> {
         let mut replace: Vec<(Range<usize>, String)> = Vec::new();
         for (range, token) in tokens(&f) {
             match token {
+                Token::Link(url) if masked.masked.contains(&range) => {
+                    // The words stay; the tooltip and the name give the address.
+                    let label = t!(
+                        "text-open-masked-link",
+                        text = f.text[range.clone()].to_string(),
+                        url = url.clone()
+                    );
+                    pieces.push(Piece {
+                        range,
+                        background: None,
+                        label: label.into(),
+                        address: Some(url.clone().into()),
+                        action: Some(match self.env.message_link(&url) {
+                            Some(link) => Action::Message(link),
+                            None => Action::Url(url),
+                        }),
+                        element: None,
+                    });
+                }
                 Token::Link(url) => {
                     if let Some(link) = self.env.message_link(&url) {
                         let shown = match self.env.place(&link, cx) {
@@ -560,6 +586,7 @@ impl Body<'_> {
                             label: label.into(),
                             action: Some(Action::Message(link)),
                             element: None,
+                            address: None,
                         });
                     } else {
                         let irc = url.to_ascii_lowercase().starts_with("irc");
@@ -573,6 +600,7 @@ impl Body<'_> {
                                 Action::Url(url)
                             }),
                             element: None,
+                            address: None,
                         });
                     }
                 }
@@ -594,6 +622,7 @@ impl Body<'_> {
                         label: t!("text-mention", name = nick).into(),
                         action: None,
                         element: None,
+                        address: None,
                     });
                 }
                 Token::Channel(name) => {
@@ -617,6 +646,7 @@ impl Body<'_> {
                         },
                         action: Some(Action::Channel(name)),
                         element: None,
+                        address: None,
                     });
                 }
             }
@@ -640,6 +670,7 @@ impl Body<'_> {
                 background: None,
                 action: None,
                 element: Some(draw.clone()),
+                address: None,
             });
         }
         replace.sort_by_key(|(r, _)| r.start);
@@ -760,7 +791,12 @@ impl Body<'_> {
                         Role::Button
                     })
                     .cursor_pointer()
-                    .tooltip(ui::tooltip::text(piece.label.clone()))
+                    .when_some(piece.address.clone(), |d, address| {
+                        d.tooltip(address_tooltip(address))
+                    })
+                    .when(piece.address.is_none(), |d| {
+                        d.tooltip(ui::tooltip::text(piece.label.clone()))
+                    })
                     .on_click(move |_, window, cx| {
                         cx.stop_propagation();
                         run(&action, &session, &network, window, cx);
@@ -792,6 +828,32 @@ fn run(
     }
 }
 
+/// A paragraph's masked links, found once and kept under the paragraph's ID
+/// until its text or the message changes.
+fn masked_for(
+    id: &str,
+    text: &Mapped,
+    source: &Formatted,
+    window: &mut Window,
+    cx: &mut App,
+) -> Masked {
+    let state = window.use_keyed_state(
+        ElementId::Name(format!("{id}-masked").into()),
+        cx,
+        |_, _| None::<(Mapped, Formatted, Masked)>,
+    );
+    if let Some((t, s, m)) = state.read(cx)
+        && t == text
+        && s == source
+    {
+        return m.clone();
+    }
+    let masked = masked_links(text, source);
+    let kept = (text.clone(), source.clone(), masked.clone());
+    state.update(cx, |state, _| *state = Some(kept));
+    masked
+}
+
 /// The places a paragraph's pills landed in the last frame, kept between
 /// frames under the paragraph's ID.
 fn places_for(id: &str, window: &mut Window, cx: &mut App) -> Places {
@@ -801,6 +863,22 @@ fn places_for(id: &str, window: &mut Window, cx: &mut App) -> Places {
         |_, _| Places::default(),
     );
     state.read(cx).clone()
+}
+
+/// A masked link's tooltip: the address it opens, named by it so a test
+/// finds it.
+fn address_tooltip(address: SharedString) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    move |window, cx| {
+        let address = address.clone();
+        Tooltip::element(move |_, _| {
+            div()
+                .id("link-address")
+                .test_support()
+                .aria_label(address.clone())
+                .child(address.clone())
+        })
+        .build(window, cx)
+    }
 }
 
 fn pill_style(color: Hsla) -> HighlightStyle {
