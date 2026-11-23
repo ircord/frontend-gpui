@@ -24,7 +24,7 @@ use gpui_kit::component::ActiveTheme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::ConversationKind;
-use ircord_client::format::blocks::{Block, List, Mapped, message_blocks};
+use ircord_client::format::blocks::{Align, Block, List, Mapped, Table, message_blocks};
 use ircord_client::format::highlight::{Kind, highlight};
 use ircord_client::format::inline::{Token, tokens};
 use ircord_client::format::links::{MessageLink, parse_message_link};
@@ -42,6 +42,7 @@ pub fn render(
     ctx: &MessageCtx,
     theme: &Theme,
     inline: &[InlineRenderer],
+    size: f32,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -76,6 +77,10 @@ pub fn render(
         paragraphs: 0,
         codes: 0,
         lists: 0,
+        tables: 0,
+        headings: 0,
+        rules: 0,
+        size,
         mono: cx.theme().mono_font_family.clone(),
     };
     let blocks = message_blocks(&Mapped::new(&m.body.text), m.action);
@@ -218,6 +223,11 @@ struct Body<'a> {
     paragraphs: usize,
     codes: usize,
     lists: usize,
+    tables: usize,
+    headings: usize,
+    rules: usize,
+    /// The message text size in pixels, which headings scale.
+    size: f32,
     mono: SharedString,
 }
 
@@ -248,7 +258,122 @@ impl Body<'_> {
                 quote.into_any_element()
             }
             Block::List(list) => self.list(list, 0, window, cx),
+            Block::Table(table) => self.table(table, window, cx),
+            Block::Heading { level, text } => self.heading(*level, text, window, cx),
+            Block::Rule => {
+                let n = self.rules;
+                self.rules += 1;
+                div()
+                    .id(ElementId::Name(format!("rule-{}-{n}", self.m.id).into()))
+                    .test_support()
+                    .h(px(1.))
+                    .my_1()
+                    .bg(self.theme.border)
+                    .into_any_element()
+            }
         }
+    }
+
+    /// A heading: the message size times 1.5, 1.25 and 1.1 for levels 1 to 3,
+    /// and the message size in bold for 4 to 6.
+    fn heading(
+        &mut self,
+        level: u8,
+        text: &Mapped,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let n = self.headings;
+        self.headings += 1;
+        let scale = match level {
+            1 => 1.5,
+            2 => 1.25,
+            3 => 1.1,
+            _ => 1.,
+        };
+        div()
+            .id(ElementId::Name(format!("heading-{}-{n}", self.m.id).into()))
+            .test_support()
+            .role(Role::Heading)
+            .min_w_0()
+            .mt_1()
+            .text_size(px(self.size * scale))
+            .font_weight(FontWeight::BOLD)
+            .child(self.paragraph(text, false, false, window, cx))
+            .into_any_element()
+    }
+
+    /// A pipe table as a grid: each column as wide as its widest cell, and
+    /// able to shrink so a long cell wraps. A grid's cells are its direct
+    /// children, so a screen reader meets the table, then its cells, with no
+    /// row between.
+    fn table(&mut self, table: &Table, window: &mut Window, cx: &mut App) -> AnyElement {
+        let n = self.tables;
+        self.tables += 1;
+        let id = format!("table-{}-{n}", self.m.id);
+        let theme = self.theme;
+        let columns = table.align.len();
+        let rows = table.rows.len() + 1;
+        let columns_label = match columns {
+            1 => t!("text-table-column").to_string(),
+            n => t!("text-table-columns", count = n),
+        };
+        let rows_label = match table.rows.len() {
+            1 => t!("text-table-row").to_string(),
+            n => t!("text-table-rows", count = n),
+        };
+        let mut grid = div()
+            .id(ElementId::Name(id.clone().into()))
+            .test_support()
+            .role(Role::Table)
+            .aria_label(t!("text-table", columns = columns_label, rows = rows_label))
+            .grid()
+            .grid_cols_max_content(columns as u16)
+            .min_w_0()
+            .rounded_md()
+            .border_1()
+            .border_color(theme.border)
+            .overflow_hidden();
+        for (r, row) in std::iter::once(&table.header)
+            .chain(&table.rows)
+            .enumerate()
+        {
+            for (c, cell) in row.iter().enumerate() {
+                let mut d = div()
+                    .id(ElementId::Name(format!("{id}-{r}-{c}").into()))
+                    .test_support()
+                    .role(if r == 0 {
+                        Role::ColumnHeader
+                    } else {
+                        Role::Cell
+                    })
+                    .min_w_0()
+                    .px_2()
+                    .py_1()
+                    .border_color(theme.border);
+                if r + 1 < rows {
+                    d = d.border_b_1();
+                }
+                if c + 1 < columns {
+                    d = d.border_r_1();
+                }
+                d = match table.align[c] {
+                    Align::Left => d,
+                    Align::Center => d.text_center(),
+                    Align::Right => d.text_right(),
+                };
+                if r == 0 {
+                    d = d.bg(theme.code).font_weight(FontWeight::BOLD);
+                }
+                grid = grid.child(d.child(self.paragraph(cell, false, false, window, cx)));
+            }
+        }
+        div()
+            .flex()
+            .max_w_full()
+            .my_0p5()
+            .child(grid)
+            .into_any_element()
     }
 
     fn list(&mut self, list: &List, depth: usize, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -267,6 +392,39 @@ impl Body<'_> {
             } else {
                 ["•", "◦", "▪"][depth % 3].to_string()
             };
+            // A task's box is decoration that names its state; it is no
+            // checkbox, so the keyboard has nothing to reach and the item
+            // still reads as its own text.
+            let marker_cell = match item.checked {
+                Some(done) => div().flex_none().min_w(px(18.)).flex().justify_end().child(
+                    div()
+                        .id(ElementId::Name(format!("{list_id}-{i}-box").into()))
+                        .test_support()
+                        .role(Role::Image)
+                        .aria_label(if done {
+                            t!("text-task-done")
+                        } else {
+                            t!("text-task-todo")
+                        })
+                        .size(px(14.))
+                        .mt(px(2.))
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(self.theme.control_border)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_xs()
+                        .text_color(self.theme.accent)
+                        .when(done, |b| b.child("✓")),
+                ),
+                None => div()
+                    .flex_none()
+                    .min_w(px(18.))
+                    .text_right()
+                    .text_color(self.theme.muted)
+                    .child(marker),
+            };
             let mut content = div()
                 .flex_1()
                 .min_w_0()
@@ -284,14 +442,7 @@ impl Body<'_> {
                     .role(Role::ListItem)
                     .flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .flex_none()
-                            .min_w(px(18.))
-                            .text_right()
-                            .text_color(self.theme.muted)
-                            .child(marker),
-                    )
+                    .child(marker_cell)
                     .child(content),
             );
         }

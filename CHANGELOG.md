@@ -6,6 +6,10 @@
 
 - Channel activity also covers operator, half-operator, voice and other status changes handed to people: Hide drops them, Fold folds them into the run of joins and parts ("2 status changes"), Show lists them. Channel-wide modes and bans stay visible, as in the web client.
 
+### New
+
+- Messages show Markdown tables as a grid, headings, horizontal rules and task-list boxes, as the web client does; plain IRC clients still see the Markdown text. Editing a message keeps its bold, italic and other formatting as Markdown instead of dropping it.
+
 ### Fixed
 
 - Text pasted on Windows sends again instead of failing with "invalid message (maximum 4000 characters / 4096 UTF-8 bytes)": its line breaks go out as the server expects, and a long multi-line paste goes out as one message the server splits within the network's limits, as in the web client.

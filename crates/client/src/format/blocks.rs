@@ -1,8 +1,10 @@
-//! The blocks a message body draws as: fenced code, `>` quotes, Markdown
-//! lists and the text between. A port of the web client's
-//! `shared/utils/blocks.ts`, `quotes.ts`, `lists.ts` and `splitCodeBlocks`.
+//! The blocks a message body draws as: fenced code, `>` quotes, tables,
+//! headings, rules, Markdown lists and the text between. A port of the web
+//! client's `shared/utils/blocks.ts`, `quotes.ts`, `lists.ts` and
+//! `splitCodeBlocks`; `testdata/markdown-blocks.json` is the cases both
+//! clients share.
 //!
-//! Quotes, lists and fences travel on IRC exactly as typed, so other clients
+//! Quotes, lists, tables and fences travel on IRC exactly as typed, so other clients
 //! read the plain markers and every IRCord view draws them from the same
 //! text. The app splits a message's text with formatting codes already
 //! removed; each piece of text keeps, byte by byte, where it came from
@@ -84,6 +86,12 @@ impl Mapped {
     fn trim_start(&self) -> Mapped {
         let trimmed = self.text.trim_start();
         self.from(self.text.len() - trimmed.len())
+    }
+
+    fn trim(&self) -> Mapped {
+        let start = self.text.len() - self.text.trim_start().len();
+        let end = self.text.trim_end().len().max(start);
+        self.slice(start..end)
     }
 
     /// Where the byte range `source` of the source text falls in this text:
@@ -356,6 +364,9 @@ pub const MAX_LIST_DEPTH: usize = 5;
 pub struct ListItem {
     /// The item's text after its marker; continuation lines join with a break.
     pub text: Mapped,
+    /// The box of a task item: `Some(true)` for `[x]`, `Some(false)` for `[ ]`.
+    /// The text starts after the box.
+    pub checked: Option<bool>,
     /// Lists indented under this item.
     pub children: Vec<List>,
 }
@@ -420,6 +431,29 @@ fn item_line(line: &str) -> Option<ItemLine> {
         number,
         text_at: i,
     })
+}
+
+/// `^\[( |x|X)\][ \t]+(?=\S)`: a task item's box and the text after it.
+fn task_box(text: Mapped) -> (Option<bool>, Mapped) {
+    let b = text.text.as_bytes();
+    let checked = match b {
+        [b'[', b' ', b']', ..] => false,
+        [b'[', b'x' | b'X', b']', ..] => true,
+        _ => return (None, text),
+    };
+    let spaces = b[3..]
+        .iter()
+        .take_while(|c| **c == b' ' || **c == b'\t')
+        .count();
+    if spaces == 0
+        || text.text[3 + spaces..]
+            .chars()
+            .next()
+            .is_none_or(char::is_whitespace)
+    {
+        return (None, text);
+    }
+    (Some(checked), text.from(3 + spaces))
 }
 
 fn indent_of(space: &str) -> usize {
@@ -529,8 +563,11 @@ pub fn split_lists(text: &Mapped) -> Vec<ListBlock> {
                         r
                     }
                 };
+                let text = line.slice(item.text_at..c.len());
+                let (checked, text) = task_box(text);
                 r.get(&mut blocks).items.push(ListItem {
-                    text: line.slice(item.text_at..c.len()),
+                    text,
+                    checked,
                     children: Vec::new(),
                 });
             }
@@ -567,9 +604,20 @@ impl ListRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
     Text(Mapped),
-    Code { code: Mapped, lang: Option<String> },
+    Code {
+        code: Mapped,
+        lang: Option<String>,
+    },
     Quote(Vec<Block>),
     List(List),
+    Table(Table),
+    /// `#` to `######` and a line of text; `level` is the number of `#`.
+    Heading {
+        level: u8,
+        text: Mapped,
+    },
+    /// Three or more `-`, `*` or `_` alone on a line.
+    Rule,
 }
 
 /// Splits a message body into blocks. Fenced code comes first, so nothing
@@ -623,14 +671,14 @@ fn blocks_with(text: &Mapped, quotes: bool, continues_line: bool) -> Vec<Block> 
             part = part.strip_suffix_newline();
         }
         if !quotes {
-            blocks.extend(list_blocks(&part));
+            blocks.extend(rich_blocks(&part));
             index += 1;
             continue;
         }
         let mut consumed_rest = false;
         for piece in split_quotes(&part) {
             match piece {
-                QuoteBlock::Text(t) => blocks.extend(list_blocks(&t)),
+                QuoteBlock::Text(t) => blocks.extend(rich_blocks(&t)),
                 QuoteBlock::Quote { text, rest } => {
                     let mut inner = text;
                     if rest && next_is_code {
@@ -666,6 +714,184 @@ fn list_blocks(text: &Mapped) -> Vec<Block> {
         .collect()
 }
 
+// ---- Tables, headings and rules ---------------------------------------------
+
+/// More columns than this is no table, so hostile input stays small.
+pub const MAX_TABLE_COLUMNS: usize = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+/// A pipe table: every row has one cell per column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Table {
+    pub align: Vec<Align>,
+    pub header: Vec<Mapped>,
+    pub rows: Vec<Vec<Mapped>>,
+}
+
+/// A row's cells: split at each `|` no backslash escapes, trimmed, the outer
+/// pipes dropped; `\|` is a literal pipe. A line without a `|` is no row.
+fn cells(line: &Mapped) -> Option<Vec<Mapped>> {
+    let s = content(line);
+    let trimmed = s.trim();
+    if !trimmed.contains('|') {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut a = s.len() - s.trim_start().len();
+    let mut b = a + trimmed.len();
+    if bytes[a] == b'|' {
+        a += 1;
+    }
+    if b > a && bytes[b - 1] == b'|' && !(b >= a + 2 && bytes[b - 2] == b'\\') {
+        b -= 1;
+    }
+    let cell = |from: usize, to: usize| {
+        let mut out = Mapped::default();
+        let mut start = from;
+        for i in from..to {
+            if bytes[i] == b'\\' && i + 1 < to && bytes[i + 1] == b'|' {
+                out.push(&line.slice(start..i));
+                start = i + 1;
+            }
+        }
+        out.push(&line.slice(start..to));
+        out.trim()
+    };
+    let mut out = Vec::new();
+    let mut start = a;
+    for i in a..b {
+        if bytes[i] == b'|' && !(i > a && bytes[i - 1] == b'\\') {
+            out.push(cell(start, i));
+            start = i + 1;
+        }
+    }
+    out.push(cell(start, b));
+    Some(out)
+}
+
+/// The columns' alignment when `line` is a table's delimiter row.
+fn delimiter(line: &Mapped) -> Option<Vec<Align>> {
+    cells(line)?
+        .iter()
+        .map(|cell| {
+            let c = cell.as_str();
+            let core = c.strip_prefix(':').unwrap_or(c);
+            let core = core.strip_suffix(':').unwrap_or(core);
+            if core.is_empty() || !core.bytes().all(|b| b == b'-') {
+                return None;
+            }
+            Some(match (c.starts_with(':'), c.ends_with(':')) {
+                (true, true) if c.len() > 1 => Align::Center,
+                (_, true) if c.len() > 1 => Align::Right,
+                _ => Align::Left,
+            })
+        })
+        .collect()
+}
+
+/// `^(#{1,6})[ \t]+(\S.*?)[ \t]*$`: the level and the text.
+fn heading(line: &Mapped) -> Option<(u8, Mapped)> {
+    let s = content(line);
+    let hashes = s.bytes().take_while(|b| *b == b'#').count();
+    if !(1..=6).contains(&hashes) {
+        return None;
+    }
+    let spaces = s.as_bytes()[hashes..]
+        .iter()
+        .take_while(|b| **b == b' ' || **b == b'\t')
+        .count();
+    let start = hashes + spaces;
+    if spaces == 0 || s[start..].chars().next().is_none_or(char::is_whitespace) {
+        return None;
+    }
+    let end = s.trim_end_matches([' ', '\t']).len();
+    Some((hashes as u8, line.slice(start..end)))
+}
+
+/// `^(?:-{3,}|\*{3,}|_{3,})[ \t]*$`
+fn is_rule(line: &Mapped) -> bool {
+    let s = content(line).trim_end_matches([' ', '\t']);
+    s.len() >= 3 && ['-', '*', '_'].iter().any(|c| s.chars().all(|x| x == *c))
+}
+
+/// Text outside code and quotes: tables first, then headings and rules, then
+/// lists. The blank lines beside a table, heading or rule are its margin and
+/// are dropped.
+fn rich_blocks(text: &Mapped) -> Vec<Block> {
+    let s = text.as_str();
+    if !(s.contains('|')
+        || s.contains('#')
+        || s.contains("---")
+        || s.contains("***")
+        || s.contains("___"))
+    {
+        return list_blocks(text);
+    }
+    let mut blocks = Vec::new();
+    let mut pending: Vec<Mapped> = Vec::new();
+    // A table, heading or rule was just added: the blank lines after it are its margin.
+    let mut after_block = false;
+    let flush = |blocks: &mut Vec<Block>, pending: &mut Vec<Mapped>, before_block: bool| {
+        if before_block {
+            while pending.last().is_some_and(|l| content(l).trim().is_empty()) {
+                pending.pop();
+            }
+        }
+        if !pending.is_empty() {
+            blocks.extend(list_blocks(&join(pending)));
+        }
+        pending.clear();
+    };
+    let lines = text.lines();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = &lines[i];
+        i += 1;
+        if after_block && content(line).trim().is_empty() {
+            continue;
+        }
+        let table = cells(line).and_then(|head| {
+            let align = delimiter(lines.get(i)?)?;
+            (head.len() == align.len() && head.len() <= MAX_TABLE_COLUMNS).then_some((head, align))
+        });
+        if let Some((header, align)) = table {
+            flush(&mut blocks, &mut pending, true);
+            after_block = true;
+            i += 1;
+            let mut rows = Vec::new();
+            while let Some(mut row) = lines.get(i).and_then(cells) {
+                row.resize(align.len(), Mapped::default());
+                rows.push(row);
+                i += 1;
+            }
+            blocks.push(Block::Table(Table {
+                align,
+                header,
+                rows,
+            }));
+        } else if let Some((level, text)) = heading(line) {
+            flush(&mut blocks, &mut pending, true);
+            after_block = true;
+            blocks.push(Block::Heading { level, text });
+        } else if is_rule(line) {
+            flush(&mut blocks, &mut pending, true);
+            after_block = true;
+            blocks.push(Block::Rule);
+        } else {
+            after_block = false;
+            pending.push(line.clone());
+        }
+    }
+    flush(&mut blocks, &mut pending, false);
+    blocks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -685,6 +911,9 @@ mod tests {
                     )
                 }
                 Block::Quote(inner) => format!("quote({})", texts(inner).join("|")),
+                Block::Table(t) => format!("table:{}", t.header.len()),
+                Block::Heading { level, text } => format!("h{level}:{}", text.text),
+                Block::Rule => "rule".to_string(),
                 Block::List(l) => format!(
                     "list{}{}:{}",
                     if l.ordered { "#" } else { "-" },
@@ -837,5 +1066,111 @@ mod tests {
                 .collect();
             assert_eq!(urls, case.urls, "{}", case.name);
         }
+    }
+
+    use serde_json::{Value, json};
+
+    fn list_json(list: &List) -> Value {
+        let items: Vec<Value> = list
+            .items
+            .iter()
+            .map(|item| {
+                let mut v = json!({
+                    "text": item.text.text,
+                    "children": item.children.iter().map(list_json).collect::<Vec<_>>(),
+                });
+                if let Some(checked) = item.checked {
+                    v["checked"] = json!(checked);
+                }
+                v
+            })
+            .collect();
+        json!({"kind": "list", "ordered": list.ordered, "start": list.start, "items": items})
+    }
+
+    fn block_json(block: &Block) -> Value {
+        let texts = |cells: &[Mapped]| cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>();
+        match block {
+            Block::Text(t) => json!({"kind": "text", "text": t.text}),
+            Block::Code { code, lang } => {
+                let mut v = json!({"kind": "code", "code": code.text});
+                if let Some(lang) = lang {
+                    v["lang"] = json!(lang);
+                }
+                v
+            }
+            Block::Quote(inner) => {
+                json!({"kind": "quote", "blocks": inner.iter().map(block_json).collect::<Vec<_>>()})
+            }
+            Block::List(l) => list_json(l),
+            Block::Table(t) => json!({
+                "kind": "table",
+                "align": t.align.iter().map(|a| match a {
+                    Align::Left => "left",
+                    Align::Center => "center",
+                    Align::Right => "right",
+                }).collect::<Vec<_>>(),
+                "header": texts(&t.header),
+                "rows": t.rows.iter().map(|r| texts(r)).collect::<Vec<_>>(),
+            }),
+            Block::Heading { level, text } => {
+                json!({"kind": "heading", "level": level, "text": text.text})
+            }
+            Block::Rule => json!({"kind": "rule"}),
+        }
+    }
+
+    /// The cases the web client's `blocks.ts` also passes.
+    #[test]
+    fn markdown_block_cases() {
+        let cases: Vec<Value> =
+            serde_json::from_str(include_str!("testdata/markdown-blocks.json")).unwrap();
+        assert_eq!(cases.len(), 36);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let f = super::super::parse(case["text"].as_str().unwrap());
+            let action = case["continuesLine"].as_bool().unwrap_or(false);
+            let got: Vec<Value> = message_blocks(&Mapped::new(&f.text), action)
+                .iter()
+                .map(block_json)
+                .collect();
+            assert_eq!(Value::Array(got), case["blocks"], "{name}");
+        }
+    }
+
+    #[test]
+    fn formatting_and_links_follow_into_cells() {
+        let f = super::super::parse(
+            "| \x02bold\x02 | https://x.test/a |\n|---|---|\n| a\\|b | \x1dit\x1d |",
+        );
+        let b = message_blocks(&Mapped::new(&f.text), false);
+        let Block::Table(t) = &b[0] else { panic!() };
+        let bold = t.header[0].formatted(&f);
+        assert_eq!(bold.text, "bold");
+        assert_eq!(bold.runs.len(), 1);
+        assert_eq!(bold.runs[0].0, 0..4);
+        let link = t.header[1].formatted(&f);
+        assert_eq!(link.links.len(), 1);
+        assert_eq!(link.links[0].0, 0..16);
+        // The escaped pipe: the cell holds `a|b` and its bytes come from the source.
+        assert_eq!(t.rows[0][0].text, "a|b");
+        let source = &f.text;
+        assert_eq!(&source[t.rows[0][0].at[0]..=t.rows[0][0].at[0]], "a");
+        assert_eq!(&source[t.rows[0][0].at[2]..=t.rows[0][0].at[2]], "b");
+        let it = t.rows[0][1].formatted(&f);
+        assert_eq!(it.runs[0].0, 0..2);
+    }
+
+    #[test]
+    fn heading_text_formats_in_place() {
+        let f = super::super::parse("## \x02Bold\x02 title");
+        let b = message_blocks(&Mapped::new(&f.text), false);
+        let Block::Heading { level, text } = &b[0] else {
+            panic!()
+        };
+        assert_eq!(*level, 2);
+        let h = text.formatted(&f);
+        assert_eq!(h.text, "Bold title");
+        assert_eq!(h.runs[0].0, 0..4);
     }
 }
