@@ -1545,6 +1545,29 @@ mod tests {
     }
 
     #[test]
+    fn one_status_change_folds_with_a_join_in_the_singular() {
+        let mut w = workspace();
+        load(
+            &mut w,
+            vec![
+                event(
+                    "j",
+                    "2026-11-20T12:00:00Z",
+                    "m-bob",
+                    MembershipEventType::Join,
+                ),
+                mode("o", "2026-11-20T12:00:30Z", "+o bob"),
+            ],
+            None,
+        );
+        let rows = build(&w, "c", Options::default());
+        let Some(Row::Fold(f)) = rows.iter().find(|r| matches!(r, Row::Fold(_))) else {
+            panic!("{rows:?}")
+        };
+        assert_eq!(f.summary, "bob joined · one status change");
+    }
+
+    #[test]
     fn people_reconnecting_and_renaming() {
         let mut w = workspace();
         let mut nick = event(

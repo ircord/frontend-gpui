@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### Changed
+### Improved
 
 - Channel activity also covers operator, half-operator, voice and other status changes handed to people: Hide drops them, Fold folds them into the run of joins and parts ("2 status changes"), Show lists them. Channel-wide modes and bans stay visible, as in the web client.
 
