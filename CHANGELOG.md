@@ -4,7 +4,7 @@
 
 ### New
 
-- A `mermaid` code block in a message draws as its diagram (flowchart, sequence, class, state, ER, gantt, pie, git graph, mind map, timeline, quadrant, XY chart and journey), drawn in the app without a browser or any network request, with Show source and Copy source. Other diagram types, and a diagram that cannot be read, show their source as code with a line saying why.
+- A `mermaid` code block in a message draws as its diagram (flowchart, sequence, class, state, ER, gantt, pie, git graph, mind map, timeline, quadrant, XY chart and journey), drawn in the app without a browser or any network request, with Show fullscreen (at full size, scrolling when larger than the window), Show source and Copy source. Other diagram types, and a diagram that cannot be read, show their source as code with a line saying why.
 
 ### Improved
 

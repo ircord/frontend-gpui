@@ -38,10 +38,12 @@ const FAMILIES: &[&str] = &[
 const DEFAULT_FAMILY: &str = "Inter";
 
 /// Pictures are dropped once together they hold more device pixels than this.
-const MAX_PIXELS: usize = 24_000_000;
-/// One picture holds at most this many device pixels; past it, it is drawn
-/// at a lower resolution.
+const MAX_PIXELS: usize = 40_000_000;
+/// One picture in a message holds at most this many device pixels; past
+/// it, it is drawn at a lower resolution.
 const MAX_PICTURE_PIXELS: f32 = 8_000_000.;
+/// The same for the fullscreen picture, which is drawn at natural size.
+const MAX_FULLSCREEN_PIXELS: f32 = 16_000_000.;
 /// Layouts kept; past it the cache starts again.
 const MAX_LAYOUTS: usize = 128;
 /// The picture's height inside the frame before it scrolls, as code does.
@@ -74,19 +76,26 @@ pub fn render(
         .is_some_and(|d| d.showing_source.contains(id));
     let picture = match (&laid, showing_source) {
         (Some(laid), false) if width.get() > 0. => {
-            Some(picture_for(key, laid, width.get(), window, cx))
+            let shown = fitted(laid, width.get());
+            Some(picture_for(
+                key,
+                laid,
+                shown,
+                MAX_PICTURE_PIXELS,
+                window,
+                cx,
+            ))
         }
         _ => None,
     };
-    Ok(frame(
-        id,
-        source,
-        theme,
-        mono,
+    let fullscreen = laid.map(|laid| (key, laid));
+    let shown = Shown {
         width,
         showing_source,
         picture,
-    ))
+        fullscreen,
+    };
+    Ok(frame(id, source, theme, mono, shown))
 }
 
 /// The theme's colours and font, as the layout takes them.
@@ -194,25 +203,32 @@ fn layout_for(key: u64, source: &str, look: &DiagramTheme, cx: &mut App) -> Layo
     Layout::Pending
 }
 
-fn picture_for(
-    key: u64,
-    laid: &Arc<Laid>,
-    available: f32,
-    window: &Window,
-    cx: &mut App,
-) -> Picture {
-    // The natural size, or the available width when that is narrower,
-    // rounded down so resizing the window by a pixel draws nothing new.
-    let shown = if laid.width <= available {
+/// The width a diagram is shown at in `available`: its natural width, or
+/// the available width when that is narrower, rounded down so resizing the
+/// window by a pixel draws nothing new.
+fn fitted(laid: &Laid, available: f32) -> f32 {
+    if laid.width <= available {
         laid.width
     } else {
         (available / 8.).floor().max(1.) * 8.
-    };
+    }
+}
+
+/// The picture shown `shown` pixels wide, drawn for the window's scale in
+/// at most `max_pixels` device pixels.
+fn picture_for(
+    key: u64,
+    laid: &Arc<Laid>,
+    shown: f32,
+    max_pixels: f32,
+    window: &Window,
+    cx: &mut App,
+) -> Picture {
     let height = laid.height * shown / laid.width;
     let mut scale = window.scale_factor();
     let device = shown * height * scale * scale;
-    if device > MAX_PICTURE_PIXELS {
-        scale *= (MAX_PICTURE_PIXELS / device).sqrt();
+    if device > max_pixels {
+        scale *= (max_pixels / device).sqrt();
     }
     let (w, h) = (
         (shown * scale).round().max(1.) as u32,
@@ -381,18 +397,26 @@ fn advance_em(data: &[u8], index: u32, text: &str) -> Option<f64> {
     Some(advance as f64 / f64::from(units))
 }
 
-/// The frame: the label and the two buttons over the picture, its source,
-/// or a line saying it is being drawn.
-fn frame(
-    id: &str,
-    source: &str,
-    theme: &Theme,
-    mono: SharedString,
+/// What one frame shows.
+struct Shown {
+    /// The width the picture may take, measured in the frame before.
     width: Rc<Cell<f32>>,
     showing_source: bool,
     picture: Option<Picture>,
-) -> AnyElement {
+    /// The laid-out diagram, once there is one to open fullscreen.
+    fullscreen: Option<(u64, Arc<Laid>)>,
+}
+
+/// The frame: the label and its buttons over the picture, its source, or a
+/// line saying it is being drawn.
+fn frame(id: &str, source: &str, theme: &Theme, mono: SharedString, shown: Shown) -> AnyElement {
     use gpui_kit::TestSupportExt;
+    let Shown {
+        width,
+        showing_source,
+        picture,
+        fullscreen,
+    } = shown;
     let copy = {
         let source = source.to_string();
         ui::icon::button(
@@ -427,6 +451,15 @@ fn frame(
             },
         )
     };
+    let fullscreen = fullscreen.map(|(key, laid)| {
+        ui::icon::button(
+            ElementId::Name(format!("{id}-fullscreen").into()),
+            ui::icon::IconName::Maximize,
+            t!("text-diagram-fullscreen"),
+            theme,
+            move |_, window, cx| open_fullscreen(key, laid.clone(), window, cx),
+        )
+    });
     let content: AnyElement = if showing_source {
         div()
             .id(ElementId::Name(format!("{id}-source").into()))
@@ -488,7 +521,7 @@ fn frame(
                 .pr_1()
                 .pt_0p5()
                 .child(div().text_xs().text_color(theme.faint).child("mermaid"))
-                .child(div().flex().child(toggle).child(copy)),
+                .child(div().flex().children(fullscreen).child(toggle).child(copy)),
         )
         .child(
             div()
@@ -500,5 +533,58 @@ fn frame(
                 .child(measure)
                 .child(content),
         )
+        .into_any_element()
+}
+
+/// The diagram at its natural size in a dialog filling the window, as the
+/// image viewer opens a picture: it scrolls both ways when it is larger,
+/// and Escape closes it. The picture is drawn for this size, not enlarged
+/// from the message's.
+fn open_fullscreen(key: u64, laid: Arc<Laid>, window: &mut Window, cx: &mut App) {
+    use gpui_kit::component::WindowExt;
+    let size = window.viewport_size();
+    let width = (size.width - px(64.)).max(px(320.));
+    window.open_dialog(cx, move |dialog, window, cx| {
+        dialog
+            .width(width)
+            .title(t!("text-diagram"))
+            .child(stage(key, &laid, window, cx))
+    });
+}
+
+fn stage(key: u64, laid: &Arc<Laid>, window: &mut Window, cx: &mut App) -> AnyElement {
+    use gpui_kit::TestSupportExt;
+    let theme = crate::theme::get(cx).clone();
+    let height = (window.viewport_size().height - px(220.)).max(px(200.));
+    let picture = match picture_for(key, laid, laid.width, MAX_FULLSCREEN_PIXELS, window, cx) {
+        Picture::Ready(image, size) => div()
+            .id("diagram-viewer-picture")
+            .test_support()
+            .role(Role::Image)
+            .aria_label(t!("text-diagram"))
+            .flex_none()
+            .w(size.width)
+            .h(size.height)
+            .child(img(ImageSource::Render(image)).w(size.width).h(size.height))
+            .into_any_element(),
+        Picture::Pending => div()
+            .m_auto()
+            .text_xs()
+            .text_color(theme.faint)
+            .child(t!("text-diagram-drawing"))
+            .into_any_element(),
+    };
+    let fits = px(laid.width) < window.viewport_size().width - px(112.) && px(laid.height) < height;
+    div()
+        .id("diagram-viewer-stage")
+        .test_support()
+        .h(height)
+        .w_full()
+        .rounded_md()
+        .bg(theme.code)
+        .overflow_scroll()
+        .flex()
+        .when(fits, |d| d.items_center().justify_center())
+        .child(picture)
         .into_any_element()
 }

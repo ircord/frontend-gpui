@@ -35,3 +35,4 @@ text-diagram-invalid = The diagram could not be read: { $error }
 text-diagram-too-long = The diagram is too long to draw.
 text-diagram-timeout = The diagram took too long to draw.
 text-diagram-failed = The diagram could not be drawn.
+text-diagram-fullscreen = Show fullscreen
