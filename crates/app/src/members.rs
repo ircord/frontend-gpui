@@ -161,6 +161,38 @@ impl MembersView {
     }
 }
 
+/// How a member's row looks beyond its text: the name's colour and the
+/// picture's frame.
+pub struct Look {
+    pub name: Hsla,
+    pub frame: Option<(people::AvatarFrame, Hsla)>,
+}
+
+/// The look of `m`'s row. The name takes the colour the timeline draws for
+/// them (their chosen colour, or the hashed one when coloured names are on),
+/// except that offline and ignored people are plain faint, as in the web's
+/// member list. A frame they picked is drawn in their accent or name colour
+/// as on their card; the web's list draws none (ircord/issues#234).
+pub fn look(
+    m: &ircord_client::contract::Member,
+    colored_names: bool,
+    ignored: bool,
+    theme: &Theme,
+) -> Look {
+    let name = if ignored || m.status == MemberStatus::Offline {
+        theme.faint
+    } else {
+        ui::avatar::name_color(m, colored_names, theme)
+            .map(theme::hex)
+            .unwrap_or(theme.text)
+    };
+    let frame = people::avatar_frame(m).map(|kind| {
+        let color = ui::avatar::tint(m, colored_names, theme).unwrap_or(theme.accent);
+        (kind, color)
+    });
+    Look { name, frame }
+}
+
 /// Whether the member list is hidden.
 pub fn hidden(session: &Session) -> bool {
     session.panel.as_deref() == Some(NO_PANEL)
@@ -318,6 +350,9 @@ fn member_line(frame: &Frame, line: &Line) -> AnyElement {
             let Some(m) = w.members.get(mid) else {
                 return div().into_any_element();
             };
+            // You are your profile on this network, as the timeline and the
+            // card draw you, not the account's roster copy.
+            let m = people::person(&w, mid, &frame.network).unwrap_or(m);
             // Your own record can still carry the backend's placeholder
             // nick; the network knows what you are called there.
             let name = if w.is_self(&m.id, &frame.network) {
@@ -352,14 +387,7 @@ fn member_line(frame: &Frame, line: &Line) -> AnyElement {
                 conversation: Some(frame.conversation.clone()),
             };
             let click = ctx.clone();
-            let faded = m.status == MemberStatus::Offline || ignored;
-            let name_color = if faded {
-                theme.faint
-            } else {
-                ui::avatar::name_color(m, frame.colored_names, theme)
-                    .map(theme::hex)
-                    .unwrap_or(theme.text)
-            };
+            let look = look(m, frame.colored_names, ignored, theme);
             let picture = ui::avatar::person(
                 ui::avatar::Person {
                     member: m,
@@ -371,6 +399,31 @@ fn member_line(frame: &Frame, line: &Line) -> AnyElement {
                 px(ui::avatar::SMALL),
                 theme,
             );
+            // The slot stays as wide as an unframed picture: the frame's band
+            // overflows it into the row's padding, as the web's does.
+            let band = px(5.);
+            let picture = match look.frame {
+                Some((kind, color)) => div()
+                    .relative()
+                    .size(px(ui::avatar::SMALL))
+                    .flex_none()
+                    .child(
+                        ui::avatar::framed(
+                            picture,
+                            Some(kind),
+                            color,
+                            theme.main.blend(theme.panel.opacity(0.45)),
+                            px(ui::avatar::SMALL),
+                            &format!("member-{}", m.id),
+                        )
+                        .test_support()
+                        .absolute()
+                        .top(-band)
+                        .left(-band),
+                    )
+                    .into_any_element(),
+                None => picture.into_any_element(),
+            };
             div()
                 .id(ElementId::Name(format!("member-{}", m.id).into()))
                 .test_support()
@@ -386,7 +439,12 @@ fn member_line(frame: &Frame, line: &Line) -> AnyElement {
                 .gap_2()
                 .cursor_pointer()
                 .hover(|d| d.bg(theme.hover))
-                .child(picture.when(m.status == MemberStatus::Offline, |d| d.opacity(0.45)))
+                .child(
+                    div()
+                        .flex_none()
+                        .child(picture)
+                        .when(m.status == MemberStatus::Offline, |d| d.opacity(0.45)),
+                )
                 .when(!prefix.is_empty(), |d| {
                     d.child(
                         div()
@@ -408,7 +466,7 @@ fn member_line(frame: &Frame, line: &Line) -> AnyElement {
                             div()
                                 .truncate()
                                 .text_sm()
-                                .text_color(name_color)
+                                .text_color(look.name)
                                 .when(ignored, |d| d.line_through())
                                 .child(name),
                         )

@@ -90,7 +90,9 @@ pub fn tint(m: &Member, colored_names: bool, theme: &Theme) -> Option<Hsla> {
 
 /// `picture` (a disc `size` across) in the frame `frame`, drawn in `color`
 /// as the web's `.avatar-frame-*` (`identity.css`): in a band 5 px wide
-/// around the picture, on `backdrop`. Without a frame only the band shows.
+/// around the picture. The two gradient frames hollow their band with
+/// `backdrop`; the others draw only their border. Without a frame only the
+/// band's room shows.
 pub fn framed(
     picture: impl IntoElement,
     frame: Option<people::AvatarFrame>,
@@ -108,8 +110,7 @@ pub fn framed(
         .rounded_full()
         .flex()
         .items_center()
-        .justify_center()
-        .bg(backdrop);
+        .justify_center();
     // The two gradients are a band of colour with the backdrop inside it.
     let band = |outer: Stateful<Div>, fill: Background, picture: AnyElement| {
         outer.bg(fill).child(
