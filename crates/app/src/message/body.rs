@@ -26,6 +26,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::ConversationKind;
 use ircord_client::format::blocks::{Align, Block, List, Mapped, Table, message_blocks};
+use ircord_client::format::diagram::is_diagram;
 use ircord_client::format::highlight::{Kind, highlight};
 use ircord_client::format::inline::{Masked, Token, masked_links, tokens};
 use ircord_client::format::links::{MessageLink, parse_message_link};
@@ -82,6 +83,7 @@ pub fn render(
         headings: 0,
         rules: 0,
         size,
+        diagrams: 0,
         mono: cx.theme().mono_font_family.clone(),
     };
     let blocks = message_blocks(&Mapped::new(&m.body.text), m.action);
@@ -231,6 +233,7 @@ struct Body<'a> {
     rules: usize,
     /// The message text size in pixels, which headings scale.
     size: f32,
+    diagrams: usize,
     mono: SharedString,
 }
 
@@ -245,6 +248,9 @@ impl Body<'_> {
     ) -> AnyElement {
         match block {
             Block::Text(text) => self.paragraph(text, first, last, window, cx),
+            Block::Code { code, lang } if is_diagram(lang.as_deref()) => {
+                self.diagram(&code.text, lang.as_deref(), window, cx)
+            }
             Block::Code { code, lang } => self.code(&code.text, lang.as_deref()),
             Block::Quote(inner) => {
                 let mut quote = div()
@@ -450,6 +456,35 @@ impl Body<'_> {
             );
         }
         column.into_any_element()
+    }
+
+    /// A `mermaid` fence: the picture, or the code and why it is not drawn.
+    fn diagram(
+        &mut self,
+        code: &str,
+        lang: Option<&str>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let id = format!("diagram-{}-{}", self.m.id, self.diagrams);
+        self.diagrams += 1;
+        match super::diagram::render(&id, code, self.theme, self.mono.clone(), window, cx) {
+            Ok(picture) => picture,
+            Err(why) => div()
+                .flex()
+                .flex_col()
+                .child(self.code(code, lang))
+                .child(
+                    div()
+                        .id(ElementId::Name(format!("{id}-note").into()))
+                        .test_support()
+                        .aria_label(why.clone())
+                        .text_xs()
+                        .text_color(self.theme.faint)
+                        .child(why),
+                )
+                .into_any_element(),
+        }
     }
 
     fn code(&mut self, code: &str, lang: Option<&str>) -> AnyElement {
