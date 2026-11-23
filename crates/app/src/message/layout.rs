@@ -477,7 +477,7 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                     None => ui::avatar::avatar(&m.sender, None, px(avatar), theme),
                 };
                 let face = person(face, format!("sender-avatar-{}", m.id), m.sender.clone());
-                match view.attract.filter(|fx| fx.avatar) {
+                match view.attract.clone().filter(|fx| fx.avatar) {
                     Some(fx) => super::attract::avatar(face, fx, avatar, &m.id, theme),
                     None => face,
                 }

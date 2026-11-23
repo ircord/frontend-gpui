@@ -15,6 +15,7 @@
 
 pub mod announce;
 pub mod attract;
+pub mod comet;
 pub mod export;
 mod glide;
 pub mod rows;
@@ -103,6 +104,15 @@ struct Reading {
 }
 
 impl Global for Reading {}
+
+/// The `/attract` comets the timeline on screen drew in its last frame,
+/// oldest first: whose rows they play on and how far into each they were.
+pub fn comets(cx: &App) -> Vec<(attract::Target, comet::Moment)> {
+    cx.try_global::<Reading>()
+        .and_then(|r| r.view.as_ref()?.upgrade())
+        .map(|view| view.read(cx).comets.clone())
+        .unwrap_or_default()
+}
 
 /// Rebuild the timeline's rows now, as after a change to how they look that
 /// no workspace change announces (an appearance kept on this device).
@@ -598,8 +608,15 @@ pub struct TimelineView {
     bodies: rows::Bodies,
     /// `/attract`, while it plays on the open conversation.
     attract: Option<Playing>,
+    /// An attract the playing one replaced, while its sparks land, and the
+    /// time into it that it was replaced at.
+    settling: Option<(Playing, Duration)>,
     /// The id of the last attract started.
     attracts: u64,
+    /// Where the rows the comets play on were painted in this frame.
+    stage: attract::Stage,
+    /// The comets the last frame drew, oldest first ([`comets`]).
+    comets: Vec<(attract::Target, comet::Moment)>,
     _subscription: Subscription,
 }
 
@@ -618,6 +635,9 @@ struct Playing {
     target: attract::Target,
     started: Instant,
 }
+
+/// The height of the typing line under the list.
+const TYPING_LINE: f32 = 20.;
 
 /// The time between two frames of a glide: about 60 a second.
 const GLIDE_FRAME: Duration = Duration::from_millis(16);
@@ -680,7 +700,10 @@ impl TimelineView {
             glides: 0,
             bodies: rows::Bodies::default(),
             attract: None,
+            settling: None,
             attracts: 0,
+            stage: attract::Stage::default(),
+            comets: Vec::new(),
             _subscription: subscription,
         };
         view.install_scroll_handler(cx);
@@ -792,6 +815,7 @@ impl TimelineView {
         if switched {
             self.conversation = conversation;
             self.attract = None;
+            self.settling = None;
             self.hovered = None;
             self.expanded.clear();
             self.list.reset(rows.len());
@@ -991,9 +1015,10 @@ impl TimelineView {
         .detach();
     }
 
-    /// Play the newest `/attract` of the open conversation: it sparkles on
+    /// Play the newest `/attract` of the open conversation: the comet laps
     /// the message it points at for [`attract::ATTRACT_MS`], and never moves
-    /// the scroll position. One that arrives while another plays restarts it.
+    /// the scroll position. One that arrives while another plays takes its
+    /// place at once; the sparks the old one shed finish falling.
     fn start_attract(&mut self, cx: &mut Context<Self>) {
         let (Some(conversation), Some(client)) = (
             self.conversation.clone(),
@@ -1008,6 +1033,12 @@ impl TimelineView {
             return;
         };
         self.attracts += 1;
+        self.stage.take();
+        let reduced = theme::get(cx).reduced_motion;
+        self.settling = self.attract.take().filter(|_| !reduced).map(|old| {
+            let at = old.started.elapsed();
+            (old, at)
+        });
         self.attract = Some(Playing {
             id: self.attracts,
             target,
@@ -1027,6 +1058,7 @@ impl TimelineView {
         cx.notify();
         if attract::over(elapsed) {
             self.attract = None;
+            self.settling = None;
             return;
         }
         let wait = if theme::get(cx).reduced_motion {
@@ -1046,6 +1078,57 @@ impl TimelineView {
             .ok();
         })
         .detach();
+    }
+
+    /// The layer that draws the comets over the rows, while one moves. It
+    /// asks for the display's next frame, so the comet runs at the screen's
+    /// rate; `attract_frame` keeps the effect going and ends it where frames
+    /// are not drawn on their own (the headless tests).
+    fn render_comet(&mut self, theme: &Theme, window: &mut Window) -> Option<AnyElement> {
+        self.comets = self.comets_now(theme);
+        if self.comets.is_empty() {
+            return None;
+        }
+        window.request_animation_frame();
+        Some(comet::layer(
+            self.stage.clone(),
+            self.comets.clone(),
+            comet::Palette::new(theme),
+            px(TYPING_LINE),
+        ))
+    }
+
+    /// The comets to draw now, oldest first; a replaced one is dropped once
+    /// its sparks have landed.
+    fn comets_now(&mut self, theme: &Theme) -> Vec<(attract::Target, comet::Moment)> {
+        if theme.reduced_motion {
+            self.settling = None;
+            return Vec::new();
+        }
+        let Some(playing) = self.attract.as_ref() else {
+            return Vec::new();
+        };
+        let moment = |p: &Playing, replaced: Option<Duration>| comet::Moment {
+            t: attract::seconds(p.started.elapsed()),
+            replaced: replaced.map(attract::seconds),
+        };
+        if self
+            .settling
+            .as_ref()
+            .is_some_and(|(p, at)| moment(p, Some(*at)).done())
+        {
+            self.settling = None;
+        }
+        let now = moment(playing, None);
+        if now.done() {
+            return Vec::new();
+        }
+        let mut comets = Vec::new();
+        if let Some((p, at)) = &self.settling {
+            comets.push((p.target.clone(), moment(p, Some(*at))));
+        }
+        comets.push((playing.target.clone(), now));
+        comets
     }
 
     /// How far the end of the history is below the view, in pixels.
@@ -1213,11 +1296,21 @@ impl TimelineView {
                 };
                 let id = m.id.clone();
                 let hovered = self.hovered.as_deref() == Some(id.as_str());
-                let reduced = theme.reduced_motion;
+                let stage = (!theme.reduced_motion).then_some(&self.stage);
                 let attract = self
                     .attract
                     .as_ref()
-                    .and_then(|p| attract::fx(&p.target, &m.id, p.started.elapsed(), reduced));
+                    .and_then(|p| attract::fx(&p.target, &m.id, p.started.elapsed(), stage))
+                    .or_else(|| {
+                        // A replaced comet's row and avatar keep reporting
+                        // their places while its sparks land.
+                        let (p, _) = self.settling.as_ref()?;
+                        let fx = attract::fx(&p.target, &m.id, p.started.elapsed(), stage)?;
+                        Some(attract::Fx {
+                            settling: true,
+                            ..fx
+                        })
+                    });
                 let this = cx.entity().downgrade();
                 message::render(
                     MessageView {
@@ -1719,6 +1812,7 @@ impl Render for TimelineView {
             _ => Vec::new(),
         };
         let jump = self.render_jump(&theme, cx);
+        let comet = self.render_comet(&theme, window);
         div()
             .id("timeline")
             .test_support()
@@ -1737,10 +1831,11 @@ impl Render for TimelineView {
                 .flex_1()
                 .size_full(),
             )
+            .children(comet)
             .child(
                 div()
                     .id("typing")
-                    .h(px(20.))
+                    .h(px(TYPING_LINE))
                     .px_4()
                     .text_xs()
                     .text_color(theme.muted)
