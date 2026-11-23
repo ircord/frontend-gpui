@@ -4,7 +4,7 @@
 
 ### New
 
-- A personal theme's background picture is drawn behind the conversation or the whole window, as the web client does: the picture is read from your server, the conversation list and the conversation turn translucent over it, and a theme without a background looks as before.
+- A personal theme's background picture is drawn behind the conversation or the whole window, as the web client does: the picture is read from your server, the top bar, the conversation list and the conversation turn into frosted panels over it, and a theme without a background looks as before.
 
 ## v0.2.0 — 2026-11-23
 

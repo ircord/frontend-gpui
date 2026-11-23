@@ -724,7 +724,7 @@ impl Render for WorkspaceView {
             .map(|d| match &backdrop {
                 // Over an app-wide picture the card is the main colour at the
                 // dim, so the picture shows through; its shadow would too.
-                Some(b) if app_wide => d.bg(theme.main.opacity(b.spec.dim)),
+                Some(b) if app_wide => d.child(theme::backdrop::frosted_card(b, &theme, corners)),
                 other => d
                     .bg(theme.main)
                     .shadow(frame_shadows(&theme))
