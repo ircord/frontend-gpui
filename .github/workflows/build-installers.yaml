@@ -58,13 +58,19 @@ jobs:
       - uses: ./.github/actions/build-image
       - run: cargo xtask package linux
       - name: Install it on clean Debian and Ubuntu, and start it
+        timeout-minutes: 15
         run: |
           for image in debian:bookworm ubuntu:24.04; do
             echo "::group::$image"
             docker run --rm -v "$PWD/dist:/dist:ro" -e DEBIAN_FRONTEND=noninteractive "$image" bash -euxc '
               # GitHub runners sit in Azure, where Canonical runs its own mirror.
-              if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+              . /etc/os-release
+              if [ "$ID" = ubuntu ]; then
                 sed -i -E "s#https?://(archive|security)\.ubuntu\.com/ubuntu/?#http://azure.archive.ubuntu.com/ubuntu/#" /etc/apt/sources.list.d/ubuntu.sources
+                if grep -E "^URIs:.*//(archive|security)\.ubuntu\.com" /etc/apt/sources.list.d/ubuntu.sources; then
+                  echo "Azure mirror rewrite missed a URI" >&2
+                  exit 1
+                fi
               fi
               apt="apt-get -q -o Acquire::Retries=3 -o Acquire::http::Timeout=30"
               $apt update
