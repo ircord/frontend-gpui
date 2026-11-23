@@ -306,6 +306,7 @@ pub fn apply(cx: &mut App) {
     let look = look(cx);
     let mode = look.resolve_mode(system_mode(cx));
     let compiled = look::compile_with_css(&look, mode, &themes(cx), false, css_allowed(cx));
+    super::backdrop::sync(compiled.backdrop.as_ref(), client(cx), cx);
     let state = cx.global_mut::<State>();
     if state.compiled.as_ref() == Some(&compiled) {
         return;

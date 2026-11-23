@@ -12,6 +12,7 @@ mod appearance;
 mod attract;
 mod audio_card;
 mod audit;
+mod backdrop;
 mod channel_settings;
 mod channels;
 mod commands;

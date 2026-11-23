@@ -10,6 +10,7 @@
 //! is what settings edit.
 
 pub mod appearance;
+pub mod backdrop;
 pub mod fonts;
 
 use gpui_kit::{App, Global, Hsla, Pixels, Rems, Rgba, SharedString, px, rems, rgb};

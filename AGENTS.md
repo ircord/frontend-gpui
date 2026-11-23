@@ -18,6 +18,7 @@ client; it never speaks IRC itself. Layout and commands are in
   build against a disposable backend and leaves screenshots in
   `target/capture/`. Your own Xvfb must run with `-extension COMPOSITE`, or
   every capture is black (see `xtask/src/capture.rs`).
+- A theme's background picture is `theme::backdrop` (read with the session, decoded once, floors from `store::appearance::theme_backdrop`); a surface it shows through takes its colour from `backdrop::shell`/`get`, never `theme.sidebar` directly. `CAPTURE_ONLY=theme` and `CAPTURE_THEME=<dir with theme.json and picture.*>` narrow `cargo xtask capture` to that scene.
 - `crates/client` must not depend on GPUI: everything except drawing is
   tested there, without a window.
 - Anything that calls the operating system for sound, video or

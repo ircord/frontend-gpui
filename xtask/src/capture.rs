@@ -11,6 +11,8 @@
 //! times while it plays (the last two around its landing) and once after it
 //! ends, then restarts the app to show it signs in from there, and opens Settings → Emotes → Discover (emoji.gg's emoji, read by
 //! the backend over the internet).
+//! A personal theme's background picture is captured last, behind the window
+//! and behind the conversation, in dark and light.
 //! Screenshots and the app's logs land in `target/capture/`; look at them.
 //!
 //! Xvfb runs without its COMPOSITE extension. With it, GPUI picks a 32-bit
@@ -108,6 +110,7 @@ grep -q 'attribute.service = com.ircord.gpui' "$OUT/keyring.txt" \
   || { echo "the sign-in was not saved in the keyring"; exit 1; }
 echo "the sign-in is in GNOME Keyring (target/capture/keyring.txt)"
 
+if [ -z "${CAPTURE_ONLY:-}" ]; then
 # A server emoji typed into the message box draws as its picture. Typing
 # with nothing focused goes into the box.
 xdotool type --delay 30 "hello :capture: there"
@@ -204,6 +207,9 @@ xdotool key Return
 sleep 10
 shot 9-emotes-discover
 stop_app 2
+else
+stop_app 1
+fi
 
 # A personal theme whose CSS sets the accent and the rail, switched on for
 # the account, then a fresh start: the app draws the theme's CSS.
@@ -216,6 +222,85 @@ start_app
 sleep 7
 shot 6-css-theme
 stop_app 3
+
+# A personal theme with a background picture (the web's "Personal theme
+# background"): the picture is uploaded, the theme names it, and the app
+# draws it behind the whole window (`app`) or behind the conversation
+# (`conversation`), in dark and in light. `CAPTURE_THEME=<dir>` swaps in a
+# theme file (`theme.json`, an exported `.ircord-theme.json`) and its
+# picture (`picture.*`) for the generated ones.
+set -- $(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" "$SERVER/api/v1/bootstrap" | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+c = [c for c in s["conversations"] if c["name"].lstrip("#").lower() == "capture"][0]
+print(c["id"], c["networkId"])')
+CONVERSATION=$1 NETWORK=$2
+for n in 1 2 3; do
+  curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+    -d "{\"clientId\":\"capture-backdrop-$n\",\"text\":\"a message to read over the picture, number $n\"}" \
+    "$SERVER/api/v1/conversations/$CONVERSATION/messages"
+done
+if [ -n "${CAPTURE_THEME:-}" ]; then
+  PICTURE=$(ls /theme/picture.* | head -1)
+else
+  PICTURE=/tmp/backdrop.png
+  python3 -c '
+import struct, sys, zlib
+w, h = 640, 360
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+rows = b"".join(b"\0" + b"".join(
+    bytes((40 + 150 * x // w, 60 + 100 * y // h, 200 - 120 * x // w)) for x in range(w)) for y in range(h))
+sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+    + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+' >"$PICTURE"
+fi
+TYPE=$(python3 -c 'import sys; print({"png":"image/png","webp":"image/webp","jpg":"image/jpeg","jpeg":"image/jpeg"}[sys.argv[1].rsplit(".",1)[1]])' "$PICTURE")
+PICTURE_URL=$(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" \
+  -F "file=@$PICTURE;type=$TYPE" "$SERVER/api/v1/uploads?networkId=$NETWORK" \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["url"])')
+theme() {
+  python3 - "$1" "$PICTURE_URL" <<'PY' >/tmp/backdrop-theme.json
+import json, os, sys
+placement, url = sys.argv[1], sys.argv[2]
+if os.environ.get("CAPTURE_THEME"):
+    file = json.load(open("/theme/theme.json"))
+    theme = {"format": 1, "id": "t-capture-bg-" + placement, "name": file["name"], "updatedAt": "c1",
+             "base": file["base"], "colors": file["colors"], "css": file.get("css", ""),
+             "background": dict(file.get("background") or {}, url=url)}
+else:
+    seeds = lambda c, s, o, i, m, a: {"canvas": c, "surface": s, "overlay": o, "ink": i, "muted": m, "accent": a,
+        "palette": {k: v for k, v in zip(["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"],
+            ["#f87171", "#fb923c", "#fbbf24", "#22c55e", "#5fc4dc", "#86b6ef", "#b3a2ea", "#ee9fc4"])}}
+    theme = {"format": 1, "id": "t-capture-bg-" + placement, "name": "Capture backdrop", "updatedAt": "c1",
+             "base": {"dark": "ircord-dark", "light": "ircord-light"},
+             "colors": {"dark": seeds("#07090d", "#161a22", "#2a3140", "#e8ebf1", "#9aa3b2", "#7ea6ff"),
+                        "light": seeds("#e4e8ef", "#ffffff", "#d3d9e4", "#141821", "#5a6473", "#2b59c3")},
+             "css": "",
+             "background": {"url": url, "placement": placement, "fit": "cover", "position": "center",
+                            "dim": 55, "blur": 0, "panelOpacity": 85}}
+json.dump({"theme": theme}, sys.stdout)
+PY
+  curl -fsS -o /dev/null -X PUT -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+    -d @/tmp/backdrop-theme.json "$SERVER/api/v1/app/themes/t-capture-bg-$1"
+}
+appearance() { api PUT "{\"settings\":{\"mode\":\"$1\",\"theme\":\"t-capture-bg-$2\"}}" /api/v1/app/appearance; }
+theme app
+for mode in dark light; do
+  appearance $mode app
+  start_app
+  sleep 8
+  shot 11-backdrop-app-$mode
+  stop_app backdrop-app-$mode
+done
+if [ -z "${CAPTURE_THEME:-}" ]; then
+  theme conversation
+  appearance dark conversation
+  start_app
+  sleep 8
+  shot 11-backdrop-conversation-dark
+  stop_app backdrop-conversation
+fi
 "##;
 
 pub fn run(root: &Path) -> Result<()> {
@@ -238,6 +323,20 @@ pub fn run(root: &Path) -> Result<()> {
         "--shm-size".into(),
         "256m".into(),
     ]);
+    // `CAPTURE_ONLY=theme` skips the long scenes; `CAPTURE_THEME=<dir>` holds
+    // a `theme.json` and a `picture.*` for the background scene.
+    if let Ok(only) = std::env::var("CAPTURE_ONLY") {
+        extra.extend(["-e".into(), format!("CAPTURE_ONLY={only}")]);
+    }
+    if let Ok(dir) = std::env::var("CAPTURE_THEME") {
+        let dir = std::fs::canonicalize(&dir).with_context(|| format!("CAPTURE_THEME {dir}"))?;
+        extra.extend([
+            "-v".into(),
+            format!("{}:/theme:ro", dir.display()),
+            "-e".into(),
+            "CAPTURE_THEME=1".into(),
+        ]);
+    }
     let result = crate::container::run_with(
         root,
         &extra,

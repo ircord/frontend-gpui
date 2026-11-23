@@ -738,6 +738,7 @@ impl SidebarView {
         selected: Option<&str>,
         layout: &order::Layout,
         theme: &Theme,
+        shell: Hsla,
     ) -> Div {
         let mut column = div()
             .id("folded-list")
@@ -818,7 +819,7 @@ impl SidebarView {
             .flex()
             .flex_col()
             .items_center()
-            .bg(theme.sidebar)
+            .bg(shell)
             .child(div().h(px(48.)).flex().items_center().child(restore))
             .child(column)
     }
@@ -861,10 +862,11 @@ impl Render for SidebarView {
         let w = client.read();
         let network = selected_network.as_deref().and_then(|id| w.network(id));
 
+        let shell = theme::backdrop::shell(&theme, cx);
         if !layout.show_list {
             let folded = network
-                .map(|n| self.folded(&w, &n.id, selected.as_deref(), &layout, &theme))
-                .unwrap_or_else(|| div().w(px(FOLDED)).h_full().bg(theme.sidebar));
+                .map(|n| self.folded(&w, &n.id, selected.as_deref(), &layout, &theme, shell))
+                .unwrap_or_else(|| div().w(px(FOLDED)).h_full().bg(shell));
             return div()
                 .id("sidebar")
                 .track_focus(&self.focus)
@@ -1051,7 +1053,7 @@ impl Render for SidebarView {
                     .flex_none()
                     .flex()
                     .flex_col()
-                    .bg(theme.sidebar)
+                    .bg(shell)
                     .child(search)
                     .child(
                         div()
