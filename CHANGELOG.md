@@ -9,8 +9,6 @@
 ### New
 
 - Messages show Markdown tables as a grid, headings, horizontal rules and task-list boxes, as the web client does; plain IRC clients still see the Markdown text. Editing a message keeps its bold, italic and other formatting as Markdown instead of dropping it.
-### Added
-
 - Masked links, `[text](https://…)`, show their text as a link and the real address on hover. Text that names another site is not masked: the typed text and its real address stay.
 
 ### Fixed

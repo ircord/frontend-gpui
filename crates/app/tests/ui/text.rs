@@ -152,7 +152,7 @@ fn a_masked_link_shows_its_words_and_its_address_on_hover(cx: &mut TestAppContex
                 .find_by_label("the docs: opens https://example.com/docs")
                 .visible()
         );
-        assert!(window.find_by_label("Open https://evil.example").visible());
+        assert!(window.find_by_label("Open https://evil.example/").visible());
         assert!(window.try_find("link-address").is_none());
     })
     .unwrap();

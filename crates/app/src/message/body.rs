@@ -27,7 +27,7 @@ use gpui_kit::*;
 use ircord_client::contract::ConversationKind;
 use ircord_client::format::blocks::{Align, Block, List, Mapped, Table, message_blocks};
 use ircord_client::format::highlight::{Kind, highlight};
-use ircord_client::format::inline::{Token, masked_links, tokens};
+use ircord_client::format::inline::{Masked, Token, masked_links, tokens};
 use ircord_client::format::links::{MessageLink, parse_message_link};
 use ircord_client::format::mentions::{fold, group_mention};
 use ircord_client::format::{Color as IrcColor, Formatted};
@@ -539,7 +539,7 @@ impl Body<'_> {
         let theme = self.theme;
         // `[text](url)` shows its words; the rest of the paragraph is
         // placed through the text without its brackets and addresses.
-        let masked = masked_links(text, &self.m.body);
+        let masked = masked_for(&id, text, &self.m.body, window, cx);
         let text = &masked.text;
         let f = masked.formatted;
         let mut spans = highlights_for(&f, theme);
@@ -826,6 +826,32 @@ fn run(
         Action::Channel(name) => text::open_channel(session, network, name, window, cx),
         Action::Message(link) => text::open_message_link(session, link, window, cx),
     }
+}
+
+/// A paragraph's masked links, found once and kept under the paragraph's ID
+/// until its text or the message changes.
+fn masked_for(
+    id: &str,
+    text: &Mapped,
+    source: &Formatted,
+    window: &mut Window,
+    cx: &mut App,
+) -> Masked {
+    let state = window.use_keyed_state(
+        ElementId::Name(format!("{id}-masked").into()),
+        cx,
+        |_, _| None::<(Mapped, Formatted, Masked)>,
+    );
+    if let Some((t, s, m)) = state.read(cx)
+        && t == text
+        && s == source
+    {
+        return m.clone();
+    }
+    let masked = masked_links(text, source);
+    let kept = (text.clone(), source.clone(), masked.clone());
+    state.update(cx, |state, _| *state = Some(kept));
+    masked
 }
 
 /// The places a paragraph's pills landed in the last frame, kept between

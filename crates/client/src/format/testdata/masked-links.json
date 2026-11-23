@@ -1,31 +1,493 @@
 [
-  {"name": "masked https link", "text": "see [the docs](https://example.com/docs) now", "visible": "see the docs now", "links": [["the docs", "https://example.com/docs"]]},
-  {"name": "masked http link", "text": "[site](http://example.com)", "visible": "site", "links": [["site", "http://example.com"]]},
-  {"name": "masked mailto link", "text": "[mail us](mailto:team@example.com)", "visible": "mail us", "links": [["mail us", "mailto:team@example.com"]]},
-  {"name": "two masked links", "text": "[a](https://a.example) and [b](https://b.example)", "visible": "a and b", "links": [["a", "https://a.example"], ["b", "https://b.example"]]},
-  {"name": "relative address is not masked", "text": "[x](/path)", "visible": "[x](/path)", "links": []},
-  {"name": "javascript address is not masked", "text": "[x](javascript:alert(1))", "visible": "[x](javascript:alert(1))", "links": []},
-  {"name": "ftp address is not masked", "text": "[f](ftp://example.com/a)", "visible": "[f](ftp://example.com/a)", "links": []},
-  {"name": "irc address is not masked, stays an ordinary link", "text": "[chat](irc://irc.libera.chat/#rust)", "visible": "[chat](irc://irc.libera.chat/#rust)", "links": [["irc://irc.libera.chat/#rust", "irc://irc.libera.chat/#rust"]]},
-  {"name": "text naming the same host is masked", "text": "[https://example.com/a](https://example.com/b)", "visible": "https://example.com/a", "links": [["https://example.com/a", "https://example.com/b"]]},
-  {"name": "text naming another url is not masked", "text": "[https://good.example](https://evil.example/login)", "visible": "[https://good.example](https://evil.example/login)", "links": [["https://evil.example/login", "https://evil.example/login"]]},
-  {"name": "bare domain naming another host is not masked", "text": "[paypal.com](https://evil.example)", "visible": "[paypal.com](https://evil.example)", "links": [["https://evil.example", "https://evil.example"]]},
-  {"name": "bare domain naming the same host is masked", "text": "[example.com](https://example.com/x)", "visible": "example.com", "links": [["example.com", "https://example.com/x"]]},
-  {"name": "www is another host", "text": "[example.com](https://www.example.com)", "visible": "[example.com](https://www.example.com)", "links": [["https://www.example.com", "https://www.example.com"]]},
-  {"name": "a domain among other words is not masked", "text": "[log in to bank.example now](https://evil.example)", "visible": "[log in to bank.example now](https://evil.example)", "links": [["https://evil.example", "https://evil.example"]]},
-  {"name": "an email address naming another domain is not masked", "text": "[bob@good.example](mailto:bob@evil.example)", "visible": "[bob@good.example](mailto:bob@evil.example)", "links": [["mailto:bob@evil.example", "mailto:bob@evil.example"]]},
-  {"name": "a look-alike host is another host", "text": "[paypal.com](https://p\u0430ypal.com)", "visible": "[paypal.com](https://p\u0430ypal.com)", "links": [["https://p\u0430ypal.com", "https://p\u0430ypal.com"]]},
-  {"name": "a version number is not a domain", "text": "[v1.2.3 notes](https://example.com/notes)", "visible": "v1.2.3 notes", "links": [["v1.2.3 notes", "https://example.com/notes"]]},
-  {"name": "formatting inside the text is kept", "text": "[\u0002bold\u0002 text](https://example.com)", "visible": "bold text", "links": [["bold text", "https://example.com"]]},
-  {"name": "nested brackets", "text": "[a [b] c](https://example.com)", "visible": "a [b] c", "links": [["a [b] c", "https://example.com"]]},
-  {"name": "an escaped closing bracket", "text": "[a \\] b](https://example.com)", "visible": "a ] b", "links": [["a ] b", "https://example.com"]]},
-  {"name": "an escaped opening bracket makes no link", "text": "\\[a](https://example.com)", "visible": "\\[a](https://example.com)", "links": [["https://example.com", "https://example.com"]]},
-  {"name": "an address with parentheses", "text": "[Rust](https://en.wikipedia.org/wiki/Rust_(programming_language)).", "visible": "Rust.", "links": [["Rust", "https://en.wikipedia.org/wiki/Rust_(programming_language)"]]},
-  {"name": "a space before the address makes no link", "text": "[text] (https://example.com)", "visible": "[text] (https://example.com)", "links": [["https://example.com", "https://example.com"]]},
-  {"name": "inside a code span stays as typed", "text": "\u0011[a](https://example.com)\u0011", "visible": "[a](https://example.com)", "links": []},
-  {"name": "empty text makes no link", "text": "[ ](https://example.com)", "visible": "[ ](https://example.com)", "links": [["https://example.com", "https://example.com"]]},
-  {"name": "a space in the address makes no link", "text": "[a](https://example.com/a b)", "visible": "[a](https://example.com/a b)", "links": [["https://example.com/a", "https://example.com/a"]]},
-  {"name": "an unclosed address makes no link", "text": "[a](https://example.com", "visible": "[a](https://example.com", "links": [["https://example.com", "https://example.com"]]},
-  {"name": "a link inside an unclosed bracket", "text": "[see [x](https://example.com)", "visible": "[see x", "links": [["x", "https://example.com"]]},
-  {"name": "the text does not span lines", "text": "[a\nb](https://example.com)", "visible": "[a\nb](https://example.com)", "links": [["https://example.com", "https://example.com"]]}
+ {
+  "name": "https link",
+  "input": "[docs](https://example.com/docs)",
+  "visible": "docs",
+  "targets": [
+   "https://example.com/docs"
+  ],
+  "ordinary": null,
+  "reason": "absolute https address: masked"
+ },
+ {
+  "name": "http link in a sentence",
+  "input": "see [the site](http://example.com) now",
+  "visible": "see the site now",
+  "targets": [
+   "http://example.com/"
+  ],
+  "ordinary": null,
+  "reason": "absolute http address: masked; the target is the canonical URL"
+ },
+ {
+  "name": "mailto link",
+  "input": "[mail me](mailto:me@example.com)",
+  "visible": "mail me",
+  "targets": [
+   "mailto:me@example.com"
+  ],
+  "ordinary": null,
+  "reason": "mailto address: masked"
+ },
+ {
+  "name": "two links",
+  "input": "[a](https://a.test) and [b](https://b.test)",
+  "visible": "a and b",
+  "targets": [
+   "https://a.test/",
+   "https://b.test/"
+  ],
+  "ordinary": null,
+  "reason": "each link is masked on its own"
+ },
+ {
+  "name": "javascript address",
+  "input": "[x](javascript:alert(1))",
+  "visible": "[x](javascript:alert(1))",
+  "targets": [],
+  "ordinary": null,
+  "reason": "not http, https or mailto: as typed"
+ },
+ {
+  "name": "ftp address",
+  "input": "[x](ftp://example.com)",
+  "visible": "[x](ftp://example.com)",
+  "targets": [],
+  "ordinary": null,
+  "reason": "not http, https or mailto: as typed"
+ },
+ {
+  "name": "irc address",
+  "input": "[chat](irc://irc.libera.chat/#rust)",
+  "visible": "[chat](irc://irc.libera.chat/#rust)",
+  "targets": [],
+  "ordinary": null,
+  "reason": "irc is not masked: as typed"
+ },
+ {
+  "name": "relative address",
+  "input": "[x](/relative/path)",
+  "visible": "[x](/relative/path)",
+  "targets": [],
+  "ordinary": null,
+  "reason": "not absolute: as typed"
+ },
+ {
+  "name": "address without a scheme",
+  "input": "[x](example.com)",
+  "visible": "[x](example.com)",
+  "targets": [],
+  "ordinary": null,
+  "reason": "not absolute: as typed"
+ },
+ {
+  "name": "scheme without a host",
+  "input": "[x](https://)",
+  "visible": "[x](https://)",
+  "targets": [],
+  "ordinary": null,
+  "reason": "no host: as typed"
+ },
+ {
+  "name": "space in the address",
+  "input": "[x](https://example.com/a b)",
+  "visible": "[x](https://example.com/a b)",
+  "targets": [],
+  "ordinary": null,
+  "reason": "an address has no spaces: as typed"
+ },
+ {
+  "name": "empty text",
+  "input": "[](https://example.com)",
+  "visible": "[](https://example.com)",
+  "targets": [],
+  "ordinary": null,
+  "reason": "nothing to show: as typed"
+ },
+ {
+  "name": "blank text",
+  "input": "[ ](https://example.com)",
+  "visible": "[ ](https://example.com)",
+  "targets": [],
+  "ordinary": null,
+  "reason": "nothing to show: as typed"
+ },
+ {
+  "name": "unclosed address",
+  "input": "[x](https://example.com",
+  "visible": "[x](https://example.com",
+  "targets": [],
+  "ordinary": null,
+  "reason": "no closing parenthesis: as typed"
+ },
+ {
+  "name": "text across lines",
+  "input": "[two\nlines](https://example.com)",
+  "visible": "[two\nlines](https://example.com)",
+  "targets": [],
+  "ordinary": null,
+  "reason": "a link stays on one line: as typed"
+ },
+ {
+  "name": "in a code span",
+  "input": "\u0011[x](https://example.com)\u0011",
+  "visible": "[x](https://example.com)",
+  "targets": [],
+  "ordinary": null,
+  "reason": "inside code (IRC monospace): as typed"
+ },
+ {
+  "name": "in a fenced block",
+  "input": "```\n[x](https://example.com)\n```",
+  "visible": "[x](https://example.com)",
+  "targets": [],
+  "ordinary": null,
+  "reason": "inside a fenced block: as typed in the block (visible is the code)"
+ },
+ {
+  "name": "non-canonical address",
+  "input": "[x](https:example.com)",
+  "visible": "x",
+  "targets": [
+   "https://example.com/"
+  ],
+  "ordinary": null,
+  "reason": "parses as an absolute https URL; target and tooltip are the canonical form"
+ },
+ {
+  "name": "bidi control in the address",
+  "input": "[x](https://example.com/\u202egpj.exe)",
+  "visible": "x",
+  "targets": [
+   "https://example.com/%E2%80%AEgpj.exe"
+  ],
+  "ordinary": null,
+  "reason": "the canonical URL percent-encodes the control, so the tooltip cannot be reordered"
+ },
+ {
+  "name": "domain naming another host",
+  "input": "[example.com](https://evil.test/login)",
+  "visible": "[example.com](https://evil.test/login)",
+  "targets": [],
+  "ordinary": "https://evil.test/login",
+  "reason": "text names another host: not masked"
+ },
+ {
+  "name": "url naming another host",
+  "input": "[https://bank.test](https://evil.test)",
+  "visible": "[https://bank.test](https://evil.test)",
+  "targets": [],
+  "ordinary": "https://evil.test/",
+  "reason": "text names another host: not masked"
+ },
+ {
+  "name": "domain with a path naming another host",
+  "input": "[www.bank.test/login](https://evil.test)",
+  "visible": "[www.bank.test/login](https://evil.test)",
+  "targets": [],
+  "ordinary": "https://evil.test/",
+  "reason": "text names another host: not masked"
+ },
+ {
+  "name": "user info in the address",
+  "input": "[bank.test](https://bank.test@evil.test)",
+  "visible": "[bank.test](https://bank.test@evil.test)",
+  "targets": [],
+  "ordinary": "https://bank.test@evil.test/",
+  "reason": "an address with user info is never masked"
+ },
+ {
+  "name": "user info behind plain words",
+  "input": "[PayPal](https://paypal.com@evil.example)",
+  "visible": "[PayPal](https://paypal.com@evil.example)",
+  "targets": [],
+  "ordinary": "https://paypal.com@evil.example/",
+  "reason": "an address with user info is never masked: it reads as paypal.com"
+ },
+ {
+  "name": "email naming another domain",
+  "input": "[me@bank.test](mailto:me@evil.test)",
+  "visible": "[me@bank.test](mailto:me@evil.test)",
+  "targets": [],
+  "ordinary": "mailto:me@evil.test",
+  "reason": "text names another host: not masked"
+ },
+ {
+  "name": "bold domain naming another host",
+  "input": "[\u0002bank.test\u0002](https://evil.test)",
+  "visible": "[bank.test](https://evil.test)",
+  "targets": [],
+  "ordinary": "https://evil.test/",
+  "reason": "formatting does not hide the domain: not masked"
+ },
+ {
+  "name": "a domain among other words",
+  "input": "[read it on example.com](https://evil.test)",
+  "visible": "[read it on example.com](https://evil.test)",
+  "targets": [],
+  "ordinary": "https://evil.test/",
+  "reason": "any word naming another host blocks masking"
+ },
+ {
+  "name": "www is another host",
+  "input": "[example.com](https://www.example.com)",
+  "visible": "[example.com](https://www.example.com)",
+  "targets": [],
+  "ordinary": "https://www.example.com/",
+  "reason": "hosts compare exactly: www.example.com is not example.com"
+ },
+ {
+  "name": "look-alike letters",
+  "input": "[paypal.com](https://p\u0430ypal.com)",
+  "visible": "[paypal.com](https://p\u0430ypal.com)",
+  "targets": [],
+  "ordinary": "https://xn--pypal-4ve.com/",
+  "reason": "the Cyrillic host normalises to another host: not masked"
+ },
+ {
+  "name": "ideographic full stop",
+  "input": "[paypal\u3002com](https://evil.example)",
+  "visible": "[paypal\u3002com](https://evil.example)",
+  "targets": [],
+  "ordinary": "https://evil.example/",
+  "reason": "U+3002 is a dot in host names: names paypal.com"
+ },
+ {
+  "name": "fullwidth full stop",
+  "input": "[paypal\uff0ecom](https://evil.example)",
+  "visible": "[paypal\uff0ecom](https://evil.example)",
+  "targets": [],
+  "ordinary": "https://evil.example/",
+  "reason": "U+FF0E is a dot in host names: names paypal.com"
+ },
+ {
+  "name": "zero-width space",
+  "input": "[pay\u200bpal.com](https://evil.example)",
+  "visible": "[pay\u200bpal.com](https://evil.example)",
+  "targets": [],
+  "ordinary": "https://evil.example/",
+  "reason": "invisible characters are ignored: names paypal.com"
+ },
+ {
+  "name": "right-to-left override",
+  "input": "[\u202emoc.lapyap](https://evil.example)",
+  "visible": "[\u202emoc.lapyap](https://evil.example)",
+  "targets": [],
+  "ordinary": "https://evil.example/",
+  "reason": "invisible controls are ignored: still a domain"
+ },
+ {
+  "name": "trailing ellipsis",
+  "input": "[paypal.com\u2026](https://evil.example)",
+  "visible": "[paypal.com\u2026](https://evil.example)",
+  "targets": [],
+  "ordinary": "https://evil.example/",
+  "reason": "punctuation around a word is trimmed: names paypal.com"
+ },
+ {
+  "name": "guillemets",
+  "input": "[\u00abpaypal.com\u00bb](https://evil.example)",
+  "visible": "[\u00abpaypal.com\u00bb](https://evil.example)",
+  "targets": [],
+  "ordinary": "https://evil.example/",
+  "reason": "punctuation around a word is trimmed: names paypal.com"
+ },
+ {
+  "name": "curly apostrophe",
+  "input": "[paypal.com\u2019s login](https://evil.example)",
+  "visible": "[paypal.com\u2019s login](https://evil.example)",
+  "targets": [],
+  "ordinary": "https://evil.example/",
+  "reason": "words split at punctuation: names paypal.com"
+ },
+ {
+  "name": "em dash",
+  "input": "[paypal.com\u2014login](https://evil.example)",
+  "visible": "[paypal.com\u2014login](https://evil.example)",
+  "targets": [],
+  "ordinary": "https://evil.example/",
+  "reason": "words split at punctuation: names paypal.com"
+ },
+ {
+  "name": "ip address",
+  "input": "[192.168.1.1](https://evil.example)",
+  "visible": "[192.168.1.1](https://evil.example)",
+  "targets": [],
+  "ordinary": "https://evil.example/",
+  "reason": "an IPv4 address names a host: not masked"
+ },
+ {
+  "name": "domain naming the same host",
+  "input": "[example.com](https://example.com/page)",
+  "visible": "example.com",
+  "targets": [
+   "https://example.com/page"
+  ],
+  "ordinary": null,
+  "reason": "text names the link's own host: masked"
+ },
+ {
+  "name": "case and trailing dot",
+  "input": "[EXAMPLE.com](https://example.com.)",
+  "visible": "EXAMPLE.com",
+  "targets": [
+   "https://example.com./"
+  ],
+  "ordinary": null,
+  "reason": "hosts compare lowercased with one trailing dot stripped: masked"
+ },
+ {
+  "name": "url naming the same host",
+  "input": "[https://example.com](https://example.com/a)",
+  "visible": "https://example.com",
+  "targets": [
+   "https://example.com/a"
+  ],
+  "ordinary": null,
+  "reason": "text names the link's own host: masked"
+ },
+ {
+  "name": "email naming the same domain",
+  "input": "[me@example.com](mailto:me@example.com)",
+  "visible": "me@example.com",
+  "targets": [
+   "mailto:me@example.com"
+  ],
+  "ordinary": null,
+  "reason": "text names the link's own host: masked"
+ },
+ {
+  "name": "version number",
+  "input": "[v1.5](https://example.com/releases)",
+  "visible": "v1.5",
+  "targets": [
+   "https://example.com/releases"
+  ],
+  "ordinary": null,
+  "reason": "a number is not a domain: masked"
+ },
+ {
+  "name": "word with a colon",
+  "input": "[Note: see this](https://example.com)",
+  "visible": "Note: see this",
+  "targets": [
+   "https://example.com/"
+  ],
+  "ordinary": null,
+  "reason": "a word ending in a colon is not an address: masked"
+ },
+ {
+  "name": "formatting kept",
+  "input": "[\u0002bold\u0002 and \u001dit\u001d](https://example.com)",
+  "visible": "bold and it",
+  "targets": [
+   "https://example.com/"
+  ],
+  "ordinary": null,
+  "reason": "bold and italic inside the text are kept"
+ },
+ {
+  "name": "nested brackets",
+  "input": "[a [b] c](https://example.com)",
+  "visible": "a [b] c",
+  "targets": [
+   "https://example.com/"
+  ],
+  "ordinary": null,
+  "reason": "balanced brackets belong to the text"
+ },
+ {
+  "name": "escaped closing bracket",
+  "input": "[a \\] b](https://example.com)",
+  "visible": "a ] b",
+  "targets": [
+   "https://example.com/"
+  ],
+  "ordinary": null,
+  "reason": "\\] is a bracket in the text; the backslash is not shown"
+ },
+ {
+  "name": "escaped opening bracket in the text",
+  "input": "[a \\[ b](https://example.com)",
+  "visible": "a [ b",
+  "targets": [
+   "https://example.com/"
+  ],
+  "ordinary": null,
+  "reason": "\\[ is a bracket in the text; the backslash is not shown"
+ },
+ {
+  "name": "escaped opening bracket",
+  "input": "\\[x](https://example.com)",
+  "visible": "\\[x](https://example.com)",
+  "targets": [],
+  "ordinary": null,
+  "reason": "an escaped [ opens no link: as typed"
+ },
+ {
+  "name": "parentheses in the address",
+  "input": "[Foo](https://en.wikipedia.org/wiki/Foo_(bar))",
+  "visible": "Foo",
+  "targets": [
+   "https://en.wikipedia.org/wiki/Foo_(bar)"
+  ],
+  "ordinary": null,
+  "reason": "balanced parentheses belong to the address"
+ },
+ {
+  "name": "link in parentheses",
+  "input": "([x](https://example.com/a))",
+  "visible": "(x)",
+  "targets": [
+   "https://example.com/a"
+  ],
+  "ordinary": null,
+  "reason": "the outer parentheses stay text"
+ },
+ {
+  "name": "sentence full stop",
+  "input": "[x](https://example.com/a).",
+  "visible": "x.",
+  "targets": [
+   "https://example.com/a"
+  ],
+  "ordinary": null,
+  "reason": "the full stop after the link stays text"
+ },
+ {
+  "name": "space before the address",
+  "input": "[x] (https://example.com)",
+  "visible": "[x] (https://example.com)",
+  "targets": [],
+  "ordinary": null,
+  "reason": "a space between ] and ( makes no link: as typed"
+ },
+ {
+  "name": "brackets alone",
+  "input": "[x]",
+  "visible": "[x]",
+  "targets": [],
+  "ordinary": null,
+  "reason": "no address: as typed"
+ },
+ {
+  "name": "link inside an unclosed bracket",
+  "input": "[see [x](https://example.com)",
+  "visible": "[see x",
+  "targets": [
+   "https://example.com/"
+  ],
+  "ordinary": null,
+  "reason": "the unclosed [ is text; the inner link is masked"
+ },
+ {
+  "name": "inner link wins over an unmasked outer one",
+  "input": "[a [b](https://x.example) c](https://y.example)",
+  "visible": "[a b c](https://y.example)",
+  "targets": [
+   "https://x.example/"
+  ],
+  "ordinary": "https://y.example/",
+  "reason": "the outer text holds an address, so the outer is not masked; the inner link is"
+ }
 ]
