@@ -317,17 +317,33 @@ pub fn events_mode(w: &Workspace) -> EventsMode {
     }
 }
 
-/// Joins, parts, quits and nick changes: the chatter that folds.
-fn is_chatter(m: &Message) -> bool {
-    m.event.as_ref().is_some_and(|e| {
-        matches!(
-            e.r#type,
-            MembershipEventType::Join
-                | MembershipEventType::Part
-                | MembershipEventType::Quit
-                | MembershipEventType::Nick
-        )
+/// Joins, parts, quits, nick changes and status given or taken (`+o`,
+/// `-v`...): the chatter that folds.
+fn is_chatter(m: &Message, isupport: &BTreeMap<String, String>) -> bool {
+    m.event.as_ref().is_some_and(|e| match e.r#type {
+        MembershipEventType::Join
+        | MembershipEventType::Part
+        | MembershipEventType::Quit
+        | MembershipEventType::Nick => true,
+        MembershipEventType::Mode => status_only(e.text.as_deref().unwrap_or_default(), isupport),
+        _ => false,
     })
+}
+
+/// Whether a `MODE` change only gives or takes members' channel status, the
+/// modes the network's `PREFIX` lists. Channel-wide modes and ban lists
+/// are not chatter, so a change that mixes them in stays visible.
+fn status_only(text: &str, isupport: &BTreeMap<String, String>) -> bool {
+    let prefixes = Prefixes::of(isupport);
+    let flags = text.split_whitespace().next().unwrap_or_default();
+    let mut any = false;
+    for mode in flags.chars().filter(|c| !matches!(c, '+' | '-')) {
+        if !prefixes.modes.contains(&mode) {
+            return false;
+        }
+        any = true;
+    }
+    any
 }
 
 /// Whether `text` mentions `@nick` or one of `words`, as the web client
@@ -403,8 +419,13 @@ fn fold_summary(w: &Workspace, events: &[&Message], network: &str) -> String {
     let mut order: Vec<String> = Vec::new();
     let mut outcomes: std::collections::HashMap<String, (Kind, Kind, Option<String>)> =
         Default::default();
+    let mut statuses = 0;
     for m in events {
         let Some(e) = &m.event else { continue };
+        if e.r#type == MembershipEventType::Mode {
+            statuses += 1;
+            continue;
+        }
         let kind = match e.r#type {
             MembershipEventType::Join => Kind::Join,
             MembershipEventType::Nick => Kind::Nick,
@@ -457,6 +478,13 @@ fn fold_summary(w: &Workspace, events: &[&Message], network: &str) -> String {
         parts.push(t!("timeline-fold-left", people = people(&left)));
     }
     parts.extend(renames);
+    if statuses > 0 {
+        parts.push(if statuses == 1 {
+            t!("timeline-fold-mode").into()
+        } else {
+            t!("timeline-fold-modes", count = statuses)
+        });
+    }
     parts.join(" · ")
 }
 
@@ -572,7 +600,7 @@ pub fn build_with(
         let time = crate::message::layout::time_label(w, &local);
         if m.kind == MessageKind::Event || m.event.is_some() {
             last = None;
-            if is_chatter(m) {
+            if is_chatter(m, isupport(w, &network)) {
                 match mode {
                     EventsMode::Hide => continue,
                     EventsMode::Fold => {
@@ -1464,6 +1492,79 @@ mod tests {
             rows.iter().filter(|r| matches!(r, Row::Event(_))).count(),
             6
         );
+    }
+
+    fn mode(id: &str, at: &str, text: &str) -> Message {
+        let mut m = event(id, at, "m-bob", MembershipEventType::Mode);
+        m.event.as_mut().unwrap().text = Some(text.into());
+        m
+    }
+
+    #[test]
+    fn status_changes_follow_the_channel_activity_setting() {
+        let mut w = workspace();
+        load(
+            &mut w,
+            vec![
+                mode("o", "2026-11-20T12:00:00Z", "+o carol"),
+                mode("v", "2026-11-20T12:00:10Z", "-v dave"),
+                // Channel-wide modes and ban lists are not chatter.
+                mode("m", "2026-11-20T12:10:00Z", "+m"),
+                mode("b", "2026-11-20T12:20:00Z", "+b *!*@bad"),
+                // Two statuses at once are still only status.
+                mode("mixed", "2026-11-20T12:30:00Z", "+ov carol dave"),
+                mode("with-m", "2026-11-20T12:40:00Z", "+mo carol"),
+            ],
+            None,
+        );
+        let ids = |rows: &[Row]| -> Vec<String> {
+            rows.iter()
+                .filter_map(|r| match r {
+                    Row::Event(e) => Some(e.id.clone()),
+                    Row::Fold(f) => Some(format!("fold:{}", f.summary)),
+                    _ => None,
+                })
+                .collect()
+        };
+        set_events(&mut w, ClientPreferencesEvents::Hide);
+        assert_eq!(
+            ids(&build(&w, "c", Options::default())),
+            ["m", "b", "with-m"],
+            "status changes hide with the joins and parts"
+        );
+        set_events(&mut w, ClientPreferencesEvents::Show);
+        assert_eq!(
+            ids(&build(&w, "c", Options::default())),
+            ["o", "v", "m", "b", "mixed", "with-m"]
+        );
+        set_events(&mut w, ClientPreferencesEvents::Collapse);
+        assert_eq!(
+            ids(&build(&w, "c", Options::default())),
+            ["fold:2 status changes", "m", "b", "mixed", "with-m"]
+        );
+    }
+
+    #[test]
+    fn one_status_change_folds_with_a_join_in_the_singular() {
+        let mut w = workspace();
+        load(
+            &mut w,
+            vec![
+                event(
+                    "j",
+                    "2026-11-20T12:00:00Z",
+                    "m-bob",
+                    MembershipEventType::Join,
+                ),
+                mode("o", "2026-11-20T12:00:30Z", "+o bob"),
+            ],
+            None,
+        );
+        let rows = build(&w, "c", Options::default());
+        let Some(Row::Fold(f)) = rows.iter().find(|r| matches!(r, Row::Fold(_))) else {
+            panic!("{rows:?}")
+        };
+        assert_eq!(f.summary, "bob joined · one status change");
     }
 
     #[test]
