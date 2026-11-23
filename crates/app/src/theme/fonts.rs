@@ -48,6 +48,12 @@ static FILES: &[&[u8]] = &[
     include_bytes!("../../assets/fonts/SourceSerif4-SemiBold.ttf"),
 ];
 
+/// The bundled font files, for drawing outside GPUI's text system
+/// (diagrams, `message::diagram`).
+pub fn files() -> &'static [&'static [u8]] {
+    FILES
+}
+
 /// Register the bundled fonts with the text system.
 pub fn register(cx: &mut App) {
     let fonts = FILES.iter().map(|bytes| Cow::Borrowed(*bytes)).collect();

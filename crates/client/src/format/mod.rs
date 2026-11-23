@@ -5,10 +5,12 @@
 //! The rest of the web client's text rules live beside it: fenced code,
 //! quotes and lists ([`blocks`]), `@nick` and group mentions ([`mentions`]),
 //! the pieces of a line that become pills or links ([`inline`]), message and
-//! `irc://` links ([`links`]), Markdown typed in the box ([`markdown`]) and
-//! code highlighting ([`highlight`]).
+//! `irc://` links ([`links`]), Markdown typed in the box ([`markdown`]),
+//! code highlighting ([`highlight`]) and `mermaid` fences drawn as
+//! diagrams ([`diagram`]).
 
 pub mod blocks;
+pub mod diagram;
 pub mod highlight;
 pub mod inline;
 pub mod links;

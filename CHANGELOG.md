@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New
+
+- A `mermaid` code block in a message draws as its diagram (flowchart, sequence, class, state, ER, gantt, pie, git graph, mind map, timeline, quadrant, XY chart and journey), drawn in the app without a browser or any network request, with Show source and Copy source. Other diagram types, and a diagram that cannot be read, show their source as code with a line saying why.
+
 ### Improved
 
 - Channel activity also covers operator, half-operator, voice and other status changes handed to people: Hide drops them, Fold folds them into the run of joins and parts ("2 status changes"), Show lists them. Channel-wide modes and bans stay visible, as in the web client.

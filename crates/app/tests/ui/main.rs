@@ -15,6 +15,7 @@ mod channel_settings;
 mod channels;
 mod commands;
 mod desktop;
+mod diagrams;
 mod drafts;
 mod emoji;
 mod emotes;

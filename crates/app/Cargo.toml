@@ -30,6 +30,10 @@ gpui-pre = { version = "=0.3.12", default-features = false, optional = true }
 # Frame types only, to hold an animated picture on its first frame.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 log = "0.4"
+# Diagrams (message/diagram.rs): the SVG to a picture, with text measured
+# in the drawn font. The versions GPUI already links.
+resvg = { version = "0.46", default-features = false, features = ["text", "system-fonts"] }
+rustybuzz = "0.20"
 tokio = { version = "1", features = ["rt"] }
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
