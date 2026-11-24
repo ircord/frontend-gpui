@@ -6,6 +6,7 @@
 pub mod attachments;
 pub mod attract;
 pub mod body;
+pub mod copy;
 pub mod diagram;
 pub mod emoji;
 pub mod layout;
