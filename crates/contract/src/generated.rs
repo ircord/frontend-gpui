@@ -2766,11 +2766,15 @@ pub struct Member {
     pub avatar_frame: Option<String>,
     #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+    #[serde(rename = "avatarSrc", skip_serializing_if = "Option::is_none")]
+    pub avatar_src: Option<String>,
     /// The AWAY text while away, when known.
     #[serde(rename = "awayMessage", skip_serializing_if = "Option::is_none")]
     pub away_message: Option<String>,
     #[serde(rename = "bannerUrl", skip_serializing_if = "Option::is_none")]
     pub banner_url: Option<String>,
+    #[serde(rename = "bannerSrc", skip_serializing_if = "Option::is_none")]
+    pub banner_src: Option<String>,
     pub bio: String,
     pub color: String,
     /// Set while this IRCord user is on a phone or tablet, from the ircord/device metadata key; absent on a desktop, when unknown, or for other clients.
@@ -2803,6 +2807,11 @@ pub struct Member {
         skip_serializing_if = "Option::is_none"
     )]
     pub profile_background_url: Option<String>,
+    #[serde(
+        rename = "profileBackgroundSrc",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub profile_background_src: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pronouns: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3522,6 +3531,8 @@ pub struct PartyCandidate {
     pub account_id: Option<String>,
     #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+    #[serde(rename = "avatarSrc", skip_serializing_if = "Option::is_none")]
+    pub avatar_src: Option<String>,
     #[serde(rename = "backendAccountId", skip_serializing_if = "Option::is_none")]
     pub backend_account_id: Option<String>,
     #[serde(rename = "displayName")]
@@ -3604,6 +3615,8 @@ pub struct PartyMember {
     pub account_id: Option<String>,
     #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+    #[serde(rename = "avatarSrc", skip_serializing_if = "Option::is_none")]
+    pub avatar_src: Option<String>,
     #[serde(rename = "backendAccountId", skip_serializing_if = "Option::is_none")]
     pub backend_account_id: Option<String>,
     #[serde(rename = "displayName")]
@@ -3757,6 +3770,8 @@ pub enum PeoplePageStatus {
 pub struct Person {
     #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+    #[serde(rename = "avatarSrc", skip_serializing_if = "Option::is_none")]
+    pub avatar_src: Option<String>,
     #[serde(rename = "backendAccountId", skip_serializing_if = "Option::is_none")]
     pub backend_account_id: Option<String>,
     #[serde(rename = "displayName")]

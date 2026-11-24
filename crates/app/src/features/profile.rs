@@ -1152,9 +1152,9 @@ impl Render for ProfileCard {
             .map(theme::hex)
             .unwrap_or(theme.text);
         let server = self.session.read(cx).server().map(|s| s.url().clone());
-        let banner_url = server
-            .as_ref()
-            .and_then(|s| people::picture_url(m.banner_url.as_deref(), s));
+        let banner_url = server.as_ref().and_then(|s| {
+            people::member_picture(m.banner_src.as_deref(), m.banner_url.as_deref(), s)
+        });
         // Their accent, else their name colour, tints the card and colours
         // their picture's frame, as on the web.
         let accent = ui::avatar::tint(&m, colored, &theme).unwrap_or(theme.accent);

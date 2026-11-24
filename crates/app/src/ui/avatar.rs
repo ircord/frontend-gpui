@@ -202,7 +202,7 @@ pub fn person(p: Person, size: Pixels, theme: &Theme) -> Div {
     };
     let face = match p
         .server
-        .and_then(|s| people::picture_url(m.avatar_url.as_deref(), s))
+        .and_then(|s| people::member_picture(m.avatar_src.as_deref(), m.avatar_url.as_deref(), s))
     {
         Some(url) => div()
             .id(ElementId::Name(format!("avatar-picture-{}", p.key).into()))

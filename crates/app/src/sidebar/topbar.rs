@@ -319,13 +319,23 @@ fn bar(
     let me = people::me(&w, selected.as_deref());
     let mut profile = me.clone();
     if let Some(server) = server.as_ref()
-        && people::picture_url(profile.avatar_url.as_deref(), server).is_none()
+        && people::member_picture(
+            profile.avatar_src.as_deref(),
+            profile.avatar_url.as_deref(),
+            server,
+        )
+        .is_none()
     {
         profile.avatar_url = w
             .members
             .get(&me.id)
             .and_then(|member| member.avatar_url.clone())
             .or_else(|| w.user.avatar_url.clone());
+        profile.avatar_src = w
+            .members
+            .get(&me.id)
+            .and_then(|member| member.avatar_src.clone())
+            .or_else(|| w.user.avatar_src.clone());
     }
     if network.is_none_or(|network| network.status != NetworkStatus::Connected) {
         profile.status = MemberStatus::Offline;

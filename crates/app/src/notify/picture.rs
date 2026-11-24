@@ -87,7 +87,11 @@ fn address(session: &Session, alert: &Alert) -> Option<url::Url> {
             w.member(sender, network)?
         }
     };
-    people::picture_url(member.avatar_url.as_deref(), &server)
+    people::member_picture(
+        member.avatar_src.as_deref(),
+        member.avatar_url.as_deref(),
+        &server,
+    )
 }
 
 /// `<dir>/<fnv1a of the address>.png`: the same address always has the same
