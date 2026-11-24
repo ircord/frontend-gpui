@@ -206,6 +206,7 @@ mod tests {
             attachments: Vec::new(),
             images: Vec::new(),
             links: Vec::new(),
+            copy: Default::default(),
         }
     }
 

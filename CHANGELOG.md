@@ -5,6 +5,9 @@
 ### New
 
 - Files you attach to a message are marked as message files, so a server that keeps them on the IRC network's shared file host can do so, and the attach button and the tray follow that network's own size and type limits. Only files you attach to a message are marked; everything else you upload (banners, profile and theme backgrounds) stays on your server.
+### Fixed
+
+- Copying a stretch of the conversation copies it as a log in the web client's format, instead of only the message texts: a line with the day (again wherever the selection crosses midnight), then `[19:10] <nick> text` for each message, `* nick action`, `-nick- notice` and `*** nick joined` for events. The day is written in English, and a message of only an upload or a GIF has no line. A selection inside one message still copies just what is selected.
 
 ## v0.4.0 — 2026-11-24
 

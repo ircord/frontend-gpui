@@ -642,6 +642,19 @@ const TYPING_LINE: f32 = 20.;
 /// The time between two frames of a glide: about 60 a second.
 const GLIDE_FRAME: Duration = Duration::from_millis(16);
 
+/// An event's words, selectable, and copied as its log line.
+fn event_text(e: &rows::EventRow, scope: &str) -> AnyElement {
+    message::body::RichText::new(
+        ElementId::Name(format!("{scope}-{}", e.id).into()),
+        e.text.clone(),
+    )
+    .copy(message::copy::Tag {
+        key: format!("{scope}-{}", e.id),
+        entries: Rc::from(vec![e.copy.clone()]),
+    })
+    .into_any_element()
+}
+
 impl TimelineView {
     pub fn new(session: Entity<Session>, cx: &mut Context<Self>) -> Self {
         let subscription =
@@ -1287,7 +1300,7 @@ impl TimelineView {
                         .whitespace_nowrap()
                         .child(e.time.clone()),
                 )
-                .child(e.text.clone())
+                .child(event_text(&e, "event"))
                 .into_any_element(),
             Row::Pending(p) => self.render_pending(&p, &theme, cx),
             Row::Message(m) => {
@@ -1402,7 +1415,20 @@ impl TimelineView {
                         .min_w(px(40.))
                         .flex_none()
                         .whitespace_nowrap()
-                        .child(f.time.clone()),
+                        .child(if f.expanded {
+                            div().child(f.time.clone()).into_any_element()
+                        } else {
+                            // The folded run copies as every event in it.
+                            message::body::RichText::new(
+                                ElementId::Name(format!("fold-time-{}", f.id).into()),
+                                f.time.clone(),
+                            )
+                            .copy(message::copy::Tag {
+                                key: format!("fold-{}", f.id),
+                                entries: f.events.iter().map(|e| e.copy.clone()).collect(),
+                            })
+                            .into_any_element()
+                        }),
                 )
                 .child(
                     div()
@@ -1452,7 +1478,7 @@ impl TimelineView {
                                 .whitespace_nowrap()
                                 .child(e.time.clone()),
                         )
-                        .child(e.text.clone()),
+                        .child(event_text(e, "fold-event")),
                 );
             }
         }

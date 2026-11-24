@@ -16,6 +16,7 @@ mod backdrop;
 mod channel_settings;
 mod channels;
 mod commands;
+mod copy_lines;
 mod desktop;
 mod diagrams;
 mod drafts;

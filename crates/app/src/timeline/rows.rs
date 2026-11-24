@@ -20,6 +20,7 @@ use ircord_client::contract::{
     Attachment, ClientPreferencesEvents, ConversationKind, MembershipEventType, Message,
     MessageKind,
 };
+use ircord_client::copy_log;
 use ircord_client::format::{self, Formatted};
 use ircord_client::irc::Prefixes;
 use ircord_client::store::{PendingSend, SELF_ID, SendState, Workspace};
@@ -252,6 +253,8 @@ pub struct MessageRow {
     /// Links in the text, linked pictures among them (`message/links.rs`
     /// previews each through the server's link resolver).
     pub links: Vec<LinkCard>,
+    /// The line copying this message gives (`ircord_client::copy_log`).
+    pub copy: copy_log::Entry,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -281,6 +284,8 @@ pub struct EventRow {
     pub id: String,
     pub text: String,
     pub time: String,
+    /// The line copying this event gives.
+    pub copy: copy_log::Entry,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -554,10 +559,15 @@ pub fn build_with(
     let flush = |run: &mut Vec<(&Message, i64)>, rows: &mut Vec<Row>| {
         let events: Vec<EventRow> = run
             .iter()
-            .map(|(m, at)| EventRow {
-                id: m.id.clone(),
-                text: event_nicks(w, m, &network),
-                time: crate::message::layout::time_label(w, &local_time(*at)),
+            .map(|(m, at)| {
+                let text = event_nicks(w, m, &network);
+                let time = crate::message::layout::time_label(w, &local_time(*at));
+                EventRow {
+                    id: m.id.clone(),
+                    copy: event_entry(&m.id, *at, m.position.unwrap_or(0), &time, &text),
+                    text,
+                    time,
+                }
             })
             .collect();
         match events.len() {
@@ -622,9 +632,11 @@ pub fn build_with(
                 }
             }
             flush(&mut run, &mut rows);
+            let text = event_nicks(w, m, &network);
             rows.push(Row::Event(Rc::new(EventRow {
                 id: m.id.clone(),
-                text: event_nicks(w, m, &network),
+                copy: event_entry(&m.id, entry.at, m.position.unwrap_or(0), &time, &text),
+                text,
                 time,
             })));
             continue;
@@ -643,7 +655,7 @@ pub fn build_with(
             None => true,
         };
         last = Some((m.sender_id.clone(), entry.at, m.kind));
-        let mut row = message_row(w, m, &network, header, time, bodies);
+        let mut row = message_row(w, m, &network, header, time, entry.at, bodies);
         row.mention = !row.own && !row.deleted && mentions(&m.text, &nick, &words);
         row.focused = options.focused == Some(m.id.as_str());
         if row.mention || row.focused {
@@ -724,6 +736,7 @@ fn message_row(
     network: &str,
     header: bool,
     time: String,
+    at: i64,
     bodies: &mut Bodies,
 ) -> MessageRow {
     let member = w.member(&m.sender_id, network);
@@ -787,6 +800,26 @@ fn message_row(
         header.hash(&mut h);
         h.finish()
     };
+    let mut copy = copy_log::Entry::new(
+        &m.id,
+        at,
+        &time,
+        copy_log::Body::Said {
+            say: match m.kind {
+                MessageKind::Action => copy_log::Say::Action,
+                MessageKind::Notice => copy_log::Say::Notice,
+                _ => copy_log::Say::Message,
+            },
+            nick: nick(w, &m.sender_id, network),
+            text: copy_log::message_text(
+                &m.text,
+                m.gif.as_ref().map(|g| g.url.as_str()),
+                attachments.iter().map(|a| a.url.as_str()),
+            ),
+        },
+        &Local,
+    );
+    copy.position = m.position.unwrap_or(0);
     MessageRow {
         id: m.id.clone(),
         version,
@@ -817,7 +850,21 @@ fn message_row(
         attachments,
         images,
         links,
+        copy,
     }
+}
+
+/// The line copying an event gives.
+fn event_entry(id: &str, at: i64, position: i64, time: &str, text: &str) -> copy_log::Entry {
+    let mut entry = copy_log::Entry::new(
+        id,
+        at,
+        time,
+        copy_log::Body::Event(text.to_string()),
+        &Local,
+    );
+    entry.position = position;
+    entry
 }
 
 /// The text without the uploaded files' URLs, which the attachments show.

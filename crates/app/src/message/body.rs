@@ -84,6 +84,7 @@ pub fn render(
         rules: 0,
         size,
         diagrams: 0,
+        selectable: 0,
         mono: cx.theme().mono_font_family.clone(),
     };
     let blocks = message_blocks(&Mapped::new(&m.body.text), m.action);
@@ -234,10 +235,20 @@ struct Body<'a> {
     /// The message text size in pixels, which headings scale.
     size: f32,
     diagrams: usize,
+    /// Selectable pieces made so far, to put them in reading order.
+    selectable: usize,
     mono: SharedString,
 }
 
 impl Body<'_> {
+    /// What copying this message's text writes.
+    fn copy_tag(&self, key: String) -> super::copy::Tag {
+        super::copy::Tag {
+            key,
+            entries: Rc::from(vec![self.m.copy.clone()]),
+        }
+    }
+
     fn block(
         &mut self,
         block: &Block,
@@ -468,7 +479,8 @@ impl Body<'_> {
     ) -> AnyElement {
         let id = format!("diagram-{}-{}", self.m.id, self.diagrams);
         self.diagrams += 1;
-        match super::diagram::render(&id, code, self.theme, self.mono.clone(), window, cx) {
+        let tag = self.copy_tag(format!("{id}-source-text"));
+        match super::diagram::render(&id, code, self.theme, self.mono.clone(), tag, window, cx) {
             Ok(picture) => picture,
             Err(why) => div()
                 .flex()
@@ -490,6 +502,8 @@ impl Body<'_> {
     fn code(&mut self, code: &str, lang: Option<&str>) -> AnyElement {
         let n = self.codes;
         self.codes += 1;
+        let rank = self.selectable;
+        self.selectable += 1;
         let id = format!("code-{}-{n}", self.m.id);
         let theme = self.theme;
         let highlights: Vec<(Range<usize>, HighlightStyle)> = highlight(code, lang)
@@ -554,7 +568,9 @@ impl Body<'_> {
                             ElementId::Name(format!("{id}-text").into()),
                             code.to_string(),
                         )
-                        .highlights(highlights),
+                        .highlights(highlights)
+                        .document_order(rank as u64)
+                        .copy(self.copy_tag(format!("{id}-text"))),
                     ),
             )
             .into_any_element()
@@ -570,6 +586,8 @@ impl Body<'_> {
     ) -> AnyElement {
         let n = self.paragraphs;
         self.paragraphs += 1;
+        let rank = self.selectable;
+        self.selectable += 1;
         let id = format!("text-{}-{n}", self.m.id);
         let theme = self.theme;
         // `[text](url)` shows its words; the rest of the paragraph is
@@ -753,6 +771,8 @@ impl Body<'_> {
         let element_id = ElementId::Name(id.clone().into());
         let places = places_for(&id, window, cx);
         let text = RichText::new(element_id, shown)
+            .document_order(rank as u64)
+            .copy(self.copy_tag(id.clone()))
             .highlights(highlights)
             .pills(
                 pieces
@@ -761,7 +781,12 @@ impl Body<'_> {
                     .collect(),
             )
             .places(places.clone());
-        let mut wrapper = div().relative().min_w_0().child(text);
+        let mut wrapper = div()
+            .id(ElementId::Name(format!("{id}-block").into()))
+            .test_support()
+            .relative()
+            .min_w_0()
+            .child(text);
         let known = places.borrow().clone();
         for (i, piece) in pieces.into_iter().enumerate() {
             let Some(bounds) = known.get(i) else {
@@ -1102,6 +1127,8 @@ pub struct RichText {
     styled: StyledText,
     pills: Vec<(Range<usize>, Option<Hsla>)>,
     places: Option<Places>,
+    copy: Option<super::copy::Tag>,
+    order: u64,
 }
 
 impl RichText {
@@ -1113,7 +1140,22 @@ impl RichText {
             text,
             pills: Vec::new(),
             places: None,
+            copy: None,
+            order: 0,
         }
+    }
+
+    /// Where this text reads among the others of its message.
+    pub fn document_order(mut self, order: u64) -> Self {
+        self.order = order;
+        self
+    }
+
+    /// Copying a selection that takes in this text writes `tag`'s log lines
+    /// (see [`super::copy`]).
+    pub fn copy(mut self, tag: super::copy::Tag) -> Self {
+        self.copy = Some(tag);
+        self
     }
 
     /// Styles ranges, in order and without overlap.
@@ -1167,11 +1209,16 @@ impl Element for RichText {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let text = self.text.clone();
+        let copy_key = self.copy.as_ref().map(|c| c.key.clone());
         let handle = window.with_element_state(
             global_id.expect("RichText has an ID"),
             |retained: Option<OwnedSelection>, window| {
                 let retained = retained.unwrap_or_else(|| {
                     let handle = TextSelectionHandle::new(text, cx);
+                    if let Some(key) = copy_key {
+                        let id = window.window_handle().window_id();
+                        handle.copy_with(move |cx| super::copy::answer(id, &key, cx), cx);
+                    }
                     let refresh = handle.refresh_window_on_change(window, cx);
                     OwnedSelection {
                         handle,
@@ -1200,6 +1247,7 @@ impl Element for RichText {
             .prepaint(global_id, inspector_id, bounds, &mut (), window, cx);
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let registration = TextSelectionRegistration::new(hitbox.clone(), bounds)
+            .with_document_order(self.order)
             .with_text_bounds(vec![bounds])
             .with_rendered_element(handle, window, cx);
         handle.register(registration, window, cx);
@@ -1255,6 +1303,15 @@ impl Element for RichText {
             )],
             cx,
         );
+        if let Some(tag) = &self.copy {
+            let selected: String = projection
+                .ranges()
+                .iter()
+                .flatten()
+                .filter_map(|r| self.text.get(r.clone()))
+                .collect();
+            super::copy::record(window.window_handle().window_id(), tag, handle, selected);
+        }
         let color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
         for range in projection.ranges().iter().flatten().cloned() {
             for q in range_bounds(&layout, range, bounds, false) {
