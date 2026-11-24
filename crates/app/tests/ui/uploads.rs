@@ -133,6 +133,73 @@ fn a_batch_uploads_and_sends_as_one_message(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_message_upload_is_marked_as_one(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |s| {
+        server(s, Some(false));
+        uploads_answer(s, Duration::ZERO);
+    });
+    bootstrap(&f, cx);
+    add(&f, cx, vec![png("one.png")]);
+    cx.update_window(f.window, |_, window, cx| {
+        window.click("composer-input", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    wait(cx, "the upload", |_| {
+        !f.server.requests_to("POST", "/api/v1/uploads").is_empty()
+    });
+    let upload = f.server.requests_to("POST", "/api/v1/uploads").remove(0);
+    assert_eq!(upload.query_param("use").as_deref(), Some("message"));
+}
+
+#[gpui_kit::test]
+fn the_networks_own_limits_decide_what_joins(cx: &mut TestAppContext) {
+    // The server takes pictures and PDFs up to 1 MB; this network's files go
+    // to a host that takes only PDFs, up to 100 bytes.
+    let f = open_with(cx, true, |s| {
+        server(s, Some(false));
+        s.route(
+            "GET",
+            "/api/v1/networks/n1/uploads",
+            200,
+            json!({"available": true, "canDelete": true, "maxBytes": 100,
+                   "provider": "upstream", "types": ["application/pdf"]}),
+        );
+    });
+    bootstrap(&f, cx);
+    // Drawing the composer asks the network; wait for the answer to be used.
+    wait(cx, "the network's answer", |cx| {
+        cx.refresh_windows();
+        !f.server
+            .requests_to("GET", "/api/v1/networks/n1/uploads")
+            .is_empty()
+    });
+    cx.update_window(f.window, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.run_until_parked();
+    let before = pending(cx).len();
+    add(&f, cx, vec![png("late.png")]);
+    // A picture no longer fits: this network takes PDFs only.
+    assert_eq!(pending(cx).len(), before, "the picture is refused");
+    add(
+        &f,
+        cx,
+        vec![FileData::new("small.pdf", "application/pdf", vec![0; 50])],
+    );
+    assert_eq!(pending(cx).len(), before + 1, "a small PDF joins");
+    add(
+        &f,
+        cx,
+        vec![FileData::new("big.pdf", "application/pdf", vec![0; 500])],
+    );
+    assert_eq!(
+        pending(cx).len(),
+        before + 1,
+        "a PDF over the network's size is refused"
+    );
+}
+
+#[gpui_kit::test]
 fn files_the_server_does_not_take_stay_out(cx: &mut TestAppContext) {
     let f = open_with(cx, true, |s| server(s, Some(false)));
     bootstrap(&f, cx);

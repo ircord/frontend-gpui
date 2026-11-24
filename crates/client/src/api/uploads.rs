@@ -31,6 +31,27 @@ const UPLOAD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// The size of each piece of the body, so progress moves smoothly.
 const CHUNK: usize = 64 * 1024;
 
+/// What an upload is for. The backend sends only a `message` upload to the
+/// network's file host; a profile picture, a banner or a theme background
+/// stays on this server, so those carry no marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadUse {
+    /// A file posted in a conversation (`use=message`).
+    Message,
+    /// Anything else: kept on this server, no marker sent.
+    Other,
+}
+
+impl UploadUse {
+    /// The `use` query value, when there is one.
+    pub fn marker(self) -> Option<&'static str> {
+        match self {
+            UploadUse::Message => Some("message"),
+            UploadUse::Other => None,
+        }
+    }
+}
+
 /// A file read into memory, ready to upload.
 #[derive(Debug, Clone)]
 pub struct FileData {
@@ -138,6 +159,36 @@ pub fn accepts(types: &[String], content_type: &str) -> bool {
                 .is_some_and(|rest| rest.starts_with('/')),
             None => pattern == content_type,
         })
+}
+
+/// What a conversation's files may be, once the network's own limits are
+/// known: where the network sends message files can be a different host with
+/// its own size and type limits than the server-wide `capabilities.upload`.
+///
+/// `None` means files cannot be sent at all. Without an answer from the
+/// network (`provider` is `None`: not asked yet, or the call failed) the
+/// server-wide limits stand. A network that names no types or no size keeps
+/// the server's for that part.
+pub fn limits(
+    provider: Option<&c::Provider>,
+    server: Option<&c::UploadCapability>,
+) -> Option<c::UploadCapability> {
+    let Some(provider) = provider else {
+        return server.cloned();
+    };
+    if !provider.available {
+        return None;
+    }
+    let types = match provider.types.as_ref().filter(|t| !t.is_empty()) {
+        Some(types) => types.clone(),
+        None => server?.types.clone(),
+    };
+    let max_bytes = if provider.max_bytes > 0 {
+        provider.max_bytes
+    } else {
+        server.map_or(0, |s| s.max_bytes)
+    };
+    Some(c::UploadCapability { max_bytes, types })
 }
 
 /// Whether a file of `content_type` and `size` may join a batch that already
@@ -253,13 +304,14 @@ impl Api {
             .unwrap_or_else(|_| self.server().join(url).to_string())
     }
 
-    /// `POST /api/v1/uploads?networkId=`: upload one file as
+    /// `POST /api/v1/uploads?networkId=[&use=message]`: upload one file as
     /// `multipart/form-data`, counting the bytes sent into `progress`. Gives
     /// up with [`UploadError::Stalled`] when nothing moves for `stall` (use
     /// [`STALL`]). Dropping the future cancels the upload.
     pub async fn upload_file(
         &self,
         network: &str,
+        purpose: UploadUse,
         file: &FileData,
         progress: &Progress,
         stall: Duration,
@@ -293,9 +345,11 @@ impl Api {
             })
         };
 
+        let mut query = vec![("networkId", network)];
+        query.extend(purpose.marker().map(|m| ("use", m)));
         let request = self
             .request(Method::POST, "/api/v1/uploads")
-            .query(&[("networkId", network)])
+            .query(&query)
             .header(
                 header::CONTENT_TYPE,
                 format!("multipart/form-data; boundary={boundary}"),
@@ -341,6 +395,41 @@ mod tests {
             max_bytes: max,
             types: types.iter().map(|t| t.to_string()).collect(),
         }
+    }
+
+    fn provider(available: bool, max: i64, types: Option<&[&str]>) -> c::Provider {
+        c::Provider {
+            available,
+            max_bytes: max,
+            provider: "upstream".into(),
+            types: types.map(|t| t.iter().map(|t| t.to_string()).collect()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_networks_limits_replace_the_servers() {
+        let server = capability(&["image/*"], 25_000_000);
+        // Not asked yet, or the call failed: the server's stand.
+        assert_eq!(limits(None, Some(&server)), Some(server.clone()));
+        assert_eq!(limits(None, None), None);
+        // The network's own limits win, also when they are tighter.
+        let own = provider(true, 1000, Some(&["application/pdf"]));
+        assert_eq!(
+            limits(Some(&own), Some(&server)),
+            Some(capability(&["application/pdf"], 1000))
+        );
+        // A part the network leaves open keeps the server's.
+        let open = provider(true, 0, None);
+        assert_eq!(limits(Some(&open), Some(&server)), Some(server.clone()));
+        // A network that takes no files takes none, whatever the server says.
+        assert_eq!(limits(Some(&provider(false, 0, None)), Some(&server)), None);
+    }
+
+    #[test]
+    fn only_message_uploads_carry_the_marker() {
+        assert_eq!(UploadUse::Message.marker(), Some("message"));
+        assert_eq!(UploadUse::Other.marker(), None);
     }
 
     #[test]

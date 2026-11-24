@@ -13,7 +13,7 @@ use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::api::ApiError;
-use ircord_client::api::uploads::{FileData, Progress, STALL};
+use ircord_client::api::uploads::{FileData, Progress, STALL, UploadUse};
 use ircord_client::contract::{
     ThemeBackground, ThemeBackgroundFit as Fit, ThemeBackgroundPlacement as Placement,
     ThemeBackgroundPosition as Position,
@@ -242,7 +242,13 @@ fn choose(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) {
             }
             let task = client.request(move |api| async move {
                 let upload = api
-                    .upload_file(&network, &file, &Progress::default(), STALL)
+                    .upload_file(
+                        &network,
+                        UploadUse::Other,
+                        &file,
+                        &Progress::default(),
+                        STALL,
+                    )
                     .await
                     .map_err(|e| ApiError::Http {
                         status: 0,
