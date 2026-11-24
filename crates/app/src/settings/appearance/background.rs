@@ -41,6 +41,9 @@ pub(super) struct Draft {
     /// draft has moved from under is set again.
     seen: [i64; 3],
     events: Vec<Subscription>,
+    /// Counts the editors opened and backgrounds removed, so an upload that
+    /// finishes after either does not touch what is shown now.
+    generation: u64,
 }
 
 impl Draft {
@@ -56,11 +59,13 @@ impl Draft {
             sliders: RANGES.map(|range| slider(range, cx)),
             seen: [-1; 3],
             events: Vec::new(),
+            generation: 0,
         }
     }
 
     /// Start from the background `theme` has, or none.
     pub(super) fn reset(&mut self, value: Option<ThemeBackground>) {
+        self.generation += 1;
         self.value = value;
         self.thumb = None;
         self.uploading = false;
@@ -205,18 +210,36 @@ fn choose(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) {
             {
                 return refuse(t!("appearance-bg-too-big"));
             }
-            cx.update(|_, cx| {
-                editor.update(cx, |e, _| {
-                    e.background.uploading = true;
-                    e.background.error = None;
-                });
-                cx.refresh_windows();
-            })
-            .ok();
+            let generation = cx
+                .update(|_, cx| {
+                    let generation = editor.update(cx, |e, _| {
+                        e.background.uploading = true;
+                        e.background.error = None;
+                        e.background.generation
+                    });
+                    cx.refresh_windows();
+                    generation
+                })
+                .unwrap_or_default();
+            // A picture this app cannot draw is refused before it is sent.
             let measured = {
                 let bytes = file.bytes.clone();
                 cx.background_spawn(async move { backdrop::preview(&bytes) })
+                    .await
             };
+            if measured.is_none() {
+                cx.update(|_, cx| {
+                    editor.update(cx, |e, _| {
+                        if e.background.generation == generation {
+                            e.background.uploading = false;
+                            e.background.error = Some(t!("appearance-bg-undecodable").into());
+                        }
+                    });
+                    cx.refresh_windows();
+                })
+                .ok();
+                return;
+            }
             let task = client.request(move |api| async move {
                 let upload = api
                     .upload_file(&network, &file, &Progress::default(), STALL)
@@ -231,10 +254,12 @@ fn choose(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) {
                 })
             });
             let result = task.await;
-            let measured = measured.await;
             cx.update(|_, cx| {
                 editor.update(cx, |e, _| {
                     let draft = &mut e.background;
+                    if draft.generation != generation {
+                        return;
+                    }
                     draft.uploading = false;
                     match result {
                         Ok(Ok(url)) => {

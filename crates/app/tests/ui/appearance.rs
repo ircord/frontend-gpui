@@ -411,14 +411,14 @@ fn picture(fill: impl Fn(u32, u32) -> [u8; 4]) -> Vec<u8> {
 
 /// The server takes images up to 1 MB, keeps one theme, and answers each
 /// upload with the next picture's address.
-fn serve_pictures(server: &CannedServer, theme: Value) {
+fn serve_pictures(server: &CannedServer, themes: Vec<Value>) {
     let mut snapshot = crate::fixture::snapshot();
     snapshot.capabilities.upload = Some(ircord_client::contract::UploadCapability {
         max_bytes: 1_000_000,
         types: vec!["image/*".into()],
     });
     server.snapshot(&snapshot);
-    let library = Arc::new(Mutex::new(vec![theme]));
+    let library = Arc::new(Mutex::new(themes));
     let document = |themes: &Vec<Value>| json!({"format": 1, "customCss": true, "themes": themes, "updatedAt": "l1"});
     let stored = library.clone();
     server.route_fn("GET", "/api/v1/app/themes", move |_| {
@@ -507,7 +507,7 @@ fn a_background_is_chosen_changed_and_removed_as_the_web_saves_it(cx: &mut TestA
         let sea = sea.clone();
         move |s| {
             serve(s, json!({"mode": "dark"}), json!([sea.clone()]));
-            serve_pictures(s, sea);
+            serve_pictures(s, vec![sea]);
         }
     });
     bootstrap(&f, cx);
@@ -616,4 +616,89 @@ fn a_server_without_uploads_gives_a_theme_no_background(cx: &mut TestAppContext)
     click(&f, cx, "appearance-theme-edit-t-sea");
     assert!(present(&f, cx, "appearance-bg-unavailable"));
     assert!(!present(&f, cx, "appearance-bg-choose"));
+}
+
+/// Two themes, the server holding uploads until `release` is sent, and a
+/// folder with a picture and an SVG.
+fn two_themes(
+    cx: &mut TestAppContext,
+    hold: bool,
+) -> (
+    Fixture,
+    std::sync::mpsc::Sender<()>,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let theme = |id: &str, name: &str| {
+        json!({"format": 1, "id": id, "name": name, "updatedAt": "s1",
+            "base": {"dark": "ircord-dark", "light": "ircord-light"}, "colors": {}, "css": ""})
+    };
+    let (release, held) = crate::fixture::held_reply(|| {
+        Reply::json(
+            201,
+            json!({"id": "u0", "url": PICTURE_ONE, "name": "x.png", "size": 4,
+                   "contentType": "image/png", "width": 8, "height": 4}),
+        )
+    });
+    let themes = vec![theme("t-sea", "Sea"), theme("t-sky", "Sky")];
+    let f = open_with(cx, true, move |s| {
+        serve(s, json!({"mode": "dark"}), json!([]));
+        serve_pictures(s, themes);
+        if hold {
+            s.route_fn("POST", "/api/v1/uploads", held);
+        }
+    });
+    bootstrap(&f, cx);
+    wait(cx, "the themes", |cx| {
+        let client = f.session.read(cx).client().unwrap().read();
+        client.documents.themes.is_loaded()
+    });
+    let dir = std::env::temp_dir().join(format!(
+        "ircord-background-{}",
+        ircord_client::client::random_id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (png, svg) = (dir.join("castle.png"), dir.join("logo.svg"));
+    std::fs::write(
+        &png,
+        picture(|x, y| [(x * 30) as u8, (y * 60) as u8, 120, 255]),
+    )
+    .unwrap();
+    std::fs::write(&svg, "<svg xmlns='http://www.w3.org/2000/svg'/>").unwrap();
+    (f, release, png, svg)
+}
+
+#[gpui_kit::test]
+fn a_picture_the_app_cannot_draw_is_refused_before_it_is_sent(cx: &mut TestAppContext) {
+    let (f, _release, _png, svg) = two_themes(cx, false);
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-theme-edit-t-sea");
+    click(&f, cx, "appearance-bg-choose");
+    choose_file(cx, &svg);
+    wait(cx, "the refusal", |cx| shown(&f, cx, "appearance-bg-error"));
+    assert!(f.server.requests_to("POST", "/api/v1/uploads").is_empty());
+    assert!(!present(&f, cx, "appearance-bg-remove"));
+}
+
+#[gpui_kit::test]
+fn an_upload_that_finishes_after_the_editor_moved_on_is_dropped(cx: &mut TestAppContext) {
+    let (f, release, png, _svg) = two_themes(cx, true);
+    open_at(&f, cx, "appearance-themes");
+    // Cancel while the upload is in flight, then edit the other theme.
+    click(&f, cx, "appearance-theme-edit-t-sea");
+    click(&f, cx, "appearance-bg-choose");
+    choose_file(cx, &png);
+    wait(cx, "the upload sent", |_| {
+        !f.server.requests_to("POST", "/api/v1/uploads").is_empty()
+    });
+    click(&f, cx, "appearance-theme-cancel");
+    click(&f, cx, "appearance-theme-edit-t-sky");
+    release.send(()).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    cx.run_until_parked();
+    assert!(
+        !present(&f, cx, "appearance-bg-remove"),
+        "no picture in Sky's editor"
+    );
+    assert!(!present(&f, cx, "appearance-bg-thumb"));
 }

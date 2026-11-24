@@ -157,6 +157,7 @@ appearance-bg-replace = Replace image
 appearance-bg-remove = Remove background
 appearance-bg-help = The image is stored in your account and counts toward your upload limit. Exported themes don't include it.
 appearance-bg-not-image = Choose an image file.
+appearance-bg-undecodable = This app can't show that image. Use PNG, JPEG, GIF, WebP or BMP.
 appearance-bg-too-big = That image is larger than this server accepts.
 appearance-bg-not-instance = The upload isn't stored on this server.
 appearance-bg-placement = Show behind
