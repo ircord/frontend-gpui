@@ -32,8 +32,8 @@ const UPLOAD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const CHUNK: usize = 64 * 1024;
 
 /// What an upload is for. The backend sends only a `message` upload to the
-/// network's file host; a profile picture, a banner or a theme background
-/// stays on this server, so those carry no marker.
+/// network's file host; everything else (banners, profile and theme
+/// backgrounds) stays on this server, so those carry no marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UploadUse {
     /// A file posted in a conversation (`use=message`).
@@ -154,6 +154,7 @@ pub fn accepts(types: &[String], content_type: &str) -> bool {
     types
         .iter()
         .any(|pattern| match pattern.strip_suffix("/*") {
+            _ if pattern == "*/*" => true,
             Some(prefix) => content_type
                 .strip_prefix(prefix)
                 .is_some_and(|rest| rest.starts_with('/')),
@@ -439,6 +440,7 @@ mod tests {
         assert!(accepts(&types, "application/pdf"));
         assert!(!accepts(&types, "imagex/png"));
         assert!(!accepts(&types, "video/mp4"));
+        assert!(accepts(&["*/*".to_string()], "image/png"));
     }
 
     #[test]

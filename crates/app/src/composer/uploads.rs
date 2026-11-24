@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::TestSupportExt;
 use gpui_kit::prelude::*;
@@ -32,6 +32,9 @@ use crate::ui::icon::IconName;
 
 /// How often the tray redraws while files upload, for the progress bars.
 const PROGRESS_TICK: Duration = Duration::from_millis(150);
+
+/// How long to wait before asking a network again after its answer failed.
+const RETRY: Duration = Duration::from_secs(30);
 
 /// A small picture of a waiting file.
 #[derive(Clone)]
@@ -75,8 +78,11 @@ pub struct Uploads {
     stall: Option<Duration>,
     /// Where each network's files go and what it takes, once asked.
     providers: HashMap<String, c::Provider>,
-    /// Networks already asked, so each is asked once per session.
-    asked: HashSet<String>,
+    /// When each network was last asked. An answered network is not asked
+    /// again; one whose ask failed is, after [`RETRY`].
+    asked: HashMap<String, Instant>,
+    /// The client the answers above belong to: a new sign-in starts afresh.
+    owner: Option<std::rc::Weak<Client>>,
 }
 
 impl Global for Uploads {}
@@ -152,28 +158,49 @@ fn capability(
     uploads::limits(provider.as_ref(), server.as_ref())
 }
 
-/// Ask `network` where its files go, once; the answer redraws the composer.
-/// A failed ask is not repeated: the server-wide limits stand, and the
-/// server still refuses what it will not take.
+/// Ask `network` where its files go; the answer redraws the composer. A
+/// failed ask is repeated after [`RETRY`], when the composer next draws; the
+/// server-wide limits stand meanwhile, and the server still refuses what it
+/// will not take.
 fn ask_network(client: &Rc<Client>, network: &str, cx: &mut App) {
-    if !cx
-        .default_global::<Uploads>()
-        .asked
-        .insert(network.to_string())
+    let state = cx.default_global::<Uploads>();
+    // Answers belong to the account that asked: forget them for another.
+    if !state
+        .owner
+        .as_ref()
+        .is_some_and(|o| std::rc::Weak::ptr_eq(o, &Rc::downgrade(client)))
     {
+        state.providers.clear();
+        state.asked.clear();
+        state.owner = Some(Rc::downgrade(client));
+    }
+    let answered = state.providers.contains_key(network);
+    let recent = state
+        .asked
+        .get(network)
+        .is_some_and(|at| at.elapsed() < RETRY);
+    if answered || recent {
         return;
     }
+    state.asked.insert(network.to_string(), Instant::now());
     let network = network.to_string();
     let task = {
         let network = network.clone();
         client.request(move |api| async move { api.upload_provider(&network).await })
     };
+    let asker = Rc::downgrade(client);
     cx.spawn(async move |cx| {
         if let Ok(Ok(provider)) = task.await {
             cx.update(|cx| {
-                cx.default_global::<Uploads>()
-                    .providers
-                    .insert(network, provider);
+                let state = cx.default_global::<Uploads>();
+                // Only if the account that asked is still the one signed in.
+                if state
+                    .owner
+                    .as_ref()
+                    .is_some_and(|o| std::rc::Weak::ptr_eq(o, &asker))
+                {
+                    state.providers.insert(network, provider);
+                }
                 refresh(cx);
             });
         }

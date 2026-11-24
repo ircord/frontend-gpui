@@ -167,16 +167,18 @@ fn the_networks_own_limits_decide_what_joins(cx: &mut TestAppContext) {
         );
     });
     bootstrap(&f, cx);
-    // Drawing the composer asks the network; wait for the answer to be used.
-    wait(cx, "the network's answer", |cx| {
+    // Drawing the composer asks the network; wait until its answer is used,
+    // which shows as the attach button naming the network's size.
+    wait(cx, "the network's limits on the attach button", |cx| {
         cx.refresh_windows();
-        !f.server
-            .requests_to("GET", "/api/v1/networks/n1/uploads")
-            .is_empty()
+        cx.update_window(f.window, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find("composer-attach")
+                .is_some_and(|b| b.label().is_some_and(|l| l.contains("100 B")))
+        })
+        .unwrap_or(false)
     });
-    cx.update_window(f.window, |_, window, cx| window.render_frame(cx))
-        .unwrap();
-    cx.run_until_parked();
     let before = pending(cx).len();
     add(&f, cx, vec![png("late.png")]);
     // A picture no longer fits: this network takes PDFs only.
