@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New
+
+- The theme editor has a Background section, as the web client's: choose an image from your computer for a personal theme, replace or remove it, and set whether it sits behind the conversation or the whole app, how it fits and where, and how much it is dimmed, blurred and covered by the panels.
+
 ## v0.3.0 — 2026-11-23
 
 ### New
