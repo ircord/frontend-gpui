@@ -76,18 +76,23 @@ fn open_at(f: &Fixture, cx: &mut TestAppContext, row: &'static str) {
     });
 }
 
-/// Click `id`, scrolling the settings page down until it is wholly in view.
-fn click(f: &Fixture, cx: &mut TestAppContext, id: &str) {
-    let id = gpui_kit::ElementId::Name(id.to_string().into());
-    for _ in 0..40 {
-        let shown = cx
+/// Scroll the settings page until `id` is wholly in view.
+fn reveal(f: &Fixture, cx: &mut TestAppContext, id: &gpui_kit::ElementId) {
+    for _ in 0..80 {
+        let (shown, above) = cx
             .update_window(f.window, |_, window, cx| {
                 window.render_frame(cx);
                 let pane = window.find("settings-content").bounds();
-                window.try_find(id.clone()).is_some_and(|e| {
-                    let b = e.bounds();
-                    e.visible() && b.top() >= pane.top() && b.bottom() <= pane.bottom()
-                })
+                window
+                    .try_find(id.clone())
+                    .map(|e| {
+                        let b = e.bounds();
+                        (
+                            e.visible() && b.top() >= pane.top() && b.bottom() <= pane.bottom(),
+                            b.top() < pane.top(),
+                        )
+                    })
+                    .unwrap_or((false, false))
             })
             .unwrap();
         if shown {
@@ -98,13 +103,19 @@ fn click(f: &Fixture, cx: &mut TestAppContext, id: &str) {
                 "settings-content",
                 gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
                     gpui_kit::px(0.),
-                    gpui_kit::px(-120.),
+                    gpui_kit::px(if above { 120. } else { -120. }),
                 )),
                 cx,
             )
         })
         .unwrap();
     }
+}
+
+/// Click `id`, scrolling the settings page down until it is wholly in view.
+fn click(f: &Fixture, cx: &mut TestAppContext, id: &str) {
+    let id = gpui_kit::ElementId::Name(id.to_string().into());
+    reveal(f, cx, &id);
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
         window.click(id, cx);
@@ -379,4 +390,315 @@ fn every_scheme_can_be_picked_and_reads_clearly(cx: &mut TestAppContext) {
             family.id
         );
     }
+}
+
+// ---- A theme's background picture ----
+
+const PICTURE_ONE: &str = "/files/aaaaaaaa/bbbbbbbb/castle.png";
+const PICTURE_TWO: &str = "/files/cccccccc/dddddddd/keep.png";
+
+fn picture(fill: impl Fn(u32, u32) -> [u8; 4]) -> Vec<u8> {
+    let image = image::RgbaImage::from_fn(8, 4, |x, y| image::Rgba(fill(x, y)));
+    let mut bytes = Vec::new();
+    image
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    bytes
+}
+
+/// The server takes images up to 1 MB, keeps one theme, and answers each
+/// upload with the next picture's address.
+fn serve_pictures(server: &CannedServer, themes: Vec<Value>) {
+    let mut snapshot = crate::fixture::snapshot();
+    snapshot.capabilities.upload = Some(ircord_client::contract::UploadCapability {
+        max_bytes: 1_000_000,
+        types: vec!["image/*".into()],
+    });
+    server.snapshot(&snapshot);
+    let library = Arc::new(Mutex::new(themes));
+    let document = |themes: &Vec<Value>| json!({"format": 1, "customCss": true, "themes": themes, "updatedAt": "l1"});
+    let stored = library.clone();
+    server.route_fn("GET", "/api/v1/app/themes", move |_| {
+        Reply::json(200, document(&stored.lock().unwrap()))
+    });
+    server.route_fn("PUT", "/api/v1/app/themes/*", move |request| {
+        let theme = request.json()["theme"].clone();
+        let mut themes = library.lock().unwrap();
+        themes.retain(|t| t["id"] != theme["id"]);
+        themes.push(theme);
+        Reply::json(200, document(&themes))
+    });
+    let uploads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    server.route_fn("POST", "/api/v1/uploads", move |request| {
+        assert_eq!(request.query_param("networkId").as_deref(), Some("n1"));
+        let n = uploads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let url = [PICTURE_ONE, PICTURE_TWO][n];
+        Reply::json(
+            201,
+            json!({"id": format!("u{n}"), "url": url, "name": "x.png", "size": 4,
+                   "contentType": "image/png", "width": 8, "height": 4}),
+        )
+    });
+    let (one, two) = (
+        picture(|x, y| [(x * 30) as u8, (y * 60) as u8, 120, 255]),
+        picture(|_, y| [10, (200 - y * 40) as u8, 30, 255]),
+    );
+    server.route_reply("GET", PICTURE_ONE, Reply::bytes(200, "image/png", one));
+    server.route_reply("GET", PICTURE_TWO, Reply::bytes(200, "image/png", two));
+}
+
+/// Answer the open file prompt with `file`.
+fn choose_file(cx: &mut TestAppContext, file: &std::path::Path) {
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_paths(), "the picker was asked");
+    let file = file.to_path_buf();
+    cx.simulate_path_prompt_response(move |_| Some(vec![file]));
+}
+
+fn shown(f: &Fixture, cx: &mut gpui_kit::App, id: &'static str) -> bool {
+    f.window
+        .update(cx, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(gpui_kit::ElementId::Name(id.into()))
+                .is_some()
+        })
+        .unwrap_or(false)
+}
+
+fn present(f: &Fixture, cx: &mut TestAppContext, id: &str) -> bool {
+    let id = gpui_kit::ElementId::Name(id.to_string().into());
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).is_some()
+    })
+    .unwrap()
+}
+
+fn saved_theme(f: &Fixture, n: usize) -> Value {
+    f.server
+        .wait_for_nth("PUT", "/api/v1/app/themes/*", n, crate::fixture::HANG_GUARD)
+        .json()["theme"]
+        .clone()
+}
+
+fn tones_of(bytes: &[u8]) -> Value {
+    let decoded = image::load_from_memory(bytes).unwrap().to_rgba8();
+    let small = image::imageops::resize(&decoded, 24, 24, image::imageops::FilterType::Triangle);
+    json!(look::measure_tones(small.as_raw()).unwrap())
+}
+
+#[gpui_kit::test]
+fn a_background_is_chosen_changed_and_removed_as_the_web_saves_it(cx: &mut TestAppContext) {
+    let sea = json!({
+        "format": 1, "id": "t-sea", "name": "Sea", "updatedAt": "s1",
+        "base": {"dark": "ircord-dark", "light": "ircord-light"},
+        "colors": {"dark": {"canvas": "#0a1018", "surface": "#102030", "overlay": "#2a3a4a",
+            "ink": "#e0f0ff", "muted": "#90a0b0", "accent": "#40c0ff",
+            "palette": {"red": "#ff6060", "orange": "#ffa060", "yellow": "#ffd060",
+                "green": "#60ff90", "cyan": "#60e0ff", "blue": "#6090ff",
+                "purple": "#c090ff", "pink": "#ff90c0"}}},
+        "css": ""
+    });
+    let f = open_with(cx, true, {
+        let sea = sea.clone();
+        move |s| {
+            serve(s, json!({"mode": "dark"}), json!([sea.clone()]));
+            serve_pictures(s, vec![sea]);
+        }
+    });
+    bootstrap(&f, cx);
+    wait(cx, "the themes", |cx| {
+        f.session
+            .read(cx)
+            .client()
+            .unwrap()
+            .read()
+            .documents
+            .themes
+            .is_loaded()
+    });
+    let dir = std::env::temp_dir().join(format!(
+        "ircord-background-{}",
+        ircord_client::client::random_id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (one, two) = (dir.join("castle.png"), dir.join("keep.png"));
+    std::fs::write(
+        &one,
+        picture(|x, y| [(x * 30) as u8, (y * 60) as u8, 120, 255]),
+    )
+    .unwrap();
+    std::fs::write(&two, picture(|_, y| [10, (200 - y * 40) as u8, 30, 255])).unwrap();
+
+    // Choose: the picture is uploaded, and saved with the theme as the web
+    // saves it, with the web's defaults for where it sits.
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-theme-edit-t-sea");
+    assert!(present(&f, cx, "appearance-bg-choose"));
+    assert!(
+        !present(&f, cx, "appearance-bg-remove"),
+        "nothing to remove yet"
+    );
+    click(&f, cx, "appearance-bg-choose");
+    choose_file(cx, &one);
+    wait(cx, "the picture in the draft", |cx| {
+        shown(&f, cx, "appearance-bg-thumb")
+    });
+    click(&f, cx, "appearance-theme-save");
+    let background = saved_theme(&f, 1)["background"].clone();
+    assert_eq!(
+        background,
+        json!({"url": PICTURE_ONE, "placement": "conversation", "fit": "cover",
+               "position": "center", "dim": 55, "blur": 0, "panelOpacity": 85,
+               "tones": tones_of(&std::fs::read(&one).unwrap())})
+    );
+
+    // Change: another picture, shown behind the whole app, dimmed to the
+    // end of its slider.
+    wait(cx, "the editor closed", |cx| {
+        !shown(&f, cx, "appearance-bg-choose")
+    });
+    click(&f, cx, "appearance-theme-edit-t-sea");
+    wait(cx, "the saved picture shown", |cx| {
+        shown(&f, cx, "appearance-bg-thumb")
+    });
+    click(&f, cx, "appearance-bg-choose");
+    choose_file(cx, &two);
+    wait(cx, "the second upload", |_| {
+        f.server.requests_to("POST", "/api/v1/uploads").len() == 2
+    });
+    click(&f, cx, "appearance-bg-placement-app");
+    click(&f, cx, "appearance-bg-fit-tile");
+    click(&f, cx, "appearance-bg-position-top");
+    let track = gpui_kit::ElementId::Name("appearance-bg-dim-track".into());
+    reveal(&f, cx, &track);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click_at("appearance-bg-dim-track", point(px(215.), px(12.)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(
+        present(&f, cx, "appearance-bg-panel-track"),
+        "panels, behind the whole app"
+    );
+    click(&f, cx, "appearance-theme-save");
+    let background = saved_theme(&f, 2)["background"].clone();
+    assert_eq!(
+        background,
+        json!({"url": PICTURE_TWO, "placement": "app", "fit": "tile",
+               "position": "top", "dim": 90, "blur": 0, "panelOpacity": 85,
+               "tones": tones_of(&std::fs::read(&two).unwrap())})
+    );
+
+    // Remove: the theme is saved without a background.
+    wait(cx, "the editor closed", |cx| {
+        !shown(&f, cx, "appearance-bg-choose")
+    });
+    click(&f, cx, "appearance-theme-edit-t-sea");
+    click(&f, cx, "appearance-bg-remove");
+    assert!(!present(&f, cx, "appearance-bg-thumb"));
+    click(&f, cx, "appearance-theme-save");
+    assert!(saved_theme(&f, 3)["background"].is_null());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[gpui_kit::test]
+fn a_server_without_uploads_gives_a_theme_no_background(cx: &mut TestAppContext) {
+    let sea = json!({"format": 1, "id": "t-sea", "name": "Sea", "updatedAt": "s1",
+        "base": {"dark": "ircord-dark", "light": "ircord-light"}, "colors": {}, "css": ""});
+    let f = signed_in(cx, json!({"mode": "dark"}), json!([sea]));
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-theme-edit-t-sea");
+    assert!(present(&f, cx, "appearance-bg-unavailable"));
+    assert!(!present(&f, cx, "appearance-bg-choose"));
+}
+
+/// Two themes, the server holding uploads until `release` is sent, and a
+/// folder with a picture and an SVG.
+fn two_themes(
+    cx: &mut TestAppContext,
+    hold: bool,
+) -> (
+    Fixture,
+    std::sync::mpsc::Sender<()>,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let theme = |id: &str, name: &str| {
+        json!({"format": 1, "id": id, "name": name, "updatedAt": "s1",
+            "base": {"dark": "ircord-dark", "light": "ircord-light"}, "colors": {}, "css": ""})
+    };
+    let (release, held) = crate::fixture::held_reply(|| {
+        Reply::json(
+            201,
+            json!({"id": "u0", "url": PICTURE_ONE, "name": "x.png", "size": 4,
+                   "contentType": "image/png", "width": 8, "height": 4}),
+        )
+    });
+    let themes = vec![theme("t-sea", "Sea"), theme("t-sky", "Sky")];
+    let f = open_with(cx, true, move |s| {
+        serve(s, json!({"mode": "dark"}), json!([]));
+        serve_pictures(s, themes);
+        if hold {
+            s.route_fn("POST", "/api/v1/uploads", held);
+        }
+    });
+    bootstrap(&f, cx);
+    wait(cx, "the themes", |cx| {
+        let client = f.session.read(cx).client().unwrap().read();
+        client.documents.themes.is_loaded()
+    });
+    let dir = std::env::temp_dir().join(format!(
+        "ircord-background-{}",
+        ircord_client::client::random_id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (png, svg) = (dir.join("castle.png"), dir.join("logo.svg"));
+    std::fs::write(
+        &png,
+        picture(|x, y| [(x * 30) as u8, (y * 60) as u8, 120, 255]),
+    )
+    .unwrap();
+    std::fs::write(&svg, "<svg xmlns='http://www.w3.org/2000/svg'/>").unwrap();
+    (f, release, png, svg)
+}
+
+#[gpui_kit::test]
+fn a_picture_the_app_cannot_draw_is_refused_before_it_is_sent(cx: &mut TestAppContext) {
+    let (f, _release, _png, svg) = two_themes(cx, false);
+    open_at(&f, cx, "appearance-themes");
+    click(&f, cx, "appearance-theme-edit-t-sea");
+    click(&f, cx, "appearance-bg-choose");
+    choose_file(cx, &svg);
+    wait(cx, "the refusal", |cx| shown(&f, cx, "appearance-bg-error"));
+    assert!(f.server.requests_to("POST", "/api/v1/uploads").is_empty());
+    assert!(!present(&f, cx, "appearance-bg-remove"));
+}
+
+#[gpui_kit::test]
+fn an_upload_that_finishes_after_the_editor_moved_on_is_dropped(cx: &mut TestAppContext) {
+    let (f, release, png, _svg) = two_themes(cx, true);
+    open_at(&f, cx, "appearance-themes");
+    // Cancel while the upload is in flight, then edit the other theme.
+    click(&f, cx, "appearance-theme-edit-t-sea");
+    click(&f, cx, "appearance-bg-choose");
+    choose_file(cx, &png);
+    wait(cx, "the upload sent", |_| {
+        !f.server.requests_to("POST", "/api/v1/uploads").is_empty()
+    });
+    click(&f, cx, "appearance-theme-cancel");
+    click(&f, cx, "appearance-theme-edit-t-sky");
+    release.send(()).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    cx.run_until_parked();
+    assert!(
+        !present(&f, cx, "appearance-bg-remove"),
+        "no picture in Sky's editor"
+    );
+    assert!(!present(&f, cx, "appearance-bg-thumb"));
 }

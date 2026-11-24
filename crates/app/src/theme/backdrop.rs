@@ -30,6 +30,8 @@ use super::Theme;
 const MAX_SIDE: u32 = 2560;
 /// With blur the picture is first made smaller, so blurring it is cheap.
 const MAX_SIDE_BLURRED: u32 = 1280;
+/// The height of the theme editor's preview; its width is at most twice this.
+const PREVIEW_SIDE: u32 = 120;
 /// The width the web's blur radius is measured against.
 const BLUR_REFERENCE: f32 = 1600.;
 /// The blur of a frosted panel, in the web's pixels (the glass panels of
@@ -263,6 +265,22 @@ fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
         decoded
     };
     Some(decoded.to_rgba8())
+}
+
+/// What the theme editor shows of a picture just chosen or read from the
+/// account: a small copy to draw, and its dark and light tones, measured on
+/// the picture shrunk to 24 by 24 pixels as the web does. Blocking; run it
+/// off the UI thread.
+pub fn preview(bytes: &[u8]) -> Option<(Arc<RenderImage>, Option<[String; 2]>)> {
+    let source = decode(bytes)?;
+    let tones = ircord_client::store::appearance::measure_tones(
+        image::imageops::resize(&source, 24, 24, FilterType::Triangle).as_raw(),
+    );
+    let small = image::DynamicImage::ImageRgba8(source)
+        .resize(PREVIEW_SIDE * 2, PREVIEW_SIDE, FilterType::Triangle)
+        .to_rgba8();
+    let image = Arc::new(RenderImage::new(vec![image::Frame::new(render(&small, 0))]));
+    Some((image, tones))
 }
 
 /// `source` with `blur` pixels of blur, as GPUI's atlas takes it

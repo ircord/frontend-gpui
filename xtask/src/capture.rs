@@ -301,6 +301,30 @@ if [ -z "${CAPTURE_THEME:-}" ]; then
   shot 11-backdrop-conversation-dark
   stop_app backdrop-conversation
 fi
+
+# The theme editor's Background part: Settings → Appearance → Your themes →
+# Edit, on the theme that has the picture.
+appearance dark app
+start_app
+sleep 8
+xdotool windowfocus --sync "$WIN"
+xdotool key ctrl+comma
+sleep 1
+xdotool key Tab
+xdotool type --delay 30 "your themes"
+xdotool key Return
+sleep 2
+shot 12-theme-editor-0
+# Edit on the second theme's row.
+xdotool mousemove 939 506 click 1
+sleep 2
+xdotool mousemove 850 450
+for n in 1 2 3; do
+  xdotool click --repeat 5 --delay 100 5
+  sleep 1
+  shot 12-theme-editor-$n
+done
+stop_app theme-editor
 "##;
 
 pub fn run(root: &Path) -> Result<()> {

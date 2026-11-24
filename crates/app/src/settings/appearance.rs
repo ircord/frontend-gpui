@@ -33,6 +33,8 @@ use crate::settings::{block, row};
 use crate::theme::{self, Theme, appearance};
 use crate::ui;
 
+mod background;
+
 pub fn init(cx: &mut App) {
     registry::register(cx, |r| {
         let rows: [(&str, &'static str, &'static str, &'static str); 11] = [
@@ -130,6 +132,10 @@ struct Editor {
     name: Entity<InputState>,
     import: Entity<InputState>,
     seeds: Vec<(Seed, Entity<InputState>)>,
+    /// The colour fields take the edited theme's colours when next drawn.
+    fill_seeds: bool,
+    /// The background picture of the theme being edited.
+    background: background::Draft,
     /// The theme whose colours are being edited, and the mode being edited.
     editing: Option<(UserTheme, Mode)>,
     /// What the last action said, and whether it was a problem.
@@ -161,16 +167,20 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
             )
         })
         .collect();
+    let background = background::Draft::new(cx);
     let e = cx.new(|_| Editor {
         session: ctx.session.clone(),
         accent,
         name,
         import,
         seeds,
+        background,
+        fill_seeds: false,
         editing: None,
         notice: None,
         busy: false,
     });
+    background::listen(&e, cx);
     cx.set_global(Editors(e.clone()));
     e
 }
@@ -375,7 +385,7 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
             ctx,
             "appearance-themes",
             t!("appearance-themes"),
-            themes_block(&current, mode, &editor, &theme, cx),
+            themes_block(&current, mode, &editor, &theme, window, cx),
             &theme,
         ))
         .child(row(
@@ -1025,7 +1035,8 @@ fn themes_block(
     mode: Mode,
     editor: &Entity<Editor>,
     theme: &Theme,
-    cx: &App,
+    window: &mut Window,
+    cx: &mut App,
 ) -> impl IntoElement + use<> {
     let signed_in = editor.read(cx).session.read(cx).client().is_some();
     let library = appearance::library(cx);
@@ -1137,6 +1148,7 @@ fn themes_block(
             &seeds,
             editor,
             theme,
+            window,
             cx,
         ));
     }
@@ -1405,22 +1417,20 @@ fn seed_key(seed: Seed) -> &'static str {
 }
 
 fn start_editing(editor: &Entity<Editor>, user_theme: &UserTheme, mode: Mode, cx: &mut App) {
-    let seeds = look::drawn_seeds(user_theme, mode);
-    let inputs = editor.read(cx).seeds.clone();
-    let windows = cx.windows();
-    for (seed, input) in inputs {
-        let value = look::to_hex(seed.get(&seeds));
-        // Setting a field's text needs a window; any of the app's will do.
-        if let Some(window) = windows.first() {
-            let _ = window.update(cx, |_, window, cx| {
-                input.update(cx, |s, cx| s.set_value(value, window, cx));
-            });
-        }
-    }
     editor.update(cx, |e, _| {
         e.editing = Some((user_theme.clone(), mode));
         e.notice = None;
+        e.fill_seeds = true;
+        e.background.reset(user_theme.background.clone());
     });
+    if let Some(path) = user_theme
+        .background
+        .as_ref()
+        .and_then(|b| b.url.clone())
+        .filter(|p| look::is_upload_path(p))
+    {
+        background::load_thumb(editor, path, cx);
+    }
     cx.refresh_windows();
 }
 
@@ -1430,8 +1440,18 @@ fn seed_editor(
     inputs: &[(Seed, Entity<InputState>)],
     editor: &Entity<Editor>,
     theme: &Theme,
-    _cx: &App,
+    window: &mut Window,
+    cx: &mut App,
 ) -> impl IntoElement + use<> {
+    if editor.read(cx).fill_seeds {
+        // Setting a field's text needs the window, so it waits for a draw.
+        let drawn = look::drawn_seeds(user_theme, mode);
+        for (seed, input) in inputs {
+            let value = look::to_hex(seed.get(&drawn));
+            input.update(cx, |s, cx| s.set_value(value, window, cx));
+        }
+        editor.update(cx, |e, _| e.fill_seeds = false);
+    }
     let name = user_theme.name.clone().unwrap_or_default();
     let mode_name = match mode {
         Mode::Dark => t!("appearance-themes-editing-dark"),
@@ -1491,53 +1511,58 @@ fn seed_editor(
     let cancel_editor = editor.clone();
     let edited = user_theme.clone();
     let inputs: Vec<_> = inputs.to_vec();
-    form.child(
-        div()
-            .flex()
-            .gap_2()
-            .child(
-                button("appearance-theme-save", t!("appearance-themes-save"), theme)
+    form.child(background::section(editor, theme, window, cx))
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .child(
+                    button("appearance-theme-save", t!("appearance-themes-save"), theme)
+                        .test_support()
+                        .reachable(theme)
+                        .on_click(move |_, _, cx| {
+                            if save_editor.read(cx).background.is_uploading() {
+                                return;
+                            }
+                            let mut next = edited.clone();
+                            next.background = save_editor.read(cx).background.value.clone();
+                            for (seed, input) in &inputs {
+                                let text = input.read(cx).value().trim().to_string();
+                                let text = if text.starts_with('#') {
+                                    text
+                                } else {
+                                    format!("#{text}")
+                                };
+                                let Some(color) = look::parse_hex(&text) else {
+                                    say(
+                                        &save_editor,
+                                        t!("appearance-accent-custom-invalid"),
+                                        true,
+                                        cx,
+                                    );
+                                    return;
+                                };
+                                look::set_seed(&mut next, mode, *seed, color);
+                            }
+                            let expected = edited.updated_at.clone();
+                            next.made_with = Some(made_with().into());
+                            save(&save_editor, next, expected, false, None, cx);
+                        }),
+                )
+                .child(
+                    button(
+                        "appearance-theme-cancel",
+                        t!("appearance-themes-cancel"),
+                        theme,
+                    )
                     .test_support()
                     .reachable(theme)
                     .on_click(move |_, _, cx| {
-                        let mut next = edited.clone();
-                        for (seed, input) in &inputs {
-                            let text = input.read(cx).value().trim().to_string();
-                            let text = if text.starts_with('#') {
-                                text
-                            } else {
-                                format!("#{text}")
-                            };
-                            let Some(color) = look::parse_hex(&text) else {
-                                say(
-                                    &save_editor,
-                                    t!("appearance-accent-custom-invalid"),
-                                    true,
-                                    cx,
-                                );
-                                return;
-                            };
-                            look::set_seed(&mut next, mode, *seed, color);
-                        }
-                        let expected = edited.updated_at.clone();
-                        next.made_with = Some(made_with().into());
-                        save(&save_editor, next, expected, false, None, cx);
+                        cancel_editor.update(cx, |e, _| e.editing = None);
+                        cx.refresh_windows();
                     }),
-            )
-            .child(
-                button(
-                    "appearance-theme-cancel",
-                    t!("appearance-themes-cancel"),
-                    theme,
-                )
-                .test_support()
-                .reachable(theme)
-                .on_click(move |_, _, cx| {
-                    cancel_editor.update(cx, |e, _| e.editing = None);
-                    cx.refresh_windows();
-                }),
-            ),
-    )
+                ),
+        )
 }
 
 fn made_with() -> &'static str {

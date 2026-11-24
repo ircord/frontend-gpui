@@ -924,11 +924,11 @@ pub fn is_upload_path(path: &str) -> bool {
         .is_some_and(|id| segment(id, 80, "-"))
 }
 
-/// The lowest dim and panel opacity (as fractions) that keep text readable
+/// The lowest dim and panel opacity, in percent, that keep text readable
 /// over a picture with these dark and light tones (`backgroundFloors`).
-fn backdrop_floors(tokens: &Tokens, tones: Option<[u32; 2]>) -> (f32, f32) {
+fn backdrop_floors(tokens: &Tokens, tones: Option<[u32; 2]>) -> (i64, i64) {
     let Some(tones) = tones else {
-        return (0.60, 0.85);
+        return (60, 85);
     };
     let readable = |surface: u32| {
         contrast(tokens.text, surface) >= 4.5
@@ -946,9 +946,76 @@ fn backdrop_floors(tokens: &Tokens, tones: Option<[u32; 2]>) -> (f32, f32) {
             .unwrap_or(max)
     };
     (
-        lowest(0, 90, tokens.main) as f32 / 100.,
-        lowest(40, 100, tokens.sidebar) as f32 / 100.,
+        i64::from(lowest(0, 90, tokens.main)),
+        i64::from(lowest(40, 100, tokens.sidebar)),
     )
+}
+
+/// A background's two measured tones, dark then light, as colours.
+fn background_tones(background: &ThemeBackground) -> Option<[u32; 2]> {
+    match background.tones.as_deref() {
+        Some([dark, light]) => parse_hex(dark).zip(parse_hex(light)).map(|(d, l)| [d, l]),
+        _ => None,
+    }
+}
+
+/// The lowest dim and panel opacity, in percent, the editor offers for
+/// `background` (`backgroundFloors`).
+pub fn background_floors(tokens: &Tokens, background: &ThemeBackground) -> (i64, i64) {
+    backdrop_floors(tokens, background_tones(background))
+}
+
+/// A background with nothing chosen yet (`defaultBackground`).
+pub fn default_background() -> ThemeBackground {
+    use ircord_contract::{
+        ThemeBackgroundFit as F, ThemeBackgroundPlacement as P, ThemeBackgroundPosition as Q,
+    };
+    ThemeBackground {
+        url: None,
+        placement: Some(P::Conversation),
+        fit: Some(F::Cover),
+        position: Some(Q::Center),
+        dim: Some(55),
+        blur: Some(0),
+        panel_opacity: Some(85),
+        tones: None,
+    }
+}
+
+/// The path of an upload, read against `server`, from the address the upload endpoint
+/// returned (`instanceFilePath`): its path alone, `None` when it has a query
+/// or fragment or is not an upload's path.
+pub fn instance_file_path(address: &str, server: &url::Url) -> Option<String> {
+    let url = server.join(address).ok()?;
+    if url.query().is_some() || url.fragment().is_some() {
+        return None;
+    }
+    Some(url.path().to_string()).filter(|path| is_upload_path(path))
+}
+
+/// The dark and light tones of a picture shrunk to a few pixels, as RGBA
+/// bytes (`measureTones`): the colours a tenth from either end of the
+/// luminance order. `None` when nothing is opaque.
+pub fn measure_tones(pixels: &[u8]) -> Option<[String; 2]> {
+    let mut samples: Vec<(f64, [u8; 3])> = pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[3] >= 16)
+        .map(|p| {
+            let (r, g, b) = (f64::from(p[0]), f64::from(p[1]), f64::from(p[2]));
+            (0.2126 * r + 0.7152 * g + 0.0722 * b, [p[0], p[1], p[2]])
+        })
+        .collect();
+    if samples.is_empty() {
+        return None;
+    }
+    samples.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let at = |q: f64| {
+        let [r, g, b] = samples[((q * samples.len() as f64) as usize).min(samples.len() - 1)].1;
+        format!("#{r:02x}{g:02x}{b:02x}")
+    };
+    Some([at(0.1), at(0.9)])
 }
 
 /// The backdrop `theme` asks for, when it names a usable picture.
@@ -958,13 +1025,9 @@ pub fn theme_backdrop(theme: &Theme, tokens: &Tokens) -> Option<Backdrop> {
     };
     let background = theme.background.as_ref()?;
     let path = background.url.as_deref().filter(|u| is_upload_path(u))?;
-    let tones = match background.tones.as_deref() {
-        Some([dark, light]) => parse_hex(dark).zip(parse_hex(light)).map(|(d, l)| [d, l]),
-        _ => None,
-    };
-    let (dim_floor, panel_floor) = backdrop_floors(tokens, tones);
-    let percent = |value: Option<i64>, min: i64, max: i64, default: i64| {
-        value.map_or(default, |v| v.clamp(min, max)) as f32 / 100.
+    let (dim_floor, panel_floor) = background_floors(tokens, background);
+    let percent = |value: Option<i64>, min: i64, max: i64, default: i64, floor: i64| {
+        value.map_or(default, |v| v.clamp(min, max)).max(floor) as f32 / 100.
     };
     Some(Backdrop {
         path: path.to_string(),
@@ -984,9 +1047,9 @@ pub fn theme_backdrop(theme: &Theme, tokens: &Tokens) -> Option<Backdrop> {
             Some(Q::Right) => BackdropPosition::Right,
             _ => BackdropPosition::Center,
         },
-        dim: percent(background.dim, 0, 90, 55).max(dim_floor),
+        dim: percent(background.dim, 0, 90, 55, dim_floor),
         blur: background.blur.map_or(0, |b| b.clamp(0, 20)) as f32,
-        panel: percent(background.panel_opacity, 40, 100, 85).max(panel_floor),
+        panel: percent(background.panel_opacity, 40, 100, 85, panel_floor),
     })
 }
 
@@ -1586,6 +1649,34 @@ mod tests {
         ] {
             assert!(!is_upload_path(other), "{other}");
         }
+    }
+
+    #[test]
+    fn an_upload_address_becomes_its_path_and_a_picture_is_measured_like_the_web() {
+        let server = url::Url::parse("https://chat.example").unwrap();
+        let path = format!("/files/{}/{}/castle.webp", "a".repeat(32), "b".repeat(48));
+        assert_eq!(instance_file_path(&path, &server), Some(path.clone()));
+        assert_eq!(
+            instance_file_path(&format!("https://chat.example{path}"), &server),
+            Some(path.clone())
+        );
+        assert_eq!(instance_file_path(&format!("{path}?x=1"), &server), None);
+        assert_eq!(instance_file_path("/avatars/fox.webp", &server), None);
+
+        // Ten black and ten white pixels, and one clear one that is skipped.
+        let mut pixels = Vec::new();
+        for i in 0..21 {
+            let v = if i < 10 { 0 } else { 255 };
+            pixels.extend([v, v, v, if i == 20 { 0 } else { 255 }]);
+        }
+        assert_eq!(
+            measure_tones(&pixels),
+            Some(["#000000".to_string(), "#ffffff".to_string()])
+        );
+        assert_eq!(measure_tones(&[1, 2, 3, 0]), None);
+        let background = default_background();
+        assert_eq!(background.dim, Some(55));
+        assert_eq!(background.panel_opacity, Some(85));
     }
 
     #[test]
