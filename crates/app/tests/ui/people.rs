@@ -316,6 +316,30 @@ fn the_card_looks_them_up_and_asks_their_client(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_cached_copy_shows_a_picture_hosted_elsewhere(cx: &mut TestAppContext) {
+    let mut s = workspace();
+    for m in &mut s.members {
+        if m.id == "m-bob" {
+            m.avatar_url = Some("https://other.example/files/a/b/avatar".into());
+            m.avatar_src = Some("/media/remote/k1".into());
+        }
+        if m.id == "m-eve" {
+            m.avatar_url = Some("https://other.example/avatars/defaults/avatar-003.png".into());
+        }
+    }
+    let f = open(cx, s, |_| {});
+    wait_for(&f, cx, "sender-avatar-1");
+    assert!(
+        shows(&f, cx, "avatar-picture-member-m-bob"),
+        "the server's copy"
+    );
+    assert!(
+        shows(&f, cx, "avatar-picture-member-m-eve"),
+        "another server's default, from this one"
+    );
+}
+
+#[gpui_kit::test]
 fn pictures_show_from_this_server_and_you_by_your_nick(cx: &mut TestAppContext) {
     let mut s = workspace();
     for m in &mut s.members {

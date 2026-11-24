@@ -124,6 +124,28 @@ fn a_direct_conversation_shows_its_partner(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_cached_copy_of_a_remote_picture_is_fetched_from_this_server(cx: &mut TestAppContext) {
+    const CACHED: &str = "/media/remote/k1";
+    let f = open_with(cx, true, |server| {
+        let mut s = workspace();
+        for m in &mut s.members {
+            if m.id == "m-bob" {
+                // Bob's address is another server's; this server's copy is
+                // the only one that may be fetched.
+                m.avatar_url = Some("https://other.example/files/a/b/avatar".into());
+                m.avatar_src = Some(CACHED.into());
+            }
+        }
+        server.snapshot(&s);
+        server.route_reply("GET", CACHED, Reply::bytes(200, "image/png", png()));
+    });
+    bootstrap(&f, cx);
+    let path = picture(&f, cx, alert("c-general", "1")).expect("bob's cached picture");
+    assert!(path.exists());
+    assert_eq!(f.server.requests_to("GET", CACHED).len(), 1);
+}
+
+#[gpui_kit::test]
 fn a_hidden_preview_shows_no_picture_and_fetches_nothing(cx: &mut TestAppContext) {
     let f = open(cx, Reply::bytes(200, "image/png", png()));
     bootstrap(&f, cx);

@@ -19,6 +19,7 @@ use ircord_contract::{
 
 use super::{Changes, SELF_ID, Workspace, parse_time};
 use crate::api::ApiError;
+use crate::api::auth::DEFAULT_AVATAR_PATH;
 use crate::commands::ignore::{self, Identity};
 use crate::commands::run::member_by_nick;
 
@@ -568,6 +569,31 @@ pub fn picture_url(avatar_url: Option<&str>, server: &url::Url) -> Option<url::U
     (usable && url.origin() == server.origin()).then_some(url)
 }
 
+/// The address to draw for a person's picture: the backend's same-origin
+/// copy (`avatarSrc`, `bannerSrc`, `profileBackgroundSrc`) when it has one,
+/// else the raw address under [`picture_url`]'s rule. A picture another
+/// IRCord server hosts that is one of the built-in defaults every server
+/// ships (`/avatars/defaults/<file>`) is read from this server's own copy,
+/// which needs no cache and works against a backend without the field.
+pub fn member_picture(src: Option<&str>, raw: Option<&str>, server: &url::Url) -> Option<url::Url> {
+    picture_url(src, server)
+        .or_else(|| picture_url(raw, server))
+        .or_else(|| default_picture(raw?, server))
+}
+
+fn default_picture(value: &str, server: &url::Url) -> Option<url::Url> {
+    let url = url::Url::parse(value.trim()).ok()?;
+    let file = url.path().strip_prefix(DEFAULT_AVATAR_PATH)?;
+    let plain = crate::api::auth::avatar_file(file);
+    let usable = url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none();
+    (plain && usable)
+        .then(|| server.join(&format!("{DEFAULT_AVATAR_PATH}{file}")).ok())
+        .flatten()
+}
+
 /// The fallback disc's fill and letter colours for a member's tone name, as
 /// the web's `identity.css`; an unknown or empty tone is lavender.
 pub fn tone(color: &str) -> (u32, u32) {
@@ -1018,6 +1044,45 @@ mod tests {
         let local = url::Url::parse("http://127.0.0.1:8080/").unwrap();
         assert!(picture_url(Some("http://127.0.0.1:8080/files/x/y/a.png"), &local).is_some());
         assert!(picture_url(Some("http://127.0.0.1:9090/a.png"), &local).is_none());
+    }
+
+    #[test]
+    fn a_cached_copy_is_preferred_and_remote_defaults_are_local() {
+        let server = url::Url::parse("https://chat.example/").unwrap();
+        let pick = |src: Option<&str>, raw: Option<&str>| {
+            member_picture(src, raw, &server).map(|u| u.to_string())
+        };
+        let remote = Some("https://other.example/files/a/b/avatar");
+        assert_eq!(
+            pick(Some("/media/remote/k1"), remote).as_deref(),
+            Some("https://chat.example/media/remote/k1")
+        );
+        assert_eq!(pick(None, remote), None);
+        assert_eq!(pick(Some(""), remote), None);
+        assert_eq!(
+            pick(Some("https://other.example/x.png"), None),
+            None,
+            "a source that is not on this server"
+        );
+        assert_eq!(
+            pick(
+                None,
+                Some("https://other.example/avatars/defaults/avatar-003.png")
+            )
+            .as_deref(),
+            Some("https://chat.example/avatars/defaults/avatar-003.png")
+        );
+        for bad in [
+            "http://other.example/avatars/defaults/a.png",
+            "https://other.example/avatars/defaults/",
+            "https://other.example/avatars/defaults/../x.png",
+            "https://other.example/avatars/defaults/a/b.png",
+            "https://other.example/avatars/defaults/a.png?x=1",
+            "https://other.example/avatars/defaults/manifest.json",
+            "https://other.example/avatars/defaults/a.b.png",
+        ] {
+            assert_eq!(pick(None, Some(bad)), None, "{bad}");
+        }
     }
 
     #[test]
