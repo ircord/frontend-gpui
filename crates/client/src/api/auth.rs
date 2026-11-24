@@ -264,7 +264,7 @@ impl DefaultAvatar {
     }
 }
 
-fn avatar_file(file: &str) -> bool {
+pub(crate) fn avatar_file(file: &str) -> bool {
     let Some((stem, ext)) = file.rsplit_once('.') else {
         return false;
     };

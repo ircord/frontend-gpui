@@ -584,11 +584,7 @@ pub fn member_picture(src: Option<&str>, raw: Option<&str>, server: &url::Url) -
 fn default_picture(value: &str, server: &url::Url) -> Option<url::Url> {
     let url = url::Url::parse(value.trim()).ok()?;
     let file = url.path().strip_prefix(DEFAULT_AVATAR_PATH)?;
-    let plain = !file.is_empty()
-        && file
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-        && !file.starts_with('.');
+    let plain = crate::api::auth::avatar_file(file);
     let usable = url.scheme() == "https"
         && url.username().is_empty()
         && url.password().is_none()
@@ -1082,6 +1078,8 @@ mod tests {
             "https://other.example/avatars/defaults/../x.png",
             "https://other.example/avatars/defaults/a/b.png",
             "https://other.example/avatars/defaults/a.png?x=1",
+            "https://other.example/avatars/defaults/manifest.json",
+            "https://other.example/avatars/defaults/a.b.png",
         ] {
             assert_eq!(pick(None, Some(bad)), None, "{bad}");
         }
