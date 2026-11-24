@@ -434,6 +434,11 @@ fn serve_pictures(server: &CannedServer, themes: Vec<Value>) {
     let uploads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     server.route_fn("POST", "/api/v1/uploads", move |request| {
         assert_eq!(request.query_param("networkId").as_deref(), Some("n1"));
+        assert_eq!(
+            request.query_param("use"),
+            None,
+            "a theme picture stays on this server"
+        );
         let n = uploads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let url = [PICTURE_ONE, PICTURE_TWO][n];
         Reply::json(

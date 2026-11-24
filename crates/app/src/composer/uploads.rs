@@ -14,13 +14,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::TestSupportExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::Client;
-use ircord_client::api::uploads::{self, FileData, Progress, Rejection, UploadError};
+use ircord_client::api::uploads::{self, FileData, Progress, Rejection, UploadError, UploadUse};
 use ircord_client::contract as c;
 
 use crate::composer::ComposerView;
@@ -32,6 +32,9 @@ use crate::ui::icon::IconName;
 
 /// How often the tray redraws while files upload, for the progress bars.
 const PROGRESS_TICK: Duration = Duration::from_millis(150);
+
+/// How long to wait before asking a network again after its answer failed.
+const RETRY: Duration = Duration::from_secs(30);
 
 /// A small picture of a waiting file.
 #[derive(Clone)]
@@ -73,6 +76,13 @@ pub struct Uploads {
     composer: Option<WeakEntity<ComposerView>>,
     /// How long an upload may stand still; [`uploads::STALL`] outside tests.
     stall: Option<Duration>,
+    /// Where each network's files go and what it takes, once asked.
+    providers: HashMap<String, c::Provider>,
+    /// When each network was last asked. An answered network is not asked
+    /// again; one whose ask failed is, after [`RETRY`].
+    asked: HashMap<String, Instant>,
+    /// The client the answers above belong to: a new sign-in starts afresh.
+    owner: Option<std::rc::Weak<Client>>,
 }
 
 impl Global for Uploads {}
@@ -123,8 +133,79 @@ fn client(session: &Entity<Session>, cx: &App) -> Option<Rc<Client>> {
     session.read(cx).client().cloned()
 }
 
-fn capability(session: &Entity<Session>, cx: &App) -> Option<c::UploadCapability> {
-    client(session, cx)?.read().capabilities.upload.clone()
+/// What a file sent in `conversation` may be: the network's own limits when
+/// it has answered (its files may go to a shared file host with other
+/// limits), the server-wide ones until then.
+fn capability(
+    session: &Entity<Session>,
+    conversation: &str,
+    cx: &mut App,
+) -> Option<c::UploadCapability> {
+    let client = client(session, cx)?;
+    let server = client.read().capabilities.upload.clone();
+    let network = client
+        .read()
+        .conversation(conversation)
+        .map(|c| c.network_id.clone());
+    let Some(network) = network else {
+        return server;
+    };
+    ask_network(&client, &network, cx);
+    let provider = cx
+        .try_global::<Uploads>()
+        .and_then(|u| u.providers.get(&network))
+        .cloned();
+    uploads::limits(provider.as_ref(), server.as_ref())
+}
+
+/// Ask `network` where its files go; the answer redraws the composer. A
+/// failed ask is repeated after [`RETRY`], when the composer next draws; the
+/// server-wide limits stand meanwhile, and the server still refuses what it
+/// will not take.
+fn ask_network(client: &Rc<Client>, network: &str, cx: &mut App) {
+    let state = cx.default_global::<Uploads>();
+    // Answers belong to the account that asked: forget them for another.
+    if !state
+        .owner
+        .as_ref()
+        .is_some_and(|o| std::rc::Weak::ptr_eq(o, &Rc::downgrade(client)))
+    {
+        state.providers.clear();
+        state.asked.clear();
+        state.owner = Some(Rc::downgrade(client));
+    }
+    let answered = state.providers.contains_key(network);
+    let recent = state
+        .asked
+        .get(network)
+        .is_some_and(|at| at.elapsed() < RETRY);
+    if answered || recent {
+        return;
+    }
+    state.asked.insert(network.to_string(), Instant::now());
+    let network = network.to_string();
+    let task = {
+        let network = network.clone();
+        client.request(move |api| async move { api.upload_provider(&network).await })
+    };
+    let asker = Rc::downgrade(client);
+    cx.spawn(async move |cx| {
+        if let Ok(Ok(provider)) = task.await {
+            cx.update(|cx| {
+                let state = cx.default_global::<Uploads>();
+                // Only if the account that asked is still the one signed in.
+                if state
+                    .owner
+                    .as_ref()
+                    .is_some_and(|o| std::rc::Weak::ptr_eq(o, &asker))
+                {
+                    state.providers.insert(network, provider);
+                }
+                refresh(cx);
+            });
+        }
+    })
+    .detach();
 }
 
 fn refresh(cx: &mut App) {
@@ -170,7 +251,7 @@ pub fn add(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let limits = capability(session, cx);
+    let limits = capability(session, conversation, cx);
     let mut refused = Vec::new();
     {
         let state = cx.default_global::<Uploads>();
@@ -319,9 +400,10 @@ pub fn send_all(session: Entity<Session>, conversation: String, window: &mut Win
                     item.file.clone(),
                     item.progress.clone(),
                 );
-                let task = client
-                    .runtime()
-                    .spawn(async move { api.upload_file(&network, &file, &progress, stall).await });
+                let task = client.runtime().spawn(async move {
+                    api.upload_file(&network, UploadUse::Message, &file, &progress, stall)
+                        .await
+                });
                 let abort = task.abort_handle();
                 cx.update(|_, cx| update_item(cx, &conversation, *key, |p| p.cancel = Some(abort)))
                     .ok();
@@ -607,7 +689,7 @@ fn remember_composer(ctx: &ComposerCtx, cx: &mut App) {
 fn attach_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     remember_composer(ctx, cx);
     let theme = theme::get(cx).clone();
-    let limits = capability(&ctx.session, cx);
+    let limits = capability(&ctx.session, &ctx.conversation, cx);
     let label: SharedString = match &limits {
         Some(l) if l.max_bytes > 0 => t!(
             "uploads-attach-limit",
@@ -625,7 +707,7 @@ fn attach_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Optio
             label,
             &theme,
             move |_, window, cx| {
-                if capability(&session, cx).is_none() {
+                if capability(&session, &conversation, cx).is_none() {
                     ui::toast::error(window, cx, t!("uploads-server-unavailable"));
                     return;
                 }

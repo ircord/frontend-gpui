@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New
+
+- Files you attach to a message are marked as message files, so a server that keeps them on the IRC network's shared file host can do so, and the attach button and the tray follow that network's own size and type limits. Only files you attach to a message are marked; everything else you upload (banners, profile and theme backgrounds) stays on your server.
+
 ## v0.4.0 — 2026-11-24
 
 ### New

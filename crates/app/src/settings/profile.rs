@@ -1119,12 +1119,18 @@ impl ProfileView {
                 })
                 .ok();
                 let task = client.handle().request(move |api| async move {
-                    api.upload_file(&network, &file, &Progress::default(), uploads::STALL)
-                        .await
-                        .map_err(|e| ApiError::Http {
-                            status: 0,
-                            detail: e.to_string(),
-                        })
+                    api.upload_file(
+                        &network,
+                        uploads::UploadUse::Other,
+                        &file,
+                        &Progress::default(),
+                        uploads::STALL,
+                    )
+                    .await
+                    .map_err(|e| ApiError::Http {
+                        status: 0,
+                        detail: e.to_string(),
+                    })
                 });
                 let result = task.await.map_err(|e| e.to_string());
                 cx.update(|_, cx| {
