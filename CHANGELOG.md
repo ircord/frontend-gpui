@@ -2,9 +2,12 @@
 
 ## Unreleased
 
+## v0.4.0 — 2026-11-24
+
 ### New
 
 - The theme editor has a Background section, as the web client's: choose an image from your computer for a personal theme, replace or remove it, and set whether it sits behind the conversation or the whole app, how it fits and where, and how much it is dimmed, blurred and covered by the panels.
+
 ### Fixed
 
 - Profile pictures and banners of people on other IRCord servers show instead of their initial when your server has cached them, and another server's built-in default pictures show from your own server's copy. Pictures still load only from the server you signed in to.
