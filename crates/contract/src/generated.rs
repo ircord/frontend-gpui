@@ -2764,17 +2764,19 @@ pub struct Member {
     pub account: String,
     #[serde(rename = "avatarFrame", skip_serializing_if = "Option::is_none")]
     pub avatar_frame: Option<String>,
-    #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
-    pub avatar_url: Option<String>,
+    /// Where clients draw the avatar: avatarUrl when it is on this server, otherwise a cached copy on this server. Absent when there is no picture to show.
     #[serde(rename = "avatarSrc", skip_serializing_if = "Option::is_none")]
     pub avatar_src: Option<String>,
+    #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
     /// The AWAY text while away, when known.
     #[serde(rename = "awayMessage", skip_serializing_if = "Option::is_none")]
     pub away_message: Option<String>,
-    #[serde(rename = "bannerUrl", skip_serializing_if = "Option::is_none")]
-    pub banner_url: Option<String>,
+    /// Where clients draw the banner, chosen like avatarSrc.
     #[serde(rename = "bannerSrc", skip_serializing_if = "Option::is_none")]
     pub banner_src: Option<String>,
+    #[serde(rename = "bannerUrl", skip_serializing_if = "Option::is_none")]
+    pub banner_url: Option<String>,
     pub bio: String,
     pub color: String,
     /// Set while this IRCord user is on a phone or tablet, from the ircord/device metadata key; absent on a desktop, when unknown, or for other clients.
@@ -2802,16 +2804,17 @@ pub struct Member {
     pub nick: String,
     #[serde(rename = "profileAccentColor", skip_serializing_if = "Option::is_none")]
     pub profile_accent_color: Option<String>,
-    #[serde(
-        rename = "profileBackgroundUrl",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub profile_background_url: Option<String>,
+    /// Where clients draw the profile background, chosen like avatarSrc.
     #[serde(
         rename = "profileBackgroundSrc",
         skip_serializing_if = "Option::is_none"
     )]
     pub profile_background_src: Option<String>,
+    #[serde(
+        rename = "profileBackgroundUrl",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub profile_background_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pronouns: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3529,10 +3532,11 @@ pub struct PartyAccountInputBody {
 pub struct PartyCandidate {
     #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
-    #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
-    pub avatar_url: Option<String>,
+    /// Where clients draw the avatar: avatarUrl when it is on this server, otherwise a cached copy on this server.
     #[serde(rename = "avatarSrc", skip_serializing_if = "Option::is_none")]
     pub avatar_src: Option<String>,
+    #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
     #[serde(rename = "backendAccountId", skip_serializing_if = "Option::is_none")]
     pub backend_account_id: Option<String>,
     #[serde(rename = "displayName")]
@@ -3613,10 +3617,11 @@ pub struct PartyInvitation {
 pub struct PartyMember {
     #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
-    #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
-    pub avatar_url: Option<String>,
+    /// Where clients draw the avatar: avatarUrl when it is on this server, otherwise a cached copy on this server.
     #[serde(rename = "avatarSrc", skip_serializing_if = "Option::is_none")]
     pub avatar_src: Option<String>,
+    #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
     #[serde(rename = "backendAccountId", skip_serializing_if = "Option::is_none")]
     pub backend_account_id: Option<String>,
     #[serde(rename = "displayName")]
@@ -3768,10 +3773,11 @@ pub enum PeoplePageStatus {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Person {
-    #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
-    pub avatar_url: Option<String>,
+    /// Where clients draw the avatar: avatarUrl when it is on this server, otherwise a cached copy on this server.
     #[serde(rename = "avatarSrc", skip_serializing_if = "Option::is_none")]
     pub avatar_src: Option<String>,
+    #[serde(rename = "avatarUrl", skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
     #[serde(rename = "backendAccountId", skip_serializing_if = "Option::is_none")]
     pub backend_account_id: Option<String>,
     #[serde(rename = "displayName")]
