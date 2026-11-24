@@ -12,8 +12,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use gpui_kit::App;
 use gpui_kit::base::TextSelectionHandle;
+use gpui_kit::{App, WindowId};
 use ircord_client::copy_log::{self, Entry, Pick};
 
 /// The log lines a piece of text stands for.
@@ -31,18 +31,18 @@ struct Live {
 }
 
 thread_local! {
-    static LIVE: RefCell<HashMap<String, Live>> = RefCell::new(HashMap::new());
+    static LIVE: RefCell<HashMap<(WindowId, String), Live>> = RefCell::new(HashMap::new());
 }
 
 /// Note what a piece of text has selected as it paints it.
-pub fn record(tag: &Tag, handle: &TextSelectionHandle, selected: String) {
+pub fn record(window: WindowId, tag: &Tag, handle: &TextSelectionHandle, selected: String) {
     LIVE.with(|live| {
         let mut live = live.borrow_mut();
         if selected.is_empty() {
-            live.remove(&tag.key);
+            live.remove(&(window, tag.key.clone()));
         } else {
             live.insert(
-                tag.key.clone(),
+                (window, tag.key.clone()),
                 Live {
                     handle: handle.clone(),
                     entries: tag.entries.clone(),
@@ -54,13 +54,14 @@ pub fn record(tag: &Tag, handle: &TextSelectionHandle, selected: String) {
 }
 
 /// What the piece `key` adds to the clipboard.
-pub fn answer(key: &str, cx: &App) -> String {
+pub fn answer(window: WindowId, key: &str, cx: &App) -> String {
     let picks: Vec<Pick> = LIVE.with(|live| {
         let mut live = live.borrow_mut();
         // A piece that scrolled away has lost its selection.
         live.retain(|_, l| l.handle.snapshot(cx).is_some());
         live.iter()
-            .map(|(key, l)| Pick {
+            .filter(|((w, _), _)| *w == window)
+            .map(|((_, key), l)| Pick {
                 key: key.clone(),
                 entries: l.entries.to_vec(),
                 selected: l.selected.clone(),

@@ -55,6 +55,8 @@ pub struct Entry {
     pub id: String,
     /// When it was sent, in milliseconds since the epoch.
     pub at: i64,
+    /// Orders messages that share a millisecond, as the timeline does.
+    pub position: i64,
     /// The local day as a key, to tell where a selection crosses midnight.
     pub day: String,
     /// The day as `Tuesday, November 24, 2026`: absolute, since "Today" is
@@ -78,6 +80,7 @@ impl Entry {
         Entry {
             id: id.to_string(),
             at,
+            position: 0,
             day: local.format("%Y-%m-%d").to_string(),
             day_label: local.format("%A, %B %-d, %Y").to_string(),
             time: time.to_string(),
@@ -153,10 +156,12 @@ pub struct Pick {
 }
 
 impl Pick {
-    fn unit(&self) -> (i64, &str) {
+    /// Reading order: the timeline's `(time, position, id)`.
+    fn unit(&self) -> (i64, i64, &str) {
         let first = self.entries.first();
         (
             first.map_or(0, |e| e.at),
+            first.map_or(0, |e| e.position),
             first.map_or("", |e| e.id.as_str()),
         )
     }
@@ -174,7 +179,7 @@ pub fn contribution(picks: &[Pick], me: &str) -> String {
         return String::new();
     };
     // One piece for each message or event: its first.
-    let mut units: BTreeMap<(i64, &str), &Pick> = BTreeMap::new();
+    let mut units: BTreeMap<(i64, i64, &str), &Pick> = BTreeMap::new();
     for pick in picks {
         let slot = units.entry(pick.unit()).or_insert(pick);
         if pick.key < slot.key {
@@ -357,6 +362,23 @@ mod tests {
              --- Tuesday, November 24, 2026 ---\n[19:10] <ann> b"
         );
         assert_eq!(contribution(&picks, "m2"), "");
+    }
+
+    #[test]
+    fn messages_sharing_a_millisecond_read_in_position_order() {
+        let mut first = said("k9", NOV24_1910, "19:10", "bob", Say::Message, "first");
+        first.position = 1;
+        let mut second = said("a1", NOV24_1910, "19:10", "ann", Say::Message, "second");
+        second.position = 2;
+        let picks = vec![
+            pick("b", vec![second], "second"),
+            pick("a", vec![first], "first"),
+        ];
+        assert_eq!(
+            contribution(&picks, "a"),
+            "--- Tuesday, November 24, 2026 ---\n[19:10] <bob> first\n[19:10] <ann> second"
+        );
+        assert_eq!(contribution(&picks, "b"), "");
     }
 
     #[test]

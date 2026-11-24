@@ -57,6 +57,7 @@ pub fn render(
     source: &str,
     theme: &Theme,
     mono: SharedString,
+    source_tag: super::copy::Tag,
     window: &mut Window,
     cx: &mut App,
 ) -> Result<AnyElement, SharedString> {
@@ -95,7 +96,7 @@ pub fn render(
         picture_label,
         fullscreen,
     };
-    Ok(frame(id, source, theme, mono, shown))
+    Ok(frame(id, source, theme, mono, source_tag, shown))
 }
 
 /// The theme's colours and font, as the layout takes them.
@@ -529,7 +530,14 @@ struct Shown {
 
 /// The frame: the label and its buttons over the picture, its source, or a
 /// line saying it is being drawn.
-fn frame(id: &str, source: &str, theme: &Theme, mono: SharedString, shown: Shown) -> AnyElement {
+fn frame(
+    id: &str,
+    source: &str,
+    theme: &Theme,
+    mono: SharedString,
+    source_tag: super::copy::Tag,
+    shown: Shown,
+) -> AnyElement {
     use gpui_kit::TestSupportExt;
     let Shown {
         width,
@@ -590,10 +598,13 @@ fn frame(id: &str, source: &str, theme: &Theme, mono: SharedString, shown: Shown
             .font_family(mono)
             .text_sm()
             .whitespace_nowrap()
-            .child(super::body::RichText::new(
-                ElementId::Name(format!("{id}-source-text").into()),
-                source.to_string(),
-            ))
+            .child(
+                super::body::RichText::new(
+                    ElementId::Name(format!("{id}-source-text").into()),
+                    source.to_string(),
+                )
+                .copy(source_tag),
+            )
             .into_any_element()
     } else {
         match picture {

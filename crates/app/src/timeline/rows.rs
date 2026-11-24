@@ -564,7 +564,7 @@ pub fn build_with(
                 let time = crate::message::layout::time_label(w, &local_time(*at));
                 EventRow {
                     id: m.id.clone(),
-                    copy: event_entry(&m.id, *at, &time, &text),
+                    copy: event_entry(&m.id, *at, m.position.unwrap_or(0), &time, &text),
                     text,
                     time,
                 }
@@ -635,7 +635,7 @@ pub fn build_with(
             let text = event_nicks(w, m, &network);
             rows.push(Row::Event(Rc::new(EventRow {
                 id: m.id.clone(),
-                copy: event_entry(&m.id, entry.at, &time, &text),
+                copy: event_entry(&m.id, entry.at, m.position.unwrap_or(0), &time, &text),
                 text,
                 time,
             })));
@@ -800,7 +800,7 @@ fn message_row(
         header.hash(&mut h);
         h.finish()
     };
-    let copy = copy_log::Entry::new(
+    let mut copy = copy_log::Entry::new(
         &m.id,
         at,
         &time,
@@ -819,6 +819,7 @@ fn message_row(
         },
         &Local,
     );
+    copy.position = m.position.unwrap_or(0);
     MessageRow {
         id: m.id.clone(),
         version,
@@ -854,14 +855,16 @@ fn message_row(
 }
 
 /// The line copying an event gives.
-fn event_entry(id: &str, at: i64, time: &str, text: &str) -> copy_log::Entry {
-    copy_log::Entry::new(
+fn event_entry(id: &str, at: i64, position: i64, time: &str, text: &str) -> copy_log::Entry {
+    let mut entry = copy_log::Entry::new(
         id,
         at,
         time,
         copy_log::Body::Event(text.to_string()),
         &Local,
-    )
+    );
+    entry.position = position;
+    entry
 }
 
 /// The text without the uploaded files' URLs, which the attachments show.

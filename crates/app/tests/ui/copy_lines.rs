@@ -179,3 +179,66 @@ fn an_event_between_messages_copies_as_a_log_line(cx: &mut TestAppContext) {
         )
     );
 }
+
+#[gpui_kit::test]
+fn a_collapsed_run_between_messages_copies_every_event(cx: &mut TestAppContext) {
+    let (a, b, c) = (
+        "2026-11-24T12:00:00Z",
+        "2026-11-24T12:00:30Z",
+        "2026-11-24T12:01:00Z",
+    );
+    let join = |id: &str, at: &str, who: &str| {
+        let mut m = sent(id, at, "");
+        m.kind = MessageKind::Event;
+        m.sender_id = who.into();
+        m.event = Some(MembershipEvent {
+            actor_id: who.into(),
+            r#type: MembershipEventType::Join,
+            ..Default::default()
+        });
+        m
+    };
+    let f = open(
+        cx,
+        vec![
+            sent("1", a, "hello"),
+            join("2", b, "m-bob"),
+            join("4", b, "m-eve"),
+            sent("3", c, "again"),
+        ],
+    );
+    let copied = copy_between(&f, cx, "text-1-0-block", "text-3-0-block");
+    assert_eq!(
+        copied,
+        format!(
+            "{}\n[{}] <bob> hello\n[{}] *** bob joined\n[{}] *** eve joined\n[{}] <bob> again",
+            day(a),
+            clock(a),
+            clock(b),
+            clock(b),
+            clock(c)
+        )
+    );
+}
+
+#[gpui_kit::test]
+fn blocks_of_one_message_copy_in_reading_order(cx: &mut TestAppContext) {
+    let f = open(
+        cx,
+        vec![sent(
+            "1",
+            "2026-11-24T12:00:00Z",
+            "intro line\n```\nfn main() {}\n```\nouro line",
+        )],
+    );
+    let copied = copy_between(&f, cx, "text-1-0-block", "text-1-1-block");
+    let (intro, code, outro) = (
+        copied.find("intro line"),
+        copied.find("fn main() {}"),
+        copied.find("ouro line"),
+    );
+    assert!(
+        intro < code && code < outro && intro.is_some(),
+        "{copied:?}"
+    );
+}
