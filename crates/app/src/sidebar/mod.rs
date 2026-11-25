@@ -42,6 +42,7 @@ use ircord_client::store::{Workspace, parties, people, topic};
 use crate::registry::{self, ConversationCtx, NetworkCtx, SidebarCtx};
 use crate::session::{Session, SessionEvent};
 use crate::theme::{self, Theme};
+use crate::timeline::lights;
 use crate::ui;
 use crate::ui::icon::IconName;
 
@@ -228,7 +229,18 @@ pub struct SidebarView {
     /// (bound in the window's root context) work before anything is clicked.
     focus: FocusHandle,
     focused_once: bool,
+    /// The mention badges: the count last drawn for each conversation and
+    /// the ring one is sending out (`timeline::lights::badge_ring`).
+    badges: std::cell::RefCell<std::collections::HashMap<String, BadgeState>>,
+    /// A timer is out that ends the ring being drawn.
+    ring_timer: Cell<bool>,
     _subscription: Subscription,
+}
+
+/// What the sidebar remembers of one conversation's mention badge.
+struct BadgeState {
+    count: i64,
+    ring: Option<std::time::Instant>,
 }
 
 impl SidebarView {
@@ -254,12 +266,16 @@ impl SidebarView {
             session,
             focus: cx.focus_handle(),
             focused_once: false,
+            badges: Default::default(),
+            ring_timer: Cell::new(false),
             _subscription: subscription,
         }
     }
 }
 
-fn badge(count: i64, theme: &Theme) -> Div {
+/// The mention badge, with the ring it sends out `ring` seconds after its
+/// count rose.
+fn badge(count: i64, ring: Option<f32>, theme: &Theme) -> Div {
     let text = if count > 99 {
         t!("sidebar-badge-many").to_string()
     } else {
@@ -278,6 +294,50 @@ fn badge(count: i64, theme: &Theme) -> Div {
         .bg(theme.mention)
         .text_color(theme.on_accent)
         .child(text)
+        .relative()
+        .when_some(ring.and_then(lights::badge_ring), |d, (reach, alpha)| {
+            d.child(
+                div()
+                    .id("mention-ring")
+                    .test_support()
+                    .absolute()
+                    .top(px(-reach))
+                    .bottom(px(-reach))
+                    .left(px(-reach))
+                    .right(px(-reach))
+                    .rounded_full()
+                    .border_2()
+                    .border_color(theme.mention.opacity(alpha)),
+            )
+        })
+}
+
+impl SidebarView {
+    /// How long ago the mention badge of `c` began its ring, when it is
+    /// sending one: its count has risen since it was last drawn (never the
+    /// first time it is drawn, nor with reduced motion).
+    fn ring(&self, c: &Conversation, theme: &Theme) -> Option<f32> {
+        let mut badges = self.badges.borrow_mut();
+        let now = std::time::Instant::now();
+        let state = badges.entry(c.id.clone()).or_insert(BadgeState {
+            count: c.mention_count,
+            ring: None,
+        });
+        if c.mention_count > state.count && !theme.reduced_motion {
+            state.ring = Some(now);
+        }
+        state.count = c.mention_count;
+        let t = state.ring?.elapsed().as_secs_f32();
+        (t < lights::RING_SECS).then_some(t)
+    }
+
+    /// Whether a ring is on its way, so the window should draw on.
+    fn ringing(&self) -> bool {
+        self.badges.borrow().values().any(|s| {
+            s.ring
+                .is_some_and(|at| at.elapsed().as_secs_f32() < lights::RING_SECS)
+        })
+    }
 }
 
 /// A page in the block at the top of the sidebar (Inbox, Saved, Server):
@@ -504,8 +564,11 @@ impl SidebarView {
         if let Some(n) = number {
             row = row.aria_description(SharedString::from(number_label(n)));
         }
+        // Seen for every drawn row, so a count that fell to nothing and rises
+        // again rings.
+        let ring = self.ring(c, theme);
         if c.mention_count > 0 {
-            row = row.child(badge(c.mention_count, theme));
+            row = row.child(badge(c.mention_count, ring, theme));
         } else if unread && !muted && !active {
             row = row.child(
                 div()
@@ -764,6 +827,7 @@ impl SidebarView {
                 let name = parties::title(w, c);
                 let initial: String = name.chars().take(2).collect();
                 let unread = c.unread_count > 0 && !order::muted(w, c);
+                let ring = self.ring(c, theme);
                 column = column.child(
                     div()
                         .id(ElementId::Name(format!("folded-{}", c.id).into()))
@@ -791,13 +855,11 @@ impl SidebarView {
                         .when(unread, |d| d.font_weight(FontWeight::BOLD))
                         .child(format!("{}{}", prefix(c), initial))
                         .when(c.mention_count > 0, |d| {
-                            d.child(
-                                div()
-                                    .absolute()
-                                    .top(px(-4.))
-                                    .right(px(-4.))
-                                    .child(badge(c.mention_count, theme)),
-                            )
+                            d.child(div().absolute().top(px(-4.)).right(px(-4.)).child(badge(
+                                c.mention_count,
+                                ring,
+                                theme,
+                            )))
                         })
                         .on_click(move |_, _, cx| {
                             session.update(cx, |s, cx| s.select_conversation(&id, cx))
@@ -833,6 +895,33 @@ impl SidebarView {
 
 impl Render for SidebarView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sidebar = self.build(window, cx);
+        if self.ringing() {
+            // A badge's ring plays at the display's rate, and the view draws
+            // once more when it is over (the timer also ends it where
+            // frames are not drawn on their own: the headless tests).
+            window.request_animation_frame();
+            if !self.ring_timer.replace(true) {
+                let runtime = self.session.read(cx).runtime.clone();
+                let over = std::time::Duration::from_secs_f32(lights::RING_SECS);
+                let paced = runtime.spawn(async move { tokio::time::sleep(over).await });
+                cx.spawn(async move |this, cx| {
+                    let _ = paced.await;
+                    this.update(cx, |this, cx| {
+                        this.ring_timer.set(false);
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+        }
+        sidebar
+    }
+}
+
+impl SidebarView {
+    fn build(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // The workspace takes the keyboard when it appears (the sign-in
         // form's field may still hold it, though it is gone), and whenever
         // nothing else has it.

@@ -18,6 +18,7 @@ pub mod attract;
 pub mod comet;
 pub mod export;
 mod glide;
+pub mod lights;
 pub mod rows;
 
 use std::time::{Duration, Instant};
@@ -104,6 +105,26 @@ struct Reading {
 }
 
 impl Global for Reading {}
+
+/// The small lights (reaction sparks, mention glints) the timeline on screen
+/// drew in its last frame, with the seconds each had played, for tests.
+pub fn lit(cx: &App) -> Vec<(lights::Kind, f32)> {
+    cx.try_global::<Reading>()
+        .and_then(|r| r.view.as_ref()?.upgrade())
+        .map(|view| view.read(cx).lit.clone())
+        .unwrap_or_default()
+}
+
+/// The glide the timeline on screen is running, for tests: whether it is a
+/// message's arrival, and how far it still has to go.
+pub fn glide(cx: &App) -> Option<(bool, f32)> {
+    cx.try_global::<Reading>()
+        .and_then(|r| r.view.as_ref()?.upgrade())
+        .and_then(|view| {
+            let view = view.read(cx);
+            Some((view.glide.as_ref()?.arrival, view.gap_to_end()))
+        })
+}
 
 /// The `/attract` comets the timeline on screen drew in its last frame,
 /// oldest first: whose rows they play on and how far into each they were.
@@ -617,6 +638,13 @@ pub struct TimelineView {
     stage: attract::Stage,
     /// The comets the last frame drew, oldest first ([`comets`]).
     comets: Vec<(attract::Target, comet::Moment)>,
+    /// The small lights playing: reaction sparks and mention glints.
+    lights: Vec<Light>,
+    /// Where the chips and rows they play on were painted in this frame.
+    light_stage: lights::Stage,
+    /// The lights the last frame drew and the seconds each had played
+    /// ([`lit`]).
+    lit: Vec<(lights::Kind, f32)>,
     _subscription: Subscription,
 }
 
@@ -626,6 +654,22 @@ struct Glide {
     id: u64,
     started: Instant,
     last: Instant,
+    /// The ease's time constant ([`glide::EASE_MS`], [`glide::ARRIVAL_EASE_MS`]).
+    ease_ms: f32,
+    /// The glide carries a message that arrived (not a jump to the newest).
+    arrival: bool,
+    /// A message arrived and no frame has laid its row out yet, so the gap
+    /// to the end is not known. The first frame drawn clears it.
+    unmeasured: bool,
+    /// The distance to the end at the last step, to tell a wheel tick
+    /// towards the end from one away from it.
+    gap: f32,
+}
+
+/// One small light playing since `started`.
+struct Light {
+    kind: lights::Kind,
+    started: Instant,
 }
 
 /// One `/attract` playing. `id` tells its frames apart from those of an
@@ -717,6 +761,9 @@ impl TimelineView {
             attracts: 0,
             stage: attract::Stage::default(),
             comets: Vec::new(),
+            lights: Vec::new(),
+            light_stage: lights::Stage::default(),
+            lit: Vec::new(),
             _subscription: subscription,
         };
         view.install_scroll_handler(cx);
@@ -732,7 +779,22 @@ impl TimelineView {
                 // The list reports the range from before this wheel tick, so
                 // "newest in view" is read from the list once it has moved.
                 let later = this.clone();
-                cx.defer(move |cx| later.update(cx, |this, cx| this.sync_at_end(cx)));
+                cx.defer(move |cx| {
+                    later.update(cx, |this, cx| {
+                        // Scrolling by hand ends a message's glide. A tick
+                        // towards the end finishes it there; away from the
+                        // end, nothing pulls the reader back.
+                        if this.glide.as_ref().is_some_and(|g| g.arrival) {
+                            let before = this.glide.as_ref().map_or(0., |g| g.gap);
+                            this.glide = None;
+                            if this.gap_to_end() < before {
+                                this.list.set_follow_mode(FollowMode::Tail);
+                                this.list.scroll_to_end();
+                            }
+                        }
+                        this.sync_at_end(cx)
+                    })
+                });
                 this.update(cx, |this, cx| this.scrolled(range, count, cx));
             }
         });
@@ -821,6 +883,23 @@ impl TimelineView {
             _ => Vec::new(),
         };
         let keys: Vec<String> = rows.iter().map(Row::key).collect();
+        // A message arrives while you are at the newest one: the view holds
+        // its place and glides to it. Not on a switch, a window into older
+        // history, new message settings, or with reduced motion.
+        let arrival = !switched
+            && !detached
+            && !self.detached
+            && self.at_end
+            && look == self.look
+            && !theme::get(cx).reduced_motion
+            && self.rows.iter().any(|r| matches!(r, Row::Message(_)))
+            && glide::arrival(&self.keys, &keys);
+        // Reactions added and mentions that arrived play a small light.
+        let news = if !switched && !theme::get(cx).reduced_motion {
+            self.news_in_view(lights::news(&self.rows, &rows), detached)
+        } else {
+            Vec::new()
+        };
         if switched || detached != self.detached {
             self.glide = None;
             self.centre = None;
@@ -839,6 +918,10 @@ impl TimelineView {
             // Every row may have a new height.
             self.list.splice(0..self.keys.len(), keys.len());
         } else if let Some((range, count)) = rows::splice(&self.keys, &keys) {
+            // A glide already running holds the view; the new row extends its end.
+            if arrival && self.glide.is_none() {
+                self.hold_view();
+            }
             self.list.splice(range, count);
         }
         self.look = look;
@@ -858,10 +941,14 @@ impl TimelineView {
             self.jumped = seq;
             self.jump_to_row(ix, cx);
         }
+        self.start_lights(news, cx);
         self.keys = keys;
         self.rows = Rc::new(rows);
         if switched {
             self.announcement = SharedString::default();
+        }
+        if arrival {
+            self.glide_arrival(cx);
         }
         let following = self.at_end && !self.detached;
         if self
@@ -871,6 +958,18 @@ impl TimelineView {
             self.announce(cx);
         }
         cx.notify();
+    }
+
+    /// The news worth a light: a glint only while following the end (a
+    /// mention in history that was loaded after the rows known is not news).
+    fn news_in_view(&self, news: Vec<lights::Kind>, detached: bool) -> Vec<lights::Kind> {
+        let following = self.at_end && !self.detached && !detached;
+        news.into_iter()
+            .filter(|kind| match kind {
+                lights::Kind::Glint { .. } => following,
+                lights::Kind::Sparks { .. } => true,
+            })
+            .collect()
     }
 
     /// Say what is new now, or once the pace allows it.
@@ -981,8 +1080,33 @@ impl TimelineView {
     }
 
     /// Start a glide: the list stops following while it runs, and each frame
-    /// moves a share of the way to the end ([`glide::step`]).
+    /// moves a share of the way to the end ([`glide::step_with`]).
     fn start_glide(&mut self, cx: &mut Context<Self>) {
+        self.begin_glide(glide::EASE_MS, false);
+        self.glide_frame(cx);
+    }
+
+    /// A message arrived while you are at the newest one: the list stays
+    /// where it is (the row is added below the view) and glides down to it
+    /// ([`glide::ARRIVAL_EASE_MS`]) rather than moving every row at once. A
+    /// glide already running takes the new end as its own.
+    fn glide_arrival(&mut self, cx: &mut Context<Self>) {
+        if self.glide.is_none() {
+            self.begin_glide(glide::ARRIVAL_EASE_MS, true);
+            self.glide_frame(cx);
+        }
+    }
+
+    /// Pin the view where it is, so rows added below it do not move it. The
+    /// list at the end keeps an anchor "past the last row", which would
+    /// follow the end into the new rows, so the anchor is made a place.
+    fn hold_view(&mut self) {
+        let height = self.list.viewport_bounds().size.height;
+        self.list.set_follow_mode(FollowMode::Normal);
+        self.list.scroll_by(-height);
+    }
+
+    fn begin_glide(&mut self, ease_ms: f32, arrival: bool) {
         self.list.set_follow_mode(FollowMode::Normal);
         self.glides += 1;
         let now = Instant::now();
@@ -990,30 +1114,68 @@ impl TimelineView {
             id: self.glides,
             started: now,
             last: now,
+            ease_ms,
+            arrival,
+            unmeasured: arrival,
+            gap: 0.,
         });
-        self.glide_frame(cx);
     }
 
-    /// One frame of the glide, then the next after [`GLIDE_FRAME`] on the
-    /// session's runtime (GPUI timers do not run in the headless tests).
-    fn glide_frame(&mut self, cx: &mut Context<Self>) {
+    /// One step of the glide. The window's frames drive it ([`Self::render`]
+    /// asks for the display's next frame while it runs), so it moves at the
+    /// screen's rate; the 16 ms timer ([`Self::glide_frame`]) only steps
+    /// when no frame has, which is how the headless tests run it. Returns
+    /// whether it runs on.
+    fn glide_tick(&mut self, from_frame: bool, cx: &mut Context<Self>) -> bool {
         let Some(glide) = self.glide.as_mut() else {
-            return;
+            return false;
         };
-        let (id, now) = (glide.id, Instant::now());
+        let now = Instant::now();
         let elapsed = now - glide.started;
         let since_last = now - glide.last;
+        if from_frame && glide.unmeasured {
+            // This frame is drawn before the list lays the new row out; the
+            // next one knows the gap.
+            glide.unmeasured = false;
+            return true;
+        }
+        if !from_frame && since_last < GLIDE_FRAME {
+            // A frame stepped a moment ago.
+            return true;
+        }
+        let ease_ms = glide.ease_ms;
+        if glide.unmeasured && elapsed < glide::LIMIT {
+            // The gap is unknown until a frame has laid the new row out.
+            return true;
+        }
         glide.last = now;
         let gap = self.gap_to_end();
+        if let Some(g) = self.glide.as_mut() {
+            g.gap = gap;
+        }
         if glide::finished(gap, elapsed) {
             self.glide = None;
             self.list.set_follow_mode(FollowMode::Tail);
             self.at_end = true;
             cx.notify();
+            return false;
+        }
+        self.list
+            .scroll_by(px(glide::step_with(gap, since_last, ease_ms)));
+        cx.notify();
+        true
+    }
+
+    /// One step of the glide from the timer, then the next after
+    /// [`GLIDE_FRAME`] on the session's runtime (GPUI timers do not run in
+    /// the headless tests).
+    fn glide_frame(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.glide.as_ref().map(|g| g.id) else {
+            return;
+        };
+        if !self.glide_tick(false, cx) {
             return;
         }
-        self.list.scroll_by(px(glide::step(gap, since_last)));
-        cx.notify();
         let runtime = self.session.read(cx).runtime.clone();
         let paced = runtime.spawn(async { tokio::time::sleep(GLIDE_FRAME).await });
         cx.spawn(async move |this, cx| {
@@ -1106,6 +1268,83 @@ impl TimelineView {
         Some(comet::layer(
             self.stage.clone(),
             self.comets.clone(),
+            comet::Palette::new(theme),
+            px(TYPING_LINE),
+        ))
+    }
+
+    /// Start a light for each piece of news; one that is already playing
+    /// starts over. The newest [`lights::MOST`] play.
+    fn start_lights(&mut self, news: Vec<lights::Kind>, cx: &mut Context<Self>) {
+        if news.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        for kind in news {
+            self.lights.retain(|l| l.kind != kind);
+            self.lights.push(Light { kind, started: now });
+        }
+        let extra = self.lights.len().saturating_sub(lights::MOST);
+        self.lights.drain(..extra);
+        // Where frames are not drawn on their own (the headless tests) the
+        // lights end on this timer, and the view draws them once more.
+        let runtime = self.session.read(cx).runtime.clone();
+        let over = Duration::from_secs_f32(lights::GLINT_SECS.max(lights::SPARK_SECS));
+        let paced = runtime.spawn(async move { tokio::time::sleep(over).await });
+        cx.spawn(async move |this, cx| {
+            let _ = paced.await;
+            this.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
+    }
+
+    /// What message `m`'s row draws of the lights playing on it.
+    fn lights_on(&self, m: &rows::MessageRow, theme: &Theme) -> Option<lights::Fx> {
+        if theme.reduced_motion {
+            return None;
+        }
+        let mut fx = lights::Fx {
+            stage: self.light_stage.clone(),
+            row: false,
+            chips: Vec::new(),
+        };
+        for light in self
+            .lights
+            .iter()
+            .filter(|l| !lights::over(&l.kind, l.started.elapsed()))
+        {
+            match &light.kind {
+                lights::Kind::Glint { message } if *message == m.id => fx.row = true,
+                lights::Kind::Sparks { message, emoji } if *message == m.id => {
+                    fx.chips.push(emoji.clone())
+                }
+                _ => {}
+            }
+        }
+        (fx.row || !fx.chips.is_empty()).then_some(fx)
+    }
+
+    /// The layer that draws the lights over the rows, while one plays. It
+    /// asks for the display's next frame, so they run at the screen's rate,
+    /// and ends with the last of them: nothing is drawn while nothing plays.
+    fn render_lights(&mut self, theme: &Theme, window: &mut Window) -> Option<AnyElement> {
+        if theme.reduced_motion {
+            self.lights.clear();
+        }
+        self.lights
+            .retain(|l| !lights::over(&l.kind, l.started.elapsed()));
+        self.lit = self
+            .lights
+            .iter()
+            .map(|l| (l.kind.clone(), l.started.elapsed().as_secs_f32()))
+            .collect();
+        if self.lit.is_empty() {
+            return None;
+        }
+        window.request_animation_frame();
+        Some(lights::layer(
+            self.light_stage.clone(),
+            self.lit.clone(),
             comet::Palette::new(theme),
             px(TYPING_LINE),
         ))
@@ -1336,6 +1575,7 @@ impl TimelineView {
                         },
                         hovered,
                         attract,
+                        lights: self.lights_on(&m, &theme),
                         on_hover: Rc::new(move |over, _, cx| {
                             if let Some(this) = this.upgrade() {
                                 this.update(cx, |this, cx| this.set_hovered(&id, over, cx));
@@ -1829,6 +2069,12 @@ impl Render for TimelineView {
                 view.update(cx, |this, cx| this.centre_now(cx)).ok();
             });
         }
+        if self.glide.is_some() {
+            // The display's frames pace the glide.
+            if self.glide_tick(true, cx) {
+                window.request_animation_frame();
+            }
+        }
         let theme = theme::get(cx).clone();
         let session = self.session.read(cx);
         let typing = match (session.client(), &self.conversation) {
@@ -1839,6 +2085,7 @@ impl Render for TimelineView {
         };
         let jump = self.render_jump(&theme, cx);
         let comet = self.render_comet(&theme, window);
+        let lights = self.render_lights(&theme, window);
         div()
             .id("timeline")
             .test_support()
@@ -1858,6 +2105,7 @@ impl Render for TimelineView {
                 .size_full(),
             )
             .children(comet)
+            .children(lights)
             .child(
                 div()
                     .id("typing")

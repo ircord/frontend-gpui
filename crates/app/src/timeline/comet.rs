@@ -119,15 +119,15 @@ impl Moment {
     }
 }
 
-fn rect(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
+pub(super) fn rect(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
     Bounds::new(point(px(x), px(y)), size(px(w), px(h)))
 }
 
-fn f(p: Pixels) -> f32 {
+pub(super) fn f(p: Pixels) -> f32 {
     f32::from(p)
 }
 
-fn ease_out(q: f32) -> f32 {
+pub(super) fn ease_out(q: f32) -> f32 {
     1. - (1. - q.clamp(0., 1.)).powi(3)
 }
 
@@ -239,22 +239,22 @@ fn origin(track: &Track, avatar: Option<Bounds<Pixels>>) -> (f32, f32, f32) {
 
 /// Collects shapes, leaving out what would not show.
 #[derive(Default)]
-struct Shapes(Vec<Shape>);
+pub(super) struct Shapes(pub(super) Vec<Shape>);
 
 impl Shapes {
-    fn fill(&mut self, at: Bounds<Pixels>, radius: f32, color: Hsla) {
+    pub(super) fn fill(&mut self, at: Bounds<Pixels>, radius: f32, color: Hsla) {
         if color.a > 0.01 {
             self.0.push(Shape::Fill { at, radius, color });
         }
     }
 
-    fn dot(&mut self, x: f32, y: f32, r: f32, color: Hsla) {
+    pub(super) fn dot(&mut self, x: f32, y: f32, r: f32, color: Hsla) {
         if r > 0.2 {
             self.fill(rect(x - r, y - r, 2. * r, 2. * r), r, color);
         }
     }
 
-    fn outline(&mut self, at: Bounds<Pixels>, radius: f32, width: f32, color: Hsla) {
+    pub(super) fn outline(&mut self, at: Bounds<Pixels>, radius: f32, width: f32, color: Hsla) {
         if color.a > 0.01 {
             self.0.push(Shape::Outline {
                 at,
@@ -265,11 +265,11 @@ impl Shapes {
         }
     }
 
-    fn ring(&mut self, x: f32, y: f32, r: f32, width: f32, color: Hsla) {
+    pub(super) fn ring(&mut self, x: f32, y: f32, r: f32, width: f32, color: Hsla) {
         self.outline(rect(x - r, y - r, 2. * r, 2. * r), r, width, color);
     }
 
-    fn blob(&mut self, x: f32, y: f32, r: f32, blur: f32, color: Hsla) {
+    pub(super) fn blob(&mut self, x: f32, y: f32, r: f32, blur: f32, color: Hsla) {
         if color.a > 0.01 {
             self.0.push(Shape::Glow {
                 at: rect(x - r, y - r, 2. * r, 2. * r),
@@ -280,7 +280,7 @@ impl Shapes {
         }
     }
 
-    fn streak(&mut self, at: Bounds<Pixels>, angle: f32, from: Hsla, to: Hsla) {
+    pub(super) fn streak(&mut self, at: Bounds<Pixels>, angle: f32, from: Hsla, to: Hsla) {
         if from.a > 0.01 || to.a > 0.01 {
             self.0.push(Shape::Streak {
                 at,
@@ -441,7 +441,7 @@ pub fn shapes(
     out.0
 }
 
-fn paint(shape: &Shape, window: &mut Window) {
+pub(super) fn paint(shape: &Shape, window: &mut Window) {
     match shape {
         Shape::Fill { at, radius, color } => {
             window.paint_quad(fill(*at, *color).corner_radii(px(*radius)));

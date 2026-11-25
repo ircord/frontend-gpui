@@ -30,6 +30,7 @@ mod media;
 mod menu_order;
 mod message_actions;
 mod networks;
+mod news_motion;
 mod notifications;
 mod notify_picture;
 mod parties;
