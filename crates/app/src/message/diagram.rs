@@ -61,7 +61,9 @@ pub fn render(
     window: &mut Window,
     cx: &mut App,
 ) -> Result<AnyElement, SharedString> {
-    let look = diagram_theme(theme);
+    // A theme change fades the window's colours; the layout takes the final
+    // ones at once instead of laying out again on every frame of the fade.
+    let look = diagram_theme(crate::theme::settled(cx));
     let key = hash(&(source, &look));
     let laid = match layout_for(key, source, &look, cx) {
         Layout::Failed(e) => return Err(note(&e)),

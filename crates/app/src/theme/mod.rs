@@ -11,6 +11,7 @@
 
 pub mod appearance;
 pub mod backdrop;
+pub mod fade;
 pub mod fonts;
 
 use gpui_kit::{App, Global, Hsla, Pixels, Rems, Rgba, SharedString, px, rems, rgb};
@@ -176,8 +177,16 @@ fn default_theme() -> &'static Theme {
 
 /// Replace the active tokens and redraw every window.
 pub fn set(theme: Theme, cx: &mut App) {
+    fade::cancel(cx);
     cx.set_global(theme);
     cx.refresh_windows();
+}
+
+/// The theme the window settles on: while a change fades in (`fade`), the
+/// colours it ends on. For what is costly to redraw per frame (diagrams, the
+/// ambient light); everything else reads [`get`].
+pub fn settled(cx: &App) -> &Theme {
+    fade::settled(cx)
 }
 
 /// A colour from data, `0xRRGGBB`.

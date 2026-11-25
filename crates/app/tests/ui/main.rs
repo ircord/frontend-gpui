@@ -43,6 +43,7 @@ mod settings_messages;
 mod sidebar;
 mod text;
 mod text_blocks;
+mod theme_fade;
 mod timeline;
 mod updates;
 mod uploads;

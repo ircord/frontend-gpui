@@ -733,7 +733,7 @@ impl Render for WorkspaceView {
                     }),
             })
             .when(theme.hibiki && header.is_some(), |d| {
-                d.child(ambient_light(&theme, window, cx))
+                d.child(ambient_light(window, cx))
             })
             .children(header)
             .child(div().flex_1().min_h_0().flex().child(main).children(panel));
@@ -829,7 +829,11 @@ struct AmbientColors {
 
 const AMBIENT_BLEED: f32 = 8.;
 
-fn ambient_light(theme: &Theme, window: &mut Window, cx: &mut App) -> impl IntoElement {
+fn ambient_light(window: &mut Window, cx: &mut App) -> impl IntoElement {
+    // The texture is made per colour set: it takes the colours a theme change
+    // fades to at once, not a new one on every frame of the fade.
+    let theme = crate::theme::settled(cx).clone();
+    let theme = &theme;
     let colors = AmbientColors {
         main: theme.main.into(),
         warm: theme

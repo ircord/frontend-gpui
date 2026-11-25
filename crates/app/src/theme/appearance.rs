@@ -314,12 +314,29 @@ pub fn apply(cx: &mut App) {
     state.compiled = Some(compiled.clone());
     let mut theme = super::Theme::from_compiled(&compiled);
     apply_css_fonts(&mut theme, &compiled, cx);
-    apply_kit(&theme, cx);
     cx.set_reduce_motion(theme.reduced_motion);
-    super::set(theme, cx);
+    let runtime = state_runtime(cx);
+    if !super::fade::start(theme.clone(), runtime, show, cx) {
+        show(theme, cx);
+    }
     for window in cx.windows() {
         let _ = window.update(cx, |_, window, cx| set_rem_size(window, cx));
     }
+}
+
+/// One step of a change: the kit's controls and the tokens, in these colours.
+/// A fade calls it each frame; its first frame already has the new fonts,
+/// corners and scale.
+fn show(theme: super::Theme, cx: &mut App) {
+    apply_kit(&theme, cx);
+    cx.set_global(theme);
+    cx.refresh_windows();
+}
+
+/// The runtime that paces a fade: the signed-in session's.
+fn state_runtime(cx: &App) -> Option<std::sync::Arc<tokio::runtime::Runtime>> {
+    let session = cx.try_global::<State>()?.session.as_ref()?.upgrade()?;
+    Some(session.read(cx).runtime.clone())
 }
 
 /// Generic family names end a theme's font list: the system's own font stays.
