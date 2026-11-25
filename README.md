@@ -85,7 +85,9 @@ approval across rebuilds. The watcher uses a valid `IRCord Local Development`
 code-signing identity when present. Set `IRCORD_DEV_SIGNING_IDENTITY` to use a
 different identity by name or fingerprint. The first signed launch may ask for
 access to the saved sign-in. Choose **Always Allow** for the signed dev app.
-The signed watcher runs a native executable so hot patches can still reload.
+The signed watcher rebuilds and restarts the app at a fixed bundle path.
+Dioxus 0.7.10 writes a web page into the bundle when it applies a hot patch,
+which invalidates the bundle signature.
 
 ### Installers
 

@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
 use std::env;
+use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -43,22 +45,16 @@ pub fn run(root: &Path, hot_patch: bool) -> Result<()> {
         "--addr",
         "127.0.0.1",
     ]);
-    if hot_patch {
-        command.arg("--hot-patch");
-    }
     if env::consts::OS == "macos"
         && let Some(identity) = macos_signing_identity()?
     {
-        // Dioxus 0.7.10 writes a web index after native hot patches.
-        // Sign the executable so that file cannot invalidate an app bundle.
+        move_legacy_reload_page(root)?;
+        // Keep the trusted app at a fixed path. Dioxus 0.7.10 writes
+        // a web index into the app bundle when it applies a hot patch.
         command
             .args([
                 "--renderer",
                 "native",
-                "--bundle",
-                "server",
-                "--profile",
-                "desktop-dev",
                 "--codesign",
                 "true",
                 "--apple-team-id",
@@ -66,10 +62,8 @@ pub fn run(root: &Path, hot_patch: bool) -> Result<()> {
             .arg(identity)
             .arg("--apple-entitlements")
             .arg(root.join("crates/dev/Entitlements.plist"));
-        if hot_patch {
-            // A new watcher needs a fresh launcher link to capture its linker inputs.
-            command.env("IRCORD_DEV_WATCHER", std::process::id().to_string());
-        }
+    } else if hot_patch {
+        command.arg("--hot-patch");
     }
     if env::var_os("RUST_LOG").is_none() {
         command.env("RUST_LOG", "warn,gpui::hot_reload=info");
@@ -80,6 +74,24 @@ pub fn run(root: &Path, hot_patch: bool) -> Result<()> {
         .success()
     {
         bail!("Dioxus development server exited unsuccessfully");
+    }
+    Ok(())
+}
+
+fn move_legacy_reload_page(root: &Path) -> Result<()> {
+    let target = env::var_os("CARGO_TARGET_DIR")
+        .map(|dir| root.join(dir))
+        .unwrap_or_else(|| root.join("target"));
+    let output = target.join("dx/ircord-dev/debug/macos");
+    let page = output.join("IrcordDev.app/index.html");
+    let html = match fs::read_to_string(&page) {
+        Ok(html) => html,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).context("read the old Dioxus reload page"),
+    };
+    if html.contains("__dx-toast-msg") && html.contains("non-hot-reloadable change") {
+        fs::rename(&page, output.join("ircord-dev-legacy-index.html"))
+            .context("move the old Dioxus reload page out of the app bundle")?;
     }
     Ok(())
 }
