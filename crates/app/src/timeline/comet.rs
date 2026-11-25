@@ -150,13 +150,33 @@ const INSET: f32 = 1.;
 /// levels the gap under the text with the gap above it.
 const DESCENT: f32 = 1.;
 
+/// How far the ring around the avatar reaches past the picture, outer edge
+/// included, in px.
+const AVATAR_RING: f32 = 5.;
+/// The gap the outline keeps from that ring, as it does from the text.
+const AVATAR_GAP: f32 = 3.;
+/// How far the layer reaches below the list, so the outline of the last row
+/// is not cut off, whether it ends [`DESCENT`] px under the row or lower to
+/// clear an avatar.
+const REACH: f32 = AVATAR_RING + AVATAR_GAP;
+
 impl Track {
-    pub fn new(row: Bounds<Pixels>) -> Self {
+    /// The track of `row`. The avatar of the row's own group head can hang
+    /// below the row's text; then the bottom edge drops to clear it and its
+    /// ring by [`AVATAR_GAP`]. An avatar that belongs to a row above (the
+    /// comet laps a continuation) is not in the row's span and changes
+    /// nothing.
+    pub fn new(row: Bounds<Pixels>, avatar: Option<Bounds<Pixels>>) -> Self {
+        let y = f(row.top()) + INSET;
+        let mut bottom = f(row.bottom()) + DESCENT;
+        if let Some(a) = avatar.filter(|a| a.top() < row.bottom() && a.bottom() > row.top()) {
+            bottom = bottom.max(f(a.bottom()) + AVATAR_RING + AVATAR_GAP);
+        }
         Track {
             x: f(row.left()) + 5.,
-            y: f(row.top()) + INSET,
+            y,
             w: (f(row.size.width) - 10.).max(1.),
-            h: (f(row.size.height) - INSET + DESCENT).max(1.),
+            h: (bottom - y).max(1.),
         }
     }
 
@@ -217,7 +237,7 @@ impl Track {
 
 /// Where the comet's head is at `t`, or `None` once it has landed.
 pub fn head(row: Bounds<Pixels>, t: f32) -> Option<Point<Pixels>> {
-    let track = Track::new(row);
+    let track = Track::new(row, None);
     (t < LANDS).then(|| {
         let ((x, y), _) = track.at(track.speed() * t.max(0.));
         point(px(x), px(y))
@@ -311,7 +331,7 @@ pub fn shapes(
     let settle = replaced.map_or(1., |at| (1. - (t - at) / SETTLE).clamp(0., 1.));
     // Sparks and bursts born after this are never made.
     let shed_until = replaced.unwrap_or(f32::INFINITY);
-    let track = Track::new(row);
+    let track = Track::new(row, avatar);
     let (ox, oy, r) = origin(&track, avatar);
     let steady = e * settle;
 
@@ -495,7 +515,7 @@ pub(super) fn paint(shape: &Shape, window: &mut Window) {
 /// the places their rows and avatars reported to `stage` while they were
 /// painted. A comet whose row is out of view draws nothing. The layer takes
 /// no clicks; `bottom` leaves the typing line under the list alone, except
-/// for the [`DESCENT`] px the layer reaches into it so the outline of the
+/// for the [`REACH`] px the layer reaches into it so the outline of the
 /// last row is not cut off (the typing line has room above its text).
 pub fn layer(
     stage: Stage,
@@ -510,7 +530,7 @@ pub fn layer(
         .top_0()
         .left_0()
         .right_0()
-        .bottom(bottom - px(DESCENT))
+        .bottom(bottom - px(REACH))
         .child(
             canvas(
                 |_, _, _| (),
@@ -596,10 +616,40 @@ mod tests {
     fn the_outline_clears_the_descenders_as_far_as_the_capitals() {
         // The top is inset into the row; the bottom reaches past the row.
         let r = row();
-        let track = Track::new(r);
+        let track = Track::new(r, None);
         let top = f(track.bounds().top()) - f(r.top());
         let bottom = f(track.bounds().bottom()) - f(r.bottom());
         assert_eq!((top, bottom), (1., 1.), "gap above equals gap below");
+    }
+
+    #[test]
+    fn the_outline_clears_an_avatar_that_hangs_below_the_text() {
+        // A row 40 px high whose avatar reaches 10 px below it.
+        let r = row();
+        let low = rect(16., 110., 40., 40.);
+        let track = Track::new(r, Some(low));
+        let gap = f(track.bounds().bottom()) - f(low.bottom());
+        assert_eq!(gap, 8., "the ring (5) and a 3 px gap below the picture");
+        // The sides and the top stay where they were.
+        let plain = Track::new(r, None);
+        assert_eq!((track.x, track.y, track.w), (plain.x, plain.y, plain.w));
+        // An avatar inside the row, or one in a row above, changes nothing.
+        for a in [rect(16., 100., 40., 30.), rect(16., 50., 40., 40.)] {
+            assert_eq!(Track::new(r, Some(a)).h, plain.h, "{a:?}");
+        }
+        // The same through the frame: the outline shape's bottom.
+        let bottom = |avatar| {
+            shapes(r, avatar, at(1.), &pal())
+                .iter()
+                .filter_map(|s| match s {
+                    Shape::Outline { at, width, .. } if *width == 1. => Some(f(at.bottom())),
+                    _ => None,
+                })
+                .next()
+                .unwrap()
+        };
+        assert_eq!(bottom(Some(low)), f(low.bottom()) + 8.);
+        assert_eq!(bottom(None), 141.);
     }
 
     #[test]

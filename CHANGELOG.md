@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- The comet of `/attract` no longer runs over the sender's avatar on a message of one plain line: its outline now reaches below the avatar and its ring, with the same gap it keeps from the text.
+
 ## v0.6.0 — 2026-11-25
 
 ### New
