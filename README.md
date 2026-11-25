@@ -80,6 +80,13 @@ at startup can require a restart. In the interactive terminal, press `r`
 to force a full build. Use `cargo xtask dev --restart` to rebuild and
 replace the app on each edit. Press Ctrl+C to stop the watcher and app.
 
+On macOS, sign development builds with the same identity to keep Keychain
+approval across rebuilds. The watcher uses a valid `IRCord Local Development`
+code-signing identity when present. Set `IRCORD_DEV_SIGNING_IDENTITY` to use a
+different identity by name or fingerprint. The first signed launch may ask for
+access to the saved sign-in. Choose **Always Allow** for the signed dev app.
+The signed watcher runs a native executable so hot patches can still reload.
+
 ### Installers
 
 Releases on GitHub will carry the installers below once the first is
