@@ -722,7 +722,7 @@ fn attach_button(ctx: &ComposerCtx, window: &mut Window, cx: &mut App) -> Option
             .track_focus(&trigger)
             .accessibility_label(t!("uploads-menu"))
             .tooltip(tooltip)
-            .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _, cx| {
+            .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _, _| {
                 let (session, conversation) = (ctx.session.clone(), ctx.conversation.clone());
                 let gif = ctx.clone();
                 let trigger = trigger.clone();
