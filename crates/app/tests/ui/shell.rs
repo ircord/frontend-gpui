@@ -284,9 +284,10 @@ fn the_sidebar_opens_with_search_and_its_pages(cx: &mut TestAppContext) {
     });
     draw(&f, cx, |window, cx| window.press("escape", cx));
     click(&f, cx, "conversation-c-general");
-    click(&f, cx, "search-conversation-toggle");
+    click(&f, cx, "search-conversation");
     draw(&f, cx, |window, _| {
-        assert!(window.find("conversation-search").visible())
+        assert!(window.find("search-page").visible());
+        assert!(window.find("search-chip-0").visible());
     });
     click(&f, cx, "sidebar-find");
     draw(&f, cx, |window, _| {

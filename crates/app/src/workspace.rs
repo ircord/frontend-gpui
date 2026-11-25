@@ -682,19 +682,9 @@ impl Render for WorkspaceView {
                 }
             }
         };
-        let searching = conversation.is_some()
-            && self.session.read(cx).panel.as_deref() == Some(crate::features::search::PANEL);
-        let panel = self.panel(&route, !compact, window, cx);
-        let (panel, search_drawer) = if compact && searching {
-            (None, panel)
-        } else {
-            (
-                panel.map(|panel| {
-                    crate::sidebar::side_panel(panel, searching.then_some(340.), window, cx)
-                }),
-                None,
-            )
-        };
+        let panel = self
+            .panel(&route, !compact, window, cx)
+            .map(|panel| crate::sidebar::side_panel(panel, window, cx));
         let backdrop = theme::backdrop::get(cx);
         let app_wide = backdrop
             .as_ref()
@@ -766,23 +756,6 @@ impl Render for WorkspaceView {
                     .child(card)
                     .when(show_drawer, |body| {
                         body.child(self.members_drawer(&drawer, &theme, window, cx))
-                    })
-                    .when_some(search_drawer, |body, search| {
-                        let session = self.session.clone();
-                        body.child(right_drawer(
-                            (
-                                "conversation-search-drawer",
-                                "conversation-search-scrim",
-                                t!("search-in-conversation"),
-                            ),
-                            search,
-                            &drawer.read(cx).scope,
-                            &theme,
-                            window,
-                            move |window, cx| {
-                                crate::features::search::toggle_panel(&session, false, window, cx)
-                            },
-                        ))
                     }),
             )
             .when(settings_open, |workspace| {

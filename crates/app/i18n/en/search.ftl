@@ -127,14 +127,7 @@ search-filters-find-conversation = Find a channel or person
 search-filters-clear = Clear filters
 search-filters-apply = Apply filters
 
-# Searching inside a conversation, beside it
 search-in-conversation = Search in this conversation
-search-conversation-search = Search { $place }
-search-conversation-field = Search messages in { $place }
-search-conversation-close = Close search
-search-conversation-no-messages-query = No messages in { $place } match “{ $query }”.
-search-conversation-everywhere = Search everywhere for “{ $query }”
-search-conversation-none = Open a conversation to search it.
 
 # Keys
 search-key-page = Search messages

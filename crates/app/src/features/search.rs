@@ -5,8 +5,7 @@
 //!   `mentions:`, `in:`, `has:`, `before:`, `after:`, `on:`, `author:`) are
 //!   typed into the field or chosen in the filters dialog, and show as
 //!   removable chips. Recent searches are kept on this device, per account.
-//! - Search inside a conversation, in the right-hand panel beside it, so
-//!   the panel stays for the next match while the timeline jumps.
+//! - Open the same page from a conversation with its In filter filled in.
 //! - Server history (the bouncer's or IRC server's own search) as a source
 //!   when exactly one conversation is searched.
 //!
@@ -19,6 +18,7 @@ use std::time::Duration;
 use chrono::{Local, NaiveDate};
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::IndexPath;
+use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::calendar::{Calendar, CalendarEvent, CalendarState, Date, Matcher};
 use gpui_kit::component::combobox::{Combobox, ComboboxState};
@@ -28,7 +28,6 @@ use gpui_kit::component::input::{
 };
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
-use gpui_kit::component::{Selectable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::commands::{self as cmd, Plan};
@@ -40,7 +39,7 @@ use ircord_client::search_filter::{
 use ircord_client::store::Workspace;
 
 use crate::features::{inbox, switcher};
-use crate::registry::{self, HeaderCtx, KeyDefault, Pane, Panel, PanelCtx, Slot};
+use crate::registry::{self, HeaderCtx, KeyDefault, Pane, Slot};
 use crate::route::{PaneKind, Route};
 use crate::session::{Session, SessionEvent};
 use crate::sidebar::layout;
@@ -54,8 +53,6 @@ use crate::ui::query_field::{
 
 gpui_kit::actions!(ircord_search, [OpenSearch, SearchConversation]);
 
-/// The right-hand panel's ID for searching the open conversation.
-pub const PANEL: &str = "conversation-search";
 /// Typing settles for this long before a search runs.
 const DEBOUNCE: Duration = Duration::from_millis(220);
 /// Conversations listed by name at most, with and without text typed.
@@ -77,45 +74,25 @@ pub fn init(cx: &mut App) {
         r.panes.add(Pane::new(PaneKind::Search, |ctx, window, cx| {
             page_view(&ctx.session, window, cx).into_any_element()
         }));
-        r.panels.add(Panel::new(PANEL, |ctx, window, cx| {
-            panel_view(ctx, window, cx)
-        }));
         r.header_buttons.add(
-            Slot::new("search-conversation", |ctx: &HeaderCtx, window, cx| {
+            Slot::new("search-conversation", |ctx: &HeaderCtx, _, cx| {
+                let conversation = ctx.route.conversation()?.to_string();
                 let session = ctx.session.clone();
-                let open = session.read(cx).panel.as_deref() == Some(PANEL);
-                let trigger = window
-                    .use_keyed_state("conversation-search-trigger", cx, |_, cx| cx.focus_handle())
-                    .read(cx)
-                    .clone();
                 let theme = theme::get(cx);
                 Some(
-                    Button::new("search-conversation-toggle")
+                    Button::new("search-conversation")
                         .ghost()
                         .small()
-                        .selected(open)
                         .rounded(px(16.))
                         .size(px(32.))
-                        .bg(if open {
-                            theme.selected
-                        } else {
-                            theme.raised.opacity(0.45)
-                        })
+                        .bg(theme.raised.opacity(0.45))
                         .border_1()
-                        .border_color(if open {
-                            theme.accent.opacity(0.35)
-                        } else {
-                            theme.border.opacity(0.55)
-                        })
+                        .border_color(theme.border.opacity(0.55))
                         .icon(IconName::Search)
-                        .track_focus(&trigger)
                         .accessibility_label(t!("search-in-conversation"))
                         .tooltip(t!("search-in-conversation"))
-                        .on_click(move |_, window, cx| {
-                            if !open {
-                                trigger.focus(window, cx);
-                            }
-                            toggle_panel(&session, !open, window, cx);
+                        .on_click(move |_, _, cx| {
+                            open_conversation(&session, &conversation, cx);
                         })
                         .into_any_element(),
                 )
@@ -151,59 +128,36 @@ pub fn init(cx: &mut App) {
         }
     });
     cx.on_action(|_: &SearchConversation, cx| {
-        layout::with_window(cx, |window, cx| {
-            if let Some(session) = layout::session(cx) {
-                toggle_panel(&session, true, window, cx);
-            }
-        })
+        if let Some(session) = layout::session(cx)
+            && let Some(Route::Conversation(id)) = session.read(cx).route()
+        {
+            open_conversation(&session, &id, cx);
+        }
     });
 }
 
 /// Open the search page, with `query` typed in when given (the switcher's
-/// "search messages for …", a conversation search's "search everywhere").
+/// "search messages for …").
 pub fn open(session: &Entity<Session>, query: Option<&str>, cx: &mut App) {
     if let Some(query) = query {
-        cx.set_global(PendingQuery(Some(query.to_string())));
+        cx.set_global(PendingSearch(Some(SearchTarget::Text(query.to_string()))));
     }
-    session.update(cx, |s, cx| {
-        if s.panel.as_deref() == Some(PANEL) {
-            let hidden = crate::features::profile::saved_members_hidden(s);
-            s.set_panel(hidden.then(|| crate::session::NO_PANEL.into()), cx);
-        }
-        s.navigate(Route::Search, cx);
-    });
+    if let Some(PageGlobal(view)) = cx.try_global::<PageGlobal>().cloned()
+        && view.read(cx).session == *session
+    {
+        view.update(cx, |page, cx| {
+            page.focus = true;
+            cx.notify();
+        });
+    }
+    session.update(cx, |s, cx| s.navigate(Route::Search, cx));
 }
 
-/// Open (or close) the search beside the open conversation.
-pub fn toggle_panel(session: &Entity<Session>, show: bool, window: &mut Window, cx: &mut App) {
-    let state = session.read(cx);
-    let showing_conversation = matches!(state.route(), Some(Route::Conversation(_)));
-    if show && !showing_conversation {
-        return;
-    }
-    let was_open = state.panel.as_deref() == Some(PANEL);
-    let opener = window.focused(cx).map(|focus| focus.downgrade());
-    let focus = cx.default_global::<FocusPanel>();
-    focus.pending = show;
-    if show && !was_open {
-        focus.opener = opener;
-    }
-    let restore = (!show && was_open)
-        .then(|| focus.opener.take().and_then(|focus| focus.upgrade()))
-        .flatten();
-    session.update(cx, |s, cx| {
-        let panel = if show {
-            Some(SharedString::from(PANEL))
-        } else {
-            crate::features::profile::saved_members_hidden(s)
-                .then(|| SharedString::from(crate::session::NO_PANEL))
-        };
-        s.set_panel(panel, cx);
-    });
-    if let Some(restore) = restore {
-        restore.focus(window, cx);
-    }
-    window.refresh();
+fn open_conversation(session: &Entity<Session>, id: &str, cx: &mut App) {
+    cx.set_global(PendingSearch(Some(SearchTarget::Conversation(
+        id.to_string(),
+    ))));
+    open(session, None, cx);
 }
 
 // ---- What a search finds and how it is running ----
@@ -225,11 +179,8 @@ pub enum More {
 }
 
 /// One running search: what is typed and chosen, and what the server found.
-/// The page and the conversation panel each keep one.
 pub struct SearchModel {
     session: Entity<Session>,
-    /// The conversation a panel search is limited to.
-    scope: Option<String>,
     pub filters: Filters,
     /// What was asked for; server history applies to one conversation only.
     pub source: Source,
@@ -248,10 +199,9 @@ pub struct SearchModel {
 }
 
 impl SearchModel {
-    fn new(session: Entity<Session>, scope: Option<String>) -> Self {
+    fn new(session: Entity<Session>) -> Self {
         Self {
             session,
-            scope,
             filters: Filters::default(),
             source: Source::Retained,
             pending: String::new(),
@@ -267,17 +217,9 @@ impl SearchModel {
         }
     }
 
-    /// The filters sent: a panel's always name its conversation.
-    fn sent_filters(&self) -> Filters {
-        match &self.scope {
-            Some(id) => self.filters.scoped(id),
-            None => self.filters.clone(),
-        }
-    }
-
     /// Whether what is typed and chosen is a search.
     pub fn searches(&self) -> bool {
-        self.scope.is_some() || sf::can_search(&self.pending, &self.filters)
+        sf::can_search(&self.pending, &self.filters)
     }
 
     /// Whether the results are not yet for what is typed.
@@ -287,7 +229,7 @@ impl SearchModel {
 
     /// Whether server history can be asked: one conversation is searched.
     pub fn source_allowed(&self) -> bool {
-        self.sent_filters().in_.len() == 1 && self.coverage != Some(Coverage::Offline)
+        self.filters.in_.len() == 1 && self.coverage != Some(Coverage::Offline)
     }
 
     fn set_text(&mut self, typed: &str, cx: &mut Context<Self>) {
@@ -358,7 +300,7 @@ impl SearchModel {
             return;
         };
         self.status = Status::Searching;
-        let query = Query::new(self.text.clone(), self.sent_filters(), self.source);
+        let query = Query::new(self.text.clone(), self.filters.clone(), self.source);
         let generation = self.generation;
         let request =
             client.request(move |api| async move { api.search_with_archive(&query).await });
@@ -414,7 +356,7 @@ impl SearchModel {
             return;
         };
         self.more = More::Loading;
-        let mut query = Query::new(self.text.clone(), self.sent_filters(), self.source);
+        let mut query = Query::new(self.text.clone(), self.filters.clone(), self.source);
         query.cursor = Some(cursor);
         let generation = self.generation;
         let request =
@@ -690,17 +632,6 @@ fn offers(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Vec<Offer> 
     offers
 }
 
-/// A message result's time as the web labels it: the day ("Today", a
-/// date) on the search page, the day and the time beside a conversation.
-fn result_time(created_at: &str, with_time: bool, clock_12h: bool) -> String {
-    let (day, time) = inbox::day_and_time(created_at, clock_12h);
-    if with_time && !time.is_empty() {
-        format!("{day} {time}")
-    } else {
-        day
-    }
-}
-
 fn coverage_text(coverage: Coverage) -> &'static str {
     use c::SearchSourceReason as R;
     match coverage {
@@ -960,11 +891,9 @@ fn result_row(
     id: String,
     w: &Workspace,
     result: &c::SearchResult,
-    show_place: bool,
     selected: bool,
     server: Option<&url::Url>,
     colored_names: bool,
-    clock_12h: bool,
     theme: &Theme,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
@@ -977,9 +906,7 @@ fn result_row(
         .conversation(&result.conversation.id)
         .map(conversation_label)
         .unwrap_or_else(|| conversation_label(&result.conversation));
-    // The page names the place; the panel beside a conversation does not,
-    // and shows the time instead.
-    let time = result_time(&result.message.created_at, !show_place, clock_12h);
+    let (time, _) = inbox::day_and_time(&result.message.created_at, false);
     let text = format::strip(&result.message.text);
     let jumpable = sf::is_jumpable(result);
     let mut label = t!(
@@ -1001,10 +928,7 @@ fn result_row(
         theme,
     );
     who.name = author;
-    let mut location = Vec::new();
-    if show_place {
-        location.push(div().truncate().child(place).into_any_element());
-    }
+    let mut location = vec![div().truncate().child(place).into_any_element()];
     if !jumpable {
         location.push(
             div()
@@ -1049,7 +973,6 @@ fn messages_part(
     selected: Option<usize>,
     scroll: &ResultScroll,
     offset: usize,
-    show_place: bool,
     empty_text: String,
     theme: &Theme,
     cx: &App,
@@ -1150,11 +1073,9 @@ fn messages_part(
                 format!("{prefix}-result-{i}"),
                 &w,
                 result,
-                show_place,
                 selected,
                 server.as_ref(),
                 look.colored_names,
-                look.clock_12h,
                 theme,
                 move |_, window, cx| {
                     model.update(cx, |_, cx| cx.emit(Opened));
@@ -1225,9 +1146,6 @@ impl FilterSelection {
         }
         let token = sf::active_token(&input.read(cx).value())?;
         let model = model.read(cx);
-        if model.scope.is_some() && token.key == Key::In {
-            return None;
-        }
         let client = model.session.read(cx).client()?;
         let chosen = model.filters.chips();
         let choices = offers(&client.read(), token.key, &token.value, today())
@@ -1436,14 +1354,11 @@ fn remove_last_chip(input: &Entity<InputState>, model: &Entity<SearchModel>, cx:
 fn field_changed(
     input: &Entity<InputState>,
     model: &Entity<SearchModel>,
-    exclude_in: bool,
     window: &mut Window,
     cx: &mut App,
 ) {
     let raw = input.read(cx).value().to_string();
-    if let Some(token) = sf::finished_token(&raw)
-        && !(exclude_in && token.key == Key::In)
-    {
+    if let Some(token) = sf::finished_token(&raw) {
         let chip = {
             let session = model.read(cx).session.read(cx);
             session
@@ -1460,9 +1375,15 @@ fn field_changed(
 
 // ---- The search page ----
 
-/// Query text handed to the page before it shows.
-struct PendingQuery(Option<String>);
-impl Global for PendingQuery {}
+enum SearchTarget {
+    Text(String),
+    Conversation(String),
+}
+
+/// A search handed to the page before it shows.
+#[derive(Default)]
+struct PendingSearch(Option<SearchTarget>);
+impl Global for PendingSearch {}
 
 /// The one page view, kept across visits so a search stays.
 #[derive(Clone)]
@@ -1478,16 +1399,24 @@ fn page_view(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> En
             view
         }
     };
-    if let Some(PendingQuery(Some(query))) = cx.try_global::<PendingQuery>() {
-        let query = query.clone();
-        cx.set_global(PendingQuery(None));
+    if let Some(target) = cx.default_global::<PendingSearch>().0.take() {
         view.update(cx, |v, cx| {
+            let (query, filters) = match target {
+                SearchTarget::Text(query) => (query, v.model.read(cx).filters.clone()),
+                SearchTarget::Conversation(id) => {
+                    v.model.update(cx, |m, _| m.source = Source::Retained);
+                    (String::new(), Filters::default().scoped(&id))
+                }
+            };
+            v.selected = 0;
+            v.result_scroll.reset();
+            v.filter_selection = FilterSelection::default();
+            v.error = None;
             v.input
                 .update(cx, |i, cx| i.set_value(query.clone(), window, cx));
             v.focus = true;
-            let model = v.model.clone();
-            model.update(cx, |m, cx| {
-                m.set_search(sf::typed_text(&query), m.filters.clone(), cx)
+            v.model.update(cx, |m, cx| {
+                m.set_search(sf::typed_text(&query), filters, cx)
             });
         });
     }
@@ -1520,7 +1449,7 @@ pub struct SearchPage {
 
 impl SearchPage {
     fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let model = cx.new(|_| SearchModel::new(session.clone(), None));
+        let model = cx.new(|_| SearchModel::new(session.clone()));
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("search-placeholder")));
         let query_calendar = query_field::calendar_state(window, cx);
         let date = cx.subscribe_in(
@@ -1538,7 +1467,7 @@ impl SearchPage {
             window,
             |this: &mut Self, input, event: &InputEvent, window, cx| match event {
                 InputEvent::Change => {
-                    field_changed(input, &this.model, false, window, cx);
+                    field_changed(input, &this.model, window, cx);
                     this.selected = 0;
                     this.result_scroll.reset();
                     this.filter_selection = FilterSelection::default();
@@ -1766,7 +1695,7 @@ impl SearchPage {
     }
 
     fn open_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        open_filters(&self.model, false, window, cx);
+        open_filters(&self.model, window, cx);
     }
 
     fn render_list(&self, theme: &Theme, cx: &App) -> Div {
@@ -1847,8 +1776,7 @@ impl SearchPage {
                     selected,
                     &self.result_scroll,
                     index,
-                    true,
-                    empty_text(&m.text, &m.filters, None),
+                    empty_text(&m.text, &m.filters),
                     theme,
                     cx,
                 ));
@@ -2150,18 +2078,13 @@ fn conversations(w: &Workspace, needle: &str, recent: &[String]) -> Vec<String> 
 }
 
 /// What an empty result says.
-fn empty_text(text: &str, filters: &Filters, place: Option<&str>) -> String {
-    match (text.is_empty(), place) {
-        (false, Some(place)) => t!(
-            "search-conversation-no-messages-query",
-            place = place,
-            query = text
-        ),
-        (false, None) if !filters.is_empty() => {
+fn empty_text(text: &str, filters: &Filters) -> String {
+    match text.is_empty() {
+        false if !filters.is_empty() => {
             t!("search-no-message-query-filtered", query = text)
         }
-        (false, None) => t!("search-no-message-query", query = text),
-        (true, _) => t!("search-no-message-filters").to_string(),
+        false => t!("search-no-message-query", query = text),
+        true => t!("search-no-message-filters").to_string(),
     }
 }
 
@@ -2583,14 +2506,13 @@ impl FilterMenu {
 
 /// Choose every filter at once. Apply changes them together; closing the
 /// dialog leaves the search as it was.
-fn open_filters(model: &Entity<SearchModel>, scoped: bool, window: &mut Window, cx: &mut App) {
+fn open_filters(model: &Entity<SearchModel>, window: &mut Window, cx: &mut App) {
     let draft = model.read(cx).filters.clone();
     let chips = draft.chips();
     let client = model.read(cx).session.read(cx).client().cloned();
     let workspace = client.as_ref().map(|client| client.read());
     let menus = [Key::From, Key::Has, Key::Mentions, Key::In]
         .into_iter()
-        .filter(|key| !scoped || *key != Key::In)
         .map(|key| FilterMenu::new(key, workspace.as_deref(), &chips, window, cx))
         .collect();
     drop(workspace);
@@ -2987,431 +2909,6 @@ fn filters_footer(view: &Entity<FiltersDialog>, window: &Window, theme: &Theme) 
                 .h(px(38. * theme.scale))
                 .on_click(window.listener_for(view, |this, _, window, cx| this.apply(window, cx))),
         )
-}
-
-// ---- Searching inside a conversation ----
-
-/// Focus the panel's field on its next draw.
-#[derive(Default)]
-struct FocusPanel {
-    pending: bool,
-    opener: Option<WeakFocusHandle>,
-}
-impl Global for FocusPanel {}
-
-#[derive(Clone)]
-struct PanelGlobal(Entity<ConversationSearch>);
-impl Global for PanelGlobal {}
-
-fn panel_view(ctx: &PanelCtx, window: &mut Window, cx: &mut App) -> AnyElement {
-    let Some(conversation) = ctx.conversation.clone() else {
-        let theme = theme::get(cx).clone();
-        return ui::empty::empty(
-            "conversation-search-none",
-            t!("search-conversation-none"),
-            None,
-            &theme,
-        )
-        .into_any_element();
-    };
-    let view = match cx.try_global::<PanelGlobal>() {
-        Some(PanelGlobal(view))
-            if view.read(cx).session == ctx.session
-                && view.read(cx).conversation == conversation =>
-        {
-            view.clone()
-        }
-        _ => {
-            let session = ctx.session.clone();
-            let view = cx.new(|cx| ConversationSearch::new(session, conversation, window, cx));
-            cx.set_global(PanelGlobal(view.clone()));
-            view
-        }
-    };
-    if std::mem::take(&mut cx.default_global::<FocusPanel>().pending) {
-        let input = view.read(cx).input.clone();
-        input.focus_handle(cx).focus(window, cx);
-    }
-    view.into_any_element()
-}
-
-pub struct ConversationSearch {
-    session: Entity<Session>,
-    conversation: String,
-    model: Entity<SearchModel>,
-    input: Entity<InputState>,
-    query_scope: FocusHandle,
-    quick_dismissed: bool,
-    selected: usize,
-    result_scroll: ResultScroll,
-    filter_selection: FilterSelection,
-    query_calendar: Entity<DatePickerState>,
-    _subscriptions: Vec<Subscription>,
-}
-
-impl ConversationSearch {
-    fn new(
-        session: Entity<Session>,
-        conversation: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let model = cx.new(|_| SearchModel::new(session.clone(), Some(conversation.clone())));
-        let place = place_name(&session, &conversation, cx);
-        let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t!("search-conversation-search", place = place))
-        });
-        let query_calendar = query_field::calendar_state(window, cx);
-        let date = cx.subscribe_in(
-            &query_calendar,
-            window,
-            |this: &mut Self, _, event: &DatePickerEvent, window, cx| {
-                let DatePickerEvent::Change(date) = event;
-                if let Some(day) = date.start() {
-                    pick_search_day(day.date(), &this.input, &this.model, window, cx);
-                }
-            },
-        );
-        let field = cx.subscribe_in(
-            &input,
-            window,
-            |this: &mut Self, input, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => {
-                    field_changed(input, &this.model, true, window, cx);
-                    this.quick_dismissed = false;
-                    this.selected = 0;
-                    this.result_scroll.reset();
-                    this.filter_selection = FilterSelection::default();
-                    cx.notify();
-                }
-                InputEvent::PressEnter { .. } => this.enter(window, cx),
-                _ => {}
-            },
-        );
-        let changed = cx.observe(&model, |this: &mut Self, model, cx| {
-            let n = model.read(cx).results.len();
-            this.selected = this.selected.min(n.saturating_sub(1));
-            cx.notify();
-        });
-        let query_scope = cx.focus_handle();
-        let focus_in = cx.on_focus_in(&query_scope, window, |this, _, cx| {
-            this.quick_dismissed = false;
-            cx.notify();
-        });
-        let focus_out = cx.on_focus_out(&query_scope, window, |_, _, _, cx| cx.notify());
-        model.update(cx, |model, cx| model.run(cx));
-        Self {
-            session,
-            conversation,
-            model,
-            input,
-            query_scope,
-            quick_dismissed: false,
-            selected: 0,
-            result_scroll: ResultScroll::default(),
-            filter_selection: FilterSelection::default(),
-            query_calendar,
-            _subscriptions: vec![field, changed, focus_in, focus_out, date],
-        }
-    }
-
-    fn enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self
-            .filter_selection
-            .accept(&self.input, &self.model, window, cx)
-        {
-            return;
-        }
-        let result = self.model.read(cx).results.get(self.selected).cloned();
-        if let Some(result) = result {
-            open_result(&self.session, &result, window, cx);
-        }
-    }
-
-    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let session = self.session.clone();
-        toggle_panel(&session, false, window, cx);
-    }
-
-    fn everywhere(&mut self, cx: &mut Context<Self>) {
-        let query = self.model.read(cx).text.clone();
-        open(&self.session, Some(&query), cx);
-    }
-
-    fn shows_quick_filters(&self, window: &Window, cx: &App) -> bool {
-        !self.quick_dismissed
-            && self.query_scope.contains_focused(window, cx)
-            && self.input.read(cx).value().trim().is_empty()
-    }
-
-    fn quick_filters(theme: &Theme, cx: &Context<Self>) -> Deferred {
-        let mut menu = div()
-            .id("conversation-search-quick-filters")
-            .test_support()
-            .role(Role::Group)
-            .aria_label(t!("search-quick-filters"))
-            .absolute()
-            .top(relative(1.))
-            .left_0()
-            .right_0()
-            .occlude()
-            .flex()
-            .flex_col()
-            .gap_0p5()
-            .p_1()
-            .bg(theme.raised)
-            .border_1()
-            .border_color(theme.border)
-            .rounded(theme.radius)
-            .shadow_md()
-            .child(list_label(t!("search-filters"), theme).pt_1());
-        let quick = [
-            (Key::From, t!("search-from-label")),
-            (Key::Mentions, t!("search-mentions-label")),
-            (Key::Has, t!("search-has-label")),
-            (Key::On, t!("search-on-label")),
-        ];
-        for (key, label) in quick {
-            menu = menu.child(
-                text_button(
-                    ElementId::Name(format!("conversation-search-quick-{}", key.as_str()).into()),
-                    label,
-                    theme,
-                    cx.listener(move |this, _, window, cx| {
-                        start_filter(&this.input, key, window, cx)
-                    }),
-                )
-                .test_support()
-                .reachable(theme)
-                .bg(theme.raised),
-            );
-        }
-        menu = menu.child(
-            text_button(
-                "conversation-search-quick-more",
-                t!("search-more-filters"),
-                theme,
-                cx.listener(|this, _, window, cx| open_filters(&this.model, true, window, cx)),
-            )
-            .test_support()
-            .reachable(theme)
-            .bg(theme.raised),
-        );
-        deferred(menu)
-    }
-}
-
-fn place_name(session: &Entity<Session>, conversation: &str, cx: &App) -> String {
-    session
-        .read(cx)
-        .client()
-        .and_then(|c| c.read().conversation(conversation).map(conversation_label))
-        .unwrap_or_default()
-}
-
-impl Render for ConversationSearch {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = theme::get(cx).clone();
-        let place = place_name(&self.session, &self.conversation, cx);
-        let m = self.model.read(cx);
-        let count = m.results.len();
-        let choices = self.filter_selection.choices(&self.input, &self.model, cx);
-        let choices_open = choices.is_some();
-        let choice_count = choices.as_ref().map_or(0, |(_, offers)| offers.len());
-        let filters = m.filters.count();
-        let has_query = !self.input.read(cx).value().is_empty() || filters > 0;
-        let text = m.text.clone();
-        let quick = self.shows_quick_filters(window, cx);
-        let filters_label = if filters > 0 {
-            t!("search-filters-on", count = filters)
-        } else {
-            t!("search-filters").to_string()
-        };
-        let header = div()
-            .px_3()
-            .pt_3()
-            .pb_2()
-            .flex()
-            .items_center()
-            .gap_1()
-            .child(
-                div()
-                    .id("conversation-search-query")
-                    .track_focus(&self.query_scope)
-                    .when(choice_count > 0, |field| field.key_context(SUGGESTION_KEYS))
-                    .relative()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        query_field::input(
-                            "conversation-search-input",
-                            &self.input,
-                            t!("search-conversation-field", place = place.clone()),
-                            chips_row("conversation-search", &self.model, &theme, cx),
-                            &theme,
-                        )
-                        .when(has_query, |field| {
-                            field.suffix(ui::icon::button(
-                                "conversation-search-clear-query",
-                                IconName::Close,
-                                t!("search-clear"),
-                                &theme,
-                                cx.listener(|this, _, window, cx| {
-                                    this.model.update(cx, |m, cx| {
-                                        m.set_search("", Filters::default(), cx)
-                                    });
-                                    this.input
-                                        .update(cx, |input, cx| input.set_value("", window, cx));
-                                    this.input.focus_handle(cx).focus(window, cx);
-                                }),
-                            ))
-                        }),
-                    )
-                    .when(quick && !choices_open, |d| {
-                        d.child(Self::quick_filters(&theme, cx))
-                    })
-                    .children(offers_row(
-                        "conversation-search",
-                        &self.input,
-                        &self.model,
-                        choices,
-                        &self.filter_selection,
-                        &self.query_calendar,
-                        &theme,
-                        cx,
-                    )),
-            )
-            .child(ui::icon::button(
-                "conversation-search-filters",
-                IconName::Settings2,
-                filters_label,
-                &theme,
-                {
-                    let model = self.model.clone();
-                    move |_, window, cx| open_filters(&model, true, window, cx)
-                },
-            ))
-            .child(ui::icon::button(
-                "conversation-search-close",
-                IconName::Close,
-                t!("search-conversation-close"),
-                &theme,
-                cx.listener(|this, _, window, cx| this.close(window, cx)),
-            ));
-        let mut list = div()
-            .id("conversation-search-results")
-            .test_support()
-            .role(Role::ListBox)
-            .aria_label(SharedString::from(t!(
-                "search-conversation-search",
-                place = place.clone()
-            )))
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.result_scroll.handle)
-            .flex()
-            .flex_col()
-            .child(messages_part(
-                "conversation-search",
-                &self.model,
-                &self.session,
-                Some(self.selected),
-                &self.result_scroll,
-                0,
-                false,
-                empty_text(&text, &Filters::default(), Some(&place)),
-                &theme,
-                cx,
-            ));
-        self.result_scroll.reveal = false;
-        if !text.trim().is_empty() {
-            list = list.child(
-                div().px_3().py_2().child(
-                    text_button(
-                        "conversation-search-everywhere",
-                        t!("search-conversation-everywhere", query = text.clone()),
-                        &theme,
-                        cx.listener(|this, _, _, cx| this.everywhere(cx)),
-                    )
-                    .test_support()
-                    .reachable(&theme),
-                ),
-            );
-        }
-        div()
-            .id("conversation-search")
-            .test_support()
-            .role(Role::Complementary)
-            .aria_label(SharedString::from(t!(
-                "search-conversation-search",
-                place = place
-            )))
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(theme.sidebar)
-            .capture_action(cx.listener(move |this, _: &MoveDown, window, cx| {
-                if choice_count > 0 && this.input.focus_handle(cx).is_focused(window) {
-                    this.filter_selection.step(choice_count, false);
-                    cx.stop_propagation();
-                    cx.notify();
-                } else if count > 0 {
-                    this.selected = (this.selected + 1) % count;
-                    this.result_scroll.reveal = true;
-                    cx.stop_propagation();
-                    cx.notify();
-                }
-            }))
-            .capture_action(cx.listener(move |this, _: &MoveUp, window, cx| {
-                if choice_count > 0 && this.input.focus_handle(cx).is_focused(window) {
-                    this.filter_selection.step(choice_count, true);
-                    cx.stop_propagation();
-                    cx.notify();
-                } else if count > 0 {
-                    this.selected = (this.selected + count - 1) % count;
-                    this.result_scroll.reveal = true;
-                    cx.stop_propagation();
-                    cx.notify();
-                }
-            }))
-            .capture_action(cx.listener(|this, _: &Backspace, _, cx| {
-                if remove_last_chip(&this.input, &this.model, cx) {
-                    cx.stop_propagation();
-                }
-            }))
-            .capture_action(cx.listener(|this, _: &AcceptSuggestion, window, cx| {
-                if !this
-                    .filter_selection
-                    .accept(&this.input, &this.model, window, cx)
-                {
-                    window.focus_next(cx);
-                }
-                cx.stop_propagation();
-            }))
-            .capture_action(cx.listener(move |this, _: &Escape, window, cx| {
-                if choices_open && this.input.focus_handle(cx).is_focused(window) {
-                    this.filter_selection.selection.dismissed = true;
-                    cx.notify();
-                } else if this.shows_quick_filters(window, cx) {
-                    this.quick_dismissed = true;
-                    this.input.focus_handle(cx).focus(window, cx);
-                    cx.notify();
-                } else {
-                    this.close(window, cx);
-                }
-                cx.stop_propagation();
-            }))
-            .child(header)
-            .child(source_switch(
-                "conversation-search-server-history",
-                &self.model,
-                false,
-                &theme,
-                cx,
-            ))
-            .child(list)
-    }
 }
 
 #[cfg(test)]

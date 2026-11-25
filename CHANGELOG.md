@@ -16,9 +16,7 @@
 - Search and Links share filter suggestions, removable chips, and a calendar. The Search Filters dialog has more room for its controls and descriptions.
 
 - Search in the sidebar opens the workspace search page directly.
-- Conversation search shows recent messages as soon as it opens and has more room for results in wide windows.
-- On narrow windows, conversation search opens over the timeline and returns focus to its opener when dismissed.
-- An empty conversation search field offers shortcuts to filter by sender, mention, content type, or date.
+- Search from a conversation opens the Search page with that conversation already selected.
 - Use the arrow keys to choose a typed search filter, then press Enter or Tab to apply it. Escape closes the suggestions first.
 - Search scrolls to the highlighted result as you use the arrow keys, with the search field and filters kept in view.
 - Search filters use compact multi-select menus, with search for people and conversations.

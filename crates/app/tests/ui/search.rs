@@ -1,8 +1,7 @@
 //! Tests for package FD1 against the canned server: the search page finds a
 //! message and opens it in the timeline (and remembers the search), typed
 //! filters become chips and are sent, the filters dialog applies several at
-//! once, and a conversation's own search beside the chat asks the server's
-//! history and opens its results there.
+//! once, and opening Search from a conversation applies its In filter.
 
 use std::time::Duration;
 
@@ -545,202 +544,74 @@ fn calendar_respects_range_bounds_and_keeps_typed_dates(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
-fn searching_one_conversation_beside_it_with_server_history(cx: &mut TestAppContext) {
+fn conversation_search_fills_in_the_search_page_and_uses_server_history(cx: &mut TestAppContext) {
     let f = open(cx);
-    click(&f, cx, "search-conversation-toggle");
-    shows(&f, cx, "conversation-search");
+    click(&f, cx, "search-conversation");
+    shows(&f, cx, "search-page");
     assert_eq!(
-        label(&f, cx, "conversation-search").as_deref(),
-        Some("Search #general")
+        label(&f, cx, "search-chip-0").as_deref(),
+        Some("Remove in filter: #general")
     );
     frame(&f, cx, |window, _| {
-        assert!(window.find("conversation-search").bounds().size.width >= gpui_kit::px(330.));
-        assert!(window.try_find("resize-panel").is_none());
+        assert_eq!(window.find("search-input").focused(), Some(true));
+        assert!(window.try_find("conversation-search").is_none());
     });
     searched(&f, cx, "recent messages in #general", |r| {
-        param(r, "q").iter().all(|value| value.is_empty())
+        param(r, "q").is_empty()
             && param(r, "conversationId") == ["c-general"]
+            && param(r, "source") == ["retained"]
     });
-    shows(&f, cx, "conversation-search-result-0");
     frame(&f, cx, |window, cx| window.input("hello", cx));
     searched(&f, cx, "a search in #general", |r| {
         param(r, "q") == ["hello"] && param(r, "conversationId") == ["c-general"]
     });
-    shows(&f, cx, "conversation-search-result-0");
-
-    // Server history: a bounded set, with a hit IRCord does not retain.
-    click(&f, cx, "conversation-search-server-history");
+    shows(&f, cx, "search-result-0");
+    click(&f, cx, "search-server-history");
     searched(&f, cx, "server history in #general", |r| {
         param(r, "source") == ["upstream"] && param(r, "conversationId") == ["c-general"]
     });
-    shows(&f, cx, "conversation-search-result-1");
+    shows(&f, cx, "search-result-1");
     assert_eq!(
-        label(&f, cx, "conversation-search-coverage").as_deref(),
+        label(&f, cx, "search-coverage").as_deref(),
         Some("Server results are bounded and may not include every match.")
     );
     assert_eq!(
-        label(&f, cx, "conversation-search-count").as_deref(),
+        label(&f, cx, "search-count").as_deref(),
         Some("2 results in this server response")
     );
-    let remote = label(&f, cx, "conversation-search-result-1").unwrap();
+    let remote = label(&f, cx, "search-result-1").unwrap();
     assert!(remote.starts_with("Mira in #general"), "{remote}");
     assert!(
         remote.ends_with("this result cannot open in the timeline."),
         "{remote}"
     );
-
-    // A result opens in the timeline and the panel stays.
-    click(&f, cx, "conversation-search-result-0");
+    click(&f, cx, "search-result-0");
     wait(cx, "the old message in the timeline", |cx| {
         let session = f.session.read(cx);
-        session.client().unwrap().read().focused("c-general") == Some("m-old")
-    });
-    frame(&f, cx, |window, _| {
-        assert!(window.find("conversation-search").visible());
-    });
-
-    // "Search everywhere" takes the text to the search page.
-    click(&f, cx, "conversation-search-everywhere");
-    shows(&f, cx, "search-page");
-    searched(&f, cx, "everywhere", |r| {
-        param(r, "q") == ["hello"] && param(r, "conversationId").is_empty()
+        session.route() == Some(Route::Conversation("c-general".into()))
+            && session.client().unwrap().read().focused("c-general") == Some("m-old")
     });
 }
 
 #[gpui_kit::test]
-fn escape_closes_the_conversation_search(cx: &mut TestAppContext) {
-    let f = open(cx);
-    click(&f, cx, "search-conversation-toggle");
-    shows(&f, cx, "conversation-search-quick-filters");
-    frame(&f, cx, |window, cx| window.press("escape", cx));
-    frame(&f, cx, |window, _| {
-        assert!(window.find("conversation-search").visible());
-        assert!(
-            window
-                .try_find("conversation-search-quick-filters")
-                .is_none()
-        );
-    });
-    frame(&f, cx, |window, cx| window.press("escape", cx));
-    wait(cx, "the panel closed", |cx| {
-        f.session.read(cx).panel.is_none()
-    });
-    frame(&f, cx, |window, _| {
-        assert!(window.try_find("conversation-search").is_none());
-    });
-}
-
-#[gpui_kit::test]
-fn conversation_search_offers_filters_when_the_field_is_empty(cx: &mut TestAppContext) {
-    let f = open(cx);
-    click(&f, cx, "search-conversation-toggle");
-    shows(&f, cx, "conversation-search-quick-has");
-    frame(&f, cx, |window, _| {
-        assert!(window.try_find("conversation-search-quick-in").is_none());
-    });
-    click(&f, cx, "conversation-search-quick-has");
-    shows(&f, cx, "conversation-search-offers");
-    frame(&f, cx, |window, _| {
-        assert!(
-            window
-                .try_find("conversation-search-quick-filters")
-                .is_none()
-        );
-        assert_eq!(
-            window.find("conversation-search-input").focused(),
-            Some(true)
-        );
-    });
-}
-
-#[gpui_kit::test]
-fn conversation_search_dismisses_and_accepts_suggestions_from_the_keyboard(
-    cx: &mut TestAppContext,
-) {
-    let f = open(cx);
-    click(&f, cx, "search-conversation-toggle");
-    frame(&f, cx, |window, cx| window.input("has:", cx));
-    shows(&f, cx, "conversation-search-offers");
-    frame(&f, cx, |window, cx| window.press("escape", cx));
-    frame(&f, cx, |window, cx| {
-        assert!(window.try_find("conversation-search-offers").is_none());
-        assert!(window.find("conversation-search").visible());
-        window.press("backspace", cx);
-    });
-    frame(&f, cx, |window, cx| window.input(":", cx));
-    shows(&f, cx, "conversation-search-offers");
-    frame(&f, cx, |window, cx| window.press("up", cx));
-    frame(&f, cx, |window, cx| {
-        assert_eq!(
-            window.find("conversation-search-offer-4").selected(),
-            Some(true)
-        );
-        window.press("enter", cx);
-    });
-    shows(&f, cx, "conversation-search-chip-0");
-    searched(&f, cx, "the selected conversation suggestion", |request| {
-        param(request, "conversationId") == ["c-general"] && param(request, "has") == ["file"]
-    });
-}
-
-#[gpui_kit::test]
-fn conversation_search_scrolls_to_the_selected_result(cx: &mut TestAppContext) {
-    let f = open_with_many_results(cx);
-    click(&f, cx, "search-conversation-toggle");
-    frame(&f, cx, |window, cx| window.input("hello world", cx));
-    shows(&f, cx, "conversation-search-result-0");
-    frame(&f, cx, |window, cx| {
-        assert!(
-            !window
-                .try_find("conversation-search-result-23")
-                .is_some_and(|e| e.visible())
-        );
-        window.press("up", cx);
-    });
-    shows(&f, cx, "conversation-search-result-23");
-    frame(&f, cx, |window, cx| {
-        assert_eq!(
-            window.find("conversation-search-result-23").selected(),
-            Some(true)
-        );
-        assert_eq!(
-            window.find("conversation-search-input").focused(),
-            Some(true)
-        );
-        window.press("down", cx);
-    });
-    shows(&f, cx, "conversation-search-result-0");
-}
-
-#[gpui_kit::test]
-fn conversation_search_uses_a_drawer_in_narrow_windows(cx: &mut TestAppContext) {
+fn the_conversation_search_shortcut_uses_the_same_page_in_a_narrow_window(cx: &mut TestAppContext) {
     let f = open(cx);
     cx.simulate_window_resize(
         f.window,
         gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(720.)),
     );
-    let mut timeline_width = gpui_kit::px(0.);
-    frame(&f, cx, |window, _| {
-        timeline_width = window.find("timeline").bounds().size.width;
+    frame(&f, cx, |window, cx| {
+        let key = if cfg!(target_os = "macos") {
+            "cmd-alt-f"
+        } else {
+            "ctrl-alt-f"
+        };
+        window.press(key, cx);
     });
-    click(&f, cx, "search-conversation-toggle");
-    frame(&f, cx, |window, _| {
-        assert!(window.find("conversation-search-drawer").visible());
-        assert_eq!(
-            window.find("conversation-search-input").focused(),
-            Some(true)
-        );
-        assert_eq!(window.find("timeline").bounds().size.width, timeline_width);
-        assert!(window.try_find("resize-panel").is_none());
-    });
-    click(&f, cx, "conversation-search-scrim");
-    frame(&f, cx, |window, _| {
-        assert!(window.try_find("conversation-search-drawer").is_none());
-        assert_eq!(
-            window.find("search-conversation-toggle").focused(),
-            Some(true)
-        );
-    });
+    shows(&f, cx, "search-page");
+    shows(&f, cx, "search-chip-0");
+    frame(&f, cx, |window, cx| window.press("escape", cx));
+    shows(&f, cx, "timeline");
 }
 
 #[gpui_kit::test]
