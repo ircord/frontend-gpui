@@ -1173,7 +1173,7 @@ impl Render for ProfileCard {
                     .object_fit(ObjectFit::Cover)
             }));
         let face = div().self_start().mt(px(-56.)).ml_3().flex_none().child(
-            ui::avatar::framed(
+            ui::avatar::framed_live(
                 ui::avatar::person(
                     ui::avatar::Person {
                         member: &m,
@@ -1190,6 +1190,7 @@ impl Render for ProfileCard {
                 theme.main,
                 px(ui::avatar::LARGE),
                 "profile",
+                &theme,
             )
             .test_support(),
         );

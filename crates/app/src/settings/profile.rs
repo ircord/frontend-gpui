@@ -1831,13 +1831,14 @@ impl Render for ProfileView {
                                 .aria_label(t!("profile-frame-preview"))
                                 .p_2()
                                 .child(
-                                    ui::avatar::framed(
+                                    ui::avatar::framed_live(
                                         picture(&pic, &name_now, px(ui::avatar::NORMAL), &theme),
                                         people::AvatarFrame::parse(Some(&self.frame)),
                                         frame_color,
                                         theme.main,
                                         px(ui::avatar::NORMAL),
                                         "settings",
+                                        &theme,
                                     )
                                     .test_support(),
                                 ),
