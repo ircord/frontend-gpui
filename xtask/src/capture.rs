@@ -11,7 +11,7 @@
 //! times while it plays (the last two around its landing) and once after it
 //! ends, then restarts the app to show it signs in from there, and opens Settings → Emotes → Discover (emoji.gg's emoji, read by
 //! the backend over the internet).
-//! `CAPTURE_ONLY=attract` captures `/attract` on a plain message, one with a reaction and a reply.
+//! `CAPTURE_ONLY=attract` captures `/attract` on a first line, a later line, a message with a reaction and a reply.
 //! `CAPTURE_ONLY=fade` captures a change of colours fading, nothing else.
 //! `CAPTURE_ONLY=news` instead sends a conversation taller than the window, a new message, a
 //! reaction and a mention, with a burst of screenshots after each, to look at
@@ -206,9 +206,8 @@ exit 0
 fi
 
 if [ "${CAPTURE_ONLY:-}" = attract ]; then
-# `/attract` on the rows that have an avatar: a plain message (nothing under
-# its text but the avatar), one with a reaction and a reply with its quoted
-# line. Someone else speaks between them, so each of yours starts a group
+# `/attract` on the rows that have an avatar: a plain first line, a later
+# line of a group, one with a reaction and a reply with its quoted line. Someone else speaks between them, so each of yours starts a group
 # and shows its avatar. Two stills of each, with the comet at its outline.
 set -- $(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" "$SERVER/api/v1/bootstrap" | python3 -c '
 import json, sys
@@ -244,7 +243,13 @@ while time.time() < deadline:
     time.sleep(0.05)
 PY
 sleep 6
+# The bot must be on IRC, or the rows would all join one group.
+kill -0 $! 2>/dev/null || { echo "the friend bot is gone"; exit 1; }
+FIRST=1
 attract() {
+  # The server lets a channel attract once in 30 s.
+  [ "$FIRST" = 1 ] || sleep 31
+  FIRST=0
   xdotool windowfocus --sync "$WIN"
   xdotool type --delay 30 "/attract"
   sleep 1
@@ -255,14 +260,21 @@ attract() {
   shot "14-attract-$1-a"
   sleep 0.8
   shot "14-attract-$1-b"
-  # The server lets a channel attract once in 20 s.
-  sleep 22
 }
 say() { touch /tmp/say-$1; sleep 3; }
+# 1. The first line of a group, nothing under it.
 post plain "a plain message, a single line with nothing under it" >/dev/null
 sleep 3
 attract plain
+# 2. A later line of a group: the comet laps the avatar and the line.
 say 1
+post first "the first line of a group" >/dev/null
+sleep 1
+post later "a later line of the same group, which the comet laps" >/dev/null
+sleep 3
+attract later
+# 3. A message with a reaction under it.
+say 2
 post reacted "a message with a reaction under it" >/dev/null
 sleep 3
 REACTED=$(newest)
@@ -270,7 +282,8 @@ curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Typ
   -d "{\"emoji\":\"🎉\",\"messageId\":\"$REACTED\"}" "$SERVER/api/v1/conversations/$CONVERSATION/reactions"
 sleep 2
 attract reaction
-say 2
+# 4. A reply with its quoted line.
+say 3
 post reply "a reply to the message with a reaction" "$REACTED" >/dev/null
 sleep 3
 attract reply

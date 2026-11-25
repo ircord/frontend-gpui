@@ -174,6 +174,10 @@ fn the_command_is_sent_and_the_event_plays_on_the_message_and_its_groups_avatar(
         "the comet's layer {layer:?} covers the row {row:?}"
     );
     assert!(
+        layer.bottom() >= row.bottom() + gpui_kit::px(ircord_app::timeline::comet::REACH),
+        "the comet's layer {layer:?} reaches under the last row {row:?}"
+    );
+    assert!(
         drawn(&f, cx, "attract-avatar-1"),
         "the comet lands on the group's head"
     );

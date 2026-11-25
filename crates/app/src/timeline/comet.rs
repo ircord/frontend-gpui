@@ -150,33 +150,48 @@ const INSET: f32 = 1.;
 /// levels the gap under the text with the gap above it.
 const DESCENT: f32 = 1.;
 
-/// How far the ring around the avatar reaches past the picture, outer edge
-/// included, in px.
-const AVATAR_RING: f32 = 5.;
+/// The ring around the avatar: its radius past the picture's edge and its
+/// stroke width, in px.
+const RING_OFFSET: f32 = 4.;
+const RING_WIDTH: f32 = 2.;
+/// How far the ring reaches past the picture, outer edge included.
+const AVATAR_RING: f32 = RING_OFFSET + RING_WIDTH / 2.;
 /// The gap the outline keeps from that ring, as it does from the text.
 const AVATAR_GAP: f32 = 3.;
 /// How far the layer reaches below the list, so the outline of the last row
 /// is not cut off, whether it ends [`DESCENT`] px under the row or lower to
-/// clear an avatar.
-const REACH: f32 = AVATAR_RING + AVATAR_GAP;
+/// clear an avatar. (It assumes no avatar ends lower than that: today's
+/// layouts end it 1 px above its row's bottom.)
+pub const REACH: f32 = AVATAR_RING + AVATAR_GAP;
 
 impl Track {
-    /// The track of `row`. The avatar of the row's own group head can hang
-    /// below the row's text; then the bottom edge drops to clear it and its
-    /// ring by [`AVATAR_GAP`]. An avatar that belongs to a row above (the
-    /// comet laps a continuation) is not in the row's span and changes
+    /// The track of `row`, clear of the avatar's ring by [`AVATAR_GAP`]
+    /// wherever the avatar is next to the row:
+    /// - the group head's avatar hangs below the row's text: the bottom edge
+    ///   drops below it, as far as it needs;
+    /// - the row is a later line of its group, so the avatar lies above it:
+    ///   the top edge rises above the avatar and the comet laps avatar and
+    ///   line together (the sides stay where they were).
+    ///
+    /// An avatar the row does not touch or follow (none in view) changes
     /// nothing.
     pub fn new(row: Bounds<Pixels>, avatar: Option<Bounds<Pixels>>) -> Self {
-        let y = f(row.top()) + INSET;
+        let mut top = f(row.top()) + INSET;
         let mut bottom = f(row.bottom()) + DESCENT;
-        if let Some(a) = avatar.filter(|a| a.top() < row.bottom() && a.bottom() > row.top()) {
-            bottom = bottom.max(f(a.bottom()) + AVATAR_RING + AVATAR_GAP);
+        if let Some(a) = avatar {
+            let clear = AVATAR_RING + AVATAR_GAP;
+            if a.bottom() <= row.top() {
+                // Above the row: the head of the group, the row a later line.
+                top = top.min(f(a.top()) - clear);
+            } else if a.top() < row.bottom() {
+                bottom = bottom.max(f(a.bottom()) + clear);
+            }
         }
         Track {
             x: f(row.left()) + 5.,
-            y,
+            y: top,
             w: (f(row.size.width) - 10.).max(1.),
-            h: (bottom - y).max(1.),
+            h: (bottom - top).max(1.),
         }
     }
 
@@ -337,7 +352,13 @@ pub fn shapes(
 
     // The ring that stays around the avatar while the comet plays.
     if avatar.is_some() {
-        out.ring(ox, oy, r + 4., 2., pal.accent.opacity(0.9 * steady));
+        out.ring(
+            ox,
+            oy,
+            r + RING_OFFSET,
+            RING_WIDTH,
+            pal.accent.opacity(0.9 * steady),
+        );
     }
 
     let length = track.length();
@@ -432,8 +453,8 @@ pub fn shapes(
             out.ring(
                 ox,
                 oy,
-                r + 4. + big * ease_out(age),
-                2.,
+                r + RING_OFFSET + big * ease_out(age),
+                RING_WIDTH,
                 pal.hot.opacity((1. - age) * strength * settle),
             );
         }
@@ -450,8 +471,10 @@ pub fn shapes(
             let angle = TAU * (n as f32 + noise(n, 22)) / BURST as f32;
             let fly = 70. + 150. * noise(n, 23);
             let (sx, sy) = (
-                ox + (r + 4.) * angle.cos() + fly * angle.cos() * age,
-                oy + (r + 4.) * angle.sin() + fly * angle.sin() * age + 0.5 * 320. * age * age,
+                ox + (r + RING_OFFSET) * angle.cos() + fly * angle.cos() * age,
+                oy + (r + RING_OFFSET) * angle.sin()
+                    + fly * angle.sin() * age
+                    + 0.5 * 320. * age * age,
             );
             let left = 1. - age / life;
             let color = if n % 3 == 0 { pal.gold } else { pal.hot };
@@ -633,9 +656,11 @@ mod tests {
         // The sides and the top stay where they were.
         let plain = Track::new(r, None);
         assert_eq!((track.x, track.y, track.w), (plain.x, plain.y, plain.w));
-        // An avatar inside the row, or one in a row above, changes nothing.
-        for a in [rect(16., 100., 40., 30.), rect(16., 50., 40., 40.)] {
-            assert_eq!(Track::new(r, Some(a)).h, plain.h, "{a:?}");
+        // An avatar inside the row, or one that starts where the row ends,
+        // changes nothing.
+        for a in [rect(16., 100., 40., 30.), rect(16., 140., 40., 40.)] {
+            let t = Track::new(r, Some(a));
+            assert_eq!((t.y, t.h), (plain.y, plain.h), "{a:?}");
         }
         // The same through the frame: the outline shape's bottom.
         let bottom = |avatar| {
@@ -650,6 +675,35 @@ mod tests {
         };
         assert_eq!(bottom(Some(low)), f(low.bottom()) + 8.);
         assert_eq!(bottom(None), 141.);
+    }
+
+    #[test]
+    fn a_later_line_is_lapped_with_the_avatar_above_it() {
+        // The avatar is the group head's, above this row (a later line).
+        let r = row();
+        let head = rect(16., 58., 40., 40.);
+        let track = Track::new(r, Some(head));
+        let plain = Track::new(r, None);
+        let gap = f(head.top()) - f(track.bounds().top());
+        assert_eq!(gap, 8., "the ring (5) and a 3 px gap above the picture");
+        assert_eq!(
+            f(track.bounds().bottom()),
+            f(plain.bounds().bottom()),
+            "the bottom edge stays under the text"
+        );
+        assert_eq!((track.x, track.w), (plain.x, plain.w));
+        // The lapped line keeps its distance when the group's avatar is not
+        // in view.
+        assert_eq!(f(plain.bounds().top()), f(r.top()) + 1.);
+        // Through the frame: the outline's top is above the ring.
+        let top = shapes(r, Some(head), at(1.), &pal())
+            .iter()
+            .find_map(|s| match s {
+                Shape::Outline { at, width, .. } if *width == 1. => Some(f(at.top())),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(top, f(head.top()) - 8.);
     }
 
     #[test]
