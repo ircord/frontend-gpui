@@ -70,7 +70,6 @@ struct Context {
     animate: bool,
     /// The server's origin, for media named by a path on it.
     origin: Option<String>,
-    media_reader: Option<crate::images::MediaReader>,
 }
 
 fn context(ctx: &MessageCtx, cx: &mut App) -> Option<Context> {
@@ -124,7 +123,6 @@ fn context(ctx: &MessageCtx, cx: &mut App) -> Option<Context> {
         sensitivity,
         animate,
         origin,
-        media_reader: crate::images::media_reader(cx),
     })
 }
 
@@ -211,12 +209,6 @@ pub fn render(
     }
     for (i, file) in files.iter().enumerate() {
         out.push(draw.file_card(i, file, window, cx));
-    }
-    if m.attachments.iter().any(|attachment| {
-        url::Url::parse(&attachment.url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
-    }) && let Some(control) = super::offline_pin::control(ctx, window, cx)
-    {
-        out.push(control);
     }
     for (i, _) in inline.iter().enumerate() {
         out.push(draw.single("image", &inline, i));
@@ -389,11 +381,10 @@ impl Draw<'_> {
     /// The picture itself: playing, or held on its first frame.
     fn picture(&self, key: &str, media: &Media, fit: ObjectFit) -> AnyElement {
         let playing = !media.is_gif() || self.context.animate || self.hovered == Some(key);
-        let uri = crate::images::media_uri(&media.url, self.context.media_reader.as_ref());
         let source = if playing {
-            ImageSource::from(SharedUri::from(uri.to_string()))
+            ImageSource::from(SharedUri::from(media.url.clone()))
         } else {
-            crate::images::still(uri)
+            crate::images::still(media.url.clone().into())
         };
         img(source).size_full().object_fit(fit).into_any_element()
     }

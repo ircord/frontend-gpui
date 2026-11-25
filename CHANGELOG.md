@@ -6,10 +6,6 @@
 
 - Configure a speech service and play a Read Aloud sample in Notifications settings. The speech key stays in this device’s credential store.
 - Read Aloud can speak new highlights on this device through your chosen speech service. It respects ignored senders, muted conversations and quiet hours.
-- Open your workspace and read saved messages while the server is unavailable, after IRCord has downloaded your recent history.
-- Search and filter saved messages when the server is unavailable, then open a match in its conversation.
-- Recent message images and GIFs are downloaded for offline viewing, including in the image viewer.
-- Keep message attachments offline beyond the normal seven-day archive window.
 
 ### Improved
 
@@ -26,7 +22,7 @@
 - Search suggestions open over the results and show people's avatars and nicknames. Choose yourself as a sender, clear the search in one click, and find recently visited conversations higher in Jump to.
 - Right-click menus use more consistent widths, align titles to the row edge, and scroll within smaller windows.
 - Context menus have taller action rows and more space between icons and labels.
-- The offline archive follows new messages, edits, and deletions as they happen and catches up after reconnecting.
+- Search and chat history load directly from the server. IRCord no longer downloads messages or attachments for offline use.
 - Settings opens over the workspace, so the view you were using stays in place.
 - The Settings header provides quick access to appearance sync on wider windows.
 - Profile cards display the chosen card background, use a taller banner, and open the Profile settings directly from Edit profile.

@@ -203,7 +203,7 @@ fn searches_and_opens_a_result_in_the_timeline(cx: &mut TestAppContext) {
     assert_eq!(label(&f, cx, "search-count").as_deref(), Some("1 message"));
     assert_eq!(
         label(&f, cx, "search-coverage").as_deref(),
-        Some("Coverage: messages retained by IRCord; server history may include more.")
+        Some("Showing messages stored on the IRCord server. The IRC network may have more.")
     );
 
     // Opening it loads the history around it and shows it in #general.
@@ -219,6 +219,38 @@ fn searches_and_opens_a_result_in_the_timeline(cx: &mut TestAppContext) {
     let recent = cx.update(|cx| load_recent(&f.session.read(cx).config, "u-me"));
     assert_eq!(recent.len(), 1);
     assert_eq!(recent[0].text, "hello");
+}
+
+#[gpui_kit::test]
+fn a_failed_search_reports_the_server_error_and_retries_the_same_query(cx: &mut TestAppContext) {
+    let unavailable = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let state = unavailable.clone();
+    let f = open_with(cx, true, move |server| {
+        server.route_fn("GET", "/api/v1/search", move |_| {
+            if state.load(std::sync::atomic::Ordering::Relaxed) {
+                Reply::problem(503, "Message search is temporarily unavailable.")
+            } else {
+                Reply::json(200, json!({ "items": [] }))
+            }
+        });
+    });
+    bootstrap(&f, cx);
+    click(&f, cx, "search-conversation");
+    shows(&f, cx, "search-failed");
+    assert!(
+        label(&f, cx, "search-failed")
+            .is_some_and(|error| error.contains("Message search is temporarily unavailable."))
+    );
+    unavailable.store(false, std::sync::atomic::Ordering::Relaxed);
+    click(&f, cx, "search-retry");
+    shows(&f, cx, "search-count");
+    let requests = f.server.requests_to("GET", "/api/v1/search");
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .all(|r| param(r, "conversationId") == ["c-general"])
+    );
 }
 
 #[gpui_kit::test]

@@ -6,55 +6,13 @@
 use ircord_contract as c;
 
 use super::{Api, ApiError};
-use crate::archive::SEARCH_CURSOR;
 use crate::search_filter::Query;
-
-pub struct SearchAnswer {
-    pub page: c::SearchPage,
-    pub archived: bool,
-}
 
 impl Api {
     /// One page of messages matching `query`, newest first. Pass the page's
     /// `nextCursor` back in `query.cursor` for the next, older page.
     pub async fn search(&self, query: &Query) -> Result<c::SearchPage, ApiError> {
         self.get_query("/api/v1/search", &query.pairs()).await
-    }
-
-    /// Prefer server results, falling back only when the server cannot be reached.
-    /// A saved continuation stays on this device for the rest of that search.
-    pub async fn search_with_archive(&self, query: &Query) -> Result<SearchAnswer, ApiError> {
-        let online = if query
-            .cursor
-            .as_deref()
-            .is_some_and(|cursor| cursor.starts_with(SEARCH_CURSOR))
-        {
-            Err(ApiError::ArchivedSearchUnavailable)
-        } else {
-            self.search(query).await
-        };
-        match online {
-            Ok(page) => Ok(SearchAnswer {
-                page,
-                archived: false,
-            }),
-            Err(error)
-                if error.unreachable() || matches!(error, ApiError::ArchivedSearchUnavailable) =>
-            {
-                let Some(archive) = &self.archive else {
-                    return Err(error);
-                };
-                match archive.search(query).await {
-                    Ok(Some(page)) => Ok(SearchAnswer {
-                        page,
-                        archived: true,
-                    }),
-                    Ok(None) => Err(error),
-                    Err(_) => Err(ApiError::ArchivedSearchUnavailable),
-                }
-            }
-            Err(error) => Err(error),
-        }
     }
 }
 

@@ -167,7 +167,6 @@ impl Session {
             self.panel = None;
         }
         self.phase = phase;
-        crate::images::set_media_session(self.client().map(|client| client.api().clone()), cx);
         self.busy = false;
         cx.emit(SessionEvent::Phase);
         cx.notify();
@@ -262,8 +261,7 @@ impl Session {
     pub fn start(&mut self, server: ServerAddress, cookie: String, cx: &mut Context<Self>) {
         let api = Api::new(server.clone());
         api.set_cookie(Some(cookie));
-        let (client, mut updates) =
-            Client::start(self.runtime.clone(), api.with_offline_archive(&self.config));
+        let (client, mut updates) = Client::start(self.runtime.clone(), api);
         let client = Rc::new(client);
         self._updates = Some(cx.spawn(async move |this, cx| {
             while let Some(update) = updates.next().await {
@@ -318,11 +316,6 @@ impl Session {
             }
             Update::SignedOut => {
                 if let Some(server) = self.server().cloned() {
-                    if let Some(client) = self.client() {
-                        let api = client.api().clone();
-                        self.runtime
-                            .spawn(async move { api.forget_offline_archive().await });
-                    }
                     if let Err(e) = self.credentials.clear(&server) {
                         log::warn!("forget session: {e}");
                     }

@@ -456,8 +456,6 @@ fn midnight<Tz: TimeZone>(day: NaiveDate, next: bool, zone: &Tz) -> Option<Strin
 /// What a page of results says about how complete it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Coverage {
-    /// Results are limited to messages saved on this device.
-    Offline,
     /// Retained messages only; server history may hold more.
     Retained,
     /// The server's own history: a bounded set.

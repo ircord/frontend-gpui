@@ -19,10 +19,9 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use ircord_contract as c;
 use ircord_contract::event::Document;
 use tokio::runtime::Runtime;
-use tokio::sync::{Notify, broadcast, mpsc};
+use tokio::sync::{Notify, mpsc};
 
 use crate::api::{Api, ApiError};
-use crate::archive::EVENT_BUFFER;
 use crate::credentials::CredentialStore;
 use crate::events::{self, Shared, Timing, Update};
 use crate::socket::WsTransport;
@@ -326,13 +325,6 @@ impl Client {
         let (app, rx) = unbounded();
         let (from_events, internal) = unbounded();
         let watchers: Arc<Mutex<Vec<Watcher>>> = Arc::default();
-        let (archive_sender, archive_events) = if api.archive.is_some() {
-            let (sender, receiver) = broadcast::channel(EVENT_BUFFER);
-            (Some(sender), Some(receiver))
-        } else {
-            (None, None)
-        };
-        let media_events = archive_sender.as_ref().map(broadcast::Sender::subscribe);
         let shared = Arc::new(Shared {
             store: Arc::new(RwLock::new(Workspace::default())),
             updates: from_events,
@@ -341,7 +333,6 @@ impl Client {
             tab: random_id(),
             incarnation: random_id(),
             read_aloud: AtomicBool::new(false),
-            archive: archive_sender,
         });
         let (socket, outgoing) = mpsc::unbounded_channel();
         let events = runtime.spawn(events::run(
@@ -366,13 +357,7 @@ impl Client {
             watchers,
         };
         let forwarder = runtime.spawn(forward(handle.clone(), internal));
-        let mut tasks = vec![events, reporter, forwarder];
-        if let (Some(archive), Some(archive_events)) = (api.archive.clone(), archive_events) {
-            tasks.push(runtime.spawn(archive.watch(api.clone(), archive_events)));
-        }
-        if let (Some(archive), Some(media_events)) = (api.archive.clone(), media_events) {
-            tasks.push(runtime.spawn(archive.watch_media(api.clone(), media_events)));
-        }
+        let tasks = vec![events, reporter, forwarder];
         let client = Client {
             runtime,
             api,
@@ -504,26 +489,15 @@ impl Client {
 
     /// Load the page before the oldest message shown, if there is one.
     pub fn load_older(&self, conversation: &str) {
-        let (cursor, oldest) = {
-            let mut store = self.shared.store.write().unwrap();
-            let Some(cursor) = store.begin_older(conversation) else {
-                return;
-            };
-            let oldest = store
-                .timelines
-                .get(conversation)
-                .and_then(|timeline| timeline.entries.first())
-                .map(|entry| entry.message.id.clone());
-            (cursor, oldest)
+        let Some(cursor) = self.shared.store.write().unwrap().begin_older(conversation) else {
+            return;
         };
         let api = self.api.clone();
         let store = self.shared.store.clone();
         let updates = self.handle.clone();
         let id = conversation.to_string();
         self.runtime.spawn(async move {
-            let result = api
-                .messages_before(&id, Some(&cursor), oldest.as_deref(), PAGE_SIZE)
-                .await;
+            let result = api.messages(&id, Some(&cursor), PAGE_SIZE).await;
             if matches!(result, Err(ApiError::Unauthorized)) {
                 updates.emit(Update::SignedOut);
             }
@@ -693,7 +667,6 @@ impl Client {
     pub fn sign_out(&self, store: Arc<dyn CredentialStore>) -> tokio::task::JoinHandle<()> {
         let api = self.api.clone();
         self.runtime.spawn(async move {
-            api.forget_offline_archive().await;
             if let Err(e) = api.logout().await {
                 log::warn!("sign out: {e}");
             }

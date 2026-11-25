@@ -326,28 +326,17 @@ pub fn mark_unread(
 /// Load the page before the oldest message held, then call `then`.
 fn page_older(client: &Rc<Client>, conversation: &str) -> Option<tokio::task::JoinHandle<()>> {
     let mut cursor = None;
-    let mut boundary = None;
     client.change(|w| {
         cursor = w.begin_older(conversation);
         match cursor {
-            Some(_) => {
-                boundary = w
-                    .timelines
-                    .get(conversation)
-                    .and_then(|timeline| timeline.entries.first())
-                    .map(|entry| entry.message.id.clone());
-                timeline_changed(conversation)
-            }
+            Some(_) => timeline_changed(conversation),
             None => Changes::default(),
         }
     });
     let cursor = cursor?;
     let (id, id2) = (conversation.to_string(), conversation.to_string());
     Some(client.call(
-        move |api| async move {
-            api.messages_before(&id, Some(&cursor), boundary.as_deref(), PAGE_SIZE)
-                .await
-        },
+        move |api| async move { api.messages(&id, Some(&cursor), PAGE_SIZE).await },
         move |w, result| {
             let mut changes = w.load_older(&id2, result.as_ref().ok().cloned());
             if let Err(e) = result {

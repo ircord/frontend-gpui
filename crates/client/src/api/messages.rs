@@ -7,62 +7,24 @@
 
 use ircord_contract as c;
 
-use crate::archive::CURSOR_PREFIX;
-
 use super::{Api, ApiError, Method, segment};
 
 impl Api {
-    /// The newest page, or the page before `before` (a `nextCursor`).
+    /// The newest page, or the page before a server cursor or a message
+    /// that marks the edge of the in-memory timeline.
     pub async fn messages(
         &self,
         conversation: &str,
         before: Option<&str>,
         limit: u32,
     ) -> Result<c::MessagePage, ApiError> {
-        self.messages_before(conversation, before, None, limit)
-            .await
-    }
-
-    /// A history page with an optional local fallback for an opaque server cursor.
-    pub async fn messages_before(
-        &self,
-        conversation: &str,
-        before: Option<&str>,
-        oldest_message: Option<&str>,
-        limit: u32,
-    ) -> Result<c::MessagePage, ApiError> {
-        let local_cursor = before.and_then(|value| value.strip_prefix(CURSOR_PREFIX));
-        let timeline_cursor = before
+        let message_id = before
             .and_then(|value| value.strip_prefix("message:"))
             .and_then(|value| url::form_urlencoded::parse(value.as_bytes()).next())
             .map(|(id, _)| id.into_owned());
-        let message_id = local_cursor.or(timeline_cursor.as_deref());
-        let page = self
-            .online_messages_before(conversation, before, message_id, limit)
-            .await;
-        if page.as_ref().is_err_and(|error| error.unreachable())
-            && let Some(archive) = &self.archive
-        {
-            let boundary = message_id.or(oldest_message);
-            if (before.is_none() || boundary.is_some())
-                && let Some(saved) = archive.history(conversation, boundary, limit).await
-            {
-                return Ok(saved);
-            }
-        }
-        page
-    }
-
-    async fn online_messages_before(
-        &self,
-        conversation: &str,
-        before: Option<&str>,
-        message_id: Option<&str>,
-        limit: u32,
-    ) -> Result<c::MessagePage, ApiError> {
-        let boundary = match message_id {
+        let boundary = match message_id.as_deref() {
             Some(id) => {
-                let around = self.online_messages_around(conversation, id, 1).await?;
+                let around = self.messages_around(conversation, id, 1).await?;
                 let Some(cursor) = around.next_cursor else {
                     return Ok(c::MessagePage {
                         cursor: around.cursor,
@@ -86,24 +48,6 @@ impl Api {
     /// A window of history centred on `message`, for jumping to an old
     /// message and for paging towards the present (`hasNewer`).
     pub async fn messages_around(
-        &self,
-        conversation: &str,
-        message: &str,
-        limit: u32,
-    ) -> Result<c::MessagePage, ApiError> {
-        let page = self
-            .online_messages_around(conversation, message, limit)
-            .await;
-        if page.as_ref().is_err_and(ApiError::unreachable)
-            && let Some(archive) = &self.archive
-            && let Some(saved) = archive.history_around(conversation, message, limit).await
-        {
-            return Ok(saved);
-        }
-        page
-    }
-
-    async fn online_messages_around(
         &self,
         conversation: &str,
         message: &str,
@@ -235,5 +179,34 @@ impl Api {
                 return Ok(all);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::testing::{CannedServer, Reply};
+
+    #[test]
+    fn pages_before_a_trimmed_message_using_the_servers_cursor() {
+        let runtime = crate::client::runtime().unwrap();
+        let server = CannedServer::start(&runtime);
+        let path = "/api/v1/conversations/c1/messages";
+        server.route_fn("GET", path, |request| {
+            if request.query_param("around").as_deref() == Some("m&42") {
+                Reply::json(
+                    200,
+                    serde_json::json!({"items": [], "nextCursor": "older+/"}),
+                )
+            } else if request.query_param("before").as_deref() == Some("older+/") {
+                Reply::json(200, serde_json::json!({"items": [], "nextCursor": "next"}))
+            } else {
+                Reply::problem(400, "Expected a message ID or the server cursor.")
+            }
+        });
+        let page = runtime
+            .block_on(server.api().messages("c1", Some("message:m%2642"), 20))
+            .unwrap();
+        assert_eq!(page.next_cursor.as_deref(), Some("next"));
+        assert_eq!(server.requests_to("GET", path).len(), 2);
     }
 }

@@ -4,8 +4,7 @@
 //! group (name, members, owner, state, revision); there is no list of groups
 //! beside the conversations. Events and answers can arrive out of order (the
 //! socket can report a JOIN before the answer to the accept arrives), so
-//! every change is fenced by the group's revision, as the web client's
-//! `offline.ts` and chat store do: an older revision never undoes a newer
+//! every change is fenced by the group's revision. An older revision never undoes a newer
 //! one, a removed group stays removed until a newer revision brings it back,
 //! and a group converted to a channel stays a channel.
 //!
@@ -23,13 +22,13 @@ use crate::format::mentions::fold;
 /// The topic this sub-state reports in [`Changes`], by conversation ID.
 pub const TOPIC: &str = "parties";
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct State {
     /// The newest revision seen for each group, by conversation ID.
     fences: HashMap<String, Fence>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 struct Fence {
     revision: i64,
     removed: bool,

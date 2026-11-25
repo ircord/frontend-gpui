@@ -456,12 +456,11 @@ pub(crate) fn picture(r: &LinkMediaResponse) -> Option<Media> {
 }
 
 /// A picture filling its box, a GIF held on its first frame.
-pub(crate) fn still(media: &Media, cx: &App) -> AnyElement {
-    let uri = crate::images::media_uri(&media.url, crate::images::media_reader(cx).as_ref());
+pub(crate) fn still(media: &Media) -> AnyElement {
     let source = if media.is_gif() {
-        crate::images::still(uri)
+        crate::images::still(media.url.clone().into())
     } else {
-        ImageSource::from(SharedUri::from(uri.to_string()))
+        ImageSource::from(SharedUri::from(media.url.clone()))
     };
     img(source)
         .size_full()
@@ -1422,7 +1421,7 @@ impl LinksView {
             (None, _, Some(media)) => div()
                 .size_full()
                 .relative()
-                .child(still(media, cx))
+                .child(still(media))
                 .child(open_mark(
                     overlaid.then(|| (site.clone(), title.clone())),
                     widget,
@@ -1678,7 +1677,6 @@ impl Render for LinksView {
             })
             .collect();
 
-        let offline = client.read().connection != Some(Connection::Live);
         let count = self.list.items.len();
         let meta: Option<String> = (count > 0).then(|| {
             if self.list.cursor.is_some() {
@@ -1974,13 +1972,9 @@ impl Render for LinksView {
                 .children(more)
                 .into_any_element()
         };
-        let notices = toolbar
-            .when(offline, |d| {
-                d.child(notice("links-offline", t!("links-view-offline")))
-            })
-            .when(l.indexing, |d| {
-                d.child(notice("links-indexing", t!("links-view-indexing")))
-            });
+        let notices = toolbar.when(l.indexing, |d| {
+            d.child(notice("links-indexing", t!("links-view-indexing")))
+        });
         let session = self.session.clone();
         let mut page = ui::page::Page::new(
             "links-page",

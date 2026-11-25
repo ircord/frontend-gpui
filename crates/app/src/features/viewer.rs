@@ -130,19 +130,13 @@ pub fn download(runtime: Arc<Runtime>, media: &Media, window: &mut Window, cx: &
         .unwrap_or_else(|| PathBuf::from("."));
     let target = cx.prompt_for_new_path(&dir, Some(&media.file_name()));
     let url = media.url.clone();
-    let reader = crate::images::media_reader(cx);
     window
         .spawn(cx, async move |cx| {
             let Ok(Ok(Some(path))) = target.await else {
                 return;
             };
             let fetched = runtime
-                .spawn(async move {
-                    match reader {
-                        Some(reader) => reader.fetch(&url, MAX_DOWNLOAD).await,
-                        None => ircord_client::api::fetch(&url, MAX_DOWNLOAD).await,
-                    }
-                })
+                .spawn(async move { ircord_client::api::fetch(&url, MAX_DOWNLOAD).await })
                 .await;
             let result = match fetched {
                 Ok(Ok((status, _, body))) if (200..300).contains(&status) => {
@@ -345,15 +339,9 @@ impl Render for Viewer {
                             .w(w)
                             .h(h)
                             .child(
-                                img(SharedUri::from(
-                                    crate::images::media_uri(
-                                        &media.url,
-                                        crate::images::media_reader(cx).as_ref(),
-                                    )
-                                    .to_string(),
-                                ))
-                                .size_full()
-                                .object_fit(ObjectFit::Contain),
+                                img(SharedUri::from(media.url.clone()))
+                                    .size_full()
+                                    .object_fit(ObjectFit::Contain),
                             ),
                     ),
             )

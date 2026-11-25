@@ -229,7 +229,7 @@ impl SearchModel {
 
     /// Whether server history can be asked: one conversation is searched.
     pub fn source_allowed(&self) -> bool {
-        self.filters.in_.len() == 1 && self.coverage != Some(Coverage::Offline)
+        self.filters.in_.len() == 1
     }
 
     fn set_text(&mut self, typed: &str, cx: &mut Context<Self>) {
@@ -302,8 +302,7 @@ impl SearchModel {
         self.status = Status::Searching;
         let query = Query::new(self.text.clone(), self.filters.clone(), self.source);
         let generation = self.generation;
-        let request =
-            client.request(move |api| async move { api.search_with_archive(&query).await });
+        let request = client.request(move |api| async move { api.search(&query).await });
         self.request = Some(request.abort_handle());
         cx.spawn(async move |this, cx| {
             let result = request.await;
@@ -312,19 +311,14 @@ impl SearchModel {
                     return;
                 }
                 match result {
-                    Ok(Ok(answer)) => {
-                        let page = answer.page;
-                        m.coverage = if answer.archived {
-                            Some(Coverage::Offline)
-                        } else {
-                            sf::coverage(&page)
-                        };
-                        m.bounded = !answer.archived && sf::is_bounded(&page);
+                    Ok(Ok(page)) => {
+                        m.coverage = sf::coverage(&page);
+                        m.bounded = sf::is_bounded(&page);
                         m.cursor = page.next_cursor.filter(|c| !c.is_empty());
                         m.results = page.items;
                         m.status = Status::Done;
                     }
-                    Ok(Err(e)) => m.status = Status::Failed(search_error(e)),
+                    Ok(Err(e)) => m.status = Status::Failed(e.to_string()),
                     Err(e) => m.status = Status::Failed(e.to_string()),
                 }
                 cx.notify();
@@ -359,8 +353,7 @@ impl SearchModel {
         let mut query = Query::new(self.text.clone(), self.filters.clone(), self.source);
         query.cursor = Some(cursor);
         let generation = self.generation;
-        let request =
-            client.request(move |api| async move { api.search_with_archive(&query).await });
+        let request = client.request(move |api| async move { api.search(&query).await });
         self.request = Some(request.abort_handle());
         cx.spawn(async move |this, cx| {
             let result = request.await;
@@ -369,12 +362,7 @@ impl SearchModel {
                     return;
                 }
                 match result {
-                    Ok(Ok(answer)) => {
-                        let page = answer.page;
-                        if answer.archived {
-                            m.coverage = Some(Coverage::Offline);
-                            m.bounded = false;
-                        }
+                    Ok(Ok(page)) => {
                         for item in page.items {
                             // A repeated message keeps its last place.
                             m.results.retain(|r| r.message.id != item.message.id);
@@ -383,7 +371,7 @@ impl SearchModel {
                         m.cursor = page.next_cursor.filter(|c| !c.is_empty());
                         m.more = More::Idle;
                     }
-                    Ok(Err(e)) => m.more = More::Failed(search_error(e)),
+                    Ok(Err(e)) => m.more = More::Failed(e.to_string()),
                     Err(e) => m.more = More::Failed(e.to_string()),
                 }
                 cx.notify();
@@ -635,7 +623,6 @@ fn offers(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Vec<Offer> 
 fn coverage_text(coverage: Coverage) -> &'static str {
     use c::SearchSourceReason as R;
     match coverage {
-        Coverage::Offline => t!("search-coverage-offline"),
         Coverage::Retained => t!("search-coverage-retained"),
         Coverage::Upstream => t!("search-coverage-upstream"),
         Coverage::Fallback(reason) => match reason {
@@ -646,17 +633,6 @@ fn coverage_text(coverage: Coverage) -> &'static str {
             R::Continuation => t!("search-fallback-continuation"),
             R::Unknown => t!("search-coverage-retained"),
         },
-    }
-}
-
-fn search_error(error: ircord_client::api::ApiError) -> String {
-    if matches!(
-        error,
-        ircord_client::api::ApiError::ArchivedSearchUnavailable
-    ) {
-        t!("search-archive-unavailable").into()
-    } else {
-        error.to_string()
     }
 }
 
@@ -783,17 +759,10 @@ fn segments(label: &'static str, theme: &Theme) -> Stateful<Div> {
 }
 
 /// The server history switch, disabled with the reason when it cannot apply.
-fn source_switch(
-    id: &'static str,
-    model: &Entity<SearchModel>,
-    help: bool,
-    theme: &Theme,
-    cx: &App,
-) -> Div {
+fn source_switch(model: &Entity<SearchModel>, theme: &Theme, cx: &App) -> Div {
     let m = model.read(cx);
     let allowed = m.source_allowed();
     let on = allowed && m.source == Source::Upstream;
-    let offline = m.coverage == Some(Coverage::Offline);
     let model = model.clone();
     div()
         .px_3()
@@ -804,13 +773,12 @@ fn source_switch(
         .gap_2()
         .text_xs()
         .text_color(theme.muted)
-        .when(offline, |d| d.child(t!("search-server-history-offline")))
-        .when(help && !allowed && !offline, |d| {
+        .when(!allowed, |d| {
             d.child(t!("search-server-history-needs-scope"))
         })
         .child(
             div()
-                .id(id)
+                .id("search-server-history")
                 .test_support()
                 .role(Role::Switch)
                 .reachable(theme)
@@ -1761,13 +1729,7 @@ impl SearchPage {
                         .justify_between()
                         .flex_wrap()
                         .child(list_label(t!("search-messages"), theme))
-                        .child(source_switch(
-                            "search-server-history",
-                            &self.model,
-                            true,
-                            theme,
-                            cx,
-                        )),
+                        .child(source_switch(&self.model, theme, cx)),
                 )
                 .child(messages_part(
                     "search",

@@ -8,6 +8,7 @@ publish.workspace = true
 [features]
 # The canned server and fixture builders in `testing`, for this crate's and the app's tests.
 test-support = []
+dev-credentials = ["dep:rusqlite"]
 
 [dependencies]
 ircord-contract.workspace = true
@@ -51,10 +52,7 @@ merman = { version = "=0.11.0", default-features = false, features = [
 ] }
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-ring = "0.17"
-rusqlite = { version = "0.41", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
@@ -63,3 +61,9 @@ unicode-normalization = "0.1"
 unicode-script = "0.5"
 unicode-segmentation = "1"
 webpki-roots = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rusqlite = { version = "0.41", features = ["bundled"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"

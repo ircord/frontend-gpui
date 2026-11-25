@@ -12,9 +12,9 @@ use std::sync::Mutex;
 use crate::address::ServerAddress;
 use crate::config::APP_ID;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "dev-credentials"))]
 mod dev;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "dev-credentials"))]
 pub use dev::DevStore;
 
 #[derive(Debug, thiserror::Error)]

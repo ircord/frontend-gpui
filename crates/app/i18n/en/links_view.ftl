@@ -19,7 +19,6 @@ links-view-host-hint = Enter a host such as example.com.
 links-view-date-format = Enter dates as shown, such as 2026-11-08.
 links-view-date-order = The end date is before the start date.
 links-view-clear-filters = Clear filters
-links-view-offline = You’re offline. Links may be out of date until IRCord reconnects.
 links-view-indexing = Older history is still being indexed, so some older links may be missing.
 links-view-meta = { $count } links
 links-view-meta-one = 1 link
