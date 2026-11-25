@@ -12,6 +12,9 @@
 //! live backdrop blur, so the picture is blurred once, off the UI thread,
 //! and a panel draws its own region of that copy under its tint. With no
 //! picture drawn, [`get`] is `None` and every surface keeps its colour.
+//!
+//! The picture has a little depth: reading back into history moves it a few
+//! pixels, sharp picture and frosted panels together ([`depth`]).
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -23,7 +26,7 @@ use ircord_client::store::appearance::{
     Backdrop, BackdropFit, BackdropPlacement, BackdropPosition,
 };
 
-use super::Theme;
+use super::{Theme, depth};
 
 /// The longest side kept of a picture without blur. A window rarely draws
 /// more, and the GPU scales it on resize, so nothing is decoded again.
@@ -84,6 +87,8 @@ fn release(cx: &mut App) {
 struct Painted {
     sharp: usize,
     frosted: usize,
+    /// Where the window's picture was placed in the last frosted paint.
+    window: Option<Bounds<Pixels>>,
 }
 
 impl Global for Painted {}
@@ -92,6 +97,12 @@ impl Global for Painted {}
 pub fn painted(cx: &App) -> (usize, usize) {
     cx.try_global::<Painted>()
         .map_or((0, 0), |p| (p.sharp, p.frosted))
+}
+
+/// The area the window's picture was placed in by the last frosted panel
+/// drawn, after the depth shift ([`depth`]).
+pub fn placed_area(cx: &App) -> Option<Bounds<Pixels>> {
+    cx.try_global::<Painted>().and_then(|p| p.window)
 }
 
 /// The picture to draw now: the theme's, once it has been read.
@@ -465,6 +476,16 @@ fn paint_layer(
                 } else {
                     bounds
                 };
+                // Reading back into history moves the picture a little, and
+                // every panel moves it alike.
+                let (shift, moving) = depth::current(cx);
+                let area = depth::placed_in(area, shift, cx);
+                if frost {
+                    cx.default_global::<Painted>().window = Some(area);
+                }
+                if moving {
+                    window.request_animation_frame();
+                }
                 paint_picture(window, &spec, &image, bounds, area, corners);
                 // The cover follows the card's rounded corners too.
                 for (cover, amount) in &covers {

@@ -10,6 +10,7 @@ pub mod dialog;
 pub mod empty;
 pub mod field;
 pub mod focus;
+pub mod frame_motion;
 pub mod icon;
 pub mod page;
 pub mod people_picker;

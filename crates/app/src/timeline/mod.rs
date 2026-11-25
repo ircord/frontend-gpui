@@ -802,6 +802,7 @@ impl TimelineView {
 
     /// Whether the newest row is in view, read from the list's own position.
     fn sync_at_end(&mut self, cx: &mut Context<Self>) {
+        self.report_depth(cx);
         let at_end = self.gap_to_end() <= glide::ARRIVED;
         if at_end != self.at_end {
             self.at_end = at_end;
@@ -1381,6 +1382,13 @@ impl TimelineView {
         }
         comets.push((playing.target.clone(), now));
         comets
+    }
+
+    /// Tell the background picture how far back in the history the view is,
+    /// which moves it a little (`theme::depth`).
+    fn report_depth(&self, cx: &mut App) {
+        let gap = self.gap_to_end();
+        theme::depth::follow(if gap <= glide::ARRIVED { 0. } else { gap }, cx);
     }
 
     /// How far the end of the history is below the view, in pixels.
@@ -2075,6 +2083,7 @@ impl Render for TimelineView {
                 window.request_animation_frame();
             }
         }
+        self.report_depth(cx);
         let theme = theme::get(cx).clone();
         let session = self.session.read(cx);
         let typing = match (session.client(), &self.conversation) {

@@ -11,6 +11,7 @@
 
 pub mod appearance;
 pub mod backdrop;
+pub mod depth;
 pub mod fade;
 pub mod fonts;
 

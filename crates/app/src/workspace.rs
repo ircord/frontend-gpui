@@ -693,8 +693,14 @@ impl Render for WorkspaceView {
             Some(Route::Conversation(_)) => main
                 .child(self.timeline.clone())
                 .child(self.composer.clone()),
-            Some(route) => main.child(self.route_pane(route, &theme, window, cx)),
-            None => main,
+            other => {
+                // Away from the conversation the picture comes back to rest.
+                theme::depth::release(cx);
+                match other {
+                    Some(route) => main.child(self.route_pane(route, &theme, window, cx)),
+                    None => main,
+                }
+            }
         };
         let panel = self
             .panel(&route, !compact, window, cx)

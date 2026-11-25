@@ -523,3 +523,41 @@ fn skipping_the_setup_completes_it_with_the_suggested_channels(cx: &mut TestAppC
         .wait_for("POST", "/api/v1/auth/onboarding/complete", WAIT);
     gone(&f, cx, "onboarding-skip");
 }
+
+#[gpui_kit::test]
+fn the_frame_preview_in_settings_turns_its_spectrum_unless_motion_is_reduced(
+    cx: &mut TestAppContext,
+) {
+    let f = open_with(cx, true, serve_profile);
+    bootstrap(&f, cx);
+    click(&f, cx, "open-settings");
+    reads(&f, cx, "settings-content", "Profile");
+    land(&f, cx, "profile-look", "profile-frame-gradient");
+    click(&f, cx, "profile-frame-gradient");
+    shows(&f, cx, "avatar-frame-settings-gradient");
+
+    // The preview draws the spectrum again in each frame...
+    let painted =
+        |cx: &mut TestAppContext| cx.update(|cx| ircord_app::ui::frame_motion::painted(cx));
+    let before = painted(cx);
+    render(&f, cx);
+    render(&f, cx);
+    assert!(
+        painted(cx).0 >= before.0 + 2,
+        "{before:?} then {:?}",
+        painted(cx)
+    );
+
+    // ...and with reduced motion it is the still frame it was.
+    cx.update(|cx| {
+        let mut theme = ircord_app::theme::get(cx).clone();
+        theme.reduced_motion = true;
+        ircord_app::theme::set(theme, cx);
+    });
+    render(&f, cx);
+    let still = painted(cx);
+    render(&f, cx);
+    render(&f, cx);
+    assert_eq!(painted(cx), still);
+    shows(&f, cx, "avatar-frame-settings-gradient");
+}

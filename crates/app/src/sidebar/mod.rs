@@ -15,9 +15,13 @@
 //!   N1's own entries are in [`menus`]. Slots marked `at_bottom` (the
 //!   connection indicator) sit under the list.
 //!
+//! The open conversation's highlight glides from row to row on a spring
+//! ([`glide`]); with reduced motion the open row draws it itself.
+//!
 //! Redraws when the sidebar's data, the documents it reads, the selection,
 //! the connection or the layout change.
 
+pub mod glide;
 pub mod glyph;
 pub mod layout;
 pub mod menus;
@@ -234,6 +238,8 @@ pub struct SidebarView {
     badges: std::cell::RefCell<std::collections::HashMap<String, BadgeState>>,
     /// A timer is out that ends the ring being drawn.
     ring_timer: Cell<bool>,
+    /// The open row's highlight, which glides between rows.
+    glide: glide::Shared,
     _subscription: Subscription,
 }
 
@@ -268,6 +274,7 @@ impl SidebarView {
             focused_once: false,
             badges: Default::default(),
             ring_timer: Cell::new(false),
+            glide: glide::Shared::default(),
             _subscription: subscription,
         }
     }
@@ -441,6 +448,7 @@ impl SidebarView {
         section: Section,
         number: Option<usize>,
         active: bool,
+        gliding: bool,
         server: Option<&url::Url>,
         theme: &Theme,
     ) -> AnyElement {
@@ -511,7 +519,13 @@ impl SidebarView {
                 theme.muted
             })
             .border_1()
-            .when(active, |d| {
+            // The highlight is drawn behind the rows when it glides; the open
+            // row then only takes the open text.
+            .when(active && gliding, |d| {
+                d.border_color(gpui_kit::transparent_black())
+                    .font_weight(FontWeight::SEMIBOLD)
+            })
+            .when(active && !gliding, |d| {
                 let border = if theme.hibiki { 0.58 } else { 0.26 };
                 let d = d
                     .bg(theme.selected)
@@ -746,50 +760,65 @@ impl SidebarView {
         server: Option<&url::Url>,
         theme: &Theme,
     ) -> AnyElement {
-        let mut list = div()
-            .id("conversation-list")
-            .test_support()
-            .role(Role::List)
-            .aria_label(t!("sidebar-conversations"))
-            .flex_1()
-            .flex()
-            .flex_col()
-            .gap_0p5()
-            .px_2()
-            .py_1()
-            .overflow_y_scroll();
+        // With motion the highlight is the list's first child, a canvas under
+        // the rows; the rows are counted from it to find the open one.
+        let gliding = !theme.reduced_motion;
+        let mut items: Vec<AnyElement> = Vec::new();
+        let mut open = None;
+        if gliding {
+            items.push(glide::layer(self.glide.clone(), theme.clone()).into_any_element());
+        }
         let numbers = order::numbered(w, network);
         let filter = Filter {
             active: selected,
             unread_only: layout.unread_only,
         };
         for view in order::sections(w, network, &layout.collapsed, filter) {
-            list = list.child(self.section_heading(network, &view, theme));
+            items.push(self.section_heading(network, &view, theme));
             for c in &view.shown {
                 let number = numbers.iter().position(|id| *id == c.id).map(|i| i + 1);
                 let active = selected == Some(c.id.as_str());
-                list = list.child(self.conversation_row(
+                if active {
+                    open = Some(items.len());
+                }
+                items.push(self.conversation_row(
                     w,
                     c,
                     view.section,
                     number,
                     active,
+                    gliding,
                     server,
                     theme,
                 ));
             }
             if view.section == Section::Directs && view.items.is_empty() && !view.collapsed {
-                list = list.child(
+                items.push(
                     div()
                         .id("sidebar-no-directs")
                         .px_2()
                         .py_1()
                         .text_xs()
                         .text_color(theme.faint)
-                        .child(t!("sidebar-no-directs")),
+                        .child(t!("sidebar-no-directs"))
+                        .into_any_element(),
                 );
             }
         }
+        let mut list = div().flex_1().flex().flex_col().gap_0p5().px_2().py_1();
+        if gliding {
+            let (shared, network) = (self.glide.clone(), network.to_string());
+            list = list.on_children_prepainted(move |rows, _, _| {
+                shared.report(network.clone(), &rows, open)
+            });
+        }
+        let list = list
+            .id("conversation-list")
+            .test_support()
+            .role(Role::List)
+            .aria_label(t!("sidebar-conversations"))
+            .overflow_y_scroll()
+            .children(items);
         list.into_any_element()
     }
 
@@ -931,6 +960,8 @@ impl SidebarView {
         }
         let theme = theme::get(cx).clone();
         let layout = layout::get(cx);
+        // The highlight draws itself again when the frame is painted.
+        glide::forget(cx);
         let session = self.session.read(cx);
         let Some(client) = session.client().cloned() else {
             return div().w(px(8.)).into_any_element();

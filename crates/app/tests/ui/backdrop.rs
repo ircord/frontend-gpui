@@ -2,7 +2,7 @@
 //! drawn behind the app, and the shell's surfaces turn translucent over it.
 
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{Hsla, TestAppContext};
+use gpui_kit::{AppContext, Hsla, TestAppContext};
 use ircord_app::theme::{self, backdrop};
 use ircord_client::store::appearance::BackdropPlacement;
 use ircord_client::testing::{CannedServer, Reply};
@@ -255,4 +255,177 @@ fn a_conversation_picture_is_sharp_and_nothing_is_frosted(cx: &mut TestAppContex
     quads(&f, cx);
     let after = cx.update(|cx| backdrop::painted(cx));
     assert_eq!((after.0 - before.0, after.1 - before.1), (1, 0));
+}
+
+// Depth: reading back into history moves the picture a little.
+
+fn numbered(i: u32) -> ircord_client::contract::Message {
+    let mut m = crate::fixture::message(&format!("m{i}"), "c-general", &format!("message {i}"));
+    m.created_at = format!("2026-11-01T10:{i:02}:00Z");
+    m
+}
+
+/// A signed-in window over `#general` with a hundred messages and an
+/// app-wide picture.
+fn with_history(cx: &mut TestAppContext) -> Fixture {
+    let theme = theme_document(
+        json!({"url": PICTURE, "placement": "app", "dim": 55, "blur": 0, "panelOpacity": 85}),
+    );
+    let f = open_with(cx, true, move |s| {
+        serve(s, theme);
+        s.route_fn("GET", "/api/v1/conversations/*/messages", |r| {
+            if !r.path.ends_with("/c-general/messages") {
+                return Reply::json(200, json!({"items": [], "nextCursor": null}));
+            }
+            let page = ircord_client::contract::MessagePage {
+                items: (1..=100).map(numbered).collect(),
+                ..Default::default()
+            };
+            Reply::json(200, serde_json::to_value(page).unwrap())
+        });
+    });
+    wait(cx, "the history", |cx| {
+        f.session.read(cx).client().is_some_and(|c| {
+            c.read()
+                .timelines
+                .get("c-general")
+                .is_some_and(|t| t.loaded && t.entries.len() == 100)
+        })
+    });
+    wait(cx, "the theme in use", |cx| {
+        theme::get(cx).main == theme::hex(0x102030)
+    });
+    wait(cx, "the picture", |cx| backdrop::get(cx).is_some());
+    f
+}
+
+fn wheel(f: &Fixture, cx: &mut TestAppContext, by: f32) {
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll(
+            "timeline",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(by))),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    // The app runs the wheel's deferred work once the event is handled.
+    cx.run_until_parked();
+}
+
+/// Draw a frame and say how far the picture is shifted and whether it is
+/// still on its way.
+fn depth_now(f: &Fixture, cx: &mut TestAppContext) -> (f32, bool) {
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        theme::depth::current(cx)
+    })
+    .unwrap()
+}
+
+fn settle(f: &Fixture, cx: &mut TestAppContext) -> f32 {
+    let deadline = std::time::Instant::now() + crate::fixture::HANG_GUARD;
+    loop {
+        let (shift, moving) = depth_now(f, cx);
+        if !moving {
+            return shift;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the picture never settled"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+fn next_frame_asks(f: &Fixture, cx: &mut TestAppContext) -> usize {
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.simulate_next_frame(cx);
+        window.render_frame(cx);
+        window.simulate_next_frame(cx)
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn reading_back_into_history_moves_the_picture_and_the_newest_message_brings_it_back(
+    cx: &mut TestAppContext,
+) {
+    let f = with_history(cx);
+    let viewport = cx.update_window(f.window, |_, window, _| window.viewport_size());
+    let viewport = viewport.unwrap();
+    // At the newest message the picture is at rest, oversize above by the
+    // limit and not shifted.
+    assert_eq!(settle(&f, cx), 0.);
+    assert_eq!(next_frame_asks(&f, cx), 0, "nothing moves, no frames asked");
+    let rest = cx.update(|cx| backdrop::placed_area(cx)).expect("placed");
+    assert_eq!(rest.origin.y, gpui_kit::px(-theme::depth::LIMIT));
+    assert_eq!(
+        rest.size.height,
+        viewport.height + gpui_kit::px(theme::depth::LIMIT)
+    );
+
+    // Scrolling back starts it, and it asks for frames while it moves.
+    wheel(&f, cx, 1500.);
+    let (started, moving) = depth_now(&f, cx);
+    assert!(moving || started > 0., "it started: {started}");
+    assert!(next_frame_asks(&f, cx) >= 1 || settle(&f, cx) > 0.);
+    let shifted = settle(&f, cx);
+    assert!(
+        shifted > 4. && shifted <= theme::depth::LIMIT,
+        "shifted {shifted}"
+    );
+    // The frosted panels draw the same moved picture.
+    cx.update_window(f.window, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let area = cx.update(|cx| backdrop::placed_area(cx)).unwrap();
+    assert!(
+        (f32::from(area.origin.y) - (shifted - theme::depth::LIMIT)).abs() < 0.2,
+        "{area:?} for a shift of {shifted}"
+    );
+    assert_eq!(next_frame_asks(&f, cx), 0, "arrived, so nothing moves");
+
+    // Back at the newest message it returns.
+    wheel(&f, cx, -100_000.);
+    assert_eq!(settle(&f, cx), 0.);
+    assert_eq!(next_frame_asks(&f, cx), 0);
+}
+
+#[gpui_kit::test]
+fn leaving_the_conversation_lets_the_picture_come_back(cx: &mut TestAppContext) {
+    let f = with_history(cx);
+    wheel(&f, cx, 1500.);
+    assert!(settle(&f, cx) > 4.);
+    let session = f.session.clone();
+    cx.update(|cx| ircord_app::settings::open(&session, None, cx));
+    assert_eq!(settle(&f, cx), 0.);
+}
+
+#[gpui_kit::test]
+fn with_reduced_motion_the_picture_stays_where_it_always_was(cx: &mut TestAppContext) {
+    let f = with_history(cx);
+    cx.update(|cx| {
+        let mut t = theme::get(cx).clone();
+        t.reduced_motion = true;
+        theme::set(t, cx);
+    });
+    let viewport = cx
+        .update_window(f.window, |_, window, _| window.viewport_size())
+        .unwrap();
+    wheel(&f, cx, 1500.);
+    assert_eq!(depth_now(&f, cx), (0., false));
+    assert_eq!(next_frame_asks(&f, cx), 0);
+    let area = cx.update(|cx| backdrop::placed_area(cx)).unwrap();
+    assert_eq!(
+        area,
+        gpui_kit::Bounds::new(
+            gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+            viewport
+        ),
+        "placed exactly as before: no shift, not oversize"
+    );
 }

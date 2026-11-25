@@ -5,6 +5,7 @@
 ### New
 
 - A new message glides into the conversation instead of moving every row at once, a reaction sends a few sparks from its chip, a message that mentions you gets one glint across its row, and the sidebar's mention badge sends out a ring when its count rises. They play only for news (never for loaded history), pace themselves by the display's frames, and follow Settings → Appearance → Motion: with reduced motion everything stays as it was.
+- Three small motions that follow the Motion setting: the conversation list's highlight glides to the conversation you open instead of jumping, a personal theme's background picture drifts a few pixels as you read back into history and returns as you come back to the newest message, and the frames on the profile card and its preview in Settings come alive (the spectrum frame is now the web's four-colour sweep and turns, the gold frame glints, the glow breathes). With reduced motion all three stay as they were.
 
 ### Fixed
 
