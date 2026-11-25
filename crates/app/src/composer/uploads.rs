@@ -1,7 +1,7 @@
 //! The upload tray and the attach button (package U1), after
 //! `useUploads.ts` and `ComposerUploads.vue` in the web client.
 //!
-//! Files join a per-conversation batch from the attach button's file dialog,
+//! Files join a per-conversation batch from the attachment menu's file dialog,
 //! by dropping them on the drop zone that shows above the box while files are
 //! dragged over the window, or by pasting a picture or copied files into the
 //! box. The tray above the box shows each with its progress; removing one
@@ -17,18 +17,22 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::Sizable;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::Client;
 use ircord_client::api::uploads::{self, FileData, Progress, Rejection, UploadError, UploadUse};
 use ircord_client::contract as c;
 
-use crate::composer::ComposerView;
+use crate::composer::{ComposerView, expressions::Tab};
+use crate::features::{klipy, message_actions, shortcuts::Gifs};
 use crate::registry::{self, ComposerCtx, Slot, SubmitHook};
 use crate::session::Session;
 use crate::theme::{self, Theme};
 use crate::ui;
-use crate::ui::icon::IconName;
+use crate::ui::icon::{IconName, LucideIcon};
 
 /// How often the tray redraws while files upload, for the progress bars.
 const PROGRESS_TICK: Duration = Duration::from_millis(150);
@@ -72,7 +76,7 @@ pub struct Uploads {
     queues: HashMap<String, Vec<Pending>>,
     sending: HashSet<String>,
     next: u64,
-    /// The composer, to redraw it and to tell whether its box has focus.
+    /// The composer, to redraw it when an upload changes.
     composer: Option<WeakEntity<ComposerView>>,
     /// How long an upload may stand still; [`uploads::STALL`] outside tests.
     stall: Option<Duration>,
@@ -94,6 +98,12 @@ impl Uploads {
             .and_then(|u| u.queues.get(conversation))
             .cloned()
             .unwrap_or_default()
+    }
+
+    pub(super) fn has_pending(cx: &App, conversation: &str) -> bool {
+        cx.try_global::<Uploads>()
+            .and_then(|u| u.queues.get(conversation))
+            .is_some_and(|queue| !queue.is_empty())
     }
 
     /// Whether any conversation has files waiting (quitting would lose them).
@@ -122,11 +132,10 @@ pub fn init(cx: &mut App) {
             .add(Slot::new("upload", attach_button).order(40));
         r.composer
             .on_submit
-            .add(SubmitHook::new("uploads", |ctx, _sent, window, cx| {
-                send_all(ctx.session.clone(), ctx.conversation.clone(), window, cx);
+            .add(SubmitHook::new("uploads", |ctx, sent, window, cx| {
+                send_all(ctx, sent.is_empty(), window, cx);
             }));
     });
-    cx.intercept_keystrokes(paste).detach();
 }
 
 fn client(session: &Entity<Session>, cx: &App) -> Option<Rc<Client>> {
@@ -331,7 +340,15 @@ fn update_item(cx: &mut App, conversation: &str, key: u64, f: impl FnOnce(&mut P
 }
 
 /// Upload everything waiting in `conversation`, then send it as one message.
-pub fn send_all(session: Entity<Session>, conversation: String, window: &mut Window, cx: &mut App) {
+fn send_all(ctx: &ComposerCtx, files_only: bool, window: &mut Window, cx: &mut App) {
+    let session = ctx.session.clone();
+    let conversation = ctx.conversation.clone();
+    if matches!(
+        message_actions::mode(&conversation, cx),
+        Some(message_actions::Mode::Edit { .. })
+    ) {
+        return;
+    }
     let Some(client) = client(&session, cx) else {
         return;
     };
@@ -353,6 +370,11 @@ pub fn send_all(session: Entity<Session>, conversation: String, window: &mut Win
         }
         state.sending.insert(conversation.clone());
         keys
+    };
+    let reply = if files_only {
+        message_actions::take_reply(&conversation, cx)
+    } else {
+        None
     };
     let network = client
         .read()
@@ -450,7 +472,7 @@ pub fn send_all(session: Entity<Session>, conversation: String, window: &mut Win
                 cx.update(|_, cx| finish(cx, &conversation)).ok();
                 return;
             }
-            let body = uploads::batch_message(ircord_client::client::random_id(), &uploaded, None);
+            let body = uploads::batch_message(ircord_client::client::random_id(), &uploaded, reply);
             let target = conversation.clone();
             let answer = client
                 .request(move |api| async move { api.send_message(&target, &body).await })
@@ -597,50 +619,27 @@ pub fn add_paths(
         .detach();
 }
 
-/// Ctrl+V (Cmd+V) in the message box with a picture or copied files on the
-/// clipboard adds them to the batch; text pastes as usual.
-fn paste(event: &KeystrokeEvent, window: &mut Window, cx: &mut App) {
-    let k = &event.keystroke;
-    if k.key != "v" || !k.modifiers.secondary(cx) || k.modifiers.shift || k.modifiers.alt {
-        return;
-    }
-    let Some(composer) = cx
-        .try_global::<Uploads>()
-        .and_then(|u| u.composer.clone())
-        .and_then(|c| c.upgrade())
-    else {
-        return;
-    };
-    let focused = composer
-        .read(cx)
-        .input
-        .read(cx)
-        .focus_handle(cx)
-        .is_focused(window);
-    if !focused {
-        return;
-    }
-    let Some(item) = cx.read_from_clipboard() else {
-        return;
-    };
+/// A picture or copied files join the batch when the clipboard has no text.
+pub(super) fn paste(
+    ctx: &ComposerCtx,
+    item: &ClipboardItem,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
     let mut images = Vec::new();
     let mut paths = Vec::new();
     for entry in item.entries() {
         match entry {
-            ClipboardEntry::String(s) if !s.text().is_empty() => return,
+            ClipboardEntry::String(s) if !s.text().is_empty() => return false,
             ClipboardEntry::Image(image) => images.push(image.clone()),
             ClipboardEntry::ExternalPaths(p) => paths.extend(p.paths().iter().cloned()),
             ClipboardEntry::String(_) => {}
         }
     }
     if images.is_empty() && paths.is_empty() {
-        return;
+        return false;
     }
-    let session = composer.read(cx).session.clone();
-    let Some(conversation) = session.read(cx).conversation.clone() else {
-        return;
-    };
-    cx.stop_propagation();
+    let (session, conversation) = (&ctx.session, &ctx.conversation);
     if !images.is_empty() {
         let files = images
             .into_iter()
@@ -656,11 +655,12 @@ fn paste(event: &KeystrokeEvent, window: &mut Window, cx: &mut App) {
                 (file, Some(Preview::Image(Arc::new(image))))
             })
             .collect();
-        add(&session, &conversation, files, window, cx);
+        add(session, conversation, files, window, cx);
     }
     if !paths.is_empty() {
-        add_paths(session, conversation, paths, window, cx);
+        add_paths(session.clone(), conversation.clone(), paths, window, cx);
     }
+    true
 }
 
 /// Open the file dialog and add what was picked.
@@ -685,36 +685,82 @@ fn remember_composer(ctx: &ComposerCtx, cx: &mut App) {
     cx.default_global::<Uploads>().composer = Some(ctx.composer.downgrade());
 }
 
-/// The attach button beside the box.
-fn attach_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+/// The attachment menu beside the box also opens GIFs and slash commands.
+fn attach_button(ctx: &ComposerCtx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     remember_composer(ctx, cx);
-    let theme = theme::get(cx).clone();
     let limits = capability(&ctx.session, &ctx.conversation, cx);
-    let label: SharedString = match &limits {
-        Some(l) if l.max_bytes > 0 => t!(
-            "uploads-attach-limit",
-            size = uploads::human_size(l.max_bytes as u64)
-        )
-        .into(),
-        Some(_) => t!("uploads-attach").into(),
-        None => t!("uploads-server-unavailable").into(),
-    };
-    let (session, conversation) = (ctx.session.clone(), ctx.conversation.clone());
-    Some(
-        ui::icon::button(
-            "composer-attach",
-            ui::icon::LucideIcon::Paperclip,
-            label,
-            &theme,
-            move |_, window, cx| {
-                if capability(&session, &conversation, cx).is_none() {
-                    ui::toast::error(window, cx, t!("uploads-server-unavailable"));
-                    return;
-                }
-                pick(session.clone(), conversation.clone(), window, cx);
+    let upload: SharedString = limits
+        .as_ref()
+        .filter(|limit| limit.max_bytes > 0)
+        .map_or_else(
+            || t!("uploads-attach").into(),
+            |limit| {
+                t!(
+                    "uploads-attach-limit",
+                    size = uploads::human_size(limit.max_bytes as u64)
+                )
+                .into()
             },
-        )
-        .into_any_element(),
+        );
+    let tooltip = limits
+        .as_ref()
+        .map_or_else(|| t!("uploads-menu").into(), |_| upload.clone());
+    let ctx = ctx.clone();
+    let trigger = window
+        .use_keyed_state("composer-attach-trigger", cx, |_, cx| {
+            cx.focus_handle().tab_stop(true)
+        })
+        .read(cx)
+        .clone();
+    Some(
+        Button::new("composer-attach")
+            .ghost()
+            .small()
+            .size(px(30.))
+            .rounded_full()
+            .icon(LucideIcon::Paperclip)
+            .track_focus(&trigger)
+            .accessibility_label(t!("uploads-menu"))
+            .tooltip(tooltip)
+            .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _, _| {
+                let (session, conversation) = (ctx.session.clone(), ctx.conversation.clone());
+                let gif = ctx.clone();
+                let trigger = trigger.clone();
+                let composer = ctx.composer.clone();
+                menu.item(
+                    PopupMenuItem::new(upload.clone())
+                        .icon(LucideIcon::Upload)
+                        .disabled(limits.is_none())
+                        .on_click(move |_, window, cx| {
+                            if capability(&session, &conversation, cx).is_none() {
+                                ui::toast::error(window, cx, t!("uploads-server-unavailable"));
+                                return;
+                            }
+                            pick(session.clone(), conversation.clone(), window, cx);
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(t!("uploads-menu-gif"))
+                        .icon(LucideIcon::Image)
+                        .action(Box::new(Gifs))
+                        .on_click(move |_, window, cx| {
+                            klipy::toggle_from(&gif, Tab::Gifs, trigger.clone(), window, cx)
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(t!("uploads-menu-command"))
+                        .icon(LucideIcon::Slash)
+                        .on_click(move |_, window, cx| {
+                            let input = composer.read(cx).input.clone();
+                            input.update(cx, |input, cx| {
+                                input.replace_all("/", window, cx);
+                                input.set_selected_range(1..1, cx);
+                                input.focus(window, cx);
+                            });
+                        }),
+                )
+            })
+            .into_any_element(),
     )
 }
 

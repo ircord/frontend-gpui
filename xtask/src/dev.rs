@@ -1,9 +1,12 @@
 use anyhow::{Context, Result, bail};
 use std::env;
+use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const DX_VERSION: &str = "0.7.10";
+const LOCAL_SIGNING_NAME: &str = "IRCord Local Development";
 
 pub fn run(root: &Path, hot_patch: bool) -> Result<()> {
     let dx = dx_path();
@@ -42,7 +45,24 @@ pub fn run(root: &Path, hot_patch: bool) -> Result<()> {
         "--addr",
         "127.0.0.1",
     ]);
-    if hot_patch {
+    if env::consts::OS == "macos"
+        && let Some(identity) = macos_signing_identity()?
+    {
+        move_legacy_reload_page(root)?;
+        // Keep the trusted app at a fixed path. Dioxus 0.7.10 writes
+        // a web index into the app bundle when it applies a hot patch.
+        command
+            .args([
+                "--renderer",
+                "native",
+                "--codesign",
+                "true",
+                "--apple-team-id",
+            ])
+            .arg(identity)
+            .arg("--apple-entitlements")
+            .arg(root.join("crates/dev/Entitlements.plist"));
+    } else if hot_patch {
         command.arg("--hot-patch");
     }
     if env::var_os("RUST_LOG").is_none() {
@@ -56,6 +76,50 @@ pub fn run(root: &Path, hot_patch: bool) -> Result<()> {
         bail!("Dioxus development server exited unsuccessfully");
     }
     Ok(())
+}
+
+fn move_legacy_reload_page(root: &Path) -> Result<()> {
+    let target = env::var_os("CARGO_TARGET_DIR")
+        .map(|dir| root.join(dir))
+        .unwrap_or_else(|| root.join("target"));
+    let output = target.join("dx/ircord-dev/debug/macos");
+    let page = output.join("IrcordDev.app/index.html");
+    let html = match fs::read_to_string(&page) {
+        Ok(html) => html,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).context("read the old Dioxus reload page"),
+    };
+    if html.contains("__dx-toast-msg") && html.contains("non-hot-reloadable change") {
+        fs::rename(&page, output.join("ircord-dev-legacy-index.html"))
+            .context("move the old Dioxus reload page out of the app bundle")?;
+    }
+    Ok(())
+}
+
+fn macos_signing_identity() -> Result<Option<String>> {
+    if let Ok(identity) = env::var("IRCORD_DEV_SIGNING_IDENTITY") {
+        let identity = identity.trim();
+        if identity.is_empty() || identity == "-" {
+            bail!("IRCORD_DEV_SIGNING_IDENTITY must name a code-signing certificate");
+        }
+        return Ok(Some(identity.to_owned()));
+    }
+    let identities = Command::new("/usr/bin/security")
+        .args(["find-identity", "-v", "-p", "codesigning"])
+        .output()
+        .context("find local macOS code-signing identities")?;
+    if !identities.status.success() {
+        return Ok(None);
+    }
+    let output = String::from_utf8_lossy(&identities.stdout);
+    Ok(output.lines().find_map(|line| {
+        let (prefix, name) = line.split_once('"')?;
+        let (name, _) = name.split_once('"')?;
+        if name != LOCAL_SIGNING_NAME {
+            return None;
+        }
+        prefix.split_whitespace().nth(1).map(str::to_owned)
+    }))
 }
 
 fn dx_path() -> PathBuf {

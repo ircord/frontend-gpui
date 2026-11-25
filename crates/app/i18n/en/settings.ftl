@@ -1,12 +1,15 @@
 # The settings shell, Account and About (package S0).
 
 settings-title = Settings
+settings-close = Close settings
 settings-empty = No settings yet.
 
 # The sample messages at the top of Appearance and Messages
 settings-preview = Preview
 settings-preview-time = 09:41
 settings-preview-time-12h = 9:41 AM
+settings-preview-second-time = 09:42
+settings-preview-second-time-12h = 9:42 AM
 settings-preview-first-name = Jules
 settings-preview-first = anyone up for a code review?
 settings-preview-second-name = Noah

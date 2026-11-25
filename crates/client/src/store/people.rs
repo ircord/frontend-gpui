@@ -9,12 +9,14 @@
 //! with.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::OnceLock;
 
 use chrono::{DateTime, Duration, TimeZone};
+use icu_locale::{Locale, LocaleCanonicalizer, locale, names::LanguageIdentifierDisplayName};
 use ircord_contract::event::ServerEvent;
 use ircord_contract::{
-    CTCPReply, Conversation, ConversationKind, Member, MemberStatus, ProfileUpdate, Snapshot,
-    WhoisDetails,
+    CTCPReply, Conversation, ConversationKind, Member, MemberStatus, Network, ProfileUpdate,
+    Snapshot, WhoisDetails,
 };
 
 use super::{Changes, SELF_ID, Workspace, parse_time};
@@ -292,6 +294,64 @@ pub fn status_label(m: &Member, now_ms: i64) -> Option<String> {
         .filter(|s| !s.is_empty())
         .collect();
     Some(parts.join(" "))
+}
+
+/// The time where someone is, using the reader's clock format.
+pub fn local_time(zone: &str, now_ms: i64, clock_12h: bool) -> Option<String> {
+    let zone = jiff::tz::TimeZone::get(zone).ok()?;
+    let at = jiff::Timestamp::from_millisecond(now_ms).ok()?;
+    let time = at.to_zoned_datetime(zone).time();
+    let format = if clock_12h { "%I:%M %p" } else { "%H:%M" };
+    Some(time.strftime(format).to_string())
+}
+
+/// Time-zone identifiers this device can use to show a profile's local time.
+pub fn time_zones() -> &'static [String] {
+    static ZONES: OnceLock<Vec<String>> = OnceLock::new();
+    ZONES.get_or_init(|| {
+        let mut zones: Vec<_> = jiff::tz::db()
+            .available()
+            .map(|zone| zone.as_str().to_owned())
+            .collect();
+        zones.push("UTC".to_string());
+        zones.sort_unstable();
+        zones.dedup();
+        zones
+    })
+}
+
+fn canonical_language(tag: &str) -> Option<Locale> {
+    let tag = tag.trim();
+    if tag.len() > 32
+        || !tag
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return None;
+    }
+    let mut locale: Locale = tag.parse().ok()?;
+    LocaleCanonicalizer::new_extended().canonicalize(&mut locale);
+    Some(locale)
+}
+
+/// Canonicalize a language tag before adding it to a profile.
+pub fn language_tag(tag: &str) -> Option<String> {
+    let tag = canonical_language(tag)?.to_string();
+    (tag.len() <= 32).then_some(tag)
+}
+
+/// The display name in the app's English catalog, with the original tag as a fallback.
+pub fn language_name(tag: &str) -> String {
+    canonical_language(tag)
+        .and_then(|language| {
+            LanguageIdentifierDisplayName::try_new_heavy(
+                locale!("en").into(),
+                language.id,
+                Default::default(),
+            )
+            .ok()
+        })
+        .map_or_else(|| tag.to_string(), |name| name.as_borrowed().to_string())
 }
 
 /// When a status set now clears.
@@ -719,17 +779,24 @@ pub fn self_name(w: &Workspace, network: &str) -> Option<String> {
     if !explicit.trim().is_empty() {
         return Some(explicit);
     }
-    let n = w.network(network);
-    if let Some(real) = n
+    fallback_self_name(w.network(network), &me.nick).map(str::to_string)
+}
+
+/// What other people see when you leave the profile display name blank.
+pub fn fallback_self_name<'a>(
+    network: Option<&'a Network>,
+    member_nick: &'a str,
+) -> Option<&'a str> {
+    if let Some(real) = network
         .and_then(|n| n.realname.as_deref())
         .filter(|r| !r.trim().is_empty() && *r != "IRCord")
     {
-        return Some(real.to_string());
+        return Some(real);
     }
-    match n.map(|n| n.nick.as_str()).filter(|nick| !nick.is_empty()) {
-        Some(nick) => Some(nick.to_string()),
-        None if me.nick == PLACEHOLDER_NICK || me.nick.is_empty() => None,
-        None => Some(me.nick.clone()),
+    match network.map(|n| n.nick.as_str()).filter(|n| !n.is_empty()) {
+        Some(nick) => Some(nick),
+        None if member_nick == PLACEHOLDER_NICK || member_nick.is_empty() => None,
+        None => Some(member_nick),
     }
 }
 
@@ -785,6 +852,32 @@ mod tests {
     use super::*;
     use crate::testing::{SnapshotBuilder, member};
     use chrono::{FixedOffset, Utc};
+
+    #[test]
+    fn profile_time_uses_the_readers_clock_and_the_members_daylight_saving() {
+        let before = parse_time("2026-03-29T00:59:00Z");
+        let after = parse_time("2026-03-29T01:00:00Z");
+        let local = |at, twelve| local_time("Europe/Copenhagen", at, twelve).unwrap();
+        assert_eq!(local(before, false), "01:59");
+        assert_eq!(local(after, false), "03:00");
+        assert_eq!(local(after, true), "03:00 AM");
+        assert!(local_time("Not/AZone", after, false).is_none());
+        assert!(local_time("", after, false).is_none());
+        assert!(time_zones().iter().any(|zone| zone == "Europe/Copenhagen"));
+        assert!(time_zones().iter().any(|zone| zone == "UTC"));
+    }
+
+    #[test]
+    fn profile_language_tags_are_normalized_and_have_readable_names() {
+        assert_eq!(language_tag(" en-gb ").as_deref(), Some("en-GB"));
+        assert_eq!(language_tag("iw").as_deref(), Some("he"));
+        assert!(language_tag("en_US").is_none());
+        assert!(language_tag("not a tag").is_none());
+        assert!(language_tag("").is_none());
+        assert_eq!(language_name("da"), "Danish");
+        assert_eq!(language_name("en-GB"), "British English");
+        assert_eq!(language_name("not a tag"), "not a tag");
+    }
 
     fn workspace() -> Workspace {
         SnapshotBuilder::new()

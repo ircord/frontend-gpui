@@ -10,8 +10,7 @@
 //! - **GIFs**: Klipy's categories, trending and search, and your saved GIFs;
 //!   a star saves or forgets one. Picking sends it at once.
 //!
-//! Over the composer the picker shows above the box (`features/klipy.rs`
-//! puts it in the composer's `above` slot); for a reaction it shows in a
+//! Over the composer the picker is a floating popover. For a reaction it shows in a
 //! dialog, emoji only, with your quick reactions first.
 
 use crate::ui::focus::Reachable;
@@ -43,6 +42,7 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 /// The picker's size over the composer.
 pub const WIDTH: f32 = 440.;
 pub const HEIGHT: f32 = 380.;
+pub(crate) const KEY_CONTEXT: &str = "ExpressionPicker";
 
 /// What picking does.
 #[derive(Clone)]
@@ -90,6 +90,9 @@ pub struct PickerView {
     purpose: Purpose,
     pub tab: Tab,
     pub search: Entity<InputState>,
+    tab_focus: [FocusHandle; 2],
+    emoji_query: String,
+    gif_query: String,
     pub group: &'static str,
     pub gif_view: GifView,
     categories: Load<Vec<Category>>,
@@ -127,6 +130,9 @@ impl PickerView {
             purpose,
             tab,
             search,
+            tab_focus: [cx.focus_handle(), cx.focus_handle()],
+            emoji_query: String::new(),
+            gif_query: String::new(),
             group: "frequent",
             gif_view: GifView::Home,
             categories: Load::Idle,
@@ -162,26 +168,49 @@ impl PickerView {
     }
 
     fn placeholder(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = match self.tab {
-            Tab::Emoji => t!("emoji-search-emoji"),
-            Tab::Gifs => t!("emoji-search-gifs"),
-        };
+        let text = self.search_label();
         self.search
             .update(cx, |s, cx| s.set_placeholder(text, window, cx));
     }
 
-    /// Switch tabs; each starts with an empty search.
+    fn search_label(&self) -> &'static str {
+        match (self.tab, &self.gif_view) {
+            (Tab::Emoji, _) => t!("emoji-search-emoji"),
+            (Tab::Gifs, GifView::Saved) => t!("emoji-search-saved"),
+            (Tab::Gifs, _) => t!("emoji-search-gifs"),
+        }
+    }
+
+    /// Switch tabs and restore the last search on that tab.
     pub fn set_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
         if self.tab == tab || (self.reacting() && tab == Tab::Gifs) {
             return;
         }
+        let query = self.query(cx);
+        let restored = match self.tab {
+            Tab::Emoji => {
+                self.emoji_query = query;
+                self.gif_query.clone()
+            }
+            Tab::Gifs => {
+                self.gif_query = query;
+                self.emoji_query.clone()
+            }
+        };
         self.tab = tab;
-        self.search.update(cx, |s, cx| s.set_value("", window, cx));
+        self.tones_open = false;
+        self.scroll.set_offset(Point::default());
+        self.search
+            .update(cx, |s, cx| s.set_value(restored, window, cx));
         self.placeholder(window, cx);
         if tab == Tab::Gifs && matches!(self.categories, Load::Idle) {
             self.load_categories(cx);
         }
         cx.notify();
+    }
+
+    pub(crate) fn focus_search(&self, window: &mut Window, cx: &mut App) {
+        self.search.focus_handle(cx).focus(window, cx);
     }
 
     fn typed(&mut self, cx: &mut Context<Self>) {
@@ -306,6 +335,8 @@ impl PickerView {
         self.gif_view = GifView::Home;
         self.generation += 1;
         self.search.update(cx, |s, cx| s.set_value("", window, cx));
+        self.placeholder(window, cx);
+        self.focus_search(window, cx);
         cx.notify();
     }
 
@@ -324,7 +355,7 @@ impl PickerView {
         };
         let conversation = self.conversation().to_string();
         if klipy::send_gif(&self.session, &conversation, gif, &query, window, cx) {
-            klipy::close(window, cx);
+            klipy::picked(window, cx);
         }
     }
 
@@ -379,33 +410,25 @@ impl PickerView {
     fn choose_emoji(&mut self, item: EmojiItem, window: &mut Window, cx: &mut Context<Self>) {
         let tone = klipy::skin_tone(&self.session, cx);
         let text = item.text(tone);
-        klipy::record_pick(&self.session, &item.id, cx);
         match self.purpose.clone() {
             Purpose::Composer { composer, .. } => {
                 let Some(composer) = composer.upgrade() else {
                     return;
                 };
-                let fits = composer.update(cx, |c, cx| {
-                    let current = c.text(cx);
-                    let range = c.input.read(cx).selected_range();
-                    let (start, end) =
-                        (range.start.min(current.len()), range.end.min(current.len()));
-                    if current.len() - (end - start) + text.len() > emoji::TEXT_LIMIT {
-                        return false;
-                    }
-                    let next = format!("{}{text}{}", &current[..start], &current[end..]);
-                    c.set_text_at(&next, start + text.len(), window, cx);
-                    true
-                });
-                if !fits {
+                let input = composer.read(cx).input.clone();
+                let current = input.read(cx).value().to_string();
+                let range = input.read(cx).selected_range();
+                let count = current.encode_utf16().count() - current[range].encode_utf16().count()
+                    + text.encode_utf16().count();
+                if count > emoji::TEXT_LIMIT {
                     return ui::toast::info(window, cx, t!("emoji-too-long"));
                 }
-                klipy::close(window, cx);
-                composer.update(cx, |c, cx| {
-                    c.input.update(cx, |s, cx| s.focus(window, cx));
-                });
+                input.update(cx, |s, cx| s.replace(text, window, cx));
+                klipy::record_pick(&self.session, &item.id, cx);
+                klipy::picked(window, cx);
             }
             Purpose::React(ctx) => {
+                klipy::record_pick(&self.session, &item.id, cx);
                 ui::dialog::close(window, cx);
                 crate::features::message_actions::react(
                     &ctx.session,
@@ -429,11 +452,13 @@ impl PickerView {
 
     fn tabs(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let tab = |id: &'static str, label: SharedString, which: Tab, on: bool| {
+            let focus = self.tab_handle(which).clone().tab_stop(true);
             div()
                 .id(id)
                 .test_support()
                 .role(Role::Tab)
                 .reachable(theme)
+                .with_focus(&focus)
                 .aria_label(label.clone())
                 .aria_selected(on)
                 .px_3()
@@ -447,7 +472,10 @@ impl PickerView {
                     d.text_color(theme.muted).hover(move |d| d.bg(hover))
                 })
                 .child(label)
-                .on_click(cx.listener(move |this, _, window, cx| this.set_tab(which, window, cx)))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.set_tab(which, window, cx);
+                    this.focus_search(window, cx);
+                }))
         };
         div()
             .id("expression-tabs")
@@ -455,7 +483,23 @@ impl PickerView {
             .role(Role::TabList)
             .aria_label(t!("emoji-picker"))
             .flex()
+            .flex_none()
             .gap_1()
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers.modified()
+                    || !matches!(event.keystroke.key.as_str(), "left" | "right")
+                {
+                    return;
+                }
+                let next = if this.tab_handle(Tab::Gifs).is_focused(window) {
+                    Tab::Emoji
+                } else {
+                    Tab::Gifs
+                };
+                this.set_tab(next, window, cx);
+                this.tab_handle(next).focus(window, cx);
+                cx.stop_propagation();
+            }))
             .child(tab(
                 "expression-tab-gifs",
                 t!("emoji-tab-gifs").into(),
@@ -471,18 +515,44 @@ impl PickerView {
             .into_any_element()
     }
 
+    fn tab_handle(&self, tab: Tab) -> &FocusHandle {
+        &self.tab_focus[usize::from(tab == Tab::Emoji)]
+    }
+
     fn search_row(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let label = match self.tab {
-            Tab::Emoji => t!("emoji-search-emoji"),
-            Tab::Gifs => t!("emoji-search-gifs"),
-        };
-        let mut row = div().flex().items_center().gap_2().child(
+        let mut row = div().flex_none().flex().items_center().gap_2();
+        if !self.reacting() {
+            row = row.child(self.tabs(theme, cx));
+        }
+        if self.tab == Tab::Gifs && !matches!(self.gif_view, GifView::Home) {
+            row = row.child(ui::icon::button(
+                "gif-back",
+                IconName::ArrowLeft,
+                t!("emoji-gif-back"),
+                theme,
+                cx.listener(|this, _, window, cx| this.back(window, cx)),
+            ));
+        }
+        row = row.child(
             div().flex_1().min_w_0().child(
                 Input::new(&self.search)
                     .id("expression-search")
-                    .aria_label(label),
+                    .aria_label(self.search_label()),
             ),
         );
+        if !self.query(cx).is_empty() {
+            row = row.child(ui::icon::button(
+                "expression-clear-search",
+                IconName::Close,
+                t!("emoji-clear-search"),
+                theme,
+                cx.listener(|this, _, window, cx| {
+                    this.search.update(cx, |s, cx| s.set_value("", window, cx));
+                    this.typed(cx);
+                    this.focus_search(window, cx);
+                }),
+            ));
+        }
         if self.tab == Tab::Emoji {
             let tone = klipy::skin_tone(&self.session, cx);
             let hover = theme.hover;
@@ -840,6 +910,7 @@ impl PickerView {
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.gif_view = GifView::Saved;
                     this.search.update(cx, |s, cx| s.set_value("", window, cx));
+                    this.placeholder(window, cx);
                     cx.notify();
                 })),
             )
@@ -885,33 +956,11 @@ impl PickerView {
     }
 
     fn gif_body(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let back = |title: SharedString, cx: &mut Context<Self>| {
-            let hover = theme.hover;
+        let heading = |title: SharedString| {
             div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .id("gif-back")
-                        .test_support()
-                        .role(Role::Button)
-                        .reachable(theme)
-                        .aria_label(t!("emoji-gif-back"))
-                        .tooltip(ui::tooltip::text(t!("emoji-gif-back")))
-                        .p_1()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .hover(move |d| d.bg(hover))
-                        .child(ui::icon::icon(IconName::ArrowLeft, theme.text))
-                        .on_click(cx.listener(|this, _, window, cx| this.back(window, cx))),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(title),
-                )
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title)
         };
         match self.gif_view.clone() {
             GifView::Home => self.gif_home(theme, cx),
@@ -921,7 +970,7 @@ impl PickerView {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(back(t!("emoji-gif-saved-title").into(), cx));
+                    .child(heading(t!("emoji-gif-saved-title").into()));
                 body = if saved.is_empty() {
                     body.child(
                         div()
@@ -935,12 +984,12 @@ impl PickerView {
                 body.into_any_element()
             }
             GifView::Results { query, title } => {
-                let heading: SharedString = match title {
+                let title: SharedString = match title {
                     Some(t) => t.into(),
                     None if query.is_empty() => t!("emoji-gif-trending").into(),
                     None => t!("emoji-gif-results", query = query).into(),
                 };
-                let mut body = div().flex().flex_col().gap_2().child(back(heading, cx));
+                let mut body = div().flex().flex_col().gap_2().child(heading(title));
                 match &self.results {
                     Load::Ready(gifs) if gifs.is_empty() => {
                         body = body.child(
@@ -1067,6 +1116,7 @@ impl Render for PickerView {
             .test_support()
             .role(Role::Dialog)
             .aria_label(t!("emoji-picker"))
+            .key_context(KEY_CONTEXT)
             .flex()
             .flex_col()
             .gap_2()
@@ -1082,9 +1132,6 @@ impl Render for PickerView {
                     }
                 }
             }));
-        if !self.reacting() {
-            root = root.child(self.tabs(&theme, cx));
-        }
         if let Some(quick) = self.quick(&theme, cx) {
             root = root.child(quick);
         }

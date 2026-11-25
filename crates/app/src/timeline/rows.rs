@@ -761,7 +761,14 @@ fn message_row(
             alt: gif.title.clone(),
         });
     }
-    for (_, url) in &body.links {
+    let prose_links;
+    let preview_links = if m.text.contains("```") || m.text.contains('\u{11}') {
+        prose_links = format::find_links(&format::blocks::text_outside_code(&m.text));
+        &prose_links
+    } else {
+        &body.links
+    };
+    for (_, url) in preview_links {
         if images.iter().any(|i| &i.url == url)
             || links.iter().any(|l| &l.url == url)
             || attachments.iter().any(|a| &a.url == url)
@@ -1295,6 +1302,37 @@ mod tests {
             "the upload's URL is left out"
         );
         assert_eq!(m.sender_color, Some(0xff0000));
+    }
+
+    #[test]
+    fn only_links_outside_code_generate_previews() {
+        let mut w = workspace();
+        let mut message = msg(
+            "1",
+            "2026-11-20T12:00:00Z",
+            "m-bob",
+            "Before https://example.com/before\n```sh\nhttps://example.com/fenced\nhttps://example.com/shared\n```\n\u{11}https://example.com/mono\u{11}\nhttps://example.com/shared https://example.com/file.pdf https://example.com/after",
+        );
+        message.attachments = Some(vec![Attachment {
+            url: "https://example.com/file.pdf".into(),
+            name: "file.pdf".into(),
+            ..Default::default()
+        }]);
+        load(&mut w, vec![message], None);
+        let rows = build(&w, "c", Options::default());
+        let Some(Row::Message(message)) = rows.iter().find(|row| matches!(row, Row::Message(_)))
+        else {
+            panic!("expected a message row");
+        };
+        let previews: Vec<_> = message.links.iter().map(|link| link.url.as_str()).collect();
+        assert_eq!(
+            previews,
+            [
+                "https://example.com/before",
+                "https://example.com/shared",
+                "https://example.com/after",
+            ]
+        );
     }
 
     #[test]

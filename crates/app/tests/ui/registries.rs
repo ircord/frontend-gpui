@@ -215,9 +215,10 @@ fn settings_panes_panels_and_history(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert!(window.find("sample-settings-body").visible());
         assert!(
-            window.try_find("timeline").is_none(),
-            "the settings page replaced it"
+            window.find("timeline").visible(),
+            "the conversation stays behind Settings"
         );
+        assert!(window.find("settings-dialog").visible());
     })
     .unwrap();
 

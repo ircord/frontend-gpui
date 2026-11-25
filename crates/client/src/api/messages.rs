@@ -10,18 +10,36 @@ use ircord_contract as c;
 use super::{Api, ApiError, Method, segment};
 
 impl Api {
-    /// The newest page, or the page before `before` (a `nextCursor`).
+    /// The newest page, or the page before a server cursor or a message
+    /// that marks the edge of the in-memory timeline.
     pub async fn messages(
         &self,
         conversation: &str,
         before: Option<&str>,
         limit: u32,
     ) -> Result<c::MessagePage, ApiError> {
+        let message_id = before
+            .and_then(|value| value.strip_prefix("message:"))
+            .and_then(|value| url::form_urlencoded::parse(value.as_bytes()).next())
+            .map(|(id, _)| id.into_owned());
+        let boundary = match message_id.as_deref() {
+            Some(id) => {
+                let around = self.messages_around(conversation, id, 1).await?;
+                let Some(cursor) = around.next_cursor else {
+                    return Ok(c::MessagePage {
+                        cursor: around.cursor,
+                        ..Default::default()
+                    });
+                };
+                Some(cursor)
+            }
+            None => None,
+        };
         let path = format!("/api/v1/conversations/{}/messages", segment(conversation));
         let mut request = self
             .request(Method::GET, &path)
             .query(&[("limit", limit.to_string())]);
-        if let Some(before) = before {
+        if let Some(before) = boundary.as_deref().or(before) {
             request = request.query(&[("before", before)]);
         }
         self.json(request).await
@@ -161,5 +179,34 @@ impl Api {
                 return Ok(all);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::testing::{CannedServer, Reply};
+
+    #[test]
+    fn pages_before_a_trimmed_message_using_the_servers_cursor() {
+        let runtime = crate::client::runtime().unwrap();
+        let server = CannedServer::start(&runtime);
+        let path = "/api/v1/conversations/c1/messages";
+        server.route_fn("GET", path, |request| {
+            if request.query_param("around").as_deref() == Some("m&42") {
+                Reply::json(
+                    200,
+                    serde_json::json!({"items": [], "nextCursor": "older+/"}),
+                )
+            } else if request.query_param("before").as_deref() == Some("older+/") {
+                Reply::json(200, serde_json::json!({"items": [], "nextCursor": "next"}))
+            } else {
+                Reply::problem(400, "Expected a message ID or the server cursor.")
+            }
+        });
+        let page = runtime
+            .block_on(server.api().messages("c1", Some("message:m%2642"), 20))
+            .unwrap();
+        assert_eq!(page.next_cursor.as_deref(), Some("next"));
+        assert_eq!(server.requests_to("GET", path).len(), 2);
     }
 }

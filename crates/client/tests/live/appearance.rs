@@ -4,7 +4,7 @@
 //! Start each case with `let Some((server, irc)) = crate::support::environment() else { return };`.
 
 use ircord_client::ServerAddress;
-use ircord_client::api::{Api, ApiError};
+use ircord_client::api::{Api, ThemeSave};
 use ircord_client::client::{random_id, runtime};
 use ircord_client::contract::{
     Appearance, AppearanceFont, SaveAppAppearanceRequest, StoredAppearance, Themes,
@@ -36,9 +36,10 @@ fn saves_uses_and_removes_a_personal_theme() {
     let mut theme = look::new_theme(&look, "Live sea", "IRCord desktop test", "");
     look::set_seed(&mut theme, Mode::Dark, Seed::Surface, 0x102030);
     let id = theme.id.clone().unwrap();
-    let library = rt
+    let first_save = rt
         .block_on(api.save_theme(&theme, None, false))
         .expect("save the theme");
+    let library = saved_library(first_save);
     let stored = library
         .themes
         .iter()
@@ -54,14 +55,15 @@ fn saves_uses_and_removes_a_personal_theme() {
     look::set_seed(&mut edited, Mode::Dark, Seed::Accent, 0x40c0ff);
     let stale = rt
         .block_on(api.save_theme(&edited, Some("2000-01-01T00:00:00Z"), false))
-        .unwrap_err();
+        .expect("the server sends the current saved version");
     assert!(
-        matches!(stale, ApiError::Http { status: 412, .. }),
+        matches!(&stale, ThemeSave::Conflict(current) if current.as_ref() == &stored),
         "{stale:?}"
     );
-    let library = rt
+    let edit_save = rt
         .block_on(api.save_theme(&edited, Some(&version), false))
         .expect("save over the loaded version");
+    let library = saved_library(edit_save);
     let saved = library
         .themes
         .iter()
@@ -90,9 +92,10 @@ fn saves_uses_and_removes_a_personal_theme() {
 
     // Exported and imported again, it is a second, separate theme.
     let copy = look::import_theme(&look::export_theme(saved), "test", "").unwrap();
-    let library = rt
+    let import_save = rt
         .block_on(api.save_theme(&copy, None, false))
         .expect("save the import");
+    let library = saved_library(import_save);
     assert_eq!(library.themes.len(), 2);
 
     // Remove both.
@@ -105,4 +108,11 @@ fn saves_uses_and_removes_a_personal_theme() {
         .block_on(api.get("/api/v1/app/themes"))
         .expect("read the library");
     assert!(read.themes.is_empty());
+}
+
+fn saved_library(result: ThemeSave) -> Themes {
+    match result {
+        ThemeSave::Saved(library) => library,
+        ThemeSave::Conflict(_) => panic!("the theme changed unexpectedly"),
+    }
 }

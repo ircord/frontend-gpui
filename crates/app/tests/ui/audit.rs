@@ -181,10 +181,11 @@ fn audit_settings(cx: &mut TestAppContext, part: usize, parts: usize) {
         })
         .unwrap();
         cx.run_until_parked();
-        problems.extend(
-            cx.update_window(f.window, |_, window, cx| audit(&section, window, cx))
-                .unwrap(),
-        );
+        problems.extend(cx.update_window(f.window, |_, window, cx| {
+            audit_where(&section, window, cx, |path| {
+                path.iter().any(|id| matches!(id, ElementId::Name(name) if name.as_ref() == "settings-dialog"))
+            })
+        }).unwrap());
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
@@ -303,7 +304,10 @@ fn tab_reaches_every_control_in_the_dialogs(cx: &mut TestAppContext) {
     let dialogs: Vec<(&str, Opener)> = vec![
         ("join a channel", click("section-channels-join")),
         ("message someone", click("section-directs-new")),
-        ("find a conversation", click("sidebar-find")),
+        (
+            "quick switcher",
+            Box::new(ircord_app::features::switcher::open),
+        ),
         (
             "keyboard shortcuts",
             Box::new(ircord_app::features::shortcuts::open_help),

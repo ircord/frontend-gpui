@@ -444,8 +444,8 @@ pub enum SuggestionLook {
     /// The label, then the detail on the same line.
     #[default]
     Inline,
-    /// The label in monospace, the detail on its own line below (commands).
-    Stacked,
+    /// The command and its syntax in monospace, with its description below.
+    Command { name: &'static str },
     /// A person: their picture, the label (their name), the detail (their
     /// `@nick`) at the right. `member` is the member's ID.
     Person { member: String },
@@ -504,6 +504,8 @@ pub struct TokenProvider {
 pub enum SendOutcome {
     /// Pass the (possibly changed) text on to the next filter, then send.
     Continue(String),
+    /// The filter sent a message with its own metadata. Clear the box and run the submit hooks.
+    Sent(String),
     /// The filter took care of it (a command ran): clear the box.
     Handled,
     /// Do not send and keep the text, for the person to fix.
@@ -522,8 +524,8 @@ pub struct SendFilter {
 
 /// Runs after every submit (Enter, or a send button), once the text went
 /// through the send filters. `sent` is the text that was sent, empty when
-/// there was none; the upload tray sends its files here. Not run when a
-/// filter handled the text (a command) or kept it.
+/// there was none; the upload tray sends its files here. Runs after a plain
+/// message or a reply, and skips commands, edits, and text kept in the box.
 #[derive(Clone)]
 pub struct SubmitHook {
     pub id: SharedString,
@@ -550,6 +552,10 @@ impl SubmitHook {
 pub struct ComposerSlots {
     /// Above the box: the reply bar, the upload tray.
     pub above: List<Slot<ComposerCtx>>,
+    /// The first visible replacement for the normal message field and buttons.
+    pub input: List<Slot<ComposerCtx>>,
+    /// Floating elements anchored to the message field's rectangle.
+    pub overlays: List<Slot<ComposerCtx>>,
     /// Buttons beside the box: upload, emoji, GIF.
     pub buttons: List<Slot<ComposerCtx>>,
     pub suggestions: List<SuggestionProvider>,

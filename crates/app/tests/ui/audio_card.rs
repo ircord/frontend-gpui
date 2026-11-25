@@ -15,7 +15,7 @@ use ircord_client::testing::Reply;
 use crate::fixture::{self, Fixture};
 
 /// A mono 16-bit WAV of `seconds`, a quiet tone.
-fn wav(seconds: u32) -> Vec<u8> {
+pub(super) fn wav(seconds: u32) -> Vec<u8> {
     let rate = 44_100u32;
     let samples = rate * seconds;
     let data_len = samples * 2;

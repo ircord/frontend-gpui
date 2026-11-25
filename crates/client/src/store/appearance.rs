@@ -24,6 +24,9 @@ use serde::{Deserialize, Serialize};
 use super::theme_css::{self, CssVariables};
 use super::{Changes, Workspace};
 
+pub mod background;
+pub mod drafts;
+
 /// The topic this sub-state reports in [`Changes`].
 pub const TOPIC: &str = "appearance";
 
@@ -43,7 +46,8 @@ pub(super) fn reset(_w: &mut Workspace, _snapshot: &Snapshot) -> Changes {
 // ---- Schemes -------------------------------------------------------------------------------
 
 /// Light or dark.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Mode {
     Dark,
     Light,
@@ -910,18 +914,7 @@ pub struct Backdrop {
 /// Whether `path` is an upload on the server a theme may name
 /// (`instanceFilePath` in `shared/themes.ts`): no query, no host.
 pub fn is_upload_path(path: &str) -> bool {
-    let segment = |s: &str, max: usize, extra: &str| {
-        (1..=max).contains(&s.len())
-            && s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || extra.contains(c))
-    };
-    if let Some(rest) = path.strip_prefix("/files/") {
-        let parts: Vec<&str> = rest.split('/').collect();
-        return matches!(parts.as_slice(), [a, b, c]
-            if segment(a, 80, "_-") && segment(b, 200, "_-") && segment(c, 400, "._~%$&+,:;=@-"));
-    }
-    path.strip_prefix("/api/v1/uploads/")
-        .is_some_and(|id| segment(id, 80, "-"))
+    background::is_upload_path(path)
 }
 
 /// The lowest dim and panel opacity, in percent, that keep text readable
@@ -986,11 +979,7 @@ pub fn default_background() -> ThemeBackground {
 /// returned (`instanceFilePath`): its path alone, `None` when it has a query
 /// or fragment or is not an upload's path.
 pub fn instance_file_path(address: &str, server: &url::Url) -> Option<String> {
-    let url = server.join(address).ok()?;
-    if url.query().is_some() || url.fragment().is_some() {
-        return None;
-    }
-    Some(url.path().to_string()).filter(|path| is_upload_path(path))
+    background::instance_upload_path(address, server)
 }
 
 /// The dark and light tones of a picture shrunk to a few pixels, as RGBA
@@ -1223,16 +1212,34 @@ pub enum Seed {
     Ink,
     Muted,
     Accent,
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Cyan,
+    Blue,
+    Purple,
+    Pink,
 }
 
 impl Seed {
-    pub const ALL: [Seed; 6] = [
+    pub const INTERFACE: [Seed; 6] = [
         Seed::Canvas,
         Seed::Surface,
         Seed::Overlay,
         Seed::Ink,
         Seed::Muted,
         Seed::Accent,
+    ];
+    pub const PALETTE: [Seed; 8] = [
+        Seed::Red,
+        Seed::Orange,
+        Seed::Yellow,
+        Seed::Green,
+        Seed::Cyan,
+        Seed::Blue,
+        Seed::Purple,
+        Seed::Pink,
     ];
 
     pub fn get(self, s: &Seeds) -> u32 {
@@ -1243,6 +1250,14 @@ impl Seed {
             Seed::Ink => s.ink,
             Seed::Muted => s.muted,
             Seed::Accent => s.accent,
+            Seed::Red => s.palette.red,
+            Seed::Orange => s.palette.orange,
+            Seed::Yellow => s.palette.yellow,
+            Seed::Green => s.palette.green,
+            Seed::Cyan => s.palette.cyan,
+            Seed::Blue => s.palette.blue,
+            Seed::Purple => s.palette.purple,
+            Seed::Pink => s.palette.pink,
         }
     }
 
@@ -1254,6 +1269,14 @@ impl Seed {
             Seed::Ink => &mut s.ink,
             Seed::Muted => &mut s.muted,
             Seed::Accent => &mut s.accent,
+            Seed::Red => &mut s.palette.red,
+            Seed::Orange => &mut s.palette.orange,
+            Seed::Yellow => &mut s.palette.yellow,
+            Seed::Green => &mut s.palette.green,
+            Seed::Cyan => &mut s.palette.cyan,
+            Seed::Blue => &mut s.palette.blue,
+            Seed::Purple => &mut s.palette.purple,
+            Seed::Pink => &mut s.palette.pink,
         } = value;
     }
 }
@@ -1261,13 +1284,31 @@ impl Seed {
 /// Change one seed of `theme` in `mode`, starting from its base's seeds when
 /// the theme has none of its own for that mode yet.
 pub fn set_seed(theme: &mut Theme, mode: Mode, seed: Seed, value: u32) {
-    let mut seeds = theme_seeds(theme, mode).unwrap_or(theme_base(theme, mode).seeds);
+    let mut seeds = drawn_seeds(theme, mode);
     seed.set(&mut seeds, value);
+    set_theme_seeds(theme, mode, Some(seeds));
+}
+
+/// Store a mode's own colors, or return that mode to its base palette.
+pub fn set_theme_seeds(theme: &mut Theme, mode: Mode, seeds: Option<Seeds>) {
+    if seeds.is_none() && theme.colors.is_none() {
+        return;
+    }
     let colors = theme.colors.get_or_insert_default();
-    let stored = Some(seeds_to(&seeds));
+    let stored = seeds.as_ref().map(seeds_to);
     match mode {
         Mode::Dark => colors.dark = stored,
         Mode::Light => colors.light = stored,
+    }
+}
+
+/// Change one mode's base scheme without changing either mode's custom colors.
+pub fn set_theme_base(theme: &mut Theme, scheme: &'static Scheme) {
+    let base = theme.base.get_or_insert_default();
+    let id = Some(scheme.id.to_string());
+    match scheme.mode {
+        Mode::Dark => base.dark = id,
+        Mode::Light => base.light = id,
     }
 }
 
@@ -1296,6 +1337,17 @@ pub fn new_theme(look: &Look, name: &str, made_with: &str, now: &str) -> Theme {
         css: Some(String::new()),
         made_with: Some(made_with.to_string()),
         updated_at: Some(now.to_string()),
+    }
+}
+
+/// Copy a theme within the account, retaining its background image and appearance.
+pub fn duplicate_theme(theme: &Theme, name: &str, made_with: &str, now: &str) -> Theme {
+    Theme {
+        id: Some(new_theme_id()),
+        name: Some(clean_name(name)),
+        made_with: Some(made_with.to_string()),
+        updated_at: Some(now.to_string()),
+        ..theme.clone()
     }
 }
 
@@ -1742,6 +1794,24 @@ mod tests {
         let newer = compile(&look, Mode::Dark, std::slice::from_ref(&theme), false);
         assert_eq!(newer.theme, None);
         assert_eq!(newer.scheme, DEFAULT_DARK);
+    }
+
+    #[test]
+    fn custom_colors_follow_their_own_mode_and_can_return_to_base() {
+        let look = Look::default();
+        let mut theme = new_theme(&look, "Test", "Tests", "revision-1");
+        let dark = scheme_for("github-dark", Mode::Dark);
+        let light = scheme_for("hibiki-light", Mode::Light);
+        set_theme_base(&mut theme, dark);
+        set_theme_base(&mut theme, light);
+        assert_eq!(drawn_seeds(&theme, Mode::Dark), dark.seeds);
+        assert_eq!(drawn_seeds(&theme, Mode::Light), light.seeds);
+        set_seed(&mut theme, Mode::Dark, Seed::Blue, 0x468def);
+        set_seed(&mut theme, Mode::Light, Seed::Canvas, 0xd2e4fc);
+        set_theme_seeds(&mut theme, Mode::Light, None);
+        assert_eq!(drawn_seeds(&theme, Mode::Light), light.seeds);
+        assert_eq!(drawn_seeds(&theme, Mode::Dark).palette.blue, 0x468def);
+        assert_eq!(theme_base(&theme, Mode::Dark).id, dark.id);
     }
 
     #[test]

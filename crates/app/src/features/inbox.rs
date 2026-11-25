@@ -592,7 +592,9 @@ impl Render for InboxView {
             .role(Role::TabList)
             .aria_label(t!("inbox-saved-views"))
             .flex()
+            .flex_wrap()
             .flex_none()
+            .max_w_full()
             .self_start()
             .gap_1()
             .p_1()
@@ -717,17 +719,11 @@ impl Render for InboxView {
         };
         drop(w);
 
-        let page_body = div()
-            .px_4()
-            .pb_4()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(tabs)
-            .child(body);
+        let page_body = div().px_4().pb_4().child(body);
         let session = self.session.clone();
         let page = ui::page::Page::new("inbox-page", t!("inbox-saved-inbox"), page_body)
             .description(t!("inbox-saved-inbox-description"))
+            .toolbar(div().flex().child(tabs))
             .meta("inbox-meta", meta)
             .close(t!("inbox-saved-return-label"), move |_, _, cx| {
                 ui::page::leave(&session, cx)

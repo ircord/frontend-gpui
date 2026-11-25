@@ -61,6 +61,8 @@ pub(super) fn reset(_w: &mut Workspace, _snapshot: &Snapshot) -> Changes {
 pub struct Layout {
     pub sidebar_width: f32,
     pub panel_width: f32,
+    pub picker_width: f32,
+    pub picker_height: f32,
     /// The conversation list is docked; off folds it to an icon rail.
     pub show_list: bool,
     /// Collapsed sections, as [`section_key`].
@@ -72,12 +74,16 @@ pub struct Layout {
 /// (smallest, largest, default) widths in pixels.
 pub const SIDEBAR_WIDTH: (f32, f32, f32) = (170., 360., 200.);
 pub const PANEL_WIDTH: (f32, f32, f32) = (180., 340., 208.);
+pub const PICKER_WIDTH: (f32, f32, f32) = (340., 820., 480.);
+pub const PICKER_HEIGHT: (f32, f32, f32) = (300., 760., 460.);
 
 impl Default for Layout {
     fn default() -> Self {
         Self {
             sidebar_width: SIDEBAR_WIDTH.2,
             panel_width: PANEL_WIDTH.2,
+            picker_width: PICKER_WIDTH.2,
+            picker_height: PICKER_HEIGHT.2,
             show_list: true,
             collapsed: Vec::new(),
             unread_only: false,
@@ -99,6 +105,8 @@ impl Layout {
     pub fn sanitized(mut self) -> Self {
         self.sidebar_width = clamp_width(self.sidebar_width, SIDEBAR_WIDTH);
         self.panel_width = clamp_width(self.panel_width, PANEL_WIDTH);
+        self.picker_width = clamp_width(self.picker_width, PICKER_WIDTH);
+        self.picker_height = clamp_width(self.picker_height, PICKER_HEIGHT);
         let mut seen = std::collections::BTreeSet::new();
         self.collapsed
             .retain(|k| !k.is_empty() && k.len() <= 300 && seen.insert(k.clone()));
@@ -264,18 +272,18 @@ pub fn custom(w: &Workspace, network_id: &str, section: Section) -> bool {
 }
 
 /// Every conversation of a network's section, in display order. Direct
-/// messages are listed by name.
+/// messages outside Favorites keep the workspace's conversation order.
 pub fn items<'a>(w: &'a Workspace, network_id: &str, section: Section) -> Vec<&'a Conversation> {
     let members: Vec<&Conversation> = w
         .conversations
         .iter()
         .filter(|c| c.network_id == network_id && section_of(c) == section)
         .collect();
-    let order = section
-        .sortable()
-        .then(|| stored(w, network_id, section))
-        .flatten();
-    order_items(members, order)
+    if section.sortable() {
+        order_items(members, stored(w, network_id, section))
+    } else {
+        members
+    }
 }
 
 /// The IDs of a section in display order.
@@ -822,6 +830,17 @@ mod tests {
     }
 
     #[test]
+    fn direct_messages_keep_their_workspace_order() {
+        let mut w = workspace();
+        w.conversations
+            .push(conv("d2", "alice", ConversationKind::Direct, false));
+        assert_eq!(
+            names(&items(&w, "n1", Section::Directs)),
+            ["carol", "alice"]
+        );
+    }
+
+    #[test]
     fn a_stored_order_wins_and_new_ones_go_last() {
         let mut w = workspace();
         prefs_with(&mut w, "n1/channels", &["c10", "gone", "ca"]);
@@ -1055,17 +1074,25 @@ mod tests {
         let l = Layout {
             sidebar_width: 9000.,
             panel_width: f32::NAN,
+            picker_width: 100.,
+            picker_height: 1000.,
             collapsed: vec!["a".into(), "a".into(), String::new()],
             ..Default::default()
         }
         .sanitized();
         assert_eq!(l.sidebar_width, 360.);
         assert_eq!(l.panel_width, 208.);
+        assert_eq!(l.picker_width, PICKER_WIDTH.0);
+        assert_eq!(l.picker_height, PICKER_HEIGHT.1);
         assert_eq!(l.collapsed, ["a"]);
         let json = serde_json::to_value(&l).unwrap();
         assert_eq!(json["showList"], true);
         let back: Layout = serde_json::from_value(serde_json::json!({"unreadOnly": true})).unwrap();
         assert!(back.unread_only && back.show_list);
+        assert_eq!(
+            (back.picker_width, back.picker_height),
+            (PICKER_WIDTH.2, PICKER_HEIGHT.2)
+        );
     }
 
     #[test]

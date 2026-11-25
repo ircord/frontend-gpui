@@ -20,6 +20,42 @@ use crate::fixture::{Fixture, open_with, snapshot, wait};
 
 const WAIT: Duration = crate::fixture::HANG_GUARD;
 
+#[gpui_kit::test]
+fn your_custom_status_draws_in_the_member_list_and_profile_button(cx: &mut TestAppContext) {
+    let mut s = snapshot();
+    s.user.status_emoji = Some(":party:".into());
+    s.user.status_text = Some("Back soon".into());
+    s.members.push(s.user.clone());
+    s.conversations[0].member_ids.push(s.user.id.clone());
+    let f = open_with(cx, true, |server| {
+        crate::emoji::serve(server);
+        server.snapshot(&s);
+    });
+    crate::fixture::bootstrap(&f, cx);
+    wait(cx, "both status emoji to render", |cx| {
+        f.window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                ["self-status", "member-status-u-me"].iter().all(|id| {
+                    window.try_find(*id).is_some()
+                        && window
+                            .within(*id)
+                            .try_find("custom-status-emoji")
+                            .is_some_and(|emoji| emoji.visible())
+                })
+            })
+            .unwrap_or(false)
+    });
+    frame(&f, cx, |window, _| {
+        let button = window.find("self-menu").bounds();
+        let emoji = window
+            .within("self-status")
+            .find("custom-status-emoji")
+            .bounds();
+        assert!(emoji.top() > button.top() && emoji.bottom() < button.bottom());
+    });
+}
+
 fn settings(ignore: &[&str]) -> Value {
     json!({"allDevicesDelay": 0, "autoAwayDelay": 0, "channelDefault": "all",
         "directDefault": "all", "lastDeviceDelay": 0, "levels": {}, "ignore": ignore,
@@ -261,6 +297,43 @@ fn a_long_member_list_draws_only_the_rows_on_screen(cx: &mut TestAppContext) {
     let f = open(cx, s, |_| {});
     assert!(shows(&f, cx, "member-m-bob"));
     assert!(!shows(&f, cx, "member-m-x69"));
+}
+
+#[gpui_kit::test]
+fn the_profile_shows_local_time_in_the_readers_clock_format(cx: &mut TestAppContext) {
+    let mut snapshot = workspace();
+    let bob = snapshot
+        .members
+        .iter_mut()
+        .find(|m| m.id == "m-bob")
+        .unwrap();
+    bob.timezone = Some("Asia/Kathmandu".into());
+    let f = open(cx, snapshot, |server| {
+        server.route(
+            "GET",
+            "/api/v1/app/appearance",
+            200,
+            json!({
+                "settings": {"timeFormat": "12h"}, "updatedAt": "clock"
+            }),
+        );
+    });
+    wait(cx, "the reader's 12-hour clock", |cx| {
+        ircord_app::message::layout::settings(cx).clock_12h
+    });
+    click(&f, cx, "member-m-bob");
+    wait_for(&f, cx, "profile-details");
+    frame(&f, cx, |window, _| {
+        let prefix = "Local time: ";
+        let rows = window.find_all_by_role(gpui_kit::Role::ListItem);
+        let time = rows
+            .iter()
+            .filter_map(|row| row.label())
+            .find_map(|label| label.strip_prefix(prefix))
+            .unwrap();
+        assert!(time.ends_with(" AM") || time.ends_with(" PM"), "{time}");
+        assert_eq!(time.len(), "00:00 AM".len());
+    });
 }
 
 #[gpui_kit::test]

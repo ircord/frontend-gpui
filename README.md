@@ -69,9 +69,8 @@ whose `target/` is up to date gains nothing from it. CI does not use it.
 
 Install [Dioxus CLI 0.7.10](https://github.com/DioxusLabs/dioxus/releases/tag/v0.7.10)
 and run `cargo xtask dev` from the repository root. If multiple tools supply
-`dx`, set `IRCORD_DX` to the absolute path of the Dioxus executable. Quit
-your other GPUI instance first so the development build can use your saved
-session. Leave the dev command running while editing Rust code.
+`dx`, set `IRCORD_DX` to the absolute path of the Dioxus executable.
+Leave the dev command running while editing Rust code.
 
 The development launcher has its own package so the watcher recompiles the
 UI library for a hot patch. GPUI applies compatible view changes in the
@@ -79,6 +78,16 @@ running app. Changes to types, native window setup and controls registered
 at startup can require a restart. In the interactive terminal, press `r`
 to force a full build. Use `cargo xtask dev --restart` to rebuild and
 replace the app on each edit. Press Ctrl+C to stop the watcher and app.
+
+On macOS, sign in once in the dev client. It keeps its own session in a private
+SQLite database under `~/Library/Application Support/com.ircord.gpui/development`.
+The installed client keeps its session in Keychain.
+
+The watcher uses a valid `IRCord Local Development` code-signing identity when
+present. Set `IRCORD_DEV_SIGNING_IDENTITY` to use a different identity by name
+or fingerprint. The signed watcher rebuilds and restarts the app at a fixed
+bundle path. Dioxus 0.7.10 writes a web page into the bundle when it applies a
+hot patch, which invalidates the bundle signature.
 
 ### Installers
 
@@ -150,6 +159,10 @@ server and `RUST_LOG=info` turns on logging. `cargo xtask capture` runs the
 Linux build on a virtual display against a disposable backend, signs in through
 the form, types a server emoji into the message box and saves
 screenshots, so a change can be looked at without a screen.
+
+Press Shift+F8 to pause or resume a personal theme. To start with personal
+themes paused, quit IRCord completely and pass `--safe-theme` to the app.
+On macOS, use `open -a 'IRCord GPUI' --args --safe-theme`.
 
 ## Publishing a release
 

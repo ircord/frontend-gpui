@@ -10,6 +10,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use std::time::{Duration, Instant};
 
@@ -331,6 +332,7 @@ impl Client {
             routing_changed: Notify::new(),
             tab: random_id(),
             incarnation: random_id(),
+            read_aloud: AtomicBool::new(false),
         });
         let (socket, outgoing) = mpsc::unbounded_channel();
         let events = runtime.spawn(events::run(
@@ -355,6 +357,7 @@ impl Client {
             watchers,
         };
         let forwarder = runtime.spawn(forward(handle.clone(), internal));
+        let tasks = vec![events, reporter, forwarder];
         let client = Client {
             runtime,
             api,
@@ -364,13 +367,17 @@ impl Client {
             activity,
             activity_changed,
             typing: Mutex::default(),
-            tasks: vec![events, reporter, forwarder],
+            tasks,
         };
         (client, rx)
     }
 
     pub fn api(&self) -> &Api {
         &self.api
+    }
+
+    pub fn set_read_aloud(&self, enabled: bool) {
+        self.shared.read_aloud.store(enabled, Ordering::Relaxed);
     }
 
     pub fn runtime(&self) -> &Arc<Runtime> {
@@ -491,6 +498,9 @@ impl Client {
         let id = conversation.to_string();
         self.runtime.spawn(async move {
             let result = api.messages(&id, Some(&cursor), PAGE_SIZE).await;
+            if matches!(result, Err(ApiError::Unauthorized)) {
+                updates.emit(Update::SignedOut);
+            }
             let mut changes = store
                 .write()
                 .unwrap()

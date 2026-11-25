@@ -4,9 +4,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use gpui_kit::test::{TestQueryExt, TestWindowExt};
-use gpui_kit::{AppContext, ClipboardItem, Image, ImageFormat, TestAppContext};
+use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
+use gpui_kit::{AppContext, ClipboardItem, Image, ImageFormat, MouseButton, TestAppContext};
+use ircord_app::composer::expressions::Tab;
 use ircord_app::composer::uploads::{self as tray, Status, Uploads};
+use ircord_app::features::{klipy, message_actions};
 use ircord_client::api::uploads::FileData;
 use ircord_client::contract::*;
 use ircord_client::testing::{CannedServer, Reply};
@@ -16,7 +18,7 @@ use crate::fixture::{Fixture, bootstrap, held_reply, message, open_with, snapsho
 
 /// The server accepts pictures and PDFs up to 1 MB; `#general` is not
 /// sensitive, unless `nsfw`.
-fn server(server: &CannedServer, nsfw: Option<bool>) {
+fn upload_snapshot(nsfw: Option<bool>) -> Snapshot {
     let mut s = snapshot();
     s.capabilities.upload = Some(UploadCapability {
         max_bytes: 1_000_000,
@@ -28,7 +30,11 @@ fn server(server: &CannedServer, nsfw: Option<bool>) {
             ..Default::default()
         });
     }
-    server.snapshot(&s);
+    s
+}
+
+fn server(server: &CannedServer, nsfw: Option<bool>) {
+    server.snapshot(&upload_snapshot(nsfw));
 }
 
 /// Each upload answers with a new ID, after `delay`.
@@ -84,6 +90,190 @@ fn pending(cx: &mut TestAppContext) -> Vec<tray::Pending> {
     cx.update(|cx| Uploads::pending(cx, "c-general"))
 }
 
+fn attach_in_a_reply(cx: &mut TestAppContext) -> Fixture {
+    let f = open_with(cx, true, |server| {
+        let mut snapshot = upload_snapshot(Some(false));
+        snapshot.networks[0].account = Some("me".into());
+        snapshot.networks[0].features.replies = true;
+        server.snapshot(&snapshot);
+        let mut first = message("1", "c-general", "Can you share the picture?");
+        first.upstream_id = Some("up-1".into());
+        server.route(
+            "GET",
+            "/api/v1/conversations/*/messages",
+            200,
+            json!({
+                "items": [first, message("2", "c-general", "Thanks")]
+            }),
+        );
+        uploads_answer(server, Duration::ZERO);
+    });
+    bootstrap(&f, cx);
+    add(&f, cx, vec![png("picture.png")]);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.hover("message-1", cx);
+        window.click("message-toolbar-reply", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(matches!(message_actions::mode("c-general", cx),
+        Some(message_actions::Mode::Reply { message, .. }) if message == "1"))
+    });
+    f
+}
+
+#[gpui_kit::test]
+fn attachments_without_text_are_sent_as_the_reply(cx: &mut TestAppContext) {
+    let f = attach_in_a_reply(cx);
+    cx.update_window(f.window, |_, window, cx| window.click("composer-send", cx))
+        .unwrap();
+    const PATH: &str = "/api/v1/conversations/c-general/messages";
+    wait(cx, "the attachment reply", |_| {
+        !f.server.requests_to("POST", PATH).is_empty()
+    });
+    let messages = f.server.requests_to("POST", PATH);
+    assert_eq!(messages.len(), 1);
+    let body = messages[0].json();
+    assert_eq!(body["replyToId"], "1");
+    assert_eq!(body["attachments"], json!(["u1"]));
+    cx.update(|cx| assert_eq!(message_actions::mode("c-general", cx), None));
+}
+
+#[gpui_kit::test]
+fn a_text_reply_also_sends_queued_files_as_a_separate_message(cx: &mut TestAppContext) {
+    let f = attach_in_a_reply(cx);
+    cx.update_window(f.window, |_, window, cx| {
+        window.input("Here it is", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    const PATH: &str = "/api/v1/conversations/c-general/messages";
+    wait(cx, "the reply and the file message", |_| {
+        f.server.requests_to("POST", PATH).len() >= 2
+    });
+    let sent: Vec<_> = f
+        .server
+        .requests_to("POST", PATH)
+        .iter()
+        .map(|request| request.json())
+        .collect();
+    assert_eq!(sent.len(), 2);
+    let reply = sent
+        .iter()
+        .find(|body| body["text"] == "Here it is")
+        .unwrap();
+    assert_eq!(reply["replyToId"], "1");
+    assert!(reply["attachments"].is_null());
+    let files = sent
+        .iter()
+        .find(|body| body["attachments"] == json!(["u1"]))
+        .unwrap();
+    assert!(files["replyToId"].is_null());
+    cx.update(|cx| assert_eq!(message_actions::mode("c-general", cx), None));
+}
+
+fn choose_attachment_action(f: &Fixture, cx: &mut TestAppContext, label: &str) {
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("composer-attach", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let item = window.find_by_label(label);
+        assert!(item.visible(), "{label} is visible");
+        let at = item.bounds().center();
+        window.pointer_down(at, MouseButton::Left, cx);
+        window.pointer_up(at, MouseButton::Left, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn the_attachment_menu_opens_the_file_picker_gifs_and_commands(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |s| server(s, Some(false)));
+    bootstrap(&f, cx);
+    let path = cx.update(|cx| f.session.read(cx).config.path().join("menu.pdf"));
+    std::fs::write(&path, b"%PDF-1.7\n").unwrap();
+
+    let limit = ircord_client::api::uploads::human_size(1_000_000);
+    choose_attachment_action(&f, cx, &format!("Upload files (up to {limit} each)"));
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(move |_| Some(vec![path]));
+    wait(cx, "the selected file in the tray", |cx| {
+        Uploads::pending(cx, "c-general")
+            .iter()
+            .any(|file| file.file.name == "menu.pdf")
+    });
+
+    choose_attachment_action(&f, cx, "Send a GIF");
+    cx.update(|cx| assert_eq!(klipy::open_tab(cx), Some(Tab::Gifs)));
+    cx.update_window(f.window, |_, window, cx| {
+        window.press("escape", cx);
+        window.click("composer-input", cx);
+        window.input("Keep this draft", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    choose_attachment_action(&f, cx, "Use a slash command");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("composer-suggestions").visible());
+        assert_eq!(window.find_by_label("Message #general").value(), Some("/"));
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-z"
+            } else {
+                "ctrl-z"
+            },
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find_by_label("Message #general").value(),
+            Some("Keep this draft")
+        );
+    })
+    .unwrap();
+    assert!(f.server.requests_to("POST", "/api/v1/uploads").is_empty());
+    assert!(
+        f.server
+            .requests_to("POST", "/api/v1/conversations/c-general/messages")
+            .is_empty()
+    );
+}
+
+#[gpui_kit::test]
+fn the_attachment_menu_keeps_gifs_and_commands_available_without_uploads(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |_| {});
+    bootstrap(&f, cx);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("composer-attach", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find_by_label("Send a GIF").visible());
+        assert!(window.find_by_label("Use a slash command").visible());
+        let at = window.find_by_label("Upload files").bounds().center();
+        window.pointer_down(at, MouseButton::Left, cx);
+        window.pointer_up(at, MouseButton::Left, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(!cx.did_prompt_for_paths());
+}
+
 #[gpui_kit::test]
 fn a_batch_uploads_and_sends_as_one_message(cx: &mut TestAppContext) {
     let f = open_with(cx, true, |s| {
@@ -98,9 +288,9 @@ fn a_batch_uploads_and_sends_as_one_message(cx: &mut TestAppContext) {
         assert!(window.find("upload-item-1").visible());
         assert_eq!(window.find("upload-status-2").label(), Some("4 B"));
         assert!(window.find("composer-attach").visible());
-        // Enter with an empty box sends the files.
-        window.click("composer-input", cx);
-        window.press("enter", cx);
+        // The Send button appears for queued files even with an empty message.
+        assert!(window.find("composer-send").visible());
+        window.click("composer-send", cx);
     })
     .unwrap();
     wait(cx, "the message with the files", |_| {
@@ -175,7 +365,7 @@ fn the_networks_own_limits_decide_what_joins(cx: &mut TestAppContext) {
             window.render_frame(cx);
             window
                 .try_find("composer-attach")
-                .is_some_and(|b| b.label().is_some_and(|l| l.contains("100 B")))
+                .is_some_and(|b| b.description().is_some_and(|l| l.contains("100 B")))
         })
         .unwrap_or(false)
     });

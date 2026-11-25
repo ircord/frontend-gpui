@@ -44,6 +44,7 @@ pub fn init(cx: &mut App) {
 pub struct Reach<E> {
     element: E,
     ring: Hsla,
+    focus: Option<FocusHandle>,
 }
 
 /// `.reachable(theme)` on any stateful element.
@@ -52,11 +53,20 @@ pub trait Reachable: Sized {
         Reach {
             element: self,
             ring: theme.accent,
+            focus: None,
         }
     }
 }
 
 impl<E: StatefulInteractiveElement + Styled> Reachable for E {}
+
+impl<E> Reach<E> {
+    /// Track a focus target that its owner will also use to restore focus.
+    pub fn with_focus(mut self, handle: &FocusHandle) -> Self {
+        self.focus = Some(handle.clone());
+        self
+    }
+}
 
 impl<E> IntoElement for Reach<E>
 where
@@ -78,10 +88,12 @@ where
         let Some(id) = Element::id(&self.element) else {
             return self.element;
         };
-        let handle = window
-            .use_keyed_state(id, cx, |_, cx| cx.focus_handle().tab_stop(true))
-            .read(cx)
-            .clone();
+        let handle = self.focus.unwrap_or_else(|| {
+            window
+                .use_keyed_state(id, cx, |_, cx| cx.focus_handle().tab_stop(true))
+                .read(cx)
+                .clone()
+        });
         let ring = self.ring;
         self.element.track_focus(&handle).focus_visible(move |s| {
             s.shadow(vec![BoxShadow {

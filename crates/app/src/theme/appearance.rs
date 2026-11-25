@@ -8,6 +8,8 @@
 //! (and so to every device), with it off it stays on this device. Package S2
 //! edits its message settings in the same document the same way.
 
+pub(crate) mod trial;
+
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -22,6 +24,7 @@ use ircord_client::store::appearance::{self as look, Compiled, Device, Look, Mod
 use ircord_client::store::documents::document_id;
 use ircord_client::store::topic;
 
+use crate::route::Route;
 use crate::session::{Session, SessionEvent};
 
 /// The device state section this module keeps.
@@ -36,7 +39,16 @@ struct State {
     /// Clients whose documents are being watched.
     watched: HashSet<usize>,
     compiled: Option<Compiled>,
+    preview: trial::State,
+    studio: Option<StudioPreview>,
     _session: Option<Subscription>,
+}
+
+#[derive(PartialEq)]
+pub(crate) struct StudioPreview {
+    pub theme: UserTheme,
+    pub mode: Mode,
+    pub compare: bool,
 }
 
 impl Global for State {}
@@ -46,6 +58,7 @@ pub(super) fn init(cx: &mut App) {
         return;
     }
     cx.set_global(State::default());
+    cx.on_action(|_: &crate::features::shortcuts::PauseTheme, cx| trial::toggle_pause(cx));
     cx.observe_new::<Session>(|_, _, cx| {
         let session = cx.entity();
         cx.defer(move |cx| attach(session, cx));
@@ -104,6 +117,9 @@ fn attach(session: Entity<Session>, cx: &mut App) {
 fn on_session(session: &Entity<Session>, event: &SessionEvent, cx: &mut App) {
     match event {
         SessionEvent::Phase => {
+            let state = cx.global_mut::<State>();
+            state.preview.cancel();
+            state.studio = None;
             watch(session, cx);
             apply(cx);
         }
@@ -118,8 +134,22 @@ fn on_session(session: &Entity<Session>, event: &SessionEvent, cx: &mut App) {
                 apply(cx);
             }
         }
+        SessionEvent::Route if session.read(cx).route() == Some(Route::Settings) => {
+            trial::return_to_editor(cx);
+        }
         _ => {}
     }
+}
+
+/// Apply an unsaved studio draft to this window's workspace without writing
+/// either the appearance preferences or the theme library.
+pub(crate) fn set_studio(studio: Option<StudioPreview>, cx: &mut App) {
+    let state = cx.global_mut::<State>();
+    if state.studio != studio {
+        state.studio = studio;
+        apply(cx);
+    }
+    cx.refresh_windows();
 }
 
 /// Read the appearance and the theme library, once per client.
@@ -286,7 +316,7 @@ pub fn server_allows_css(cx: &App) -> bool {
 
 /// Whether a personal theme's CSS is applied: the account's switch is on and
 /// the server allows CSS.
-fn css_allowed(cx: &App) -> bool {
+pub(crate) fn css_allowed(cx: &App) -> bool {
     library(cx).is_some_and(|l| l.custom_css) && server_allows_css(cx)
 }
 
@@ -310,15 +340,31 @@ pub fn apply(cx: &mut App) {
     apply_with(cx, true);
 }
 
-/// [`apply`]; with `fade` false the change shows at once, for what a window
-/// opens in.
+/// Apply the appearance, with the option to skip the fade when a window opens.
 fn apply_with(cx: &mut App, fade: bool) {
-    let look = look(cx);
-    let mode = look.resolve_mode(system_mode(cx));
-    let compiled = look::compile_with_css(&look, mode, &themes(cx), false, css_allowed(cx));
+    let mut look = look(cx);
+    let mut mode = look.resolve_mode(system_mode(cx));
+    let mut themes = themes(cx);
+    let css = css_allowed(cx);
+    let state = cx.global_mut::<State>();
+    let invalidated = state.preview.validate(&look, &themes, css);
+    state.preview.select(&mut look, &mut themes);
+    if let Some(studio) = &state.studio {
+        mode = studio.mode;
+        look.theme = if studio.compare {
+            None
+        } else {
+            studio.theme.id.clone()
+        };
+        themes = vec![studio.theme.clone()];
+    }
+    let compiled = look::compile_with_css(&look, mode, &themes, false, css);
     super::backdrop::sync(compiled.backdrop.as_ref(), client(cx), cx);
     let state = cx.global_mut::<State>();
     if state.compiled.as_ref() == Some(&compiled) {
+        if invalidated {
+            cx.refresh_windows();
+        }
         return;
     }
     state.compiled = Some(compiled.clone());

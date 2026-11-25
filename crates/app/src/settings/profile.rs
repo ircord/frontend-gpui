@@ -14,19 +14,24 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::Colorize;
 use gpui_kit::component::Disableable;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
+use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::api::ApiError;
 use ircord_client::api::auth::{self, DefaultAvatar};
 use ircord_client::api::uploads::{self, FileData, Progress};
 use ircord_client::contract::{Member, ProfileUpdate};
+use ircord_client::store::appearance::parse_hex;
 use ircord_client::store::people;
 
-use super::{block, row};
+use super::{block, frame, row};
 use crate::registry::{self, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection};
 use crate::session::{Session, SessionEvent};
 use crate::theme::{self, Theme};
@@ -50,6 +55,10 @@ pub fn init(cx: &mut App) {
             .row(
                 SettingsRow::new("profile-picture", t!("profile-picture"))
                     .keywords(t!("profile-picture-keywords")),
+            )
+            .row(
+                SettingsRow::new("profile-defaults", t!("profile-default-pictures"))
+                    .keywords(t!("profile-defaults-keywords")),
             )
             .row(
                 SettingsRow::new("profile-name", t!("profile-display-name"))
@@ -548,15 +557,48 @@ enum Field {
     Headline,
     Pronouns,
     Location,
-    Timezone,
     Homepage,
-    Languages,
-    Interests,
+    List(ProfileList),
     Accent,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ProfileList {
+    Languages,
+    Interests,
+}
+
+#[derive(Clone)]
+struct TimeZone(SharedString);
+
+impl SearchableListItem for TimeZone {
+    type Value = SharedString;
+
+    fn value(&self) -> &Self::Value {
+        &self.0
+    }
+
+    fn title(&self) -> SharedString {
+        if self.0.is_empty() {
+            t!("profile-timezone-none").into()
+        } else {
+            self.0.clone()
+        }
+    }
+}
+
+fn time_zone_options(current: &str) -> SearchableVec<TimeZone> {
+    let zones = people::time_zones();
+    let mut choices = vec![TimeZone(SharedString::default())];
+    if !current.is_empty() && !zones.iter().any(|zone| zone == current) {
+        choices.push(TimeZone(current.to_string().into()));
+    }
+    choices.extend(zones.iter().map(|zone| TimeZone(zone.clone().into())));
+    SearchableVec::new(choices)
+}
+
 impl Field {
-    const ALL: [Field; 13] = [
+    const ALL: [Field; 12] = [
         Field::Name,
         Field::Bio,
         Field::Color,
@@ -565,10 +607,9 @@ impl Field {
         Field::Headline,
         Field::Pronouns,
         Field::Location,
-        Field::Timezone,
         Field::Homepage,
-        Field::Languages,
-        Field::Interests,
+        Field::List(ProfileList::Languages),
+        Field::List(ProfileList::Interests),
         Field::Accent,
     ];
 
@@ -582,10 +623,9 @@ impl Field {
             Field::Headline => "profile-headline",
             Field::Pronouns => "profile-pronouns",
             Field::Location => "profile-location",
-            Field::Timezone => "profile-timezone",
             Field::Homepage => "profile-homepage",
-            Field::Languages => "profile-languages",
-            Field::Interests => "profile-interests-input",
+            Field::List(ProfileList::Languages) => "profile-languages",
+            Field::List(ProfileList::Interests) => "profile-interests-input",
             Field::Accent => "profile-accent-input",
         }
     }
@@ -600,10 +640,9 @@ impl Field {
             Field::Headline => t!("profile-headline").into(),
             Field::Pronouns => t!("profile-pronouns").into(),
             Field::Location => t!("profile-location").into(),
-            Field::Timezone => t!("profile-timezone").into(),
             Field::Homepage => t!("profile-homepage").into(),
-            Field::Languages => t!("profile-languages").into(),
-            Field::Interests => t!("profile-interests").into(),
+            Field::List(ProfileList::Languages) => t!("profile-languages").into(),
+            Field::List(ProfileList::Interests) => t!("profile-interests").into(),
             Field::Accent => t!("profile-accent").into(),
         }
     }
@@ -618,17 +657,15 @@ impl Field {
             Field::Headline => t!("profile-headline-placeholder").into(),
             Field::Pronouns => t!("profile-pronouns-placeholder").into(),
             Field::Location => t!("profile-location-placeholder").into(),
-            Field::Timezone => t!("profile-timezone-placeholder").into(),
             Field::Homepage => t!("profile-homepage-placeholder").into(),
-            Field::Languages => t!("profile-languages-placeholder").into(),
-            Field::Interests => t!("profile-interests-placeholder").into(),
+            Field::List(ProfileList::Languages) => t!("profile-languages-placeholder").into(),
+            Field::List(ProfileList::Interests) => t!("profile-interests-placeholder").into(),
         }
     }
 
     /// What `m` has saved in this field, as typed.
     fn saved(self, m: &Member) -> String {
         let text = |v: &Option<String>| v.clone().unwrap_or_default();
-        let list = |v: &Option<Vec<String>>| v.clone().unwrap_or_default().join(", ");
         match self {
             Field::Name => explicit_name(m),
             Field::Bio => m.bio.clone(),
@@ -638,24 +675,11 @@ impl Field {
             Field::Headline => text(&m.headline),
             Field::Pronouns => text(&m.pronouns),
             Field::Location => text(&m.location),
-            Field::Timezone => text(&m.timezone),
             Field::Homepage => text(&m.homepage_url),
-            Field::Languages => list(&m.languages),
-            Field::Interests => list(&m.interests),
+            Field::List(_) => String::new(),
             Field::Accent => text(&m.profile_accent_color),
         }
     }
-}
-
-/// Items typed with commas between them.
-pub fn split_list(text: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for item in text.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        if !out.iter().any(|o| o.eq_ignore_ascii_case(item)) {
-            out.push(item.to_string());
-        }
-    }
-    out
 }
 
 /// Whether `text` is a `#RRGGBB` colour.
@@ -665,12 +689,13 @@ pub fn is_color(text: &str) -> bool {
 
 /// Why the typed profile cannot be saved, if it cannot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Problem {
+enum Problem {
     Color,
     Accent,
     Homepage,
-    TooManyLanguages,
-    TooManyInterests,
+    TooMany(ProfileList),
+    Duplicate(ProfileList),
+    LanguageTag,
     LongInterest,
 }
 
@@ -679,9 +704,9 @@ impl Problem {
         match self {
             Problem::Color | Problem::Accent => t!("profile-problem-color").into(),
             Problem::Homepage => t!("profile-problem-homepage").into(),
-            Problem::TooManyLanguages | Problem::TooManyInterests => {
-                t!("profile-problem-too-many").into()
-            }
+            Problem::TooMany(_) => t!("profile-problem-too-many").into(),
+            Problem::Duplicate(_) => t!("profile-problem-duplicate").into(),
+            Problem::LanguageTag => t!("profile-problem-language-tag").into(),
             Problem::LongInterest => t!("profile-problem-long-interest").into(),
         }
     }
@@ -691,10 +716,29 @@ impl Problem {
             Problem::Color => Field::Color,
             Problem::Accent => Field::Accent,
             Problem::Homepage => Field::Homepage,
-            Problem::TooManyLanguages => Field::Languages,
-            Problem::TooManyInterests | Problem::LongInterest => Field::Interests,
+            Problem::TooMany(list) | Problem::Duplicate(list) => Field::List(list),
+            Problem::LanguageTag => Field::List(ProfileList::Languages),
+            Problem::LongInterest => Field::List(ProfileList::Interests),
         }
     }
+}
+
+fn validated_tag(list: ProfileList, text: &str, tags: &[String]) -> Result<String, Problem> {
+    let tag = match list {
+        ProfileList::Languages => people::language_tag(text).ok_or(Problem::LanguageTag)?,
+        ProfileList::Interests if text.len() <= 32 && !text.chars().any(char::is_control) => {
+            text.to_string()
+        }
+        ProfileList::Interests => return Err(Problem::LongInterest),
+    };
+    let key = tag.to_lowercase();
+    if tags.iter().any(|item| item.to_lowercase() == key) {
+        return Err(Problem::Duplicate(list));
+    }
+    if tags.len() >= 10 {
+        return Err(Problem::TooMany(list));
+    }
+    Ok(tag)
 }
 
 pub struct ProfileView {
@@ -707,6 +751,10 @@ pub struct ProfileView {
     loading: bool,
     load_error: Option<String>,
     inputs: Vec<(Field, Entity<InputState>)>,
+    time_zone: Entity<SelectState<SearchableVec<TimeZone>>>,
+    languages: Vec<String>,
+    interests: Vec<String>,
+    name_color: Entity<ColorPickerState>,
     custom_color: bool,
     custom_accent: bool,
     avatar: AvatarChoice,
@@ -726,18 +774,59 @@ impl ProfileView {
     fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
         let mut inputs = Vec::new();
+        let name_color = cx.new(|cx| ColorPickerState::new(window, cx));
+        let time_zone =
+            cx.new(|cx| SelectState::new(time_zone_options(""), None, window, cx).searchable(true));
+        subscriptions.push(cx.subscribe(&time_zone, |view: &mut Self, _, event, cx| {
+            let SelectEvent::Confirm(_) = event;
+            view.done = false;
+            view.problem = None;
+            cx.notify();
+        }));
+        subscriptions.push(cx.subscribe_in(
+            &name_color,
+            window,
+            |this: &mut Self, _, event: &ColorPickerEvent, window, cx| {
+                if let ColorPickerEvent::Change(Some(value)) = event {
+                    let color = Hsla { a: 1., ..*value };
+                    if value.a < 1. {
+                        this.name_color
+                            .update(cx, |picker, cx| picker.set_value(color, window, cx));
+                    }
+                    let hex = color.to_hex();
+                    this.input(Field::Color)
+                        .update(cx, |input, cx| input.set_value(hex, window, cx));
+                    this.done = false;
+                    this.problem = None;
+                    cx.notify();
+                }
+            },
+        ));
         for field in Field::ALL {
             let input = cx.new(|cx| InputState::new(window, cx).placeholder(field.placeholder()));
             subscriptions.push(cx.subscribe_in(
                 &input,
                 window,
-                |this: &mut Self, _, event: &InputEvent, window, cx| match event {
+                move |this: &mut Self, input, event: &InputEvent, window, cx| match event {
                     InputEvent::Change => {
+                        if field == Field::Color
+                            && let Some(color) = parse_hex(input.read(cx).value().trim())
+                        {
+                            this.name_color.update(cx, |picker, cx| {
+                                picker.set_value(theme::hex(color), window, cx);
+                            });
+                        }
                         this.done = false;
                         this.problem = None;
                         cx.notify();
                     }
-                    InputEvent::PressEnter { .. } => this.save(window, cx),
+                    InputEvent::PressEnter { .. } => match field {
+                        Field::List(list) => this.add_tag(list, window, cx),
+                        _ => this.save(window, cx),
+                    },
+                    InputEvent::Focus | InputEvent::Blur if matches!(field, Field::List(_)) => {
+                        cx.notify()
+                    }
                     _ => {}
                 },
             ));
@@ -750,7 +839,7 @@ impl ProfileView {
             window,
             |this: &mut Self, _, event: &SessionEvent, window, cx| match event {
                 SessionEvent::Changed(changes) if changes.members || changes.reset => {
-                    if !this.dirty(cx) && !this.saving {
+                    if !this.dirty(cx) && !this.saving && !this.has_pending_tag(cx) {
                         this.reload(window, cx);
                     }
                 }
@@ -766,6 +855,10 @@ impl ProfileView {
             loading: false,
             load_error: None,
             inputs,
+            time_zone,
+            languages: Vec::new(),
+            interests: Vec::new(),
+            name_color,
             custom_color: false,
             custom_accent: false,
             avatar: AvatarChoice::Keep,
@@ -790,6 +883,70 @@ impl ProfileView {
 
     fn text(&self, field: Field, cx: &App) -> String {
         self.input(field).read(cx).value().to_string()
+    }
+
+    fn choose_time_zone(&self, value: &str, window: &mut Window, cx: &mut App) {
+        let selected: SharedString = value.to_string().into();
+        self.time_zone.update(cx, |state, cx| {
+            state.set_items(time_zone_options(value), window, cx);
+            state.set_selected_value(&selected, window, cx);
+        });
+    }
+
+    fn has_pending_tag(&self, cx: &App) -> bool {
+        [ProfileList::Languages, ProfileList::Interests]
+            .iter()
+            .any(|list| {
+                !self
+                    .input(Field::List(*list))
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .is_empty()
+            })
+    }
+
+    fn tags_mut(&mut self, list: ProfileList) -> &mut Vec<String> {
+        match list {
+            ProfileList::Languages => &mut self.languages,
+            ProfileList::Interests => &mut self.interests,
+        }
+    }
+
+    fn add_tag(&mut self, list: ProfileList, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving || self.saved.is_none() {
+            return;
+        }
+        let field = Field::List(list);
+        let text = self.text(field, cx);
+        let raw = text.trim();
+        if raw.is_empty() {
+            return;
+        }
+        let tags = self.tags_mut(list);
+        match validated_tag(list, raw, tags) {
+            Ok(tag) => {
+                tags.push(tag);
+                self.input(field)
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                self.problem = None;
+                self.done = false;
+            }
+            Err(problem) => self.problem = Some(problem),
+        }
+        cx.notify();
+    }
+
+    fn fallback_name(&self, member: &Member, cx: &App) -> SharedString {
+        let client = self.session.read(cx).client();
+        let workspace = client.map(|client| client.read());
+        let network = workspace
+            .as_ref()
+            .and_then(|w| self.network.as_deref().and_then(|id| w.network(id)));
+        match people::fallback_self_name(network, &member.nick) {
+            Some(name) => SharedString::from(name.to_string()),
+            None => t!("profile-self-no-name").into(),
+        }
     }
 
     /// Show the profile on `network`, or on the selected (else first) one.
@@ -885,10 +1042,24 @@ impl ProfileView {
 
     /// Put `member`'s saved profile in the form.
     fn fill(&mut self, member: Member, window: &mut Window, cx: &mut Context<Self>) {
+        let fallback = self.fallback_name(&member, cx);
+        self.input(Field::Name)
+            .update(cx, |input, cx| input.set_placeholder(fallback, window, cx));
         for (field, input) in &self.inputs {
             let value = field.saved(&member);
             input.update(cx, |s, cx| s.set_value(value, window, cx));
         }
+        self.choose_time_zone(member.timezone.as_deref().unwrap_or_default(), window, cx);
+        let theme = theme::get(cx);
+        let color = member
+            .name_color
+            .as_deref()
+            .and_then(parse_hex)
+            .or_else(|| ui::avatar::name_color(&member, true, theme))
+            .map(theme::hex)
+            .unwrap_or(theme.text);
+        self.name_color
+            .update(cx, |picker, cx| picker.set_value(color, window, cx));
         self.custom_color = member.name_color.as_deref().is_some_and(|c| !c.is_empty());
         self.custom_accent = member
             .profile_accent_color
@@ -902,13 +1073,15 @@ impl ProfileView {
             .filter(|u| !u.is_empty());
         self.frame = member.avatar_frame.clone().unwrap_or_default();
         self.clear_after = ClearAfter::Keep;
+        self.languages = member.languages.clone().unwrap_or_default();
+        self.interests = member.interests.clone().unwrap_or_default();
         self.problem = None;
         self.saved = Some(member);
         cx.notify();
     }
 
     /// The typed changes, as the request that saves them, or what is wrong.
-    pub fn update(&self, cx: &App) -> Result<ProfileUpdate, Problem> {
+    fn update(&self, cx: &App) -> Result<ProfileUpdate, Problem> {
         let mut u = ProfileUpdate::default();
         let Some(saved) = &self.saved else {
             return Ok(u);
@@ -949,7 +1122,15 @@ impl ProfileView {
         u.headline = changed(Field::Headline);
         u.pronouns = changed(Field::Pronouns);
         u.location = changed(Field::Location);
-        u.timezone = changed(Field::Timezone);
+        let zone = self
+            .time_zone
+            .read(cx)
+            .selected_value()
+            .map(SharedString::as_str)
+            .unwrap_or_default();
+        if zone != saved.timezone.as_deref().unwrap_or_default() {
+            u.timezone = Some(zone.to_string());
+        }
         u.homepage_url = changed(Field::Homepage);
         if let Some(url) = &u.homepage_url
             && !url.is_empty()
@@ -957,22 +1138,11 @@ impl ProfileView {
         {
             return Err(Problem::Homepage);
         }
-        let languages = split_list(&self.text(Field::Languages, cx));
-        if languages.len() > 10 {
-            return Err(Problem::TooManyLanguages);
+        if self.languages != saved.languages.as_deref().unwrap_or_default() {
+            u.languages = Some(self.languages.clone());
         }
-        if languages != saved.languages.clone().unwrap_or_default() {
-            u.languages = Some(languages);
-        }
-        let interests = split_list(&self.text(Field::Interests, cx));
-        if interests.len() > 10 {
-            return Err(Problem::TooManyInterests);
-        }
-        if interests.iter().any(|i| i.len() > 32) {
-            return Err(Problem::LongInterest);
-        }
-        if interests != saved.interests.clone().unwrap_or_default() {
-            u.interests = Some(interests);
+        if self.interests != saved.interests.as_deref().unwrap_or_default() {
+            u.interests = Some(self.interests.clone());
         }
         if self.banner != saved.banner_url.clone().filter(|u| !u.is_empty()) {
             u.banner_url = Some(self.banner.clone().unwrap_or_default());
@@ -1166,19 +1336,115 @@ impl ProfileView {
                 .aria_label(field.label()),
             theme,
         )
-        .when(self.problem.is_some_and(|p| p.field() == field), |d| {
-            d.child(
-                div()
-                    .id(ElementId::Name(format!("{}-problem", field.id()).into()))
-                    .test_support()
-                    .role(Role::Alert)
-                    .aria_label(self.problem.unwrap().text())
-                    .text_sm()
-                    .text_color(theme.danger)
-                    .child(self.problem.unwrap().text()),
-            )
-        })
+        .children(self.field_problem(field, theme))
         .into_any_element()
+    }
+
+    fn field_problem(&self, field: Field, theme: &Theme) -> Option<AnyElement> {
+        let text = self
+            .problem
+            .filter(|problem| problem.field() == field)?
+            .text();
+        Some(
+            div()
+                .id(ElementId::Name(format!("{}-problem", field.id()).into()))
+                .test_support()
+                .role(Role::Alert)
+                .aria_label(text.clone())
+                .text_sm()
+                .text_color(theme.danger)
+                .child(text)
+                .into_any_element(),
+        )
+    }
+
+    fn tag_field(
+        &self,
+        list: ProfileList,
+        theme: &Theme,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Div {
+        let field = Field::List(list);
+        let tags = match list {
+            ProfileList::Languages => &self.languages,
+            ProfileList::Interests => &self.interests,
+        };
+        let input = self.input(field);
+        let focused = input.focus_handle(cx).is_focused(window);
+        let mut editor = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_1p5()
+            .p_1p5()
+            .border_1()
+            .border_color(if focused { theme.accent } else { theme.border })
+            .rounded(theme.radius)
+            .bg(theme.input);
+        let mut language_names = Vec::new();
+        for (index, tag) in tags.iter().enumerate() {
+            let name = match list {
+                ProfileList::Languages => {
+                    let name = people::language_name(tag);
+                    language_names.push(name.clone());
+                    name
+                }
+                ProfileList::Interests => tag.clone(),
+            };
+            let value = tag.clone();
+            let view = cx.entity();
+            editor = editor.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .pl_2p5()
+                    .pr_1()
+                    .rounded_full()
+                    .bg(theme.raised)
+                    .text_sm()
+                    .child(tag.clone())
+                    .child(
+                        Button::new(SharedString::from(format!("{}-remove-{index}", field.id())))
+                            .icon(ui::icon::IconName::Close)
+                            .accessibility_label(t!("profile-tag-remove", item = name))
+                            .small()
+                            .size(px(24.))
+                            .ghost()
+                            .disabled(self.saving)
+                            .on_click(move |_, window, cx| {
+                                view.update(cx, |view, cx| {
+                                    view.tags_mut(list).retain(|tag| *tag != value);
+                                    view.input(field).focus_handle(cx).focus(window, cx);
+                                    view.problem = None;
+                                    view.done = false;
+                                    cx.notify();
+                                });
+                            }),
+                    ),
+            );
+        }
+        let editor = editor.child(
+            div().flex_1().min_w(px(148.)).child(
+                Input::new(input)
+                    .id(field.id())
+                    .aria_label(field.label())
+                    .appearance(false)
+                    .small()
+                    .disabled(self.saving),
+            ),
+        );
+        ui::field::field(field.label(), editor, theme)
+            .when(!language_names.is_empty(), |row| {
+                row.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted)
+                        .child(language_names.join(", ")),
+                )
+            })
+            .children(self.field_problem(field, theme))
     }
 }
 
@@ -1233,7 +1499,7 @@ fn choices(
 }
 
 impl Render for ProfileView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
         let Some(ctx) = self.ctx.clone() else {
             return div().into_any_element();
@@ -1255,7 +1521,14 @@ impl Render for ProfileView {
         let mut page = div().flex().flex_col().gap_3();
 
         // The server.
-        if networks.len() > 1 {
+        if networks.is_empty() {
+            page = page.child(
+                div()
+                    .text_sm()
+                    .text_color(theme.muted)
+                    .child(t!("profile-account-only")),
+            );
+        } else {
             let e = entity.clone();
             page = page.child(row(
                 &ctx,
@@ -1265,7 +1538,7 @@ impl Render for ProfileView {
                 choices(
                     "profile-network",
                     t!("profile-server").into(),
-                    networks.clone(),
+                    networks,
                     self.network.as_deref().unwrap_or_default(),
                     &theme,
                     move |id, window, cx| {
@@ -1275,13 +1548,6 @@ impl Render for ProfileView {
                 ),
                 &theme,
             ));
-        } else if networks.is_empty() {
-            page = page.child(
-                div()
-                    .text_sm()
-                    .text_color(theme.muted)
-                    .child(t!("profile-account-only")),
-            );
         }
 
         let Some(saved) = self.saved.clone() else {
@@ -1321,11 +1587,19 @@ impl Render for ProfileView {
         let name_now = {
             let typed = self.text(Field::Name, cx);
             if typed.trim().is_empty() {
-                saved.nick.clone()
+                self.fallback_name(&saved, cx)
             } else {
-                typed.trim().to_string()
+                SharedString::from(typed.trim().to_string())
             }
         };
+        let mut preview_member = saved.clone();
+        let color_text = self.text(Field::Color, cx);
+        preview_member.name_color = (self.custom_color && is_color(color_text.trim()))
+            .then(|| color_text.trim().to_string());
+        let colored = crate::message::layout::settings(cx).colored_names;
+        let preview_color = ui::avatar::name_color(&preview_member, colored, &theme)
+            .map(theme::hex)
+            .unwrap_or(theme.text);
         let selected = match &self.avatar {
             AvatarChoice::Default(a) => Some(a.id.clone()),
             AvatarChoice::Keep => {
@@ -1336,27 +1610,23 @@ impl Render for ProfileView {
         };
         let has_picture = !matches!(pic, Picture::None);
         let e = entity.clone();
-        let upload = Button::new("profile-upload-picture")
-            .small()
-            .label(t!("profile-upload-own"))
-            .disabled(busy)
-            .on_click(move |_, window, cx| {
-                let e = e.clone();
-                pick_picture(window, cx, move |prepared, _, cx| {
-                    e.update(cx, |v, cx| {
-                        match prepared {
-                            Ok(p) => v.avatar = AvatarChoice::Upload(p),
-                            Err(err) => v.error = Some(err.into()),
-                        }
-                        v.done = false;
-                        cx.notify();
-                    });
+        let pick_upload = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+            let e = e.clone();
+            pick_picture(window, cx, move |prepared, _, cx| {
+                e.update(cx, |v, cx| {
+                    match prepared {
+                        Ok(p) => v.avatar = AvatarChoice::Upload(p),
+                        Err(err) => v.error = Some(err.into()),
+                    }
+                    v.done = false;
+                    cx.notify();
                 });
             });
+        };
         let e = entity.clone();
         let remove = Button::new("profile-remove-picture")
             .small()
-            .ghost()
+            .link()
             .label(t!("profile-remove-image"))
             .disabled(busy)
             .on_click(move |_, _, cx| {
@@ -1370,7 +1640,7 @@ impl Render for ProfileView {
                 })
             });
         let e = entity.clone();
-        let picker = (!avatars.is_empty()).then(|| {
+        let defaults = (!avatars.is_empty()).then(|| {
             picker(
                 "profile-default",
                 &avatars,
@@ -1392,85 +1662,123 @@ impl Render for ProfileView {
                 },
             )
         });
-        page = page.child(block(
+        let avatar_size = px(84.);
+        let upload = Button::new("profile-upload-picture")
+            .text()
+            .size(avatar_size)
+            .rounded(avatar_size / 2.)
+            .accessibility_label(t!("profile-upload-image"))
+            .tooltip(t!("profile-image-limits"))
+            .disabled(busy)
+            .on_click(pick_upload.clone())
+            .child(
+                div()
+                    .id("profile-picture-preview")
+                    .test_support()
+                    .role(Role::Image)
+                    .aria_label(t!("profile-picture"))
+                    .child(picture(&pic, &name_now, avatar_size, &theme)),
+            );
+        let avatar = frame(
             &ctx,
             "profile-picture",
-            t!("profile-picture"),
+            t!("profile-picture").into(),
+            &theme,
+        )
+        .flex()
+        .flex_col()
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .child(upload)
+        .when(has_picture, |d| d.child(remove))
+        .test_support();
+
+        // Name, colour, about.
+        let display_name = frame(
+            &ctx,
+            "profile-name",
+            t!("profile-display-name").into(),
+            &theme,
+        )
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w_0()
+        .gap_1()
+        .child(
             div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text)
+                .child(t!("profile-display-name")),
+        )
+        .child(
+            Input::new(self.input(Field::Name))
+                .id(Field::Name.id())
+                .aria_label(Field::Name.label()),
+        )
+        .child(
+            div()
+                .id("profile-shown-as")
+                .test_support()
+                .role(Role::Status)
+                .aria_label(SharedString::from(t!(
+                    "profile-shown-as",
+                    name = name_now.clone(),
+                    nick = saved.nick.clone()
+                )))
+                .text_sm()
+                .text_color(theme.muted)
                 .flex()
-                .flex_col()
-                .gap_2()
+                .flex_wrap()
+                .items_baseline()
+                .gap_1()
+                .child(t!("profile-shown-as-label"))
                 .child(
                     div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(preview_color)
+                        .child(name_now.clone()),
+                )
+                .child(format!("· @{}", saved.nick)),
+        )
+        .test_support();
+        page = page
+            .child(div().flex().items_start().child(avatar).child(display_name))
+            .when_some(defaults, |d, picker| {
+                d.child(block(
+                    &ctx,
+                    "profile-defaults",
+                    t!("profile-default-pictures"),
+                    div()
                         .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(
-                            div()
-                                .id("profile-picture-preview")
-                                .test_support()
-                                .role(Role::Image)
-                                .aria_label(t!("profile-picture"))
-                                .child(picture(&pic, &name_now, px(64.), &theme)),
-                        )
+                        .flex_col()
+                        .gap_2()
                         .child(
                             div()
                                 .flex()
-                                .flex_col()
-                                .gap_1()
+                                .flex_wrap()
+                                .items_center()
+                                .gap_2()
                                 .child(
                                     div()
-                                        .flex()
-                                        .gap_2()
-                                        .child(upload)
-                                        .when(has_picture, |d| d.child(remove)),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
+                                        .text_sm()
                                         .text_color(theme.muted)
                                         .child(t!("profile-image-limits")),
+                                )
+                                .child(
+                                    Button::new("profile-upload-own")
+                                        .small()
+                                        .link()
+                                        .label(t!("profile-upload-own"))
+                                        .disabled(busy)
+                                        .on_click(pick_upload),
                                 ),
-                        ),
-                )
-                .children(picker),
-            &theme,
-        ));
-
-        // Name, colour, about.
-        page = page.child(block(
-            &ctx,
-            "profile-name",
-            t!("profile-display-name"),
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    Input::new(self.input(Field::Name))
-                        .id(Field::Name.id())
-                        .aria_label(Field::Name.label()),
-                )
-                .child(
-                    div()
-                        .id("profile-shown-as")
-                        .test_support()
-                        .role(Role::Status)
-                        .aria_label(SharedString::from(t!(
-                            "profile-shown-as",
-                            name = name_now.clone(),
-                            nick = saved.nick.clone()
-                        )))
-                        .text_sm()
-                        .text_color(theme.muted)
-                        .child(t!(
-                            "profile-shown-as",
-                            name = name_now.clone(),
-                            nick = saved.nick.clone()
-                        )),
-                ),
-            &theme,
-        ));
+                        )
+                        .child(picker),
+                    &theme,
+                ))
+            });
         let e = entity.clone();
         page = page.child(block(
             &ctx,
@@ -1493,10 +1801,18 @@ impl Render for ProfileView {
                         "automatic"
                     },
                     &theme,
-                    move |key, _, cx| {
+                    move |key, window, cx| {
                         let custom = key == "custom";
                         e.update(cx, |v, cx| {
                             v.custom_color = custom;
+                            if custom
+                                && v.text(Field::Color, cx).trim().is_empty()
+                                && let Some(color) = v.name_color.read(cx).value()
+                            {
+                                v.input(Field::Color).update(cx, |input, cx| {
+                                    input.set_value(color.to_hex(), window, cx);
+                                });
+                            }
                             v.done = false;
                             v.problem = None;
                             cx.notify();
@@ -1504,7 +1820,25 @@ impl Render for ProfileView {
                     },
                 ))
                 .when(self.custom_color, |d| {
-                    d.child(self.field(Field::Color, &theme))
+                    d.child(
+                        div()
+                            .flex()
+                            .items_end()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(self.field(Field::Color, &theme)),
+                            )
+                            .child(
+                                div().id("profile-name-color-picker").test_support().child(
+                                    ColorPicker::new(&self.name_color)
+                                        .small()
+                                        .accessibility_label(t!("profile-choose-name-color")),
+                                ),
+                            ),
+                    )
                 })
                 .child(
                     div()
@@ -1593,12 +1927,12 @@ impl Render for ProfileView {
             .small()
             .ghost()
             .label(t!("profile-use-mine"))
+            .disabled(busy)
             .on_click(move |_, window, cx| {
                 let zone = ircord_client::store::notify_settings::local_time_zone();
                 e.update(cx, |v, cx| {
-                    v.input(Field::Timezone)
-                        .clone()
-                        .update(cx, |s, cx| s.set_value(zone, window, cx));
+                    v.choose_time_zone(&zone, window, cx);
+                    v.done = false;
                     cx.notify();
                 })
             });
@@ -1624,7 +1958,20 @@ impl Render for ProfileView {
                         .flex()
                         .items_end()
                         .gap_2()
-                        .child(div().flex_1().child(self.field(Field::Timezone, &theme)))
+                        .child(
+                            div().flex_1().min_w_0().child(ui::field::field(
+                                t!("profile-timezone"),
+                                Select::new(&self.time_zone)
+                                    .id("profile-timezone")
+                                    .w_full()
+                                    .accessibility_label(t!("profile-timezone"))
+                                    .placeholder(t!("profile-timezone-none"))
+                                    .search_placeholder(t!("profile-timezone-search"))
+                                    .highlight_matches(true)
+                                    .disabled(busy),
+                                &theme,
+                            )),
+                        )
                         .child(mine),
                 )
                 .child(self.field(Field::Homepage, &theme)),
@@ -1638,8 +1985,8 @@ impl Render for ProfileView {
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(self.field(Field::Languages, &theme))
-                .child(self.field(Field::Interests, &theme))
+                .child(self.tag_field(ProfileList::Languages, &theme, window, cx))
+                .child(self.tag_field(ProfileList::Interests, &theme, window, cx))
                 .child(
                     div()
                         .text_xs()
@@ -1895,7 +2242,10 @@ impl Render for ProfileView {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClearAfter, Cursor, MAX_DATA_URL, base64, is_color, prepare_avatar, split_list};
+    use super::{
+        ClearAfter, Cursor, MAX_DATA_URL, Problem, ProfileList, base64, is_color, prepare_avatar,
+        validated_tag,
+    };
 
     #[test]
     fn base64_matches_the_standard_alphabet() {
@@ -1922,9 +2272,40 @@ mod tests {
     }
 
     #[test]
-    fn lists_split_on_commas_without_repeats() {
-        assert_eq!(split_list(" en, da ,EN,, de-AT"), ["en", "da", "de-AT"]);
+    fn colors_require_six_hex_digits() {
         assert!(is_color("#3366cc") && !is_color("3366cc") && !is_color("#33g6cc"));
+    }
+
+    #[test]
+    fn profile_lists_preserve_punctuation_and_reject_repeats() {
+        let langs = ProfileList::Languages;
+        let interests = ProfileList::Interests;
+        assert_eq!(validated_tag(langs, "en-gb", &[]), Ok("en-GB".into()));
+        assert_eq!(
+            validated_tag(langs, "EN-gb", &["en-GB".into()]),
+            Err(Problem::Duplicate(langs))
+        );
+        assert_eq!(
+            validated_tag(langs, "en_US", &[]),
+            Err(Problem::LanguageTag)
+        );
+        assert_eq!(
+            validated_tag(interests, "Tea, coffee", &[]),
+            Ok("Tea, coffee".into())
+        );
+        assert_eq!(
+            validated_tag(interests, "Æble", &["æble".into()]),
+            Err(Problem::Duplicate(interests))
+        );
+        assert_eq!(
+            validated_tag(interests, "🚀🚀🚀🚀🚀🚀🚀🚀🚀", &[]),
+            Err(Problem::LongInterest)
+        );
+        let full = (0..10).map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            validated_tag(interests, "Hiking", &full),
+            Err(Problem::TooMany(interests))
+        );
     }
 
     #[test]

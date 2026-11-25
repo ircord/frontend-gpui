@@ -2,8 +2,8 @@
 //! in `com.ircord.gpui` (so it sits beside the Tauri app without sharing files):
 //!
 //! - `server`: the server origin, one line.
-//! - `state.json`: the last conversation viewed and the window size, and
-//!   under `features` one open section per feature (see [`ConfigDir::section`]).
+//! - `state.json`: the last conversation viewed, each network's last channel,
+//!   the window size, and one section per feature (see [`ConfigDir::section`]).
 //!
 //! The sign-in itself is not here: it lives in the operating system's
 //! credential store (see [`crate::credentials`]).
@@ -12,6 +12,7 @@ use crate::address::ServerAddress;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -27,8 +28,36 @@ pub struct ConfigDir(PathBuf);
 #[serde(default, rename_all = "camelCase")]
 pub struct AppState {
     pub last_conversation: Option<String>,
+    last_channels: BTreeMap<String, BTreeMap<String, String>>,
     pub window_width: Option<f32>,
     pub window_height: Option<f32>,
+}
+
+impl AppState {
+    pub fn last_channel(
+        &self,
+        server: &ServerAddress,
+        account: &str,
+        network: &str,
+    ) -> Option<&str> {
+        self.last_channels
+            .get(&format!("{} {account}", server.origin()))?
+            .get(network)
+            .map(String::as_str)
+    }
+
+    pub fn remember_channel(
+        &mut self,
+        server: &ServerAddress,
+        account: &str,
+        network: &str,
+        channel: &str,
+    ) {
+        self.last_channels
+            .entry(format!("{} {account}", server.origin()))
+            .or_default()
+            .insert(network.to_string(), channel.to_string());
+    }
 }
 
 impl ConfigDir {
@@ -155,10 +184,35 @@ mod tests {
         let state = AppState {
             last_conversation: Some("c1".into()),
             window_width: Some(1200.0),
-            window_height: None,
+            ..Default::default()
         };
         config.save_state(&state).unwrap();
         assert_eq!(config.state(), state);
+    }
+
+    #[test]
+    fn last_channels_survive_relaunch_and_are_scoped_by_server_and_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ConfigDir::at(dir.path());
+        let first = ServerAddress::parse("https://chat.example.org").unwrap();
+        let second = ServerAddress::parse("https://other.example.org").unwrap();
+        let mut state: AppState = serde_json::from_str(r#"{"lastConversation":"old"}"#).unwrap();
+        assert_eq!(state.last_conversation.as_deref(), Some("old"));
+        assert_eq!(state.last_channel(&first, "me", "home"), None);
+        state.remember_channel(&first, "me", "home", "c1");
+        state.remember_channel(&first, "me", "away", "c2");
+        state.remember_channel(&first, "someone-else", "home", "c3");
+        state.remember_channel(&second, "me", "home", "c4");
+        config.save_state(&state).unwrap();
+
+        let restored = config.state();
+        assert_eq!(restored.last_channel(&first, "me", "home"), Some("c1"));
+        assert_eq!(restored.last_channel(&first, "me", "away"), Some("c2"));
+        assert_eq!(
+            restored.last_channel(&first, "someone-else", "home"),
+            Some("c3")
+        );
+        assert_eq!(restored.last_channel(&second, "me", "home"), Some("c4"));
     }
 
     #[test]

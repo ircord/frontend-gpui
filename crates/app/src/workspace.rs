@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use crate::ui::focus::Reachable;
 use gpui_kit::TestSupportExt;
+use gpui_kit::base::FocusTrapElement;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::DropdownMenu;
@@ -516,8 +517,6 @@ impl WorkspaceView {
         window: &Window,
         cx: &App,
     ) -> impl IntoElement + use<> {
-        use gpui_kit::base::FocusTrapElement;
-
         let focus = state.read(cx);
         let search = Button::new("members-drawer-search")
             .ghost()
@@ -532,9 +531,10 @@ impl WorkspaceView {
             .label(t!("sidebar-find"))
             .on_click({
                 let state = state.clone();
+                let session = self.session.clone();
                 move |_, window, cx| {
                     state.update(cx, |drawer, cx| drawer.close(window, cx));
-                    crate::features::switcher::open(window, cx);
+                    crate::features::search::open(&session, None, cx);
                 }
             });
         let close_button = Button::new("hide-members")
@@ -548,30 +548,10 @@ impl WorkspaceView {
                 let state = state.clone();
                 move |_, window, cx| state.update(cx, |drawer, cx| drawer.close(window, cx))
             });
-        let panel = div()
-            .id("members-drawer")
-            .test_support()
-            .role(Role::Dialog)
-            .aria_label(t!("people-members"))
-            .absolute()
-            .right_0()
-            .top_0()
-            .bottom_0()
-            .w(px(300.).min(window.viewport_size().width * 0.85))
+        let contents = div()
+            .size_full()
             .flex()
             .flex_col()
-            .occlude()
-            .bg(theme.main)
-            .border_l_1()
-            .border_color(theme.border.opacity(0.65))
-            .shadow(frame_shadows(theme))
-            .on_action({
-                let state = state.clone();
-                move |_: &MarkRead, window, cx| {
-                    cx.stop_propagation();
-                    state.update(cx, |drawer, cx| drawer.close(window, cx));
-                }
-            })
             .child(
                 div()
                     .h(rems(3.))
@@ -584,32 +564,32 @@ impl WorkspaceView {
                     .child(close_button),
             )
             .child(div().flex_1().min_h_0().child(self.members.clone()))
-            .focus_trap("members-drawer", &focus.scope);
+            .into_any_element();
         let state = state.clone();
-        div()
-            .absolute()
-            .inset_0()
-            .child(
-                div()
-                    .id("members-scrim")
-                    .test_support()
-                    .absolute()
-                    .inset_0()
-                    .bg(black().opacity(0.5))
-                    .occlude()
-                    .on_click(move |_, window, cx| {
-                        state.update(cx, |drawer, cx| drawer.close(window, cx));
-                    }),
-            )
-            .child(panel)
+        right_drawer(
+            ("members-drawer", "members-scrim", t!("people-members")),
+            contents,
+            &focus.scope,
+            theme,
+            window,
+            move |window, cx| state.update(cx, |drawer, cx| drawer.close(window, cx)),
+        )
     }
 }
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
-        let route = self.session.read(cx).route();
-        let compact = window.viewport_size().width < members::DRAWER_BREAKPOINT;
+        let studio = crate::settings::appearance::studio_view(&self.session, window, cx);
+        let studio_width = if studio.as_ref().is_some_and(|(_, docked)| *docked) {
+            px(crate::settings::appearance::STUDIO_WIDTH)
+        } else {
+            px(0.)
+        };
+        let session = self.session.read(cx);
+        let settings_open = session.route() == Some(Route::Settings);
+        let route = session.workspace_route();
+        let compact = window.viewport_size().width - studio_width < members::DRAWER_BREAKPOINT;
         let drawer = window.use_keyed_state("member-drawer", cx, |_, cx| MembersDrawer {
             conversation: None,
             scope: cx.focus_handle(),
@@ -738,14 +718,18 @@ impl Render for WorkspaceView {
                         d.child(theme::backdrop::layer(b, theme.main, b.spec.dim, corners))
                     }),
             })
-            .when(theme.hibiki && header.is_some(), |d| {
-                d.child(ambient_light(window, cx))
-            })
+            .when(
+                theme.hibiki && (header.is_some() || route == Some(Route::Search)),
+                |d| d.child(ambient_light(backdrop.is_some(), window, cx)),
+            )
             .children(header)
             .child(div().flex_1().min_h_0().flex().child(main).children(panel));
-        div()
+        let workspace = div()
             .id("workspace")
-            .size_full()
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .h_full()
             .flex()
             .flex_col()
             .bg(theme.sidebar)
@@ -774,7 +758,112 @@ impl Render for WorkspaceView {
                         body.child(self.members_drawer(&drawer, &theme, window, cx))
                     }),
             )
+            .when(settings_open, |workspace| {
+                let settings = self.route_pane(&Route::Settings, &theme, window, cx);
+                let session = self.session.clone();
+                let top = if cfg!(target_os = "macos") && !window.is_fullscreen() {
+                    px(crate::MAC_TITLEBAR_HEIGHT)
+                } else {
+                    px(0.)
+                };
+                workspace.child(
+                    div()
+                        .absolute()
+                        .top(top)
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .p_6()
+                        .child(
+                            div()
+                                .id("settings-scrim")
+                                .test_support()
+                                .absolute()
+                                .inset_0()
+                                .occlude()
+                                .bg(black().opacity(0.55))
+                                .on_click(move |_, _, cx| crate::settings::close(&session, cx)),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .max_w(px(1052.))
+                                .h_full()
+                                .max_h(px(836.))
+                                .occlude()
+                                .rounded(theme.radius_large)
+                                .overflow_hidden()
+                                .bg(theme.main)
+                                .border_1()
+                                .border_color(theme.border.opacity(0.65))
+                                .shadow(frame_shadows(&theme))
+                                .child(settings),
+                        ),
+                )
+            })
+            .children(theme::appearance::trial::banner(window, cx));
+        div()
+            .relative()
+            .size_full()
+            .flex()
+            .child(workspace)
+            .children(studio.map(|(view, _)| view))
     }
+}
+
+fn right_drawer<D>(
+    (id, scrim, label): (&'static str, &'static str, &'static str),
+    contents: AnyElement,
+    focus: &FocusHandle,
+    theme: &Theme,
+    window: &Window,
+    dismiss: D,
+) -> impl IntoElement + use<D>
+where
+    D: Fn(&mut Window, &mut App) + Clone + 'static,
+{
+    let escape = dismiss.clone();
+    let panel = div()
+        .id(id)
+        .test_support()
+        .role(Role::Dialog)
+        .aria_label(label)
+        .a11y_synthetic_children(|tree| tree.parent_node().set_modal())
+        .absolute()
+        .right_0()
+        .top_0()
+        .bottom_0()
+        .w(px(300.).min(window.viewport_size().width * 0.85))
+        .flex()
+        .flex_col()
+        .occlude()
+        .bg(theme.main)
+        .border_l_1()
+        .border_color(theme.border.opacity(0.65))
+        .shadow(frame_shadows(theme))
+        .on_action(move |_: &MarkRead, window, cx| {
+            cx.stop_propagation();
+            escape(window, cx);
+        })
+        .child(contents)
+        .focus_trap(id, focus);
+    div()
+        .absolute()
+        .inset_0()
+        .child(
+            div()
+                .id(scrim)
+                .test_support()
+                .absolute()
+                .inset_0()
+                .bg(black().opacity(0.5))
+                .occlude()
+                .on_click(move |_, window, cx| dismiss(window, cx)),
+        )
+        .child(panel)
 }
 
 fn header_divider(theme: &Theme) -> Div {
@@ -835,13 +924,16 @@ struct AmbientColors {
 
 const AMBIENT_BLEED: f32 = 8.;
 
-fn ambient_light(window: &mut Window, cx: &mut App) -> impl IntoElement {
+fn ambient_light(has_backdrop: bool, window: &mut Window, cx: &mut App) -> impl IntoElement {
     // The texture is made per colour set: it takes the colours a theme change
     // fades to at once, not a new one on every frame of the fade.
     let theme = crate::theme::settled(cx).clone();
     let theme = &theme;
     let colors = AmbientColors {
-        main: theme.main.into(),
+        main: theme
+            .main
+            .opacity(if has_backdrop { 0. } else { 1. })
+            .into(),
         warm: theme
             .accent
             .blend(theme.danger.opacity(0.35))
@@ -913,17 +1005,31 @@ fn render_ambient_light(size: Size<Pixels>, colors: AmbientColors) -> Arc<Render
                 .hypot((y + 30.) / 244.8)
                 .min(1.);
         let amber = 1. - ((x - width * 0.36) / 378.).hypot((y + 20.) / 196.).min(1.);
-        let color = colors
-            .main
-            .blend(colors.amber.alpha(colors.amber.a * amber))
-            .blend(colors.warm.alpha(colors.warm.a * warm));
+        let color = overlay(
+            overlay(colors.main, colors.amber.alpha(colors.amber.a * amber)),
+            colors.warm.alpha(colors.warm.a * warm),
+        );
         // GPUI's texture atlas expects BGRA.
         image::Rgba([
             (color.b * 255.).round() as u8,
             (color.g * 255.).round() as u8,
             (color.r * 255.).round() as u8,
-            255,
+            (color.a * 255.).round() as u8,
         ])
     });
     Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]))
+}
+
+fn overlay(base: Rgba, top: Rgba) -> Rgba {
+    let covered_base = base.a * (1. - top.a);
+    let alpha = top.a + covered_base;
+    if alpha == 0. {
+        return base;
+    }
+    Rgba {
+        r: (top.r * top.a + base.r * covered_base) / alpha,
+        g: (top.g * top.a + base.g * covered_base) / alpha,
+        b: (top.b * top.a + base.b * covered_base) / alpha,
+        a: alpha,
+    }
 }

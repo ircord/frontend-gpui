@@ -139,6 +139,35 @@ fn the_gear_and_the_key_open_settings_with_sections_under_headings(cx: &mut Test
 }
 
 #[gpui_kit::test]
+fn closing_settings_returns_focus_to_the_workspace(cx: &mut TestAppContext) {
+    let f = signed_in(cx);
+    let opener = cx
+        .update_window(f.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("composer-input", cx);
+            let opener = window.focused(cx).expect("the composer takes focus");
+            ircord_app::settings::open(&f.session, None, cx);
+            opener
+        })
+        .unwrap();
+    shows(&f, cx, "settings-dialog");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("timeline").visible());
+        assert!(!opener.is_focused(window), "Settings takes focus");
+        window.click("settings-close", cx);
+    })
+    .unwrap();
+    assert_eq!(route(&f, cx), Some(Route::Conversation("c-general".into())));
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("settings-dialog").is_none());
+        assert!(opener.is_focused(window), "focus returns to the composer");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn search_finds_a_row_and_lands_on_it(cx: &mut TestAppContext) {
     let f = signed_in(cx);
     open_settings(&f, cx);

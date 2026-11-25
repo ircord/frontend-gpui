@@ -12,6 +12,11 @@ use std::sync::Mutex;
 use crate::address::ServerAddress;
 use crate::config::APP_ID;
 
+#[cfg(all(target_os = "macos", feature = "dev-credentials"))]
+mod dev;
+#[cfg(all(target_os = "macos", feature = "dev-credentials"))]
+pub use dev::DevStore;
+
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct StoreError(pub String);
@@ -22,6 +27,9 @@ pub trait CredentialStore: Send + Sync + 'static {
     fn save(&self, server: &ServerAddress, session: &str) -> Result<(), StoreError>;
     /// Forget the session. Forgetting one that is not there is not an error.
     fn clear(&self, server: &ServerAddress) -> Result<(), StoreError>;
+    /// A speech key is scoped to an IRCord account and a speech service origin.
+    fn speech_key(&self, scope: &str) -> Result<Option<String>, StoreError>;
+    fn save_speech_key(&self, scope: &str, key: Option<&str>) -> Result<(), StoreError>;
 }
 
 /// The operating system's credential store, one entry per server origin.
@@ -32,6 +40,14 @@ impl SystemStore {
     fn entry(server: &ServerAddress) -> Result<keyring::Entry, StoreError> {
         keyring::Entry::new(APP_ID, &server.origin()).map_err(explain)
     }
+
+    fn speech_entry(scope: &str) -> Result<keyring::Entry, StoreError> {
+        keyring::Entry::new(&format!("{APP_ID}.speech"), scope).map_err(|_| speech_error())
+    }
+}
+
+fn speech_error() -> StoreError {
+    StoreError("The system credential store is unavailable.".into())
 }
 
 fn explain(e: keyring::Error) -> StoreError {
@@ -63,6 +79,25 @@ impl CredentialStore for SystemStore {
             Err(e) => Err(explain(e)),
         }
     }
+
+    fn speech_key(&self, scope: &str) -> Result<Option<String>, StoreError> {
+        match Self::speech_entry(scope)?.get_password() {
+            Ok(key) => Ok(Some(key)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(_) => Err(speech_error()),
+        }
+    }
+
+    fn save_speech_key(&self, scope: &str, key: Option<&str>) -> Result<(), StoreError> {
+        let entry = Self::speech_entry(scope)?;
+        match key {
+            Some(key) => entry.set_password(key).map_err(|_| speech_error()),
+            None => match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(_) => Err(speech_error()),
+            },
+        }
+    }
 }
 
 /// An in-memory store for tests.
@@ -84,6 +119,26 @@ impl CredentialStore for MemoryStore {
 
     fn clear(&self, server: &ServerAddress) -> Result<(), StoreError> {
         self.0.lock().unwrap().remove(&server.origin());
+        Ok(())
+    }
+
+    fn speech_key(&self, scope: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .get(&format!("speech:{scope}"))
+            .cloned())
+    }
+
+    fn save_speech_key(&self, scope: &str, key: Option<&str>) -> Result<(), StoreError> {
+        let mut entries = self.0.lock().unwrap();
+        let id = format!("speech:{scope}");
+        if let Some(key) = key {
+            entries.insert(id, key.to_string());
+        } else {
+            entries.remove(&id);
+        }
         Ok(())
     }
 }

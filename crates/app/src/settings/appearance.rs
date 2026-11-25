@@ -2,42 +2,46 @@
 //! `AppearanceSettings.vue` and theme library: sync across devices, light or
 //! dark, the colour scheme and its variant, the accent, the interface font,
 //! scale, sidebar density, corners and motion, your themes (new, use, edit
-//! colours, export, import, delete) and reset.
+//! colours and backgrounds, export, import, delete) and reset.
 //!
-//! Every change goes through `theme::appearance::edit`, which saves to the
-//! account with sync on and on this device with it off, and redraws at once.
+//! Appearance preferences use `theme::appearance::edit`. Personal theme edits
+//! stay in their draft until saved to the account.
+
+mod background;
+mod colors;
+mod drafts;
 
 use crate::ui::focus::Reachable;
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::TestSupportExt;
-use gpui_kit::component::Disableable;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
+use gpui_kit::component::{Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use ircord_client::api::{ApiError, ThemeSave};
 use ircord_client::contract::{
     Appearance, AppearanceAccent, AppearanceCorners, AppearanceDensity, AppearanceFont,
     AppearanceMode, AppearanceMotion, Theme as UserTheme,
 };
-use ircord_client::store::appearance::{
-    self as look, Compiled, FAMILIES, ImportError, Look, Mode, Seed,
-};
+use ircord_client::store::appearance::{self as look, Compiled, FAMILIES, ImportError, Look, Mode};
 use ircord_client::store::theme_css::CssVariables;
 
 use crate::registry::{self, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection};
-use crate::session::Session;
+use crate::session::{Session, SessionEvent};
 use crate::settings::messages;
 use crate::settings::{block, row};
 use crate::theme::{self, Theme, appearance};
 use crate::ui;
 
-mod background;
-
 pub fn init(cx: &mut App) {
     registry::register(cx, |r| {
-        let rows: [(&str, &'static str, &'static str, &'static str); 11] = [
+        let rows: [(&str, &'static str, &'static str, &'static str); 12] = [
             (
                 "appearance-sync",
                 t!("appearance-sync"),
@@ -55,6 +59,12 @@ pub fn init(cx: &mut App) {
                 t!("appearance-scheme"),
                 t!("appearance-scheme-help"),
                 t!("appearance-scheme-keywords"),
+            ),
+            (
+                "appearance-scheme-variants",
+                t!("appearance-scheme-variants"),
+                t!("appearance-scheme-variants-help"),
+                t!("appearance-scheme-variants-keywords"),
             ),
             (
                 "appearance-accent",
@@ -131,16 +141,34 @@ struct Editor {
     accent: Entity<InputState>,
     name: Entity<InputState>,
     import: Entity<InputState>,
-    seeds: Vec<(Seed, Entity<InputState>)>,
-    /// The colour fields take the edited theme's colours when next drawn.
-    fill_seeds: bool,
-    /// The background picture of the theme being edited.
-    background: background::Draft,
-    /// The theme whose colours are being edited, and the mode being edited.
+    css: Entity<TextareaState>,
+    seeds: Vec<colors::Field>,
+    /// The unsaved theme and its editing mode.
     editing: Option<(UserTheme, Mode)>,
+    conflict: Option<Box<UserTheme>>,
+    recovery: Option<drafts::Recovery>,
+    tab: ThemeTab,
+    studio_open: bool,
+    collapsed: bool,
+    compare: bool,
+    new_theme: bool,
+    focus: FocusHandle,
+    background_preview: Entity<crate::theme::background::Wallpaper>,
+    edit_generation: u64,
     /// What the last action said, and whether it was a problem.
     notice: Option<(SharedString, bool)>,
     busy: bool,
+    uploading: bool,
+    _session: Subscription,
+    _quit: Subscription,
+    _inputs: Vec<Subscription>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ThemeTab {
+    Colors,
+    Background,
+    Css,
 }
 
 struct Editors(Entity<Editor>);
@@ -158,31 +186,72 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
     let accent = input(t!("appearance-accent-custom-placeholder"), window, cx);
     let name = input(t!("appearance-themes-new-name"), window, cx);
     let import = input(t!("appearance-themes-import-paste"), window, cx);
-    let seeds = Seed::ALL
-        .iter()
-        .map(|s| {
-            (
-                *s,
-                input(t!("appearance-accent-custom-placeholder"), window, cx),
-            )
-        })
-        .collect();
-    let background = background::Draft::new(cx);
-    let e = cx.new(|_| Editor {
-        session: ctx.session.clone(),
-        accent,
-        name,
-        import,
-        seeds,
-        background,
-        fill_seeds: false,
-        editing: None,
-        notice: None,
-        busy: false,
+    let css = cx.new(|cx| TextareaState::new(window, cx).rows(6));
+    let seeds = colors::fields(window, cx);
+    let background_preview = cx.new(|_| crate::theme::background::Wallpaper::default());
+    let e = cx.new(|cx: &mut Context<Editor>| {
+        let mut inputs: Vec<_> = seeds
+            .iter()
+            .flat_map(|field| field.subscribe(window, cx))
+            .collect();
+        inputs.push(cx.subscribe(&name, |_, _, event, cx| draft_input_changed(event, cx)));
+        inputs.push(cx.subscribe(&css, |_, _, event, cx| draft_input_changed(event, cx)));
+        Editor {
+            session: ctx.session.clone(),
+            accent,
+            name,
+            import,
+            css,
+            seeds,
+            editing: None,
+            conflict: None,
+            recovery: None,
+            tab: ThemeTab::Colors,
+            studio_open: false,
+            collapsed: false,
+            compare: false,
+            new_theme: false,
+            focus: cx.focus_handle(),
+            background_preview,
+            edit_generation: 0,
+            notice: None,
+            busy: false,
+            uploading: false,
+            _session: cx.subscribe(&ctx.session, |editor, _, event: &SessionEvent, cx| {
+                if matches!(event, SessionEvent::Phase) {
+                    if let Some(mut recovery) = editor.recovery.take() {
+                        recovery.flush();
+                    }
+                    editor
+                        .background_preview
+                        .update(cx, |preview, cx| preview.clear(None, cx));
+                    editor.studio_open = false;
+                    editor.editing = None;
+                    editor.conflict = None;
+                    editor.edit_generation = editor.edit_generation.wrapping_add(1);
+                    editor.notice = None;
+                    editor.busy = false;
+                    editor.uploading = false;
+                }
+            }),
+            _quit: cx.on_app_quit(|editor, _| {
+                if let Some(recovery) = &mut editor.recovery {
+                    recovery.flush();
+                }
+                async {}
+            }),
+            _inputs: inputs,
+        }
     });
-    background::listen(&e, cx);
     cx.set_global(Editors(e.clone()));
     e
+}
+
+fn draft_input_changed(event: &InputEvent, cx: &mut Context<Editor>) {
+    if matches!(event, InputEvent::Change) {
+        let editor = cx.entity();
+        cx.defer(move |cx| refresh_studio(&editor, cx));
+    }
 }
 
 fn say(editor: &Entity<Editor>, text: impl Into<SharedString>, problem: bool, cx: &mut App) {
@@ -193,12 +262,69 @@ fn say(editor: &Entity<Editor>, text: impl Into<SharedString>, problem: bool, cx
 
 // ---- Rendering ----
 
+pub(super) fn sync_in_header(window: &Window) -> bool {
+    window.viewport_size().width > px(700.)
+}
+
+fn sync_switch(sync: bool) -> Switch {
+    Switch::new("appearance-sync-switch")
+        .checked(sync)
+        .accessibility_label(t!("appearance-sync"))
+        .on_click(|on, _, cx| appearance::set_sync(cx, *on))
+}
+
+fn sync_help(sync: bool) -> &'static str {
+    if sync {
+        t!("appearance-sync-help")
+    } else {
+        t!("appearance-sync-local")
+    }
+}
+
+pub(super) fn sync_header(
+    theme: &Theme,
+    sync: bool,
+    highlighted: bool,
+) -> impl IntoElement + use<> {
+    let icon = if sync {
+        ui::icon::LucideIcon::Cloud
+    } else {
+        ui::icon::LucideIcon::CloudOff
+    };
+    div()
+        .id("setting-appearance-sync")
+        .test_support()
+        .role(Role::Group)
+        .aria_label(t!("appearance-sync"))
+        .tooltip(ui::tooltip::text(sync_help(sync)))
+        .flex()
+        .items_center()
+        .gap_2()
+        .pl_3()
+        .pr_1p5()
+        .py_1()
+        .rounded_full()
+        .bg(theme.raised.opacity(0.45))
+        .border_1()
+        .border_color(if highlighted {
+            theme.accent
+        } else {
+            theme.border.opacity(0.55)
+        })
+        .text_xs()
+        .text_color(theme.muted)
+        .child(ui::icon::icon(icon, theme.muted))
+        .child(t!("appearance-sync-short"))
+        .child(sync_switch(sync))
+}
+
 fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElement {
     let theme = theme::get(cx).clone();
     let editor = editor(ctx, window, cx);
     let current = appearance::look(cx);
     let compiled = appearance::compiled(cx);
     let sync = appearance::sync(cx);
+    let compact = !sync_in_header(window);
     let mode = compiled.mode;
 
     div()
@@ -206,61 +332,58 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
         .test_support()
         .role(Role::Group)
         .aria_label(t!("appearance-title"))
+        .w_full()
+        .min_w_0()
         .flex()
         .flex_col()
         .gap_4()
-        .child(super::preview(
-            &theme,
-            super::PreviewLook {
-                font: crate::message::layout::settings(cx).family(),
-                ..Default::default()
-            },
-        ))
-        .child(row(
-            ctx,
-            "appearance-sync",
-            t!("appearance-sync"),
-            Some(
-                if sync {
-                    t!("appearance-sync-help")
-                } else {
-                    t!("appearance-sync-local")
-                }
-                .into(),
-            ),
-            Switch::new("appearance-sync-switch")
-                .checked(sync)
-                .accessibility_label(t!("appearance-sync"))
-                .on_click(|on, _, cx| appearance::set_sync(cx, *on)),
-            &theme,
-        ))
+        .when(!compact && !sync, |d| {
+            d.child(
+                div()
+                    .id("appearance-local-only")
+                    .test_support()
+                    .role(Role::Status)
+                    .aria_label(t!("appearance-sync-local"))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(ui::icon::icon(ui::icon::LucideIcon::CloudOff, theme.muted))
+                    .child(t!("appearance-sync-local")),
+            )
+        })
+        .child(super::preview(&theme, crate::message::layout::settings(cx)))
+        .when(compact, |d| {
+            d.child(row(
+                ctx,
+                "appearance-sync",
+                t!("appearance-sync"),
+                Some(sync_help(sync).into()),
+                sync_switch(sync),
+                &theme,
+            ))
+        })
         .child(row(
             ctx,
             "appearance-mode",
             t!("appearance-mode"),
             Some(t!("appearance-mode-help").into()),
-            choices(
-                "appearance-mode",
-                &[
-                    (
-                        AppearanceMode::System,
-                        "system",
-                        t!("appearance-mode-system"),
-                    ),
-                    (AppearanceMode::Dark, "dark", t!("appearance-mode-dark")),
-                    (AppearanceMode::Light, "light", t!("appearance-mode-light")),
-                ],
-                current.mode,
-                |a, m| a.mode = Some(m),
-                &theme,
-            ),
+            mode_control(current.mode, &theme),
             &theme,
         ))
         .child(block(
             ctx,
             "appearance-scheme",
             t!("appearance-scheme"),
-            schemes(&current, mode, compiled.theme.is_some(), &theme),
+            schemes(&current, mode, compiled.theme.is_some(), &theme, window, cx),
+            &theme,
+        ))
+        .child(block(
+            ctx,
+            "appearance-scheme-variants",
+            t!("appearance-scheme-variants"),
+            scheme_variants(&current, mode, compiled.theme.is_some()),
             &theme,
         ))
         .child(block(
@@ -279,7 +402,12 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
             ctx,
             "appearance-font",
             t!("appearance-font"),
-            under(fonts(&current, &theme), &["font-ui"], &compiled, &theme),
+            under(
+                fonts(&current, &theme, window, cx),
+                &["font-ui"],
+                &compiled,
+                &theme,
+            ),
             &theme,
         ))
         .child(under(
@@ -385,7 +513,7 @@ fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> impl IntoElem
             ctx,
             "appearance-themes",
             t!("appearance-themes"),
-            themes_block(&current, mode, &editor, &theme, window, cx),
+            themes_block(&current, mode, &editor, &theme, cx),
             &theme,
         ))
         .child(row(
@@ -428,7 +556,7 @@ fn under(
 
 /// What the theme in use's CSS set and what this app left out, under the
 /// theme's row.
-fn css_report(name: &str, css: &CssVariables, theme: &Theme) -> Div {
+fn css_report(id: &str, name: &str, css: &CssVariables, theme: &Theme) -> Div {
     let mut report = div()
         .flex()
         .flex_col()
@@ -445,7 +573,7 @@ fn css_report(name: &str, css: &CssVariables, theme: &Theme) -> Div {
         .into();
         report = report.child(
             div()
-                .id("appearance-themes-css-applied")
+                .id(ElementId::Name(format!("{id}-applied").into()))
                 .test_support()
                 .role(Role::Status)
                 .aria_label(text.clone())
@@ -461,7 +589,7 @@ fn css_report(name: &str, css: &CssVariables, theme: &Theme) -> Div {
         .into();
         report = report.child(
             div()
-                .id("appearance-themes-css-skipped")
+                .id(ElementId::Name(format!("{id}-skipped").into()))
                 .test_support()
                 .role(Role::Status)
                 .aria_label(text.clone())
@@ -559,6 +687,72 @@ fn choices<T: Copy + PartialEq + 'static>(
     list
 }
 
+fn mode_control(current: AppearanceMode, theme: &Theme) -> impl IntoElement + use<> {
+    use ui::icon::LucideIcon as Icon;
+    let modes = [
+        (
+            AppearanceMode::System,
+            "system",
+            t!("appearance-mode-system"),
+            Icon::Monitor,
+        ),
+        (
+            AppearanceMode::Dark,
+            "dark",
+            t!("appearance-mode-dark"),
+            Icon::Moon,
+        ),
+        (
+            AppearanceMode::Light,
+            "light",
+            t!("appearance-mode-light"),
+            Icon::Sun,
+        ),
+    ];
+    div()
+        .id("appearance-mode-choices")
+        .test_support()
+        .role(Role::RadioGroup)
+        .aria_label(t!("appearance-mode"))
+        .flex()
+        .gap_0p5()
+        .p_0p5()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.raised)
+        .children(modes.map(|(value, key, text, icon)| {
+            let selected = current == value;
+            let hover = theme.hover;
+            div()
+                .id(ElementId::Name(format!("appearance-mode-{key}").into()))
+                .test_support()
+                .role(Role::RadioButton)
+                .aria_label(text)
+                .aria_selected(selected)
+                .reachable(theme)
+                .flex()
+                .items_center()
+                .gap_1p5()
+                .px_2()
+                .py_1()
+                .rounded(theme.radius)
+                .text_sm()
+                .text_color(if selected { theme.text } else { theme.muted })
+                .when(selected, |d| d.bg(theme.main).shadow_sm())
+                .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+                .cursor_pointer()
+                .child(ui::icon::icon(
+                    icon,
+                    if selected { theme.accent } else { theme.muted },
+                ))
+                .child(text)
+                .on_click(move |_, _, cx| {
+                    appearance::edit(cx, |a| a.mode = Some(value));
+                })
+        }))
+}
+
 fn family_description(id: &str) -> Option<&'static str> {
     Some(match id {
         "ircord" => t!("appearance-family-ircord"),
@@ -584,7 +778,7 @@ fn miniature(seeds: &look::Seeds) -> Div {
     let bar = |w: f32, color: u32| {
         div()
             .h(px(3.))
-            .w(px(w))
+            .w(relative(w))
             .rounded_full()
             .bg(theme::hex(color))
     };
@@ -616,21 +810,70 @@ fn miniature(seeds: &look::Seeds) -> Div {
         .child(
             div()
                 .flex_1()
+                .min_w_0()
                 .p_1p5()
                 .flex()
                 .flex_col()
                 .gap_1p5()
                 .rounded_sm()
                 .bg(theme::hex(seeds.surface))
-                .child(bar(64., seeds.ink))
-                .child(bar(96., seeds.muted))
+                .child(bar(0.6, seeds.ink))
+                .child(bar(1., seeds.muted))
                 .child(
                     div()
                         .h(px(6.))
-                        .w(px(44.))
+                        .w(relative(0.4))
                         .rounded_full()
                         .bg(theme::hex(seeds.accent)),
                 ),
+        )
+}
+
+/// Draw equal-width cards, adding a column when another 150 px card fits.
+fn card_grid(
+    id: &'static str,
+    label: &'static str,
+    cards: Vec<AnyElement>,
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement + use<> {
+    const MIN_WIDTH: f32 = 150.;
+    const GAP: f32 = 10.;
+    let columns = window
+        .use_keyed_state((id, 0_usize), cx, |_, _| Rc::new(Cell::new(1u16)))
+        .read(cx)
+        .clone();
+    let count = cards.len().max(1) as u16;
+    div()
+        .relative()
+        .w_full()
+        .child(
+            div()
+                .id(id)
+                .test_support()
+                .role(Role::RadioGroup)
+                .aria_label(label)
+                .w_full()
+                .grid()
+                .grid_cols(columns.get())
+                .gap(px(GAP))
+                .children(cards),
+        )
+        .child(
+            canvas(
+                move |bounds, window, _| {
+                    let available = f32::from(bounds.size.width);
+                    let fit = ((available + GAP) / (MIN_WIDTH + GAP)) as u16;
+                    let next = fit.clamp(1, count);
+                    if columns.replace(next) != next {
+                        window.refresh();
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0()
+            .size_full(),
         )
 }
 
@@ -669,16 +912,11 @@ fn schemes(
     mode: Mode,
     theme_in_use: bool,
     theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
 ) -> impl IntoElement + use<> {
     let chosen = current.scheme(mode);
-    let mut grid = div()
-        .id("appearance-schemes")
-        .test_support()
-        .role(Role::RadioGroup)
-        .aria_label(t!("appearance-scheme"))
-        .flex()
-        .flex_wrap()
-        .gap_2();
+    let mut cards = Vec::new();
     for family in FAMILIES {
         let shown = family
             .variants
@@ -695,7 +933,7 @@ fn schemes(
             _ => None,
         };
         let seeds = shown.seeds;
-        grid = grid.child(
+        cards.push(
             div()
                 .id(ElementId::Name(
                     format!("appearance-scheme-{}", family.id).into(),
@@ -708,7 +946,7 @@ fn schemes(
                     name = family.name
                 )))
                 .aria_selected(selected)
-                .w(px(172.))
+                .min_w_0()
                 .p_1p5()
                 .rounded(theme.radius_large)
                 .border_2()
@@ -739,12 +977,10 @@ fn schemes(
                 .when_some(only, |d, text| {
                     d.child(div().px_1().text_xs().text_color(theme.muted).child(text))
                 })
-                .on_click(move |_, _, cx| pick_family(family, cx)),
+                .on_click(move |_, _, cx| pick_family(family, cx))
+                .into_any_element(),
         );
     }
-    let variants: Vec<_> = look::family(chosen.family)
-        .map(|f| f.variants.iter().filter(|s| s.mode == mode).collect())
-        .unwrap_or_default();
     div()
         .flex()
         .flex_col()
@@ -755,54 +991,90 @@ fn schemes(
                 .text_color(theme.muted)
                 .child(t!("appearance-scheme-help")),
         )
-        .child(grid)
-        .when(variants.len() > 1 && !theme_in_use, |d| {
-            let mut list = div()
-                .id("appearance-variants")
-                .test_support()
-                .role(Role::RadioGroup)
-                .aria_label(t!("appearance-scheme-variant"))
+        .child(card_grid(
+            "appearance-schemes",
+            t!("appearance-scheme"),
+            cards,
+            window,
+            cx,
+        ))
+}
+
+fn scheme_label(scheme: &look::Scheme) -> SharedString {
+    let family = look::family(scheme.family).map(|f| f.name);
+    match family {
+        Some(family) if family != scheme.name => format!("{family} {}", scheme.name).into(),
+        _ => scheme.name.into(),
+    }
+}
+
+fn scheme_variants(current: &Look, mode: Mode, theme_in_use: bool) -> impl IntoElement + use<> {
+    let source = current.scheme(mode).source;
+    let controls = [
+        (
+            Mode::Dark,
+            "appearance-dark-variant",
+            t!("appearance-scheme-dark-variant"),
+        ),
+        (
+            Mode::Light,
+            "appearance-light-variant",
+            t!("appearance-scheme-light-variant"),
+        ),
+    ];
+    div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_wrap()
+        .items_end()
+        .gap_3()
+        .children(controls.map(|(mode, element_id, label)| {
+            let active = current.scheme(mode);
+            div()
+                .w(px(220.))
+                .max_w_full()
+                .min_w_0()
                 .flex()
-                .flex_wrap()
-                .items_center()
+                .flex_col()
                 .gap_1()
+                .child(div().text_sm().child(label))
                 .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme.muted)
-                        .mr_2()
-                        .child(t!("appearance-scheme-variant")),
-                );
-            for variant in variants {
-                let id = variant.id;
-                list = list.child(
-                    option(
-                        format!("appearance-variant-{id}"),
-                        variant.name,
-                        variant.id == chosen.id,
-                        theme,
-                    )
-                    .test_support()
-                    .reachable(theme)
-                    .on_click(move |_, _, cx| {
-                        appearance::edit(cx, |a| {
-                            match mode {
-                                Mode::Dark => a.scheme_dark = Some(id.into()),
-                                Mode::Light => a.scheme_light = Some(id.into()),
-                            }
-                            a.theme = None;
-                        });
-                    }),
-                );
-            }
-            d.child(list)
-        })
-        .when(!chosen.source.is_empty() && !theme_in_use, |d| {
+                    Button::new(element_id)
+                        .justify_start()
+                        .w_full()
+                        .label(scheme_label(active))
+                        .accessibility_label(label)
+                        .dropdown_caret(true)
+                        .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _, _| {
+                            look::schemes().filter(|scheme| scheme.mode == mode).fold(
+                                menu.max_h(px(290.)),
+                                |menu, scheme| {
+                                    menu.item(
+                                        PopupMenuItem::new(scheme_label(scheme))
+                                            .checked(scheme.id == active.id)
+                                            .on_click(move |_, _, cx| {
+                                                appearance::edit(cx, |a| match mode {
+                                                    Mode::Dark => {
+                                                        a.scheme_dark = Some(scheme.id.into())
+                                                    }
+                                                    Mode::Light => {
+                                                        a.scheme_light = Some(scheme.id.into())
+                                                    }
+                                                });
+                                            }),
+                                    )
+                                },
+                            )
+                        }),
+                )
+        }))
+        .when(!theme_in_use && !source.is_empty(), |d| {
             d.child(
-                div()
-                    .text_xs()
-                    .text_color(theme.faint)
-                    .child(t!("appearance-scheme-source", source = chosen.source)),
+                Button::new("appearance-scheme-source")
+                    .link()
+                    .label(t!("appearance-scheme-source"))
+                    .on_click(move |_, _, cx| cx.open_url(source)),
             )
         })
 }
@@ -946,45 +1218,90 @@ fn accents(
         )
 }
 
-fn font_name(font: AppearanceFont) -> &'static str {
+fn font_labels(font: AppearanceFont) -> (&'static str, &'static str) {
     match font {
-        AppearanceFont::Inter => t!("appearance-font-inter"),
-        AppearanceFont::IbmMinusPlex => t!("appearance-font-ibm-plex"),
-        AppearanceFont::Manrope => t!("appearance-font-manrope"),
-        AppearanceFont::Nunito => t!("appearance-font-nunito"),
-        AppearanceFont::Atkinson => t!("appearance-font-atkinson"),
-        AppearanceFont::SourceMinusSans => t!("appearance-font-source-sans"),
-        AppearanceFont::System => t!("appearance-font-system"),
-        _ => t!("appearance-font-geist"),
+        AppearanceFont::Inter => (
+            t!("appearance-font-inter"),
+            t!("appearance-font-inter-note"),
+        ),
+        AppearanceFont::IbmMinusPlex => (
+            t!("appearance-font-ibm-plex"),
+            t!("appearance-font-ibm-plex-note"),
+        ),
+        AppearanceFont::Manrope => (
+            t!("appearance-font-manrope"),
+            t!("appearance-font-manrope-note"),
+        ),
+        AppearanceFont::Nunito => (
+            t!("appearance-font-nunito"),
+            t!("appearance-font-nunito-note"),
+        ),
+        AppearanceFont::Atkinson => (
+            t!("appearance-font-atkinson"),
+            t!("appearance-font-atkinson-note"),
+        ),
+        AppearanceFont::SourceMinusSans => (
+            t!("appearance-font-source-sans"),
+            t!("appearance-font-source-sans-note"),
+        ),
+        AppearanceFont::System => (
+            t!("appearance-font-system"),
+            t!("appearance-font-system-note"),
+        ),
+        _ => (
+            t!("appearance-font-geist"),
+            t!("appearance-font-geist-note"),
+        ),
     }
 }
 
-fn fonts(current: &Look, theme: &Theme) -> impl IntoElement + use<> {
-    let mut list = div()
-        .id("appearance-fonts")
-        .test_support()
-        .role(Role::RadioGroup)
-        .aria_label(t!("appearance-font"))
-        .flex()
-        .flex_wrap()
-        .gap_1();
+fn fonts(
+    current: &Look,
+    theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement + use<> {
+    let mut cards = Vec::new();
     for font in look::FONTS {
         let font = *font;
         let key = look::key(&font);
         let family: SharedString = look::font_family(font).unwrap_or(".SystemUIFont").into();
-        list = list.child(
-            option(
-                format!("appearance-font-{key}"),
-                font_name(font),
-                current.font == font,
-                theme,
-            )
-            .font_family(family)
-            .test_support()
-            .reachable(theme)
-            .on_click(move |_, _, cx| {
-                appearance::edit(cx, |a| a.font = Some(font));
-            }),
+        let selected = current.font == font;
+        let hover = theme.hover;
+        let (name, description) = font_labels(font);
+        cards.push(
+            div()
+                .id(ElementId::Name(format!("appearance-font-{key}").into()))
+                .test_support()
+                .role(Role::RadioButton)
+                .aria_label(name)
+                .aria_selected(selected)
+                .reachable(theme)
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .py_2()
+                .px_2p5()
+                .font_family(family)
+                .rounded(theme.radius_large)
+                .border_2()
+                .border_color(if selected { theme.accent } else { theme.border })
+                .bg(theme.main)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .child(
+                    div()
+                        .text_size(px(26.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Aa"),
+                )
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
+                .child(div().text_xs().text_color(theme.muted).child(description))
+                .on_click(move |_, _, cx| {
+                    appearance::edit(cx, |a| a.font = Some(font));
+                })
+                .into_any_element(),
         );
     }
     div()
@@ -997,7 +1314,13 @@ fn fonts(current: &Look, theme: &Theme) -> impl IntoElement + use<> {
                 .text_color(theme.muted)
                 .child(t!("appearance-font-help")),
         )
-        .child(list)
+        .child(card_grid(
+            "appearance-fonts",
+            t!("appearance-font"),
+            cards,
+            window,
+            cx,
+        ))
 }
 
 /// The interface scale as a slider in steps of 5 %, with its value beside it.
@@ -1035,19 +1358,15 @@ fn themes_block(
     mode: Mode,
     editor: &Entity<Editor>,
     theme: &Theme,
-    window: &mut Window,
-    cx: &mut App,
+    cx: &App,
 ) -> impl IntoElement + use<> {
     let signed_in = editor.read(cx).session.read(cx).client().is_some();
     let library = appearance::library(cx);
     let compiled = appearance::compiled(cx);
     let e = editor.read(cx);
     let notice = e.notice.clone();
-    let editing = e.editing.clone();
     let busy = e.busy;
-    let name_input = e.name.clone();
     let import_input = e.import.clone();
-    let seeds = e.seeds.clone();
     let mut body = div()
         .id("appearance-theme-library")
         .test_support()
@@ -1062,7 +1381,7 @@ fn themes_block(
                 .text_color(theme.muted)
                 .child(t!("appearance-themes-help")),
         );
-    if let Some((text, problem)) = notice {
+    if let Some((text, problem)) = notice.filter(|_| !e.studio_open) {
         body = body.child(
             div()
                 .id("appearance-themes-notice")
@@ -1099,6 +1418,9 @@ fn themes_block(
             .gap_3()
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
+                    .whitespace_normal()
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -1115,11 +1437,13 @@ fn themes_block(
                     })),
             )
             .child(
-                Switch::new("appearance-themes-css-switch")
-                    .checked(library.custom_css)
-                    .disabled(!server)
-                    .accessibility_label(t!("appearance-themes-css-switch"))
-                    .on_click(|on: &bool, _, cx| appearance::set_custom_css(cx, *on)),
+                div().flex_none().child(
+                    Switch::new("appearance-themes-css-switch")
+                        .checked(library.custom_css)
+                        .disabled(!server)
+                        .accessibility_label(t!("appearance-themes-css-switch"))
+                        .on_click(|on: &bool, _, cx| appearance::set_custom_css(cx, *on)),
+                ),
             ),
     );
     if library.themes.is_empty() {
@@ -1130,29 +1454,25 @@ fn themes_block(
                 .child(t!("appearance-themes-empty")),
         );
     }
+    let full = library.themes.len() >= look::MAX_THEMES;
     for user_theme in &library.themes {
-        body = body.child(theme_row(user_theme, current, mode, editor, theme));
+        body = body.child(theme_row(
+            user_theme,
+            current,
+            mode,
+            editor,
+            theme,
+            !full && !busy,
+        ));
         if let Some(css) = compiled
             .css
             .as_ref()
             .filter(|_| compiled.theme == user_theme.id)
         {
             let name = user_theme.name.clone().unwrap_or_default();
-            body = body.child(css_report(&name, css, theme));
+            body = body.child(css_report("appearance-themes-css", &name, css, theme));
         }
     }
-    if let Some((user_theme, editing_mode)) = editing {
-        body = body.child(seed_editor(
-            &user_theme,
-            editing_mode,
-            &seeds,
-            editor,
-            theme,
-            window,
-            cx,
-        ));
-    }
-    let full = library.themes.len() >= look::MAX_THEMES;
     if full {
         body = body.child(
             div()
@@ -1161,6 +1481,11 @@ fn themes_block(
                 .child(t!("appearance-themes-full")),
         );
     }
+    let base = library
+        .themes
+        .iter()
+        .find(|theme| theme.id == current.theme)
+        .and_then(|theme| theme.base.clone());
     let new_editor = editor.clone();
     let paste_editor = editor.clone();
     let file_editor = editor.clone();
@@ -1171,27 +1496,22 @@ fn themes_block(
             .flex_wrap()
             .items_center()
             .gap_2()
-            .child(
-                div().w(px(180.)).child(
-                    Input::new(&name_input)
-                        .id("appearance-themes-name")
-                        .aria_label(t!("appearance-themes-name")),
-                ),
-            )
             .when(!full && !busy, |d| {
                 d.child(
                     button("appearance-themes-new", t!("appearance-themes-new"), theme)
                         .test_support()
                         .reachable(theme)
-                        .on_click(move |_, _, cx| {
-                            let name = name_input.read(cx).value().to_string();
-                            let name = if name.trim().is_empty() {
-                                t!("appearance-themes-new-name").to_string()
-                            } else {
-                                name
-                            };
-                            let made = look::new_theme(&current, &name, made_with(), &now());
-                            save(&new_editor, made, None, true, None, cx);
+                        .on_click(move |_, window, cx| {
+                            let mut made = look::new_theme(
+                                &current,
+                                t!("appearance-themes-new-name"),
+                                made_with(),
+                                &now(),
+                            );
+                            if let Some(base) = &base {
+                                made.base = Some(base.clone());
+                            }
+                            open_studio(&new_editor, &made, mode, true, window, cx);
                         }),
                 )
             }),
@@ -1256,6 +1576,7 @@ fn theme_row(
     mode: Mode,
     editor: &Entity<Editor>,
     theme: &Theme,
+    can_duplicate: bool,
 ) -> impl IntoElement + use<> {
     let id = user_theme.id.clone().unwrap_or_default();
     let name: SharedString = user_theme.name.clone().unwrap_or_default().into();
@@ -1264,8 +1585,12 @@ fn theme_row(
     let seeds = look::drawn_seeds(user_theme, mode);
     let key = |what: &str| format!("appearance-theme-{what}-{id}");
     let use_id = id.clone();
+    let use_editor = editor.clone();
     let edit_theme = user_theme.clone();
     let edit_editor = editor.clone();
+    let duplicate_source = user_theme.clone();
+    let duplicate_editor = editor.clone();
+    let duplicate_name = t!("appearance-themes-duplicate-name", name = name);
     let export_theme = user_theme.clone();
     let copy_theme = user_theme.clone();
     let copy_editor = editor.clone();
@@ -1325,8 +1650,10 @@ fn theme_row(
                     )))
                     .test_support()
                     .on_click(move |_, _, cx| {
-                        let id = use_id.clone();
-                        appearance::edit(cx, |a| a.theme = Some(id));
+                        if appearance::trial::choose(&use_id, cx) {
+                            let session = use_editor.read(cx).session.clone();
+                            crate::settings::close(&session, cx);
+                        }
                     }),
             )
         })
@@ -1336,7 +1663,7 @@ fn theme_row(
                     .test_support()
                     .reachable(theme)
                     .on_click(|_, _, cx| {
-                        appearance::edit(cx, |a| a.theme = None);
+                        appearance::trial::use_built_in(cx);
                     }),
             )
         })
@@ -1348,9 +1675,30 @@ fn theme_row(
                         name = name
                     )))
                     .test_support()
-                    .on_click(move |_, _, cx| start_editing(&edit_editor, &edit_theme, mode, cx)),
+                    .on_click(move |_, window, cx| {
+                        open_studio(&edit_editor, &edit_theme, mode, false, window, cx)
+                    }),
             )
         })
+        .child(
+            Button::new(key("duplicate"))
+                .label(t!("appearance-themes-duplicate"))
+                .accessibility_label(t!("appearance-themes-duplicate-named", name = name))
+                .small()
+                .ghost()
+                .disabled(!can_duplicate || !supported)
+                .on_click(move |_, _, cx| {
+                    let duplicate = look::duplicate_theme(
+                        &duplicate_source,
+                        &duplicate_name,
+                        made_with(),
+                        &now(),
+                    );
+                    let name = duplicate.name.as_deref().unwrap_or_default();
+                    let note = t!("appearance-themes-duplicated", name = name);
+                    save(&duplicate_editor, duplicate, SaveTheme::Add(note), cx);
+                }),
+        )
         .child(
             button(key("export"), t!("appearance-themes-export"), theme)
                 .aria_label(SharedString::from(t!(
@@ -1394,175 +1742,685 @@ fn theme_row(
         )
 }
 
-fn seed_label(seed: Seed) -> &'static str {
-    match seed {
-        Seed::Canvas => t!("appearance-seed-canvas"),
-        Seed::Surface => t!("appearance-seed-surface"),
-        Seed::Overlay => t!("appearance-seed-overlay"),
-        Seed::Ink => t!("appearance-seed-ink"),
-        Seed::Muted => t!("appearance-seed-muted"),
-        Seed::Accent => t!("appearance-seed-accent"),
-    }
-}
-
-fn seed_key(seed: Seed) -> &'static str {
-    match seed {
-        Seed::Canvas => "canvas",
-        Seed::Surface => "surface",
-        Seed::Overlay => "overlay",
-        Seed::Ink => "ink",
-        Seed::Muted => "muted",
-        Seed::Accent => "accent",
-    }
-}
-
-fn start_editing(editor: &Entity<Editor>, user_theme: &UserTheme, mode: Mode, cx: &mut App) {
-    editor.update(cx, |e, _| {
-        e.editing = Some((user_theme.clone(), mode));
-        e.notice = None;
-        e.fill_seeds = true;
-        e.background.reset(user_theme.background.clone());
-    });
-    if let Some(path) = user_theme
-        .background
-        .as_ref()
-        .and_then(|b| b.url.clone())
-        .filter(|p| look::is_upload_path(p))
-    {
-        background::load_thumb(editor, path, cx);
-    }
-    cx.refresh_windows();
-}
-
-fn seed_editor(
+fn open_studio(
+    editor: &Entity<Editor>,
     user_theme: &UserTheme,
     mode: Mode,
-    inputs: &[(Seed, Entity<InputState>)],
+    new_theme: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if editor.read(cx).busy {
+        return;
+    }
+    let state = editor.read(cx);
+    let resume = !new_theme
+        && state
+            .editing
+            .as_ref()
+            .is_some_and(|(draft, _)| draft.id == user_theme.id);
+    let session = state.session.clone();
+    let focus = state.focus.clone();
+    let recovery = if resume {
+        None
+    } else {
+        editor.update(cx, |e, _| {
+            if let Some(mut recovery) = e.recovery.take() {
+                recovery.flush();
+            }
+        });
+        fill_theme_fields(editor, user_theme, mode, window, cx);
+        drafts::Recovery::for_theme(editor.read(cx), user_theme, new_theme, cx)
+    };
+    editor.update(cx, |e, _| {
+        if !resume {
+            e.editing = Some((user_theme.clone(), mode));
+            e.tab = ThemeTab::Colors;
+            e.new_theme = new_theme;
+            e.conflict = None;
+            e.recovery = recovery;
+            e.edit_generation = e.edit_generation.wrapping_add(1);
+            e.notice = None;
+        }
+        e.studio_open = true;
+        e.collapsed = false;
+        e.compare = false;
+    });
+    crate::settings::close(&session, cx);
+    refresh_studio(editor, cx);
+    window.on_next_frame(move |window, cx| focus.focus(window, cx));
+}
+
+fn fill_theme_fields(
+    editor: &Entity<Editor>,
+    theme: &UserTheme,
+    mode: Mode,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let css = editor.read(cx).css.clone();
+    let name = editor.read(cx).name.clone();
+    fill_seeds(editor, theme, mode, window, cx);
+    css.update(cx, |input, cx| {
+        input.set_value(theme.css.clone().unwrap_or_default(), window, cx);
+    });
+    name.update(cx, |input, cx| {
+        input.set_value(theme.name.clone().unwrap_or_default(), window, cx);
+    });
+}
+
+fn fill_seeds(
+    editor: &Entity<Editor>,
+    theme: &UserTheme,
+    mode: Mode,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let seeds = look::drawn_seeds(theme, mode);
+    for field in editor.read(cx).seeds.clone() {
+        field.fill(&seeds, window, cx);
+    }
+}
+
+fn draft_fields(
+    editor: &Editor,
+    base: &UserTheme,
+    mode: Mode,
+    cx: &App,
+) -> Result<UserTheme, &'static str> {
+    let (draft, error) = snapshot_fields(editor, base, mode, cx);
+    error.map_or(Ok(draft), Err)
+}
+
+fn snapshot_fields(
+    editor: &Editor,
+    base: &UserTheme,
+    mode: Mode,
+    cx: &App,
+) -> (UserTheme, Option<&'static str>) {
+    let mut draft = base.clone();
+    let mut error = None;
+    let shown = look::drawn_seeds(base, mode);
+    if look::theme_seeds(base, mode).is_some() {
+        let mut colors = shown;
+        for field in &editor.seeds {
+            if let Some(color) = field.value(cx) {
+                field.seed.set(&mut colors, color);
+            } else {
+                error = Some(t!("appearance-accent-custom-invalid"));
+            }
+        }
+        if colors != shown {
+            look::set_theme_seeds(&mut draft, mode, Some(colors));
+        }
+    }
+    let css = editor.css.read(cx).value();
+    if css.len() > look::MAX_THEME_CSS {
+        error.get_or_insert(t!("appearance-themes-import-css-too-long"));
+    }
+    if css.len() <= look::MAX_IMPORT && &*css != base.css.as_deref().unwrap_or_default() {
+        draft.css = Some(css.to_string());
+    }
+    let name = editor.name.read(cx).value();
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > look::MAX_THEME_NAME {
+        error.get_or_insert(t!("appearance-studio-name-error"));
+    }
+    if name != base.name.as_deref().unwrap_or_default() {
+        draft.name = Some(name.chars().take(look::MAX_THEME_NAME + 1).collect());
+    }
+    (draft, error)
+}
+
+fn refresh_studio(editor: &Entity<Editor>, cx: &mut App) {
+    let state = editor.read(cx);
+    if state.studio_open
+        && let Some((base, mode)) = &state.editing
+    {
+        let mode = *mode;
+        let compare = state.compare;
+        let (draft, error) = snapshot_fields(state, base, mode, cx);
+        let theme = if error.is_some() {
+            base.clone()
+        } else {
+            draft.clone()
+        };
+        drafts::remember(editor, &draft, mode, cx);
+        appearance::set_studio(
+            Some(appearance::StudioPreview {
+                theme,
+                mode,
+                compare,
+            }),
+            cx,
+        );
+    }
+}
+
+fn hide_studio(editor: &Entity<Editor>, discard: bool, cx: &mut App) {
+    editor.update(cx, |editor, cx| {
+        editor.studio_open = false;
+        if editor.uploading {
+            editor.uploading = false;
+            editor.busy = false;
+        }
+        editor
+            .background_preview
+            .update(cx, |preview, cx| preview.clear(None, cx));
+        if discard {
+            if let Some(mut recovery) = editor.recovery.take()
+                && let Some(id) = editor
+                    .editing
+                    .as_ref()
+                    .and_then(|(theme, _)| theme.id.as_deref())
+            {
+                recovery.discard(id);
+            }
+            editor.editing = None;
+            editor.conflict = None;
+            editor.notice = None;
+            editor.edit_generation = editor.edit_generation.wrapping_add(1);
+        }
+    });
+    appearance::set_studio(None, cx);
+}
+
+fn switch_preview_mode(editor: &Entity<Editor>, mode: Mode, window: &mut Window, cx: &mut App) {
+    let state = editor.read(cx);
+    let Some((base, current)) = &state.editing else {
+        return;
+    };
+    if *current == mode {
+        return;
+    }
+    match draft_fields(state, base, *current, cx) {
+        Ok(draft) => {
+            fill_seeds(editor, &draft, mode, window, cx);
+            editor.update(cx, |editor, _| {
+                editor.editing = Some((draft, mode));
+                editor.notice = None;
+            });
+            refresh_studio(editor, cx);
+        }
+        Err(message) => say(editor, message, true, cx),
+    }
+}
+
+pub(crate) const STUDIO_WIDTH: f32 = 360.;
+
+pub(crate) fn studio_view(
+    session: &Entity<Session>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<(AnyElement, bool)> {
+    let editor = cx.try_global::<Editors>()?.0.clone();
+    let state = editor.read(cx);
+    if state.session != *session || !state.studio_open {
+        return None;
+    }
+    let (draft, mode) = state.editing.clone()?;
+    let docked = window.viewport_size().width > px(700.);
+    let collapsed = !docked && state.collapsed;
+    let focus = state.focus.clone();
+    let busy = state.busy;
+    let safe = Theme::from_compiled(&look::compile(&appearance::look(cx), mode, &[], false));
+    let collapse = editor.clone();
+    let dismiss = editor.clone();
+    let panel = div()
+        .id("theme-studio")
+        .test_support()
+        .role(Role::Group)
+        .aria_label(t!("appearance-studio-title"))
+        .track_focus(&focus)
+        .flex()
+        .flex_col()
+        .min_h_0()
+        .occlude()
+        .bg(safe.panel)
+        .text_color(safe.text)
+        .when(docked, |panel| {
+            panel
+                .w(px(STUDIO_WIDTH))
+                .h_full()
+                .flex_none()
+                .border_l_1()
+                .border_color(safe.border)
+        })
+        .when(!docked, |panel| {
+            panel
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .rounded_t(safe.radius_large)
+                .overflow_hidden()
+                .border_t_1()
+                .border_color(safe.border)
+        })
+        .when(!docked && !collapsed, |panel| panel.h(relative(0.58)))
+        .on_action(move |_: &crate::features::shortcuts::MarkRead, _, cx| {
+            cx.stop_propagation();
+            let editor = dismiss.read(cx);
+            if !editor.busy || editor.uploading {
+                hide_studio(&dismiss, true, cx);
+            }
+        })
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .border_b_1()
+                .border_color(safe.border)
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(t!("appearance-studio-title")),
+                )
+                .when(!docked, |header| {
+                    header.child(
+                        Button::new("theme-studio-collapse")
+                            .ghost()
+                            .disabled(busy)
+                            .label(if collapsed {
+                                t!("appearance-studio-expand")
+                            } else {
+                                t!("appearance-studio-collapse")
+                            })
+                            .on_click(move |_, _, cx| {
+                                collapse.update(cx, |editor, _| editor.collapsed = !collapsed);
+                                cx.refresh_windows();
+                            }),
+                    )
+                }),
+        )
+        .when(!collapsed, |panel| {
+            panel.child(theme_editor(&draft, mode, &editor, &safe, window, cx))
+        });
+    Some((panel.into_any_element(), docked))
+}
+
+fn theme_editor(
+    user_theme: &UserTheme,
+    mode: Mode,
     editor: &Entity<Editor>,
     theme: &Theme,
     window: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement + use<> {
-    if editor.read(cx).fill_seeds {
-        // Setting a field's text needs the window, so it waits for a draw.
-        let drawn = look::drawn_seeds(user_theme, mode);
-        for (seed, input) in inputs {
-            let value = look::to_hex(seed.get(&drawn));
-            input.update(cx, |s, cx| s.set_value(value, window, cx));
-        }
-        editor.update(cx, |e, _| e.fill_seeds = false);
-    }
-    let name = user_theme.name.clone().unwrap_or_default();
-    let mode_name = match mode {
-        Mode::Dark => t!("appearance-themes-editing-dark"),
-        Mode::Light => t!("appearance-themes-editing-light"),
-    };
+    let state = editor.read(cx);
+    let tab = state.tab;
+    let busy = state.busy;
+    let can_cancel = !busy || state.uploading;
+    let compare = state.compare;
+    let conflict = state.conflict.is_some();
+    let can_restore = state
+        .recovery
+        .as_ref()
+        .is_some_and(|recovery| recovery.offer.is_some());
+    let name = state.name.clone();
     let mut form = div()
-        .id("appearance-theme-editor")
+        .id("theme-studio-content")
         .test_support()
         .role(Role::Form)
-        .aria_label(SharedString::from(t!(
-            "appearance-themes-editing",
-            name = name,
-            mode = mode_name
-        )))
+        .aria_label(t!("appearance-studio-title"))
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
         .flex()
         .flex_col()
         .gap_2()
-        .p_3()
-        .rounded(theme.radius_large)
-        .bg(theme.panel)
+        .p_3();
+    let conflict_banner = conflict.then(|| {
+        let keep = editor.clone();
+        let load = editor.clone();
+        div()
+            .id("theme-studio-conflict")
+            .test_support()
+            .role(Role::Alert)
+            .aria_label(t!("appearance-themes-conflict"))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.warning)
+                    .child(t!("appearance-themes-conflict")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        Button::new("theme-studio-keep-mine")
+                            .label(t!("appearance-studio-keep-mine"))
+                            .disabled(busy)
+                            .on_click(move |_, _, cx| save_edit(&keep, true, cx)),
+                    )
+                    .child(
+                        Button::new("theme-studio-load-saved")
+                            .label(t!("appearance-studio-load-saved"))
+                            .disabled(busy)
+                            .on_click(move |_, window, cx| load_saved_theme(&load, window, cx)),
+                    ),
+            )
+    });
+    let restore_banner = (can_restore && !conflict).then(|| {
+        let restore = editor.clone();
+        let dismiss = editor.clone();
+        div()
+            .id("theme-studio-recovery")
+            .test_support()
+            .role(Role::Status)
+            .aria_label(t!("appearance-studio-recovery"))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.muted)
+                    .child(t!("appearance-studio-recovery")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        Button::new("theme-studio-restore")
+                            .label(t!("appearance-studio-restore"))
+                            .disabled(busy)
+                            .on_click(move |_, window, cx| drafts::restore(&restore, window, cx)),
+                    )
+                    .child(
+                        Button::new("theme-studio-dismiss-recovery")
+                            .label(t!("appearance-studio-dismiss-recovery"))
+                            .ghost()
+                            .disabled(busy)
+                            .on_click(move |_, _, cx| drafts::dismiss(&dismiss, cx)),
+                    ),
+            )
+    });
+    form = form
+        .child(div().text_sm().child(t!("appearance-themes-name")))
         .child(
-            div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.text)
-                .child(t!(
-                    "appearance-themes-editing",
-                    name = name,
-                    mode = mode_name
-                )),
+            Input::new(&name)
+                .id("appearance-themes-name")
+                .aria_label(t!("appearance-themes-name")),
         );
-    for (seed, input) in inputs {
+    let tabs = div()
+        .id("appearance-theme-tabs")
+        .test_support()
+        .role(Role::RadioGroup)
+        .aria_label(t!("appearance-themes-edit"))
+        .flex()
+        .flex_wrap()
+        .gap_2()
+        .children(
+            [
+                (ThemeTab::Colors, "colors", t!("appearance-themes-colors")),
+                (
+                    ThemeTab::Background,
+                    "background",
+                    t!("appearance-themes-background"),
+                ),
+                (ThemeTab::Css, "css", t!("appearance-themes-css-tab")),
+            ]
+            .map(|(choice, key, label)| {
+                let editor = editor.clone();
+                option(
+                    format!("appearance-theme-tab-{key}"),
+                    label,
+                    choice == tab,
+                    theme,
+                )
+                .test_support()
+                .reachable(theme)
+                .on_click(move |_, _, cx| {
+                    editor.update(cx, |e, _| e.tab = choice);
+                    cx.refresh_windows();
+                })
+            }),
+        );
+    form = form.child(tabs);
+    if tab == ThemeTab::Background {
+        form = form.child(background::render(
+            editor, user_theme, mode, theme, window, cx,
+        ));
+    } else {
+        let preview = editor.read(cx).background_preview.clone();
+        preview.update(cx, |view, cx| view.clear(Some(window), cx));
+    }
+    if tab == ThemeTab::Css {
+        form = form.child(css_editor(editor, user_theme, mode, theme, cx));
+    } else if tab == ThemeTab::Colors {
+        form = form.child(colors::render(editor, user_theme, mode, theme, cx));
+    }
+    if let Some((text, problem)) = editor.read(cx).notice.clone() {
         form = form.child(
             div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .w(px(120.))
-                        .text_sm()
-                        .text_color(theme.text)
-                        .child(seed_label(*seed)),
-                )
-                .child(
-                    div().w(px(120.)).child(
-                        Input::new(input)
-                            .id(SharedString::from(format!(
-                                "appearance-seed-{}",
-                                seed_key(*seed)
-                            )))
-                            .aria_label(seed_label(*seed)),
-                    ),
-                ),
+                .id("appearance-themes-notice")
+                .test_support()
+                .role(if problem { Role::Alert } else { Role::Status })
+                .aria_label(text.clone())
+                .text_sm()
+                .text_color(if problem { theme.danger } else { theme.online })
+                .child(text),
         );
     }
     let save_editor = editor.clone();
     let cancel_editor = editor.clone();
-    let edited = user_theme.clone();
-    let inputs: Vec<_> = inputs.to_vec();
-    form.child(background::section(editor, theme, window, cx))
+    let compare_editor = editor.clone();
+    div()
+        .id("appearance-theme-editor")
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h_0()
+        .children(conflict_banner)
+        .children(restore_banner)
+        .child(form)
         .child(
             div()
                 .flex()
+                .flex_wrap()
+                .justify_between()
+                .items_center()
                 .gap_2()
+                .p_3()
+                .border_t_1()
+                .border_color(theme.border)
                 .child(
-                    button("appearance-theme-save", t!("appearance-themes-save"), theme)
-                        .test_support()
-                        .reachable(theme)
-                        .on_click(move |_, _, cx| {
-                            if save_editor.read(cx).background.is_uploading() {
-                                return;
-                            }
-                            let mut next = edited.clone();
-                            next.background = save_editor.read(cx).background.value.clone();
-                            for (seed, input) in &inputs {
-                                let text = input.read(cx).value().trim().to_string();
-                                let text = if text.starts_with('#') {
-                                    text
-                                } else {
-                                    format!("#{text}")
-                                };
-                                let Some(color) = look::parse_hex(&text) else {
-                                    say(
-                                        &save_editor,
-                                        t!("appearance-accent-custom-invalid"),
-                                        true,
-                                        cx,
-                                    );
-                                    return;
-                                };
-                                look::set_seed(&mut next, mode, *seed, color);
-                            }
-                            let expected = edited.updated_at.clone();
-                            next.made_with = Some(made_with().into());
-                            save(&save_editor, next, expected, false, None, cx);
-                        }),
-                )
-                .child(
-                    button(
-                        "appearance-theme-cancel",
-                        t!("appearance-themes-cancel"),
+                    option(
+                        "theme-studio-compare",
+                        t!("appearance-studio-compare"),
+                        compare,
                         theme,
                     )
+                    .role(Role::Button)
                     .test_support()
                     .reachable(theme)
                     .on_click(move |_, _, cx| {
-                        cancel_editor.update(cx, |e, _| e.editing = None);
-                        cx.refresh_windows();
+                        compare_editor.update(cx, |editor, _| editor.compare = !compare);
+                        refresh_studio(&compare_editor, cx);
                     }),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Button::new("appearance-theme-save")
+                                .label(t!("appearance-themes-save"))
+                                .primary()
+                                .disabled(busy || conflict)
+                                .on_click(move |_, _, cx| save_edit(&save_editor, false, cx)),
+                        )
+                        .child(
+                            Button::new("appearance-theme-cancel")
+                                .label(t!("appearance-themes-cancel"))
+                                .ghost()
+                                .disabled(!can_cancel)
+                                .on_click(move |_, _, cx| {
+                                    hide_studio(&cancel_editor, true, cx);
+                                }),
+                        ),
                 ),
         )
+}
+
+fn css_editor(
+    editor: &Entity<Editor>,
+    draft: &UserTheme,
+    mode: Mode,
+    theme: &Theme,
+    cx: &App,
+) -> Div {
+    let input = &editor.read(cx).css;
+    let text = input.read(cx).value();
+    let size = text.len();
+    let mut form = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .id("appearance-theme-css-editor")
+                .test_support()
+                .child(
+                    Textarea::new(input)
+                        .aria_label(t!("appearance-themes-css-editor"))
+                        .font_family(theme.mono_font.clone()),
+                ),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(if size > look::MAX_THEME_CSS {
+                    theme.danger
+                } else {
+                    theme.muted
+                })
+                .child(t!(
+                    "appearance-themes-css-size",
+                    used = size,
+                    limit = look::MAX_THEME_CSS
+                )),
+        );
+    if !appearance::server_allows_css(cx) {
+        form = form.child(
+            div()
+                .text_sm()
+                .text_color(theme.warning)
+                .child(t!("appearance-themes-css-server-off")),
+        );
+    } else if !appearance::css_allowed(cx) {
+        form = form.child(
+            div()
+                .text_sm()
+                .text_color(theme.muted)
+                .child(t!("appearance-themes-css-account-off")),
+        );
+    }
+    if size <= look::MAX_THEME_CSS && !text.trim().is_empty() {
+        let mut base = appearance::look(cx);
+        base.theme.clone_from(&draft.id);
+        let mut preview = draft.clone();
+        preview.css = Some(text.to_string());
+        let compiled = look::compile_with_css(&base, mode, &[preview], false, true);
+        if let Some(css) = &compiled.css {
+            form = form.child(css_report(
+                "appearance-draft-css",
+                draft.name.as_deref().unwrap_or_default(),
+                css,
+                theme,
+            ));
+        }
+    }
+    form.child(
+        div()
+            .text_sm()
+            .text_color(theme.muted)
+            .child(t!("appearance-themes-css-switch-help")),
+    )
+}
+
+fn load_saved_theme(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) {
+    let state = editor.read(cx);
+    let (Some(theirs), Some((_, mode))) = (&state.conflict, &state.editing) else {
+        return;
+    };
+    if state.busy {
+        return;
+    }
+    let theirs = (**theirs).clone();
+    let mode = *mode;
+    fill_theme_fields(editor, &theirs, mode, window, cx);
+    editor.update(cx, |e, _| {
+        if let Some(recovery) = &mut e.recovery {
+            recovery.replace_original(&theirs);
+        }
+        e.editing = Some((theirs, mode));
+        e.new_theme = false;
+        e.conflict = None;
+        e.notice = None;
+        e.edit_generation = e.edit_generation.wrapping_add(1);
+    });
+    refresh_studio(editor, cx);
+    editor.read(cx).name.focus_handle(cx).focus(window, cx);
+    cx.refresh_windows();
+}
+
+fn save_edit(editor: &Entity<Editor>, force: bool, cx: &mut App) {
+    let state = editor.read(cx);
+    let Some((base, mode)) = &state.editing else {
+        return;
+    };
+    if state.busy || (force != state.conflict.is_some()) {
+        return;
+    }
+    let mut draft = match draft_fields(state, base, *mode, cx) {
+        Ok(draft) => draft,
+        Err(message) => return say(editor, message, true, cx),
+    };
+    draft.made_with = Some(made_with().into());
+    let new_theme = state.new_theme;
+    let reason = SaveTheme::Studio { new_theme, force };
+    if new_theme && !force {
+        save(editor, draft, reason, cx);
+        return;
+    }
+    let current = state.conflict.as_deref().cloned();
+    let preview = draft.clone();
+    let keep_editor = editor.clone();
+    let generation = state.edit_generation;
+    if appearance::trial::preview_edit(
+        &draft,
+        current.as_ref(),
+        move |cx| {
+            if keep_editor.read(cx).edit_generation == generation {
+                save(&keep_editor, preview, reason, cx);
+            }
+        },
+        cx,
+    ) {
+        hide_studio(editor, false, cx);
+    } else {
+        save(editor, draft, SaveTheme::Studio { new_theme, force }, cx);
+    }
 }
 
 fn made_with() -> &'static str {
@@ -1573,49 +2431,98 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-/// Save `user_theme` to the account; `then_use` applies it once stored.
-fn save(
-    editor: &Entity<Editor>,
-    user_theme: UserTheme,
-    expected: Option<String>,
-    then_use: bool,
-    done: Option<String>,
-    cx: &mut App,
-) {
+enum SaveTheme {
+    Studio { new_theme: bool, force: bool },
+    Add(String),
+}
+
+fn save(editor: &Entity<Editor>, user_theme: UserTheme, reason: SaveTheme, cx: &mut App) {
     let Some(client) = editor.read(cx).session.read(cx).client().cloned() else {
         return;
     };
-    editor.update(cx, |e, _| e.busy = true);
+    if editor.read(cx).busy {
+        return;
+    }
+    editor.update(cx, |e, _| {
+        e.busy = true;
+        e.notice = None;
+    });
     let id = user_theme.id.clone();
+    let saves_draft = matches!(reason, SaveTheme::Studio { .. });
+    let then_use = matches!(
+        reason,
+        SaveTheme::Studio {
+            new_theme: true,
+            ..
+        }
+    );
+    let force = matches!(reason, SaveTheme::Studio { force: true, .. });
+    let expected = if saves_draft && !then_use {
+        user_theme.updated_at.clone()
+    } else {
+        None
+    };
     let task = client.request(move |api| async move {
-        api.save_theme(&user_theme, expected.as_deref(), false)
+        api.save_theme(&user_theme, expected.as_deref(), force)
             .await
     });
     let editor = editor.clone();
     cx.spawn(async move |cx| {
         let result = task.await;
         cx.update(|cx| {
-            editor.update(cx, |e, _| e.busy = false);
+            if !editor
+                .read(cx)
+                .session
+                .read(cx)
+                .client()
+                .is_some_and(|now| Rc::ptr_eq(now, &client))
+            {
+                return;
+            }
+            editor.update(cx, |e, _| {
+                e.busy = false;
+                if saves_draft && !matches!(&result, Ok(Ok(ThemeSave::Saved(_)))) {
+                    e.studio_open = true;
+                }
+            });
             match result {
-                Ok(Ok(themes)) => {
+                Ok(Ok(ThemeSave::Saved(themes))) => {
                     appearance::set_library(themes, cx);
-                    editor.update(cx, |e, _| {
-                        e.editing = None;
-                        e.notice = done.map(|text| (text.into(), false));
-                    });
-                    if then_use {
-                        appearance::edit(cx, |a| a.theme = id);
+                    if saves_draft {
+                        hide_studio(&editor, true, cx);
+                    }
+                    if let SaveTheme::Add(text) = reason {
+                        say(&editor, text, false, cx);
+                    }
+                    if then_use && let Some(id) = id {
+                        appearance::trial::choose(&id, cx);
                     }
                     appearance::apply(cx);
                 }
-                Ok(Err(ircord_client::api::ApiError::Http { status: 412, .. })) => {
-                    editor.update(cx, |e, _| e.editing = None);
-                    say(&editor, t!("appearance-themes-conflict"), true, cx);
+                Ok(Ok(ThemeSave::Conflict(theirs))) => {
+                    if saves_draft {
+                        editor.update(cx, |e, _| e.conflict = Some(theirs));
+                    } else {
+                        say(&editor, t!("appearance-themes-conflict-add"), true, cx);
+                    }
+                    client.watch_document(&ircord_client::documents::THEMES);
+                }
+                Ok(Err(ApiError::Http {
+                    status: 412,
+                    detail,
+                })) => {
+                    say(
+                        &editor,
+                        t!("appearance-themes-failed", error = detail),
+                        true,
+                        cx,
+                    );
                     client.watch_document(&ircord_client::documents::THEMES);
                 }
                 Ok(Err(e)) => say(&editor, t!("appearance-themes-failed", error = e), true, cx),
                 Err(e) => say(&editor, t!("appearance-themes-failed", error = e), true, cx),
             }
+            refresh_studio(&editor, cx);
             cx.refresh_windows();
         });
     })
@@ -1638,7 +2545,7 @@ fn import(editor: &Entity<Editor>, text: &str, cx: &mut App) {
         Ok(user_theme) => {
             let name = user_theme.name.clone().unwrap_or_default();
             let note = t!("appearance-themes-imported", name = name);
-            save(editor, user_theme, None, false, Some(note), cx);
+            save(editor, user_theme, SaveTheme::Add(note), cx);
             let input = editor.read(cx).import.clone();
             if let Some(window) = cx.windows().first() {
                 let _ = window.update(cx, |_, window, cx| {

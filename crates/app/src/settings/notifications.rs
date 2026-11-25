@@ -39,6 +39,7 @@ use ircord_client::store::notify_settings::{self as ns, DeviceChange, Level, Uni
 use ircord_client::store::topic;
 use std::rc::Rc;
 
+use super::read_aloud::ReadAloudView;
 use super::{block, row};
 use crate::registry::{self, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection};
 use crate::session::{Session, SessionEvent};
@@ -80,6 +81,11 @@ pub fn init(cx: &mut App) {
             .group(SettingsGroup::App)
             .order(30)
             .keywords(t!("notifications-keywords").split(", "))
+            .row(
+                SettingsRow::new("read-aloud", t!("speech-read-aloud"))
+                    .description(t!("speech-service-help"))
+                    .keywords(t!("speech-keywords")),
+            )
             .row(row(
                 "notifications-status",
                 t!("notifications-device-title"),
@@ -245,6 +251,7 @@ pub struct NotificationsView {
     word_problem: Option<WordProblem>,
     /// The last test notification: whether it was shown, and what to say.
     tested: Option<bool>,
+    read_aloud: Entity<ReadAloudView>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -291,6 +298,7 @@ impl NotificationsView {
                 _ => {}
             },
         ));
+        let read_aloud = cx.new(|cx| ReadAloudView::new(session.clone(), window, cx));
         Self {
             session,
             ctx: None,
@@ -299,6 +307,7 @@ impl NotificationsView {
             word,
             word_problem: None,
             tested: None,
+            read_aloud,
             _subscriptions: subscriptions,
         }
     }
@@ -620,6 +629,13 @@ impl Render for NotificationsView {
             }
         }
         page.child(self.other_devices(&ctx, &state, Some(client.handle().clone()), &theme))
+            .child(block(
+                &ctx,
+                "read-aloud",
+                t!("speech-read-aloud"),
+                self.read_aloud.clone(),
+                &theme,
+            ))
             .into_any_element()
     }
 }

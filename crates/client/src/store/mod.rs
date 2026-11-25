@@ -28,6 +28,7 @@ pub mod notify_settings;
 pub mod outbox;
 pub mod parties;
 pub mod people;
+pub mod read_aloud;
 pub mod saved;
 pub mod server_log;
 pub mod sidebar_order;
@@ -231,6 +232,11 @@ pub fn parse_time(text: &str) -> i64 {
         .unwrap_or(0)
 }
 
+/// A joined text channel that can be reopened by a saved selection.
+pub fn can_restore_channel(c: &Conversation) -> bool {
+    c.kind == ConversationKind::Channel && c.party.is_none() && c.joined && c.kicked.is_none()
+}
+
 /// Every sub-state's hooks, in one fixed order. This list is written once.
 macro_rules! each_part {
     ($hook:ident($w:expr, $($arg:expr),*)) => {{
@@ -348,6 +354,25 @@ impl Workspace {
             )
         });
         list
+    }
+
+    /// Where to land on a network tab, in the same order as the web client.
+    pub fn network_conversation(
+        &self,
+        network_id: &str,
+        last_channel: Option<&str>,
+    ) -> Option<&Conversation> {
+        let conversations = || {
+            self.conversations
+                .iter()
+                .filter(|c| c.network_id == network_id)
+        };
+        last_channel
+            .and_then(|id| conversations().find(|c| c.id == id && can_restore_channel(c)))
+            .or_else(|| conversations().find(|c| can_restore_channel(c)))
+            .or_else(|| {
+                conversations().find(|c| c.kind == ConversationKind::Direct || c.party.is_some())
+            })
     }
 
     /// Unread and mention totals for a network's rail badge.
@@ -714,6 +739,33 @@ mod tests {
         let names: Vec<&str> = w.sidebar("n1").iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["zeta", "alpha", "beta", "bob"]);
         assert_eq!(w.network_counts("n1"), (2, 1));
+    }
+
+    #[test]
+    fn a_network_reopens_its_last_joined_channel_with_a_safe_fallback() {
+        let mut w = Workspace::from_snapshot(snapshot(1));
+        let land = |w: &Workspace, last| w.network_conversation("n1", last).map(|c| c.id.clone());
+        assert_eq!(land(&w, Some("c-a")).as_deref(), Some("c-a"));
+        assert_eq!(land(&w, Some("c-dm")).as_deref(), Some("c-b"));
+        for c in &mut w.conversations {
+            if c.id == "c-a" {
+                c.kicked = Some(Kick::default());
+            } else if c.id == "c-z" {
+                c.joined = false;
+            }
+        }
+        for id in ["c-a", "c-z", "removed"] {
+            assert_eq!(land(&w, Some(id)).as_deref(), Some("c-b"));
+        }
+        w.conversations
+            .iter_mut()
+            .find(|c| c.id == "c-b")
+            .unwrap()
+            .network_id = "n2".into();
+        assert_eq!(land(&w, Some("c-b")).as_deref(), Some("c-dm"));
+        w.conversations
+            .retain(|c| c.kind != ConversationKind::Direct);
+        assert_eq!(land(&w, Some("c-a")), None);
     }
 
     #[test]

@@ -13,7 +13,7 @@
 
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-use gpui_kit::component::{Icon, Sizable};
+use gpui_kit::component::{Icon, Side, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::ConversationKind;
@@ -125,9 +125,29 @@ pub fn fill<C: Clone + MenuTitle + 'static>(
     if items.is_empty() {
         return menu;
     }
-    // The title row: not a menu item, so arrow keys pass over it.
+    // The kit reserves an icon column for every row when any row has an
+    // icon. The web's title starts at the row edge, not in that column.
     if let Some(title) = ctx.menu_title(cx) {
-        menu = menu.item(PopupMenuItem::label(title)).separator();
+        let has_icons = items
+            .iter()
+            .any(|item| item.parent.is_none() && item.icon.is_some());
+        menu = menu
+            .item(
+                PopupMenuItem::element(move |_, cx| {
+                    div()
+                        .id("context-menu-title")
+                        .test_support()
+                        .role(Role::MenuItem)
+                        .aria_label(title.clone())
+                        .when(has_icons, |this| this.ml_neg_4())
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(crate::theme::get(cx).muted)
+                        .child(title.clone())
+                })
+                .disabled(true),
+            )
+            .separator();
     }
     let (top, nested): (Vec<_>, Vec<_>) = items.into_iter().partition(|i| i.parent.is_none());
     rows(menu, top, nested, ctx, window, cx)
@@ -143,6 +163,17 @@ fn rows<C: Clone + 'static>(
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
+    let viewport = window.viewport_size();
+    let scale = crate::theme::get(cx).scale;
+    let width = (viewport.width - px(16.)).max(px(1.));
+    menu = menu
+        .min_w(px(224. * scale).min(width))
+        .max_w(px(288. * scale).min(width))
+        .max_h((viewport.height - px(16.)).max(px(1.)))
+        .scrollable(true)
+        .check_side(Side::Right);
+    let has_icons = items.iter().any(|item| item.icon.is_some());
+    let has_checked_items = items.iter().any(|item| item.checked);
     let breaks = separators(&items);
     for (item, separate) in items.into_iter().zip(breaks) {
         if separate {
@@ -154,11 +185,14 @@ fn rows<C: Clone + 'static>(
             .cloned()
             .collect();
         if under.is_empty() {
-            menu = menu.item(entry(item, ctx.clone(), cx));
+            menu = menu.item(entry(item, ctx.clone(), has_icons, has_checked_items, cx));
             continue;
         }
         let (ctx, rest) = (ctx.clone(), nested.clone());
-        let icon = item.icon.clone().map(Icon::new);
+        let icon = item
+            .icon
+            .clone()
+            .map(|icon| Icon::new(icon).text_color(crate::theme::get(cx).muted));
         menu = menu.submenu_with_icon(
             icon,
             item.label.clone(),
@@ -186,7 +220,13 @@ pub fn separators<C>(items: &[MenuItem<C>]) -> Vec<bool> {
     before
 }
 
-fn entry<C: Clone + 'static>(item: MenuItem<C>, ctx: C, cx: &App) -> PopupMenuItem {
+fn entry<C: Clone + 'static>(
+    item: MenuItem<C>,
+    ctx: C,
+    has_icons: bool,
+    has_checked_items: bool,
+    cx: &App,
+) -> PopupMenuItem {
     if item.heading {
         return PopupMenuItem::label(item.label.clone());
     }
@@ -203,7 +243,12 @@ fn entry<C: Clone + 'static>(item: MenuItem<C>, ctx: C, cx: &App) -> PopupMenuIt
                 .aria_label(label.clone())
                 .aria_description(reason.clone())
                 .flex()
+                .flex_1()
+                .min_w_0()
                 .flex_col()
+                .justify_center()
+                .min_h(px(36. * theme.scale))
+                .when(has_icons, |this| this.ml(px(6. * theme.scale)))
                 .child(div().text_color(theme.faint).child(label.clone()))
                 .child(
                     div()
@@ -223,36 +268,43 @@ fn entry<C: Clone + 'static>(item: MenuItem<C>, ctx: C, cx: &App) -> PopupMenuIt
         return entry;
     }
     let run = item.run.clone();
-    if item.danger {
-        // Drawn by hand so the label and its icon take the danger colour.
-        let label = item.label.clone();
-        let id = ElementId::Name(format!("menu-danger-{}", item.id).into());
-        let mut entry = PopupMenuItem::element(move |_, cx| {
+    let label = item.label.clone();
+    let danger = item.danger;
+    let prefix = if danger { "menu-danger" } else { "menu-entry" };
+    let id = ElementId::Name(format!("{prefix}-{}", item.id).into());
+    // Standard rows expose the check and accessible label on the same node.
+    let row = if has_checked_items && !danger {
+        PopupMenuItem::new(label)
+    } else {
+        PopupMenuItem::element(move |_, cx| {
             let theme = crate::theme::get(cx);
             div()
                 .id(id.clone())
                 .test_support()
                 .role(Role::MenuItem)
                 .aria_label(label.clone())
-                .text_color(theme.danger)
-                .child(label.clone())
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .items_center()
+                .min_h(px(36. * theme.scale))
+                .when(has_icons, |this| this.ml(px(6. * theme.scale)))
+                .when(danger, |this| this.text_color(theme.danger))
+                .child(div().truncate().child(label.clone()))
         })
-        .on_click(move |_, window, cx| run(&ctx, window, cx));
-        if let Some(icon) = item.icon.clone() {
-            entry = entry.icon(
-                Icon::new(icon)
-                    .xsmall()
-                    .text_color(crate::theme::get(cx).danger),
-            );
-        }
-        return entry;
-    }
-    let mut entry = PopupMenuItem::new(item.label.clone())
+    };
+    let mut entry = row
         .checked(item.checked)
         .disabled(item.disabled)
         .on_click(move |_, window, cx| run(&ctx, window, cx));
-    if let Some(icon) = item.icon.clone() {
-        entry = entry.icon(icon);
+    if let Some(icon) = item.icon {
+        let theme = crate::theme::get(cx);
+        let icon = Icon::new(icon);
+        entry = entry.icon(if danger {
+            icon.xsmall().text_color(theme.danger)
+        } else {
+            icon.text_color(theme.muted)
+        });
     }
     entry
 }

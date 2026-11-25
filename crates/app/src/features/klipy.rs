@@ -5,7 +5,7 @@
 //!   `emotes.updated` names a new version; the picker library (saved GIFs,
 //!   use counts, skin tone) is the watched `library` document;
 //! - custom `:name:` in messages draw as pictures (`message/emoji.rs`);
-//! - the composer gets GIF and emoji buttons and the picker above the box
+//! - the composer gets GIF and emoji buttons and a floating picker above the box
 //!   (`composer/expressions.rs`); Ctrl+G (N1's `Gifs` key) opens the GIFs;
 //! - `:na` in the box suggests emoji;
 //! - "React" in the message menu opens the full emoji picker;
@@ -18,8 +18,11 @@
 
 use crate::ui::focus::Reachable;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::rc::Rc;
 
+use gpui_kit::TestSupportExt;
+use gpui_kit::component::WindowExt;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::Client;
@@ -36,30 +39,55 @@ use ircord_client::store::{Changes, Connection, PendingSend, SendState, Workspac
 use crate::composer::expressions::{self, PickerView, Purpose, Tab};
 use crate::composer::{self, ComposerView};
 use crate::features::commands::{self, ViewRequest};
+use crate::features::drafts;
 use crate::features::message_actions::{self, Mode};
 use crate::features::shortcuts::Gifs;
 use crate::message::emoji as pictures;
 use crate::registry::{self, ComposerCtx, MessageCtx, Slot, Suggestion, SuggestionProvider};
+use crate::route::Route;
 use crate::session::{Session, SessionEvent};
 use crate::sidebar::layout;
 use crate::theme;
 use crate::ui;
+
+mod popover;
 
 /// Suggestions `:na` offers at most.
 const SUGGESTIONS: usize = 8;
 
 #[derive(Default)]
 struct Expressions {
-    /// The open picker over a composer, and its conversation.
-    open: Option<(String, Entity<PickerView>)>,
+    open: Option<Opened>,
     /// The composer last drawn, for the GIF key.
-    composer: Option<ComposerCtx>,
+    composer: Option<(WeakEntity<Session>, WeakEntity<ComposerView>)>,
     /// Clients whose library this module watches.
     watched: HashSet<usize>,
-    /// Conversations with a `/gif` lookup running.
-    lookups: HashSet<String>,
+    /// Account and conversation pairs with a `/gif` lookup running.
+    lookups: HashMap<(usize, String), String>,
     /// Klipy's address and key, when set by [`configure`].
     klipy: Option<(String, String)>,
+}
+
+#[derive(Clone)]
+struct Opened {
+    composer: WeakEntity<ComposerView>,
+    session: EntityId,
+    conversation: String,
+    view: Entity<PickerView>,
+    return_to: ReturnFocus,
+}
+
+#[derive(Clone)]
+enum ReturnFocus {
+    Trigger(FocusHandle),
+    Draft { range: Range<usize>, reversed: bool },
+}
+
+impl Opened {
+    fn belongs_to(&self, ctx: &ComposerCtx) -> bool {
+        self.composer.entity_id() == ctx.composer.entity_id()
+            && self.conversation == ctx.conversation
+    }
 }
 
 impl Global for Expressions {}
@@ -68,6 +96,15 @@ pub fn init(cx: &mut App) {
     cx.default_global::<Expressions>();
     cx.observe_new::<Session>(|_, _, cx| {
         cx.subscribe_self(|session: &mut Session, event: &SessionEvent, cx| {
+            if matches!(event, SessionEvent::Selection | SessionEvent::Phase)
+                && cx.try_global::<Expressions>().and_then(|e| e.open.as_ref()).is_some_and(|open| {
+                    open.session == cx.entity_id()
+                        && (matches!(event, SessionEvent::Phase)
+                            || !matches!(session.route(), Some(Route::Conversation(id)) if id == open.conversation))
+                })
+            {
+                dismiss(cx);
+            }
             let SessionEvent::Changed(changes) = event else {
                 return;
             };
@@ -93,7 +130,9 @@ pub fn init(cx: &mut App) {
         r.inline_renderers.add(pictures::renderer());
         let c = &mut r.composer;
         c.tokens.add(pictures::token_provider());
-        c.above.add(Slot::new("expressions", picker_slot).order(20));
+        c.overlays.add(Slot::new("expressions", popover::slot));
+        c.above
+            .add(Slot::new("gif-lookup", lookup_status).order(30));
         c.buttons.add(Slot::new("gif", gif_button).order(20));
         c.buttons.add(Slot::new("emoji", emoji_button).order(30));
         c.suggestions.add(SuggestionProvider {
@@ -223,11 +262,8 @@ pub fn animate(w: &Workspace) -> bool {
 }
 
 fn refresh_picker(cx: &mut App) {
-    let open = cx
-        .try_global::<Expressions>()
-        .and_then(|e| e.open.as_ref().map(|(_, v)| v.clone()));
-    if let Some(view) = open {
-        view.update(cx, |_, cx| cx.notify());
+    if let Some(open) = opened(cx) {
+        open.view.update(cx, |_, cx| cx.notify());
     }
     cx.refresh_windows();
 }
@@ -373,6 +409,29 @@ pub fn send_gif(
     window: &mut Window,
     cx: &mut App,
 ) -> bool {
+    let mode = message_actions::mode(conversation, cx);
+    let reply = match &mode {
+        Some(Mode::Reply { message, .. }) => Some(message.as_str()),
+        _ => None,
+    };
+    if !send_gif_to(session, conversation, gif, query, reply, window, cx) {
+        return false;
+    }
+    if reply.is_some() {
+        message_actions::take_reply(conversation, cx);
+    }
+    true
+}
+
+fn send_gif_to(
+    session: &Entity<Session>,
+    conversation: &str,
+    gif: c::GIF,
+    query: &str,
+    reply: Option<&str>,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
     let Some(client) = session.read(cx).client().cloned() else {
         return false;
     };
@@ -388,10 +447,6 @@ pub fn send_gif(
         ui::toast::error(window, cx, t!("emoji-gif-unsafe"));
         return false;
     }
-    let reply = match message_actions::mode(conversation, cx) {
-        Some(Mode::Reply { message, .. }) => Some(message),
-        _ => None,
-    };
     let pending = PendingSend {
         client_id: random_id(),
         conversation_id: conversation.to_string(),
@@ -399,7 +454,7 @@ pub fn send_gif(
         action: false,
         state: SendState::Sending,
         created_ms: ircord_client::events::now_ms(),
-        reply_to_id: reply.clone(),
+        reply_to_id: reply.map(str::to_string),
         gif: Some(gif.clone()),
         ..Default::default()
     };
@@ -410,7 +465,7 @@ pub fn send_gif(
         text: gif.url.clone(),
         kind: Some(c::MessageInputBodyKind::Message),
         gif: Some(gif.clone()),
-        reply_to_id: reply.clone(),
+        reply_to_id: pending.reply_to_id.clone(),
         ..Default::default()
     };
     let (id, client_id) = (conversation.to_string(), pending.client_id);
@@ -421,9 +476,6 @@ pub fn send_gif(
             Err(e) => w.fail_send(&client_id, &e.to_string()).unwrap_or_default(),
         },
     );
-    if reply.is_some() {
-        message_actions::cancel(conversation, window, cx);
-    }
     if let Some(klipy) = klipy(cx) {
         let query = query.to_string();
         session
@@ -438,22 +490,34 @@ pub fn send_gif(
 /// command was typed, even if you moved on meanwhile. One lookup per
 /// conversation at a time.
 fn gif_command(request: &ViewRequest, window: &mut Window, cx: &mut App) {
+    let fail = |message: &str, window: &mut Window, cx: &mut App| {
+        ui::toast::info(window, cx, message.to_string());
+        if let Some(finished) = &request.finished {
+            finished(false, window, cx);
+        }
+    };
     let query = request.args.trim().to_string();
     if query.is_empty() {
-        return ui::toast::info(window, cx, t!("emoji-gif-usage"));
+        return fail(t!("emoji-gif-usage"), window, cx);
     }
     let Some(klipy) = klipy(cx) else {
-        return ui::toast::info(window, cx, t!("emoji-gif-not-configured"));
+        return fail(t!("emoji-gif-not-configured"), window, cx);
+    };
+    let session = request.session.clone();
+    let Some(client) = session.read(cx).client().cloned() else {
+        return;
     };
     let conversation = request.conversation.clone();
-    if !cx
-        .default_global::<Expressions>()
-        .lookups
-        .insert(conversation.clone())
-    {
-        return ui::toast::info(window, cx, t!("emoji-gif-pending"));
+    let lookup = (Rc::as_ptr(&client) as usize, conversation.clone());
+    let lookups = &mut cx.default_global::<Expressions>().lookups;
+    if lookups.contains_key(&lookup) {
+        return fail(t!("emoji-gif-pending"), window, cx);
     }
-    let session = request.session.clone();
+    lookups.insert(lookup.clone(), query.clone());
+    cx.refresh_windows();
+    let draft = request.draft.clone();
+    let finished = request.finished.clone();
+    let reply_mode = message_actions::mode(&conversation, cx);
     let search = query.clone();
     let task = session
         .read(cx)
@@ -463,24 +527,76 @@ fn gif_command(request: &ViewRequest, window: &mut Window, cx: &mut App) {
         .spawn(cx, async move |cx| {
             let result = task.await;
             cx.update(|window, cx| {
-                cx.default_global::<Expressions>()
-                    .lookups
-                    .remove(&conversation);
-                match result {
+                cx.default_global::<Expressions>().lookups.remove(&lookup);
+                cx.refresh_windows();
+                if !session
+                    .read(cx)
+                    .client()
+                    .is_some_and(|active| Rc::ptr_eq(active, &client))
+                {
+                    return;
+                }
+                let sent = match result {
                     Ok(Ok(page)) if page.items.is_empty() => {
-                        ui::toast::info(window, cx, t!("emoji-gif-no-match", query = query))
+                        ui::toast::info(window, cx, t!("emoji-gif-no-match", query = query));
+                        false
                     }
                     Ok(Ok(page)) => {
                         let gif = page.items[pick_random(page.items.len())].clone();
-                        send_gif(&session, &conversation, gif, &query, window, cx);
+                        let reply = match &reply_mode {
+                            Some(Mode::Reply { message, .. }) => Some(message.as_str()),
+                            _ => None,
+                        };
+                        let sent =
+                            send_gif_to(&session, &conversation, gif, &query, reply, window, cx);
+                        if sent
+                            && reply.is_some()
+                            && message_actions::mode(&conversation, cx) == reply_mode
+                        {
+                            message_actions::take_reply(&conversation, cx);
+                        }
+                        sent
                     }
-                    Ok(Err(e)) => ui::toast::error(window, cx, error_text(&e)),
-                    Err(e) => ui::toast::error(window, cx, e.to_string()),
+                    Ok(Err(e)) => {
+                        ui::toast::error(window, cx, error_text(&e));
+                        false
+                    }
+                    Err(e) => {
+                        ui::toast::error(window, cx, e.to_string());
+                        false
+                    }
+                };
+                if let Some(finished) = &finished {
+                    finished(sent, window, cx);
+                } else if sent {
+                    drafts::clear_if_matches(&session, &conversation, &draft, window, cx);
                 }
             })
             .ok();
         })
         .detach();
+}
+
+fn lookup_status(ctx: &ComposerCtx, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let client = ctx.session.read(cx).client()?;
+    let query = cx
+        .try_global::<Expressions>()?
+        .lookups
+        .get(&(Rc::as_ptr(client) as usize, ctx.conversation.clone()))?;
+    let label = SharedString::from(t!("emoji-gif-finding", query = query.as_str()));
+    Some(
+        div()
+            .id("composer-gif-lookup")
+            .test_support()
+            .role(Role::Status)
+            .aria_label(label.clone())
+            .px_2()
+            .truncate()
+            .text_xs()
+            .text_color(theme::get(cx).muted)
+            .child(label)
+            .into_any_element(),
+    )
 }
 
 /// A position below `len`, uniformly enough for picking a GIF.
@@ -494,31 +610,44 @@ fn pick_random(len: usize) -> usize {
 
 // ---- The picker over the composer ----
 
-fn remember(ctx: &ComposerCtx, cx: &mut App) {
-    cx.default_global::<Expressions>().composer = Some(ctx.clone());
-}
-
-fn open_view(cx: &App) -> Option<(String, Entity<PickerView>)> {
+fn opened(cx: &App) -> Option<Opened> {
     cx.try_global::<Expressions>()?.open.clone()
 }
 
 /// Whether the picker is open over the composer, and on which tab.
 pub fn open_tab(cx: &App) -> Option<Tab> {
-    open_view(cx).map(|(_, v)| v.read(cx).tab)
+    opened(cx).map(|open| open.view.read(cx).tab)
 }
 
-/// Open the picker on `tab` over the composer, switch it to `tab`, or close
-/// it when it already shows `tab`.
-pub fn toggle(ctx: &ComposerCtx, tab: Tab, window: &mut Window, cx: &mut App) {
-    if let Some((conversation, view)) = open_view(cx)
-        && conversation == ctx.conversation
+/// Open the picker from a toolbar control and return to it on Escape.
+pub(crate) fn toggle_from(
+    ctx: &ComposerCtx,
+    tab: Tab,
+    trigger: FocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    toggle(ctx, tab, ReturnFocus::Trigger(trigger), window, cx);
+}
+
+fn toggle(ctx: &ComposerCtx, tab: Tab, return_to: ReturnFocus, window: &mut Window, cx: &mut App) {
+    if let Some(open) = opened(cx)
+        && open.belongs_to(ctx)
     {
-        if view.read(cx).tab == tab {
+        if let ReturnFocus::Trigger(_) = &return_to {
+            cx.global_mut::<Expressions>()
+                .open
+                .as_mut()
+                .unwrap()
+                .return_to = return_to;
+        }
+        if open.view.read(cx).tab == tab {
             return close(window, cx);
         }
-        view.update(cx, |v, cx| v.set_tab(tab, window, cx));
-        let input = view.read(cx).search.clone();
-        input.update(cx, |s, cx| s.focus(window, cx));
+        open.view.update(cx, |v, cx| {
+            v.set_tab(tab, window, cx);
+            v.focus_search(window, cx);
+        });
         return;
     }
     let purpose = Purpose::Composer {
@@ -527,95 +656,128 @@ pub fn toggle(ctx: &ComposerCtx, tab: Tab, window: &mut Window, cx: &mut App) {
     };
     let session = ctx.session.clone();
     let view = cx.new(|cx| PickerView::new(session, purpose, tab, window, cx));
-    let input = view.read(cx).search.clone();
-    cx.default_global::<Expressions>().open = Some((ctx.conversation.clone(), view));
-    input.update(cx, |s, cx| s.focus(window, cx));
+    view.read(cx).search.focus_handle(cx).focus(window, cx);
+    cx.default_global::<Expressions>().open = Some(Opened {
+        composer: ctx.composer.downgrade(),
+        session: ctx.session.entity_id(),
+        conversation: ctx.conversation.clone(),
+        view,
+        return_to,
+    });
     cx.refresh_windows();
 }
 
-/// Close the picker over the composer and give the box the focus back.
-pub fn close(window: &mut Window, cx: &mut App) {
-    let e = cx.default_global::<Expressions>();
-    if e.open.take().is_none() {
+/// Allow the outside click or navigation to set its own focus.
+pub(crate) fn dismiss(cx: &mut App) {
+    if cx.default_global::<Expressions>().open.take().is_some() {
+        cx.refresh_windows();
+    }
+}
+
+pub(crate) fn close(window: &mut Window, cx: &mut App) {
+    let Some(open) = cx.default_global::<Expressions>().open.take() else {
         return;
-    }
-    let composer = e.composer.as_ref().map(|c| c.composer.clone());
-    if let Some(composer) = composer {
-        focus_box(&composer, window, cx);
+    };
+    match open.return_to {
+        ReturnFocus::Trigger(handle) => handle.focus(window, cx),
+        ReturnFocus::Draft { range, reversed } => {
+            if let Some(composer) = open.composer.upgrade() {
+                let input = composer.read(cx).input.clone();
+                input.update(cx, |s, cx| {
+                    s.set_selected_range_with_direction(range, reversed, cx);
+                    s.focus(window, cx);
+                });
+            }
+        }
     }
     cx.refresh_windows();
 }
 
-fn focus_box(composer: &Entity<ComposerView>, window: &mut Window, cx: &mut App) {
-    let input = composer.read(cx).input.clone();
-    input.update(cx, |s, cx| s.focus(window, cx));
+/// A pick continues in the draft, including the caret moved by an insertion.
+pub(crate) fn picked(window: &mut Window, cx: &mut App) {
+    if let Some(open) = opened(cx) {
+        dismiss(cx);
+        if let Some(composer) = open.composer.upgrade() {
+            composer.read(cx).input.focus_handle(cx).focus(window, cx);
+        }
+    }
 }
 
-/// Escape in the picker's search closes the picker (the field takes the key
-/// before the picker sees it).
+/// Escape from any picker control takes precedence over the global Mark read key.
 fn on_key(event: &KeystrokeEvent, window: &mut Window, cx: &mut App) {
     let key = &event.keystroke;
     if key.key != "escape" || key.modifiers.modified() {
         return;
     }
-    let Some((_, view)) = open_view(cx) else {
-        return;
-    };
-    let search = view.read(cx).search.clone();
-    if search.read(cx).focus_handle(cx).is_focused(window) {
+    if opened(cx).is_some()
+        && event
+            .context_stack
+            .iter()
+            .any(|c| c.contains(expressions::KEY_CONTEXT))
+    {
         close(window, cx);
+        cx.stop_propagation();
     }
 }
 
 fn toggle_gifs_from_key(window: &mut Window, cx: &mut App) {
-    let Some(ctx) = cx
+    let Some((session, composer)) = cx
         .try_global::<Expressions>()
-        .and_then(|e| e.composer.clone())
+        .and_then(|e| e.composer.as_ref())
+        .and_then(|(session, composer)| Some((session.upgrade()?, composer.upgrade()?)))
     else {
         return;
     };
-    toggle(&ctx, Tab::Gifs, window, cx);
-}
-
-fn picker_slot(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    remember(ctx, cx);
-    let (conversation, view) = open_view(cx)?;
-    if conversation != ctx.conversation {
-        return None;
+    let Some(Route::Conversation(conversation)) = session.read(cx).route() else {
+        return;
+    };
+    if window.has_active_dialog(cx)
+        || !session.read(cx).client().is_some_and(|c| {
+            c.read()
+                .conversation(&conversation)
+                .is_some_and(|c| c.joined)
+        })
+    {
+        return;
     }
-    let theme = theme::get(cx).clone();
-    Some(
-        div()
-            .flex()
-            .justify_end()
-            .pb_1()
-            .child(
-                div()
-                    .w(px(expressions::WIDTH))
-                    .max_w_full()
-                    .h(px(expressions::HEIGHT))
-                    .p_2()
-                    .rounded_lg()
-                    .bg(theme.sidebar)
-                    .border_1()
-                    .border_color(theme.hover)
-                    .shadow_md()
-                    .child(view),
-            )
-            .into_any_element(),
-    )
+    let ctx = ComposerCtx {
+        session,
+        conversation,
+        composer,
+    };
+    if commands::editor_is_open(&ctx, cx) {
+        return;
+    }
+    let input = ctx.composer.read(cx).input.read(cx);
+    let (range, reversed) = if input.focus_handle(cx).is_focused(window) {
+        (input.selected_range(), input.is_selection_reversed())
+    } else {
+        let end = input.value().len();
+        (end..end, false)
+    };
+    toggle(
+        &ctx,
+        Tab::Gifs,
+        ReturnFocus::Draft { range, reversed },
+        window,
+        cx,
+    );
 }
 
 fn text_button(
     id: &'static str,
     glyph: AnyElement,
     label: SharedString,
-    expanded: bool,
     ctx: &ComposerCtx,
     tab: Tab,
-    cx: &App,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
-    use gpui_kit::TestSupportExt;
+    let expanded = is_open_on(ctx, tab, cx);
+    let trigger = window
+        .use_keyed_state((id, 0_usize), cx, |_, cx| cx.focus_handle().tab_stop(true))
+        .read(cx)
+        .clone();
     let theme = theme::get(cx).clone();
     let ctx = ctx.clone();
     let hover = theme.hover;
@@ -624,6 +786,7 @@ fn text_button(
         .test_support()
         .role(Role::Button)
         .reachable(&theme)
+        .with_focus(&trigger)
         .aria_label(label.clone())
         .aria_expanded(expanded)
         .tooltip(ui::tooltip::text(label))
@@ -639,13 +802,13 @@ fn text_button(
         .when(expanded, |d| d.bg(theme.selected))
         .hover(move |d| d.bg(hover))
         .child(glyph)
-        .on_click(move |_, window, cx| toggle(&ctx, tab, window, cx))
+        .on_click(move |_, window, cx| toggle_from(&ctx, tab, trigger.clone(), window, cx))
         .into_any_element()
 }
 
-fn gif_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    remember(ctx, cx);
-    let expanded = is_open_on(ctx, Tab::Gifs, cx);
+fn gif_button(ctx: &ComposerCtx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    cx.default_global::<Expressions>().composer =
+        Some((ctx.session.downgrade(), ctx.composer.downgrade()));
     Some(text_button(
         "composer-gif",
         div()
@@ -659,15 +822,14 @@ fn gif_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<A
             .child("GIF")
             .into_any_element(),
         t!("emoji-open-gifs").into(),
-        expanded,
         ctx,
         Tab::Gifs,
+        window,
         cx,
     ))
 }
 
-fn emoji_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    let expanded = is_open_on(ctx, Tab::Emoji, cx);
+fn emoji_button(ctx: &ComposerCtx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     Some(text_button(
         "composer-emoji",
         gpui_kit::component::Icon::default()
@@ -676,16 +838,15 @@ fn emoji_button(ctx: &ComposerCtx, _window: &mut Window, cx: &mut App) -> Option
             .text_color(theme::get(cx).muted)
             .into_any_element(),
         t!("emoji-open-emoji").into(),
-        expanded,
         ctx,
         Tab::Emoji,
+        window,
         cx,
     ))
 }
 
 fn is_open_on(ctx: &ComposerCtx, tab: Tab, cx: &App) -> bool {
-    open_view(cx)
-        .is_some_and(|(conversation, v)| conversation == ctx.conversation && v.read(cx).tab == tab)
+    opened(cx).is_some_and(|open| open.belongs_to(ctx) && open.view.read(cx).tab == tab)
 }
 
 // ---- Reacting with any emoji ----

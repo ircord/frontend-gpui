@@ -28,6 +28,12 @@ const RECENT: usize = 20;
 struct Recent(VecDeque<String>);
 impl Global for Recent {}
 
+pub(super) fn recent_conversations(cx: &App) -> Vec<String> {
+    cx.try_global::<Recent>()
+        .map(|recent| recent.0.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
 pub fn init(cx: &mut App) {
     cx.default_global::<Recent>();
     cx.observe_new::<Session>(|_, _, cx| {
@@ -179,10 +185,7 @@ impl SwitcherView {
 
     fn picks(&self, cx: &App) -> Vec<Pick> {
         let query = self.input.read(cx).value().to_string();
-        let recent: Vec<String> = cx
-            .try_global::<Recent>()
-            .map(|r| r.0.iter().cloned().collect())
-            .unwrap_or_default();
+        let recent = recent_conversations(cx);
         let session = self.session.read(cx);
         match session.client() {
             Some(client) => results(&client.read(), &query, &recent),

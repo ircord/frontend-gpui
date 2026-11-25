@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use gpui_kit::test::TestWindowExt;
+use gpui_kit::test::{TestQueryExt, TestWindowExt};
 use gpui_kit::{AppContext, TestAppContext};
 use ircord_app::session::Phase;
 use ircord_client::testing::{CANNED_COOKIE, CannedServer, Reply};
@@ -154,18 +154,31 @@ fn type_into(f: &Fixture, cx: &mut TestAppContext, id: &str, text: &str) {
 
 #[gpui_kit::test]
 fn edits_the_profile_in_settings(cx: &mut TestAppContext) {
-    let f = open_with(cx, true, serve_profile);
+    let f = open_with(cx, true, |server| {
+        let mut data = crate::fixture::snapshot();
+        data.networks[0].realname = Some("Peter".into());
+        server.snapshot(&data);
+        serve_profile(server);
+    });
     bootstrap(&f, cx);
     // The gear opens Settings on Profile, the first section.
     click(&f, cx, "open-settings");
     reads(&f, cx, "settings-content", "Profile");
+    assert_eq!(
+        find(&f, cx, "profile-network-n1", |e| e.selected()).flatten(),
+        Some(true)
+    );
     land(&f, cx, "profile-name", "profile-name-input");
+    let avatar = find(&f, cx, "profile-picture-preview", |e| e.bounds()).unwrap();
+    let name = find(&f, cx, "profile-name-input", |e| e.bounds()).unwrap();
+    assert!(avatar.right() < name.origin.x);
     render(&f, cx);
-    reads(&f, cx, "profile-shown-as", "Shown as me · @me");
+    reads(&f, cx, "profile-shown-as", "Shown as Peter · @me");
 
     type_into(&f, cx, "profile-name-input", "Petra");
     reads(&f, cx, "profile-shown-as", "Shown as Petra · @me");
-    land(&f, cx, "profile-picture", "profile-default-a2");
+    land(&f, cx, "profile-picture", "profile-upload-picture");
+    land(&f, cx, "profile-defaults", "profile-default-a2");
     click(&f, cx, "profile-default-a2");
     assert_eq!(
         find(&f, cx, "profile-default-a2", |e| e.selected()).flatten(),
@@ -175,6 +188,7 @@ fn edits_the_profile_in_settings(cx: &mut TestAppContext) {
     type_into(&f, cx, "profile-bio-input", "Hi there");
     land(&f, cx, "profile-color", "profile-color-mode-custom");
     click(&f, cx, "profile-color-mode-custom");
+    shows(&f, cx, "profile-name-color-picker");
     type_into(&f, cx, "profile-color-input", "blue");
 
     // A colour that is not #RRGGBB stops the save and says why.
@@ -247,6 +261,116 @@ fn edits_the_profile_in_settings(cx: &mut TestAppContext) {
         "{until}"
     );
     assert!(body.get("displayName").is_none());
+}
+
+#[gpui_kit::test]
+fn profile_chips_add_validate_remove_and_save_individual_entries(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, serve_profile);
+    bootstrap(&f, cx);
+    land(&f, cx, "profile-interests", "profile-languages");
+
+    type_into(&f, cx, "profile-languages", "en_US");
+    enter(&f, cx, "profile-languages");
+    shows(&f, cx, "profile-languages-problem");
+    type_into(&f, cx, "profile-languages", "en-gb");
+    enter(&f, cx, "profile-languages");
+    reads(
+        &f,
+        cx,
+        "profile-languages-remove-0",
+        "Remove British English",
+    );
+    type_into(&f, cx, "profile-languages", "EN-GB");
+    enter(&f, cx, "profile-languages");
+    reads(
+        &f,
+        cx,
+        "profile-languages-problem",
+        "This item is already in the list.",
+    );
+    type_into(&f, cx, "profile-languages", "da");
+    enter(&f, cx, "profile-languages");
+    reads(&f, cx, "profile-languages-remove-1", "Remove Danish");
+    click(&f, cx, "profile-languages-remove-0");
+    reads(&f, cx, "profile-languages-remove-0", "Remove Danish");
+
+    type_into(&f, cx, "profile-interests-input", "Tea, coffee");
+    enter(&f, cx, "profile-interests-input");
+    reads(
+        &f,
+        cx,
+        "profile-interests-input-remove-0",
+        "Remove Tea, coffee",
+    );
+    assert!(
+        f.server
+            .requests_to("PATCH", "/api/v1/networks/n1/profile")
+            .is_empty()
+    );
+
+    land(&f, cx, "profile-about", "profile-pronouns");
+    enter(&f, cx, "profile-pronouns");
+    let body = f
+        .server
+        .wait_for("PATCH", "/api/v1/networks/n1/profile", WAIT)
+        .json();
+    assert_eq!(body["languages"], json!(["da"]));
+    assert_eq!(body["interests"], json!(["Tea, coffee"]));
+    assert!(body.get("pronouns").is_none());
+}
+
+#[gpui_kit::test]
+fn searches_for_and_saves_a_profile_time_zone(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, serve_profile);
+    bootstrap(&f, cx);
+    land(&f, cx, "profile-about", "profile-timezone");
+    click(&f, cx, "profile-timezone");
+    assert_eq!(
+        find(&f, cx, "profile-timezone", |element| element.expanded()).flatten(),
+        Some(true)
+    );
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .find_all_by_role(gpui_kit::Role::TextInput)
+                .iter()
+                .any(|element| {
+                    element.placeholder() == Some("Search time zones")
+                        && element.focused() == Some(true)
+                })
+        );
+        window.input("Copenhagen", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.press("down", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        find(&f, cx, "profile-timezone", |element| element
+            .value()
+            .map(str::to_owned))
+        .flatten()
+        .as_deref(),
+        Some("Europe/Copenhagen")
+    );
+    assert!(
+        f.server
+            .requests_to("PATCH", "/api/v1/networks/n1/profile")
+            .is_empty()
+    );
+    enter(&f, cx, "profile-pronouns");
+    let patch = f
+        .server
+        .wait_for("PATCH", "/api/v1/networks/n1/profile", WAIT)
+        .json();
+    assert_eq!(patch["timezone"], "Europe/Copenhagen");
 }
 
 /// The server's sign-in check, the registration policy, the username check

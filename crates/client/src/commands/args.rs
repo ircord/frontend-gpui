@@ -14,6 +14,8 @@ pub enum ArgError {
     /// Spaces in a one-word argument.
     Token,
     MaxBytes,
+    /// A positional argument cannot follow one that was omitted.
+    Order,
 }
 
 /// A command being typed, as guided entry shows it.
@@ -59,6 +61,39 @@ pub fn guide(input: &str) -> Option<Guide> {
         values,
         error,
     })
+}
+
+/// A known command prefix with no arguments yet. A single trailing space
+/// also matches, as it can arrive through an input method instead of a key.
+pub fn exact(input: &str) -> Option<&'static Spec> {
+    let name = input.strip_prefix('/')?;
+    let name = name.strip_suffix(' ').unwrap_or(name);
+    if name.contains('/') || name.contains(char::is_whitespace) {
+        return None;
+    }
+    resolve(name).filter(|spec| !spec.fields.is_empty())
+}
+
+/// Validate and serialize positional editor values. Status uses its own
+/// editor, where the duration and emoji can be changed independently.
+pub fn serialize(spec: &Spec, values: &[String]) -> Result<String, (usize, ArgError)> {
+    let mut line = format!("/{}", spec.name);
+    let mut missing = false;
+    for (i, field) in spec.fields.iter().enumerate() {
+        let value = values.get(i).map_or("", String::as_str);
+        if let Some(error) = check(field, value, true) {
+            return Err((i, error));
+        }
+        if value.is_empty() {
+            missing = true;
+        } else if missing {
+            return Err((i, ArgError::Order));
+        } else {
+            line.push(' ');
+            line.push_str(value);
+        }
+    }
+    Ok(line)
 }
 
 /// Split typed arguments into the fields they fill: a one-word field takes
@@ -147,6 +182,36 @@ mod tests {
         assert_eq!(
             guide("/msg bob \u{7}").unwrap().error,
             Some((1, ArgError::Control))
+        );
+    }
+
+    #[test]
+    fn exact_only_matches_an_argument_bearing_command_prefix() {
+        assert_eq!(exact("/J ").unwrap().name, "join");
+        for text in ["/join  ", "/join #a", "//join", "/back", " /join", "/"] {
+            assert!(exact(text).is_none(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn serializes_separate_arguments_without_echoing_invalid_values() {
+        let spec = resolve("join").unwrap();
+        assert_eq!(
+            serialize(spec, &["#rust".into(), "key".into()]).unwrap(),
+            "/join #rust key"
+        );
+        assert_eq!(serialize(spec, &["#rust".into()]).unwrap(), "/join #rust");
+        assert_eq!(
+            serialize(spec, &["#rust".into(), "a key".into()]),
+            Err((1, ArgError::Token))
+        );
+        assert_eq!(
+            serialize(spec, &["#rust".into(), "key\nmore".into()]),
+            Err((1, ArgError::Control))
+        );
+        assert_eq!(
+            serialize(spec, &["".into(), "key".into()]),
+            Err((0, ArgError::Required))
         );
     }
 }

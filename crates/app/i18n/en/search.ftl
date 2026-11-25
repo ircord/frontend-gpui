@@ -31,7 +31,7 @@ search-message-count-more = { $count } or more messages
 search-bounded-count = { $count } results in this server response
 search-server-history = Search server history
 search-server-history-needs-scope = Choose one conversation to search server history.
-search-coverage-retained = Coverage: messages retained by IRCord; server history may include more.
+search-coverage-retained = Showing messages stored on the IRCord server. The IRC network may have more.
 search-coverage-upstream = Server results are bounded and may not include every match.
 search-fallback-unsupported-scope = Server history search is not available for this conversation. Showing retained messages.
 search-fallback-unsupported-filters = Server history cannot apply these filters. Showing retained messages.
@@ -60,9 +60,12 @@ search-key-open = to open
 search-key-remove-filter = remove a filter
 search-key-return = to return
 search-someone = Someone
+search-yourself = Yourself ({ $name })
 search-closed-conversation = Closed conversation
 search-remove-filter = Remove { $filter } filter: { $value }
-search-suggestions = Suggestions for { $filter }:
+search-suggest-before = Sent before a date
+search-suggest-after = Sent after a date
+search-pick-day = Pick a day
 search-no-suggestion = Nothing matches “{ $query }”.
 
 # Filter names, as typed and as pills
@@ -106,22 +109,21 @@ search-filters-between = Between
 search-filters-sent-on = Sent on (YYYY-MM-DD)
 search-filters-sent-after = Sent after (YYYY-MM-DD)
 search-filters-sent-before = Sent before (YYYY-MM-DD)
+search-calendar-open = Choose { $field } from calendar
 search-filters-bad-day = Enter dates as YYYY-MM-DD, such as { $example }.
+search-filters-future-day = Choose a date on or before today.
+search-filters-date-order = The start date must be on or before the end date.
 search-filters-author-type = Author type
 search-filters-anyone = Anyone
-search-filters-nobody-here = Nobody to choose yet.
+search-filters-any-mentions = Anyone or no one
+search-filters-any-content = Any content
+search-filters-everywhere = Everywhere
+search-filters-find-person = Find a person
+search-filters-find-conversation = Find a channel or person
 search-filters-clear = Clear filters
 search-filters-apply = Apply filters
 
-# Searching inside a conversation, beside it
 search-in-conversation = Search in this conversation
-search-conversation-search = Search { $place }
-search-conversation-field = Search messages in { $place }
-search-conversation-close = Close search
-search-conversation-hint = Type at least two characters or choose a filter.
-search-conversation-no-messages-query = No messages in { $place } match “{ $query }”.
-search-conversation-everywhere = Search everywhere for “{ $query }”
-search-conversation-none = Open a conversation to search it.
 
 # Keys
 search-key-page = Search messages

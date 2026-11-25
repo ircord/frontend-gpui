@@ -44,6 +44,7 @@ pub const QUICK_REACTIONS: [&str; 5] = ["👍", "❤️", "😂", "😮", "😢"
 pub enum Mode {
     /// The next message replies to `message`.
     Reply {
+        id: String,
         message: String,
         nick: String,
         text: String,
@@ -418,6 +419,7 @@ pub fn start_reply(ctx: &MessageCtx, window: &mut Window, cx: &mut App) {
     set_mode(
         &ctx.conversation,
         Some(Mode::Reply {
+            id: random_id(),
             message: ctx.message.clone(),
             nick,
             text,
@@ -461,6 +463,15 @@ pub fn cancel(conversation: &str, window: &mut Window, cx: &mut App) {
         set_box(&draft, window, cx);
     }
     set_mode(conversation, None, cx);
+}
+
+/// Take the reply target as a send begins.
+pub fn take_reply(conversation: &str, cx: &mut App) -> Option<String> {
+    let Mode::Reply { message, .. } = mode(conversation, cx)? else {
+        return None;
+    };
+    set_mode(conversation, None, cx);
+    Some(message)
 }
 
 /// Your newest message in `conversation` that you can edit now.
@@ -526,11 +537,12 @@ fn send_filter(ctx: &ComposerCtx, text: String, window: &mut Window, cx: &mut Ap
     match mode(&ctx.conversation, cx) {
         None => SendOutcome::Continue(text),
         Some(Mode::Reply { message, .. }) => {
+            let Some(client) = ctx.session.read(cx).client().cloned() else {
+                return SendOutcome::Keep;
+            };
             set_mode(&ctx.conversation, None, cx);
-            if let Some(client) = ctx.session.read(cx).client() {
-                send_reply(client, &ctx.conversation, &text, &message);
-            }
-            SendOutcome::Handled
+            send_reply(&client, &ctx.conversation, &text, &message);
+            SendOutcome::Sent(text)
         }
         Some(Mode::Edit { message, draft }) => {
             let text = text.trim().to_string();

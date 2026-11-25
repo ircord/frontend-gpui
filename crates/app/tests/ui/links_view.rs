@@ -228,14 +228,19 @@ fn the_links_view_lists_cards_with_previews_and_jumps_to_a_post(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
-fn typed_filters_and_type_pills_narrow_the_list(cx: &mut TestAppContext) {
+fn typed_filters_and_type_suggestions_narrow_the_list(cx: &mut TestAppContext) {
     let f = open(cx);
     let session = f.session.clone();
     cx.update(|cx| links::open(&session, None, cx));
     reads(&f, cx, "links-card-0", "IRCord, the IRC client");
 
-    // A pill asks for one kind.
-    click(&f, cx, "links-kind-image");
+    click(&f, cx, "links-start-type");
+    shows(&f, cx, "links-offers");
+    frame(&f, cx, |window, cx| {
+        window.input("ima", cx);
+        assert_eq!(window.find("links-offer-0").label(), Some("Images"));
+        window.press("tab", cx);
+    });
     listed(&f, cx, "images only", |r| param(r, "kind") == ["image"]);
     reads(&f, cx, "links-chip-0", "Remove the filter Type: Images");
     click(&f, cx, "links-chip-0");
@@ -288,6 +293,40 @@ fn typed_filters_and_type_pills_narrow_the_list(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn links_suggestions_overlay_the_cards_and_escape_dismisses_them(cx: &mut TestAppContext) {
+    let f = open(cx);
+    let session = f.session.clone();
+    cx.update(|cx| links::open(&session, None, cx));
+    shows(&f, cx, "links-card-0");
+    click(&f, cx, "links-filter");
+    frame(&f, cx, |window, cx| {
+        let bounds = window.find("links-card-0").bounds();
+        window.input("host:", cx);
+        assert_eq!(window.find("links-card-0").bounds(), bounds);
+        assert_eq!(window.find("links-offer-0").selected(), Some(true));
+    });
+    frame(&f, cx, |window, cx| window.press("escape", cx));
+    assert!(gone(&f, cx, "links-offers"));
+    assert!(matches!(route(&f, cx), Some(Route::Links(_))));
+    click(&f, cx, "links-clear-query");
+    click(&f, cx, "links-start-since");
+    frame(&f, cx, |window, _| {
+        assert!(
+            window.try_find("links-offers").is_some(),
+            "Since should offer dates"
+        );
+    });
+    frame(&f, cx, |window, cx| {
+        window.input("2020-02-20", cx);
+        window.press("enter", cx);
+    });
+    let (since, _) = ircord_client::api::links::date_range("2020-02-20", "").unwrap();
+    listed(&f, cx, "the chosen date", |r| {
+        param(r, "since") == [since.as_deref().unwrap()]
+    });
+}
+
+#[gpui_kit::test]
 fn a_channel_opens_its_own_links_and_its_gallery(cx: &mut TestAppContext) {
     let f = open(cx);
     let session = f.session.clone();
@@ -303,8 +342,9 @@ fn a_channel_opens_its_own_links_and_its_gallery(cx: &mut TestAppContext) {
         "Remove the filter Channel: #general",
     );
 
+    click(&f, cx, "links-page-close");
+    assert_eq!(route(&f, cx), Some(Route::Conversation("c-general".into())));
     // The gallery beside the channel lists its pictures and opens the viewer.
-    cx.update(|cx| session.update(cx, |s, cx| s.select_conversation("c-general", cx)));
     click(&f, cx, "conversation-menu");
     frame(&f, cx, |window, cx| {
         let at = window.find_by_label("Gallery").bounds().center();

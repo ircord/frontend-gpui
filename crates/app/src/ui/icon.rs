@@ -6,7 +6,29 @@ use gpui_kit::component::{Icon, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-gpui_kit::assets::icon_assets!(WorkspaceIcons, [Paperclip, Send, ShieldCheck, Users]);
+gpui_kit::assets::icon_assets!(
+    WorkspaceIcons,
+    [
+        Bookmark,
+        Cloud,
+        CloudOff,
+        Clapperboard,
+        Hash,
+        Image,
+        Link,
+        MessageCircle,
+        Monitor,
+        Music,
+        Paperclip,
+        Pencil,
+        Send,
+        ShieldCheck,
+        Slash,
+        Upload,
+        Users,
+        Video
+    ]
+);
 
 pub(crate) struct Assets;
 

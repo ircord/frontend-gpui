@@ -10,6 +10,7 @@
 //! diagrams ([`diagram`]).
 
 pub mod blocks;
+pub mod clipboard;
 pub mod diagram;
 pub mod highlight;
 pub mod inline;

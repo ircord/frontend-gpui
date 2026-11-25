@@ -281,7 +281,7 @@ fn type_text(f: &Fixture, cx: &mut TestAppContext, text: &str) {
 }
 
 #[gpui_kit::test]
-fn the_box_names_the_conversation_and_its_arrow_fills_and_sends(cx: &mut TestAppContext) {
+fn the_box_names_the_conversation_and_send_appears_when_there_is_text(cx: &mut TestAppContext) {
     let f = open(cx, |server| {
         server.route_fn("POST", "/api/v1/conversations/*/messages", |r| {
             let body = r.json();
@@ -296,18 +296,11 @@ fn the_box_names_the_conversation_and_its_arrow_fills_and_sends(cx: &mut TestApp
         window.render_frame(cx);
         let input = window.find_by_label("Message #general");
         assert_eq!(input.placeholder(), Some("Message #general"));
-        assert!(window.find("composer-send").visible());
+        assert!(window.try_find("composer-send").is_none());
     })
     .unwrap();
-    assert!(
-        !shows(&f, cx, "composer-send-filled"),
-        "empty: a quiet arrow"
-    );
     type_text(&f, cx, "hello");
-    assert!(
-        shows(&f, cx, "composer-send-filled"),
-        "text: a filled arrow"
-    );
+    assert!(shows(&f, cx, "composer-send"));
     cx.update_window(f.window, |_, window, cx| window.click("composer-send", cx))
         .unwrap();
     cx.run_until_parked();
@@ -316,7 +309,47 @@ fn the_box_names_the_conversation_and_its_arrow_fills_and_sends(cx: &mut TestApp
         .wait_for("POST", "/api/v1/conversations/c-general/messages", WAIT)
         .json();
     assert_eq!(body["text"], "hello");
-    assert!(!shows(&f, cx, "composer-send-filled"), "sent: empty again");
+    assert!(!shows(&f, cx, "composer-send"), "sent: empty again");
+}
+
+#[gpui_kit::test]
+fn the_composer_counts_down_near_the_web_clients_draft_limit(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    let composer = cx.update(|cx| match f.view.read(cx).screen() {
+        ircord_app::Screen::Workspace(view) => view.read(cx).composer.clone(),
+        _ => panic!("the workspace is not showing"),
+    });
+    let set_text = |cx: &mut TestAppContext, text: String| {
+        cx.update_window(f.window, |_, window, cx| {
+            composer.update(cx, |composer, cx| composer.set_text(&text, window, cx));
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    set_text(cx, "a".repeat(3_600));
+    assert!(!shows(&f, cx, "composer-remaining"));
+    set_text(cx, "a".repeat(3_601));
+    assert_eq!(
+        label_of(&f, cx, "composer-remaining"),
+        "399 characters remaining"
+    );
+    set_text(cx, "😀".repeat(2_001));
+    assert_eq!(
+        label_of(&f, cx, "composer-remaining"),
+        "2 characters over the limit"
+    );
+    cx.update_window(f.window, |_, window, cx| window.click("composer-send", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        f.server
+            .requests_to("POST", "/api/v1/conversations/c-general/messages")
+            .is_empty()
+    );
+    assert_eq!(
+        cx.update(|cx| composer.read(cx).text(cx)),
+        "😀".repeat(2_001)
+    );
 }
 
 #[gpui_kit::test]

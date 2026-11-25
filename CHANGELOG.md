@@ -2,8 +2,70 @@
 
 ## Unreleased
 
+### New
+
+- Configure a speech service and play a Read Aloud sample in Notifications settings. The speech key stays in this device’s credential store.
+- Read Aloud can speak new highlights on this device through your chosen speech service. It respects ignored senders, muted conversations and quiet hours.
+
+### Improved
+
+- Search and Links share filter suggestions, removable chips, and a calendar. The Search Filters dialog has more room for its controls and descriptions.
+
+- Search in the sidebar opens the workspace search page directly.
+- Search from a conversation opens the Search page with that conversation already selected.
+- Use the arrow keys to choose a typed search filter, then press Enter or Tab to apply it. Escape closes the suggestions first.
+- Search scrolls to the highlighted result as you use the arrow keys, with the search field and filters kept in view.
+- Search filters use compact multi-select menus, with search for people and conversations.
+- Pick dates from a calendar in Search filters, or type them directly.
+- Search shows the active filter count beside Filters and keeps quick filters in a row of compact pills.
+- Search and filter IRC capabilities beside the server log. Switch between Log and Capabilities when the window is narrow.
+- Search suggestions open over the results and show people's avatars and nicknames. Choose yourself as a sender, clear the search in one click, and find recently visited conversations higher in Jump to.
+- Right-click menus use more consistent widths, align titles to the row edge, and scroll within smaller windows.
+- Context menus have taller action rows and more space between icons and labels.
+- Search and chat history load directly from the server. IRCord no longer downloads messages or attachments for offline use.
+- Settings opens over the workspace, so the view you were using stays in place.
+- The Settings header provides quick access to appearance sync on wider windows.
+- Profile cards display the chosen card background, use a taller banner, and open the Profile settings directly from Edit profile.
+- Profile cards show the person’s current local time and present profile details as label and value rows.
+- Add and remove languages and interests individually in Profile settings. Profile cards show readable language names.
+- Search time zones in Profile settings and choose the one shown on your profile card.
+- The composer’s attachment menu opens the file picker, GIF picker, or slash command suggestions.
+- Run slash commands from a form with separate arguments, suggestions, and a masked field for channel keys.
+- Set or clear your network status directly with `/status`, or open its composer form to choose an emoji and a deadline.
+- Bulleted text pasted into the composer keeps its list formatting. On macOS and Windows, copied webpage and document lists also retain nesting and numbering.
+- The resizable emoji and GIF picker floats above the composer and returns focus when you dismiss it with Escape.
+- The composer shows Send when there’s text or a file to send, counts down near the text limit, and keeps drafts that exceed it.
+- In Profile settings, the server name stays visible and you can upload a picture by clicking the avatar next to your display name.
+- The Profile settings preview shows the name people will see when you leave your display name blank.
+- Choose a custom name color with the Profile color picker and see it in the name preview.
+- The Inbox tabs and Saved messages filter stay visible while you scroll.
+- Links uses the same header and keyboard hints as the other workspace pages, with filters that stay visible while you scroll.
+- The Appearance and Messages previews reflect your selected message layout, font, spacing, clock and name colors.
+- Themes and interface fonts appear in grids that adapt to the window width, with a sample in each font.
+- Appearance groups the System, Dark and Light choices and shows when settings are saved only on this device.
+- Pick separate theme variants for dark and light mode, and open the palette source from Appearance.
+- Personal themes can show a synced background image behind the conversation or the whole workspace.
+- Upload and preview a personal theme’s background, then adjust its placement, fit, dimming, and blur before saving.
+- Try a theme with custom CSS for 20 seconds before keeping it. Press Shift+F8 to pause or resume your personal theme.
+- Edit a personal theme’s custom CSS in Appearance and see which rules GPUI can use before saving.
+- Theme Studio previews your unsaved colors, background, and CSS beside the conversation, with Dark, Light, and Compare controls.
+- Choose a base scheme and customize interface, status, and code colors independently for dark and light mode in Theme Studio.
+- If a theme changes on another device while you edit it, you can keep your edits or load the saved version in Theme Studio.
+- Duplicate a saved theme to keep a separate copy with the same colors, background, and custom CSS.
+- Restore an unsaved Theme Studio draft when you reopen the editor after restarting IRCord.
+- Direct messages use the same sidebar order as the web client.
+- Switching networks returns to the last channel you viewed on that network, even after restarting IRCord.
+- The collapsed sidebar still gives you access to Search, Inbox, Saved messages, Drafts, Links and Server.
+- In the collapsed sidebar, channels show numbers and direct messages show avatars and presence. Both keep their conversation menus.
+
 ### Fixed
 
+- Tab reaches both Emoji and GIFs in the expression picker.
+- Links inside code blocks and IRC monospace no longer open preview cards.
+- Custom status emoji appear in the member list and have room to draw in the profile button.
+- A `/gif` search uses the original reply. Failed searches keep the command, and successful searches preserve any newer draft or reply.
+- File-only replies quote the original message. If you reply with text and files, IRCord sends the text reply and uploads the files separately.
+- Keep the custom CSS switch visible when its explanation wraps in Appearance settings.
 - The comet of `/attract` no longer runs over the sender's avatar on a message of one plain line: its outline now reaches below the avatar and its ring, with the same gap it keeps from the text.
 
 ## v0.6.0 — 2026-11-25

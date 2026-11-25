@@ -1,4 +1,4 @@
-//! The settings page: the registered sections listed under their group
+//! The settings dialog: the registered sections listed under their group
 //! headings on the left, the open one on the right, a search over every
 //! section's rows, and whether the latest change is saved.
 //!
@@ -11,7 +11,7 @@
 //! show their saving state here by themselves; a setting kept on this device
 //! calls [`saved`] once it is written.
 //!
-//! The page opens from Settings in the top bar, with [`open`], or with N1's
+//! The dialog opens from Settings in the top bar, with [`open`], or with N1's
 //! Ctrl+, (Cmd+, on a Mac); Escape goes back to where it was opened from.
 //! As on the web, each section is listed with its icon on a soft tint, and
 //! Log out sits at the foot of the list.
@@ -26,6 +26,7 @@ pub mod networks;
 pub mod notifications;
 pub mod privacy;
 pub mod profile;
+mod read_aloud;
 pub mod shortcuts;
 
 use crate::ui::focus::Reachable;
@@ -34,6 +35,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::TestSupportExt;
+use gpui_kit::base::FocusTrapElement;
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -79,6 +81,11 @@ pub fn open(session: &Entity<Session>, row: Option<&str>, cx: &mut App) {
         cx.set_global(Pending(pending));
     }
     session.update(cx, |s, cx| s.navigate(Route::Settings, cx));
+}
+
+/// Dismiss Settings and return to the workspace route behind it.
+pub fn close(session: &Entity<Session>, cx: &mut App) {
+    session.update(cx, Session::close_settings);
 }
 
 /// A row to land on once the view exists.
@@ -220,8 +227,10 @@ pub struct SettingsView {
     scroll: ScrollHandle,
     /// A change on this device was just written.
     flash: Option<Task<()>>,
-    /// The page itself, focused when it is entered so Escape reaches it.
+    /// The dialog scope, focused when it opens.
     focus: FocusHandle,
+    opener: Option<FocusHandle>,
+    visible: bool,
     /// Focus the page at the next draw: it was just entered.
     focus_pending: bool,
     _subscriptions: Vec<Subscription>,
@@ -248,11 +257,16 @@ impl SettingsView {
                 |this, session, event: &SessionEvent, window, cx| {
                     if let SessionEvent::Route = event {
                         let here = session.read(cx).route() == Some(Route::Settings);
-                        this.focus_pending = here;
-                        // Leaving: a focus left on the hidden page would keep
-                        // the app's keys from reaching the window.
-                        if !here && this.focus.contains_focused(window, cx) {
-                            window.blur(cx);
+                        if here != this.visible {
+                            this.visible = here;
+                            this.focus_pending = here;
+                            if here {
+                                this.opener = window.focused(cx);
+                            } else if let Some(opener) = this.opener.take() {
+                                opener.focus(window, cx);
+                            } else if this.focus.contains_focused(window, cx) {
+                                window.blur(cx);
+                            }
                         }
                     }
                     if let SessionEvent::Changed(changes) = event
@@ -274,6 +288,8 @@ impl SettingsView {
             scroll,
             flash: None,
             focus: cx.focus_handle(),
+            opener: window.focused(cx),
+            visible: true,
             focus_pending: true,
             _subscriptions: subscriptions,
         }
@@ -311,10 +327,7 @@ impl SettingsView {
 
     /// Escape: back to where the page was opened from.
     fn leave(&mut self, cx: &mut Context<Self>) {
-        let session = self.session.clone();
-        if session.read(cx).route() == Some(Route::Settings) {
-            session.update(cx, |s, cx| s.go_back(cx));
-        }
+        close(&self.session, cx);
     }
 
     fn flash_saved(&mut self, cx: &mut Context<Self>) {
@@ -531,6 +544,7 @@ impl Render for SettingsView {
                     .into_any_element(),
             }
         };
+        let session = self.session.clone();
         let mut page = ui::page::Page::new(
             "settings",
             t!("settings-title"),
@@ -539,13 +553,25 @@ impl Render for SettingsView {
                 .flex()
                 .child(nav)
                 .child(div().flex_1().min_w_0().h_full().child(content)),
-        );
+        )
+        .close(t!("settings-close"), move |_, _, cx| close(&session, cx));
         if let Some(state) = self.save_state(cx) {
             page = page.action(save_indicator(&state, &theme));
         }
+        if appearance::sync_in_header(window) {
+            page = page.action(appearance::sync_header(
+                &theme,
+                crate::theme::appearance::sync(cx),
+                self.target.as_deref() == Some("appearance-sync"),
+            ));
+        }
         div()
+            .id("settings-dialog")
+            .test_support()
+            .role(Role::Dialog)
+            .aria_label(t!("settings-title"))
+            .a11y_synthetic_children(|tree| tree.parent_node().set_modal())
             .size_full()
-            .track_focus(&self.focus)
             .capture_action(cx.listener(|this, _: &Escape, _, cx| {
                 this.leave(cx);
                 cx.stop_propagation();
@@ -558,6 +584,7 @@ impl Render for SettingsView {
                 }),
             )
             .child(page.render(&theme))
+            .focus_trap("settings-dialog", &self.focus)
     }
 }
 
@@ -667,43 +694,38 @@ fn save_indicator(state: &SaveState, theme: &Theme) -> impl IntoElement + use<> 
         .child(text)
 }
 
-/// How the sample messages are drawn: the message settings' font, size,
-/// clock and name colours; the defaults are the app's.
-#[derive(Clone, Debug)]
-pub struct PreviewLook {
-    pub font: Option<&'static str>,
-    pub size: f32,
-    pub clock_12h: bool,
-    pub colored_names: bool,
-}
-
-impl Default for PreviewLook {
-    fn default() -> Self {
-        Self {
-            font: None,
-            size: 14.,
-            clock_12h: false,
-            colored_names: true,
-        }
-    }
-}
-
 /// Two sample messages drawn with the active theme, as the web's preview
 /// at the top of Appearance and Messages, so a change shows at once.
-pub fn preview(theme: &Theme, look: PreviewLook) -> impl IntoElement + use<> {
-    let time: SharedString = if look.clock_12h {
-        t!("settings-preview-time-12h").into()
-    } else {
-        t!("settings-preview-time").into()
-    };
+fn preview(theme: &Theme, look: crate::message::layout::Look) -> impl IntoElement + use<> {
+    div()
+        .id("settings-preview")
+        .test_support()
+        .role(Role::Group)
+        .aria_label(t!("settings-preview"))
+        .p_4()
+        .rounded(theme.radius_large)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.main)
+        .shadow_sm()
+        .child(preview_samples(theme, look, "settings-preview"))
+}
+
+fn preview_samples(
+    theme: &Theme,
+    look: crate::message::layout::Look,
+    id: &str,
+) -> impl IntoElement + use<> {
+    use crate::message::layout::{Layout, message_font};
+    let font = message_font(&look, theme);
     let message = |id: &'static str,
-                   account: &'static str,
                    tone: &'static str,
                    name: &'static str,
+                   time: &'static str,
                    text: Div| {
         let member = ircord_client::contract::Member {
-            id: id.to_string(),
-            account: account.to_string(),
+            id: id.into(),
+            account: id.into(),
             nick: name.to_lowercase(),
             display_name: name.to_string(),
             ..Default::default()
@@ -712,12 +734,38 @@ pub fn preview(theme: &Theme, look: PreviewLook) -> impl IntoElement + use<> {
             .map(theme::hex)
             .unwrap_or(theme.text);
         let (fill, ink) = ircord_client::store::people::tone(tone);
+        let avatar_size = if look.layout == Layout::Compact {
+            24.
+        } else {
+            40.
+        };
+        let text = text
+            .min_w_0()
+            .font_family(font.clone())
+            .text_size(px(look.size as f32))
+            .line_height(relative(1.5))
+            .text_color(theme.body);
+        let clock = div()
+            .flex_none()
+            .text_xs()
+            .text_color(theme.faint)
+            .child(time);
+        let author = div().font_weight(FontWeight::SEMIBOLD).text_color(color);
+        if look.layout == Layout::Irc {
+            return div()
+                .flex()
+                .items_baseline()
+                .gap_2()
+                .child(clock)
+                .child(author.w(px(100.)).flex_none().truncate().child(member.nick))
+                .child(text);
+        }
         div()
             .flex()
             .gap_3()
             .child(
                 div()
-                    .size(px(36.))
+                    .size(px(avatar_size))
                     .flex_none()
                     .rounded_full()
                     .bg(theme::hex(fill))
@@ -732,52 +780,51 @@ pub fn preview(theme: &Theme, look: PreviewLook) -> impl IntoElement + use<> {
                 div()
                     .flex()
                     .flex_col()
+                    .min_w_0()
                     .child(
                         div()
                             .flex()
                             .items_baseline()
                             .gap_2()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(color)
-                                    .child(name),
-                            )
-                            .child(div().text_xs().text_color(theme.faint).child(time.clone())),
+                            .child(author.child(name))
+                            .child(clock),
                     )
-                    .child(text.text_color(theme.body)),
+                    .child(text),
             )
     };
+    let (first_time, second_time) = if look.clock_12h {
+        (
+            t!("settings-preview-time-12h"),
+            t!("settings-preview-second-time-12h"),
+        )
+    } else {
+        (
+            t!("settings-preview-time"),
+            t!("settings-preview-second-time"),
+        )
+    };
     div()
-        .id("settings-preview")
+        .id(ElementId::Name(format!("{id}-{}", look.layout.id()).into()))
         .test_support()
-        .role(Role::Group)
-        .aria_label(t!("settings-preview"))
-        .p_4()
         .flex()
         .flex_col()
-        .gap_3()
-        .rounded(theme.radius_large)
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.main)
-        .shadow_sm()
-        .text_size(px(look.size))
-        .when_some(look.font, |d, family| d.font_family(family))
+        .gap(px(look.spacing as f32))
         .child(message(
-            "preview-jules",
             "jules",
             "mint",
             t!("settings-preview-first-name"),
+            first_time,
             div().child(t!("settings-preview-first")),
         ))
         .child(message(
-            "preview-noah",
             "noah",
             "blue",
             t!("settings-preview-second-name"),
+            second_time,
             div()
                 .flex()
+                .flex_wrap()
+                .items_baseline()
                 .gap_1()
                 .child(t!("settings-preview-second"))
                 .child(

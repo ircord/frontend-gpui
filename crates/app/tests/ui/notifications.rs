@@ -13,7 +13,7 @@ use gpui_kit::{AppContext, SystemNotificationResponse, TestAppContext};
 use ircord_app::media::sound;
 use ircord_app::notify::picture::Fixed;
 use ircord_client::contract::{Alert, AlertDelivery};
-use ircord_client::testing::{CannedServer, Reply};
+use ircord_client::testing::{CannedServer, Reply, frame};
 use ircord_platform::toast::Toast;
 use serde_json::{Value, json};
 
@@ -147,6 +147,105 @@ fn type_enter(f: &Fixture, cx: &mut TestAppContext, id: &'static str, text: &str
     })
     .unwrap();
     cx.run_until_parked();
+}
+
+fn speech_fixture(cx: &mut TestAppContext) -> Fixture {
+    let f = open_with(cx, true, |server| {
+        serve(server, true);
+        server.route(
+            "GET",
+            "/api/v1/app/preferences",
+            200,
+            json!({
+                "preferences": {
+                    "speech": {
+                        "baseUrl": format!("{}/v1", server.address().origin()),
+                        "model": "speech-model",
+                        "voice": "my-voice",
+                    }
+                }
+            }),
+        );
+        server.route_reply(
+            "POST",
+            "/v1/audio/speech",
+            Reply::bytes(200, "audio/wav", super::audio_card::wav(2)),
+        );
+    });
+    bootstrap(&f, cx);
+    cx.update(sound::use_null);
+    wait(cx, "the saved speech service", |cx| {
+        let work = f.session.read(cx).client().unwrap().read();
+        work.documents.preferences.is_loaded() && work.documents.notification_settings.is_loaded()
+    });
+    f
+}
+
+#[gpui_kit::test]
+fn read_aloud_plays_a_sample_with_only_its_device_key(cx: &mut TestAppContext) {
+    let f = speech_fixture(cx);
+    land(&f, cx, "read-aloud", "speech-key");
+    type_enter(&f, cx, "speech-key", "fixture-speech-key");
+    click(&f, cx, "speech-save-key");
+    shows(&f, cx, "speech-status");
+    assert_eq!(
+        label(&f, cx, "speech-status").as_deref(),
+        Some("Speech API key saved on this device.")
+    );
+    click(&f, cx, "speech-play-sample");
+    let request = f.server.wait_for("POST", "/v1/audio/speech", WAIT);
+    assert_eq!(request.header("cookie"), None);
+    assert_eq!(
+        request.header("authorization"),
+        Some("Bearer fixture-speech-key")
+    );
+    assert_eq!(request.json()["voice"], "my-voice");
+    shows(&f, cx, "speech-status");
+    assert!(matches!(
+        label(&f, cx, "speech-status").as_deref(),
+        Some("Playing sample" | "Sample played")
+    ));
+    assert!(
+        f.server
+            .requests_to("PUT", "/api/v1/app/preferences")
+            .is_empty()
+    );
+}
+
+#[gpui_kit::test]
+fn only_live_highlights_are_read_aloud_when_enabled(cx: &mut TestAppContext) {
+    let f = speech_fixture(cx);
+    land(&f, cx, "read-aloud", "speech-read-highlights");
+    let send = |cx: &mut TestAppContext, seq, text| {
+        let message = crate::fixture::message(&format!("speech-{seq}"), "c-general", text);
+        f.server.push(frame(seq, "message.created", &message));
+        wait(cx, "the server message arrived", |cx| {
+            f.session.read(cx).client().unwrap().read().cursor >= seq
+        });
+    };
+    send(cx, 4, "hello @me");
+    assert!(f.server.requests_to("POST", "/v1/audio/speech").is_empty());
+    click(&f, cx, "speech-read-highlights");
+    send(cx, 5, "hello everyone");
+    assert!(f.server.requests_to("POST", "/v1/audio/speech").is_empty());
+    send(
+        cx,
+        6,
+        "hello @me https://example.test/private?token=example",
+    );
+    let request = f.server.wait_for("POST", "/v1/audio/speech", WAIT);
+    assert_eq!(
+        request.json()["input"],
+        "bob in #general: hello @me a link to example.test"
+    );
+    click(&f, cx, "speech-read-highlights");
+    send(cx, 7, "another highlight for @me");
+    assert_eq!(f.server.requests_to("POST", "/v1/audio/speech").len(), 1);
+    assert!(
+        f.server
+            .requests_to("PUT", "/api/v1/app/preferences")
+            .is_empty()
+    );
 }
 
 #[gpui_kit::test]

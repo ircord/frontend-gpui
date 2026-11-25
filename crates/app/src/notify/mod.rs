@@ -4,6 +4,7 @@
 //! chime, or nothing. Clicking a toast opens its conversation.
 
 pub mod picture;
+pub(crate) mod read_aloud;
 
 use std::path::PathBuf;
 use std::rc::Rc;

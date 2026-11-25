@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
-use gpui_kit::{AppContext, MouseButton, TestAppContext};
+use gpui_kit::{AppContext, MouseButton, ScrollDelta, TestAppContext, point, px};
 use ircord_app::route::Route;
 use ircord_client::store::Connection;
 use ircord_client::store::inbox::Filter;
@@ -98,6 +98,55 @@ fn saved_item(saved_at: &str) -> Value {
                     "createdAt": "2026-11-21T10:00:00Z", "kind": "message",
                     "text": "hello \u{2}world\u{2} https://ircord.com", "reactions": []}
     })
+}
+
+#[gpui_kit::test]
+fn saved_filter_stays_visible_while_results_scroll(cx: &mut TestAppContext) {
+    let f = open(cx, |server| {
+        let items: Vec<_> = (1..=25)
+            .map(|id| {
+                let mut item = saved_item("2026-11-21T11:00:00Z");
+                item["messageId"] = json!(id.to_string());
+                item["message"]["id"] = json!(id.to_string());
+                item
+            })
+            .collect();
+        server.route(
+            "GET",
+            "/api/v1/saved-messages",
+            200,
+            json!({ "items": items }),
+        );
+    });
+    click(&f, cx, "open-saved");
+    wait(cx, "saved results loaded", |cx| {
+        f.session
+            .read(cx)
+            .client()
+            .unwrap()
+            .read()
+            .saved
+            .list
+            .loaded
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let filter = window.find("saved-filter").bounds();
+        let first = window.find("saved-item-1").bounds();
+        window.scroll(
+            "saved-item-1",
+            ScrollDelta::Pixels(point(px(0.), px(-300.))),
+            cx,
+        );
+        window.render_frame(cx);
+        assert_eq!(window.find("saved-filter").bounds(), filter);
+        assert!(
+            window
+                .try_find("saved-item-1")
+                .is_none_or(|row| { !row.visible() || row.bounds().origin.y < first.origin.y })
+        );
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]

@@ -256,6 +256,26 @@ pub fn open_main_window(session: Entity<Session>, cx: &mut App) {
 
 /// Start the app.
 pub fn run() {
+    run_with_credentials(|_| Ok(Arc::new(SystemStore)));
+}
+
+#[cfg(all(target_os = "macos", feature = "hot-reload"))]
+pub fn run_dev() {
+    run_with_credentials(|config| {
+        use ircord_client::credentials::DevStore;
+        Ok(Arc::new(DevStore::open(
+            &config.path().join("development"),
+        )?))
+    });
+}
+
+fn run_with_credentials(
+    credentials: impl FnOnce(
+        &ConfigDir,
+    )
+        -> Result<Arc<dyn CredentialStore>, ircord_client::credentials::StoreError>,
+) {
+    let safe_theme = std::env::args_os().skip(1).any(|arg| arg == "--safe-theme");
     let runtime = match ircord_client::client::runtime() {
         Ok(runtime) => runtime,
         Err(e) => {
@@ -271,7 +291,13 @@ pub fn run() {
         }
     };
     init_logging(&config);
-    let credentials: Arc<dyn CredentialStore> = Arc::new(SystemStore);
+    let credentials = match credentials(&config) {
+        Ok(credentials) => credentials,
+        Err(error) => {
+            eprintln!("IRCord could not open its credential store: {error}");
+            std::process::exit(1);
+        }
+    };
     let use_tray = !cfg!(all(feature = "hot-reload", debug_assertions));
     let quit_mode = if use_tray && tray::keeps_running() {
         QuitMode::Explicit
@@ -289,9 +315,12 @@ pub fn run() {
         notify::identify(cx);
         gpui_kit::init(cx);
         init(cx);
+        if safe_theme {
+            theme::appearance::trial::safe_start(cx);
+        }
         #[cfg(target_os = "macos")]
         install_app_menu(cx);
-        cx.set_http_client(Arc::new(images::ImageClient::new(runtime.clone())));
+        images::ImageClient::install(runtime.clone(), cx);
         let session = cx.new(|cx| Session::new(runtime, config, credentials, cx));
         notify::install(session.clone(), cx);
         if use_tray && let Err(e) = tray::install(session.clone(), cx) {

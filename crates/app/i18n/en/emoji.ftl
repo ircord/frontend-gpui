@@ -1,11 +1,15 @@
 # Text for package E1. IDs start with `emoji-`.
 emoji-picker = Emoji and GIFs
+emoji-resize = Resize picker
+emoji-resize-help = Drag or use the arrow keys to resize. Double-click to reset.
 emoji-open-emoji = Emoji
 emoji-open-gifs = GIFs
 emoji-tab-emoji = Emoji
 emoji-tab-gifs = GIFs
 emoji-search-emoji = Search emoji
 emoji-search-gifs = Search Klipy
+emoji-search-saved = Search saved GIFs
+emoji-clear-search = Clear search
 emoji-groups = Emoji groups
 emoji-group-frequent = Frequently used
 emoji-group-workspace = This server
@@ -48,6 +52,7 @@ emoji-gif-save = Save GIF
 emoji-gif-forget = Remove from saved GIFs
 emoji-gif-usage = Usage: /gif <search terms>
 emoji-gif-pending = Still looking for a GIF…
+emoji-gif-finding = Finding a GIF for “{ $query }”…
 emoji-gif-no-match = No GIFs matched “{ $query }”. Try other words.
 emoji-gif-not-configured = GIF search is not set up in this build of the app.
 emoji-gif-unreachable = Couldn’t reach Klipy. Check your connection and try again.

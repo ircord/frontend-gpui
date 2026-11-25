@@ -15,10 +15,11 @@ use ircord_client::client::sign_in;
 use ircord_client::config::{AppState, ConfigDir};
 use ircord_client::credentials::CredentialStore;
 use ircord_client::events::Update;
-use ircord_client::store::Changes;
+use ircord_client::store::{Changes, can_restore_channel, topic};
 use ircord_client::{Client, ServerAddress};
 use tokio::runtime::Runtime;
 
+use crate::notify::read_aloud;
 use crate::route::{History, Route};
 
 /// The panel ID that closes the right-hand panel, the member list beside a
@@ -68,6 +69,7 @@ pub struct Session {
     pub panel: Option<SharedString>,
     /// Alert IDs of shown notifications → the conversation each opens.
     pub alerts: HashMap<String, String>,
+    pub(crate) read_aloud: read_aloud::Reader,
     pub window_active: bool,
     pub state: AppState,
     /// Set while signing in or checking a server, to disable the form.
@@ -87,6 +89,7 @@ impl Session {
         cx: &mut Context<Self>,
     ) -> Self {
         let state = config.state();
+        let read_aloud = read_aloud::Reader::new(&config);
         let ticker = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -110,6 +113,7 @@ impl Session {
             history: History::default(),
             panel: None,
             alerts: HashMap::new(),
+            read_aloud,
             window_active: true,
             state,
             busy: false,
@@ -156,6 +160,8 @@ impl Session {
     }
 
     fn set_phase(&mut self, phase: Phase, cx: &mut Context<Self>) {
+        let old_client = self.client().cloned();
+        self.read_aloud.sync(None, old_client.as_deref());
         if !matches!(phase, Phase::SignedIn { .. }) {
             self.history = History::default();
             self.panel = None;
@@ -278,6 +284,9 @@ impl Session {
                 if changes.reset {
                     self.fix_selection(cx);
                 }
+                if changes.reset || changes.touches(topic::DOCUMENTS) {
+                    self.sync_read_aloud();
+                }
                 for notice in &changes.notices {
                     cx.emit(SessionEvent::Notice(notice.clone()));
                 }
@@ -301,6 +310,10 @@ impl Session {
                 cx.notify();
             }
             Update::Alert(alert) => crate::notify::show(self, alert, cx),
+            Update::ReadAloud(highlight) => {
+                self.read_aloud
+                    .incoming(highlight, &self.runtime, &self.credentials, cx);
+            }
             Update::SignedOut => {
                 if let Some(server) = self.server().cloned() {
                     if let Err(e) = self.credentials.clear(&server) {
@@ -312,6 +325,22 @@ impl Session {
                 }
             }
         }
+    }
+
+    fn sync_read_aloud(&mut self) {
+        let target = read_aloud::target(self);
+        let client = self.client().cloned();
+        self.read_aloud.sync(target, client.as_deref());
+    }
+
+    pub(crate) fn set_read_aloud(&mut self, enabled: bool, cx: &mut Context<Self>) -> bool {
+        let Some(target) = read_aloud::target(self) else {
+            return false;
+        };
+        let saved = self.read_aloud.change(&target, enabled, &self.config);
+        self.sync_read_aloud();
+        cx.notify();
+        saved.is_ok()
     }
 
     /// After a bootstrap: keep the selection if it still exists, else pick one.
@@ -359,7 +388,7 @@ impl Session {
             self.history.replace(Route::Conversation(id.clone()));
         }
         if changed {
-            self.save_state();
+            self.save_selection(&client);
             cx.emit(SessionEvent::Selection);
         }
     }
@@ -368,15 +397,26 @@ impl Session {
         let Some(client) = self.client().cloned() else {
             return;
         };
-        let first = client.read().sidebar(network).first().map(|c| c.id.clone());
-        self.network = Some(network.to_string());
-        self.conversation = None;
-        match first {
-            Some(id) => self.select_conversation(&id, cx),
-            None => {
+        let workspace = client.read();
+        if workspace.network(network).is_none() {
+            return;
+        }
+        let last = self
+            .state
+            .last_channel(client.api().server(), &workspace.user.id, network);
+        let target = workspace
+            .network_conversation(network, last)
+            .map(|c| c.id.clone());
+        drop(workspace);
+        if let Some(id) = target {
+            self.select_conversation(&id, cx);
+        } else {
+            if self.network.as_deref() == Some(network) && self.conversation.take().is_some() {
+                self.report_activity();
                 cx.emit(SessionEvent::Selection);
                 cx.notify();
             }
+            self.navigate(Route::ServerWindow(network.to_string()), cx);
         }
     }
 
@@ -395,7 +435,7 @@ impl Session {
         if self.window_active {
             client.mark_read(id);
         }
-        self.save_state();
+        self.save_selection(&client);
         self.report_activity();
         cx.emit(SessionEvent::Selection);
         cx.notify();
@@ -409,15 +449,40 @@ impl Session {
             .or_else(|| self.conversation.clone().map(Route::Conversation))
     }
 
+    /// The workspace route visible while Settings is open.
+    pub fn workspace_route(&self) -> Option<Route> {
+        match self.route() {
+            Some(Route::Settings) => self
+                .history
+                .previous()
+                .cloned()
+                .or_else(|| self.conversation.clone().map(Route::Conversation)),
+            route => route,
+        }
+    }
+
+    /// Dismiss Settings, including when it was opened from an empty workspace.
+    pub(crate) fn close_settings(&mut self, cx: &mut Context<Self>) {
+        if self.route() != Some(Route::Settings) {
+            return;
+        }
+        if self.history.can_go_back() {
+            self.go_back(cx);
+        } else {
+            self.history.retain(|route| *route != Route::Settings);
+            cx.emit(SessionEvent::Route);
+            cx.notify();
+        }
+    }
+
     /// Show `route` in the main pane.
     pub fn navigate(&mut self, route: Route, cx: &mut Context<Self>) {
         if let Route::Conversation(id) = &route {
             self.select_conversation(id, cx);
             return;
         }
-        if self.history.push(route) {
-            cx.emit(SessionEvent::Route);
-            cx.notify();
+        if self.history.push(route.clone()) {
+            self.show(route, cx);
         }
     }
 
@@ -446,10 +511,18 @@ impl Session {
                 if self.window_active {
                     client.mark_read(id);
                 }
-                self.save_state();
+                self.save_selection(&client);
                 self.report_activity();
                 cx.emit(SessionEvent::Selection);
             }
+        }
+        if let Route::ServerWindow(network) = route
+            && self.network.as_deref() != Some(network.as_str())
+        {
+            self.network = Some(network);
+            self.conversation = None;
+            self.report_activity();
+            cx.emit(SessionEvent::Selection);
         }
         cx.emit(SessionEvent::Route);
         cx.notify();
@@ -502,8 +575,27 @@ impl Session {
         self.set_phase(Phase::SignIn { server }, cx);
     }
 
-    fn save_state(&mut self) {
+    fn save_selection(&mut self, client: &Client) {
         self.state.last_conversation = self.conversation.clone();
+        let workspace = client.read();
+        if let Some(channel) = self
+            .conversation
+            .as_deref()
+            .and_then(|id| workspace.conversation(id))
+            .filter(|c| can_restore_channel(c))
+        {
+            self.state.remember_channel(
+                client.api().server(),
+                &workspace.user.id,
+                &channel.network_id,
+                &channel.id,
+            );
+        }
+        drop(workspace);
+        self.save_state();
+    }
+
+    fn save_state(&self) {
         if let Err(e) = self.config.save_state(&self.state) {
             log::warn!("save state: {e}");
         }

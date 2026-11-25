@@ -12,17 +12,19 @@
 //!    that keeps asking for a fresh copy is not hammered (web `baadcc8`).
 
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use tokio::time::Instant;
 
 use futures::channel::mpsc::UnboundedSender;
-use ircord_contract::event::{ServerEvent, resume_frame};
+use ircord_contract::event::{Durable, ServerEvent, resume_frame};
 use ircord_contract::{Alert, Snapshot};
 use tokio::sync::{Notify, mpsc};
 
 use crate::api::ApiError;
+use crate::store::read_aloud::{self, Highlight};
 use crate::store::{Changes, Connection, Workspace};
 
 /// What the client tells the app.
@@ -32,6 +34,8 @@ pub enum Update {
     Connection(Connection),
     /// The server routed a notification to this device.
     Alert(Alert),
+    /// A live highlight qualified for the opt-in Read Aloud feature.
+    ReadAloud(Highlight),
     /// The session ended or was refused; the app shows the sign-in screen.
     SignedOut,
 }
@@ -86,6 +90,7 @@ pub struct Shared {
     pub routing_changed: Notify,
     pub tab: String,
     pub incarnation: String,
+    pub read_aloud: AtomicBool,
 }
 
 impl Shared {
@@ -264,12 +269,34 @@ async fn session<T: Transport>(
                     }
                     _ => {}
                 }
-                let changes = shared.store.write().unwrap().apply(&event, now_ms());
+                let (changes, highlight) = {
+                    let mut store = shared.store.write().unwrap();
+                    let cursor = store.cursor;
+                    let now = now_ms();
+                    let changes = store.apply(&event, now);
+                    let highlight = match &event {
+                        ServerEvent::Durable {
+                            seq,
+                            event: Durable::MessageCreated(message),
+                        } if *seq > cursor
+                            && !changes.resync
+                            && store.connection == Some(Connection::Live)
+                            && shared.read_aloud.load(Ordering::Relaxed) =>
+                        {
+                            read_aloud::incoming(&store, message, now)
+                        }
+                        _ => None,
+                    };
+                    (changes, highlight)
+                };
                 if changes.resync {
                     return End::Resync;
                 }
                 if !changes.is_empty() {
                     shared.emit(Update::Changed(changes));
+                }
+                if let Some(highlight) = highlight {
+                    shared.emit(Update::ReadAloud(highlight));
                 }
             }
             frame = outgoing.recv() => match frame {
@@ -387,6 +414,7 @@ mod tests {
             routing_changed: Notify::new(),
             tab: "tab".into(),
             incarnation: "inc".into(),
+            read_aloud: AtomicBool::new(false),
         });
         let (_out_tx, out_rx) = mpsc::unbounded_channel();
         // The fake answers Unauthorized once its scripted sockets run out, which ends the run.

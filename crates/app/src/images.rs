@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use gpui_kit::App;
 use gpui_kit::http_client::{self, AsyncBody, HttpClient, Response, Url};
 use tokio::runtime::Runtime;
 
@@ -17,8 +18,8 @@ pub struct ImageClient {
 }
 
 impl ImageClient {
-    pub fn new(runtime: Arc<Runtime>) -> Self {
-        Self { runtime }
+    pub fn install(runtime: Arc<Runtime>, cx: &mut App) {
+        cx.set_http_client(Arc::new(Self { runtime }));
     }
 }
 
@@ -87,5 +88,47 @@ pub fn still(url: gpui_kit::SharedString) -> gpui_kit::ImageSource {
         }
         stills.0.insert(url.clone(), still.clone());
         Some(Ok(still))
+    }))
+}
+
+#[derive(Default)]
+struct AvatarBackdrops(
+    std::collections::HashMap<gpui_kit::SharedString, Arc<gpui_kit::RenderImage>>,
+);
+
+impl gpui_kit::Global for AvatarBackdrops {}
+
+/// A small softened copy of the first avatar frame, used behind a profile.
+/// Keep this separate from the decoded original used by the avatar itself.
+pub fn avatar_backdrop(url: gpui_kit::SharedString) -> gpui_kit::ImageSource {
+    use gpui_kit::{ImgResourceLoader, RenderImage, Resource, SharedUri};
+    gpui_kit::ImageSource::Custom(Arc::new(move |window, cx| {
+        if let Some(cached) = cx
+            .try_global::<AvatarBackdrops>()
+            .and_then(|images| images.0.get(&url))
+        {
+            return Some(Ok(cached.clone()));
+        }
+        let resource = Resource::Uri(SharedUri::from(url.to_string()));
+        let decoded = match window.use_asset::<ImgResourceLoader>(&resource, cx)? {
+            Ok(image) => image,
+            Err(error) => return Some(Err(error)),
+        };
+        let size = decoded.size(0);
+        // The decoder and the atlas both use BGRA; the filters preserve channel order.
+        let pixels = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
+            size.width.0 as u32,
+            size.height.0 as u32,
+            decoded.as_bytes(0)?,
+        )?;
+        let small = image::imageops::thumbnail(&pixels, 96, 96);
+        let blurred = image::imageops::blur(&small, 8.);
+        let backdrop = Arc::new(RenderImage::new(vec![image::Frame::new(blurred)]));
+        let images = cx.default_global::<AvatarBackdrops>();
+        if images.0.len() >= 32 {
+            images.0.clear();
+        }
+        images.0.insert(url.clone(), backdrop.clone());
+        Some(Ok(backdrop))
     }))
 }

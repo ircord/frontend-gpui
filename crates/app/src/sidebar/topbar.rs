@@ -371,6 +371,7 @@ fn bar(
                 .child(
                     div()
                         .text_sm()
+                        .line_height(px(16.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.text)
                         .truncate()
@@ -381,14 +382,14 @@ fn bar(
     drop(w);
     let me_button = Button::new("self-menu")
         .ghost()
-        .rounded(px(17.))
+        .rounded(px(18.))
         .border_1()
         .border_color(theme.border.opacity(0.6))
         .bg(theme.raised.opacity(0.42))
         .accessibility_label(t!("sidebar-self-menu"))
         .tooltip(t!("sidebar-self-menu"))
         .max_w(px(220.))
-        .h(px(34.))
+        .h(px(36.))
         .justify_start()
         .child(name)
         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {

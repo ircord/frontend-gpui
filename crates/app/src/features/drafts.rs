@@ -23,6 +23,7 @@ use ircord_client::store::{Changes, PendingSend, SendState, outbox, parties};
 
 use crate::composer::ComposerView;
 use crate::composer::drafts::Shown;
+use crate::features::message_actions::{self, Mode};
 use crate::registry::{self, KeyDefault, MenuItem, Pane, PaneCtx, SidebarCtx, Slot};
 use crate::route::{PaneKind, Route};
 use crate::session::{Phase, Session, SessionEvent};
@@ -230,15 +231,43 @@ pub fn save_now(cx: &mut App) {
 /// or an undo from the page).
 fn refill(session: &Entity<Session>, conversation: &str, window: &mut Window, cx: &mut App) {
     let text = text(session, conversation, cx);
-    let composers: Vec<_> = cx
-        .global::<Drafts>()
+    for composer in composers_for(conversation, cx) {
+        composer.update(cx, |c, cx| c.set_text_at(&text, text.len(), window, cx));
+    }
+}
+
+fn composers_for(conversation: &str, cx: &App) -> Vec<Entity<ComposerView>> {
+    cx.global::<Drafts>()
         .composers
         .iter()
         .filter(|(_, shown)| shown.borrow().as_deref() == Some(conversation))
         .filter_map(|(c, _)| c.upgrade())
-        .collect();
-    for composer in composers {
-        composer.update(cx, |c, cx| c.set_text_at(&text, text.len(), window, cx));
+        .collect()
+}
+
+/// Spend a submitted draft after an asynchronous command succeeds.
+pub(super) fn clear_if_matches(
+    session: &Entity<Session>,
+    conversation: &str,
+    submitted: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if matches!(
+        message_actions::mode(conversation, cx),
+        Some(Mode::Edit { .. })
+    ) {
+        return;
+    }
+    if text(session, conversation, cx) == submitted {
+        set(session, conversation, "", cx);
+    }
+    for composer in composers_for(conversation, cx) {
+        composer.update(cx, |c, cx| {
+            if c.text(cx) == submitted {
+                c.set_text("", window, cx);
+            }
+        });
     }
 }
 

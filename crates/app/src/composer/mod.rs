@@ -32,6 +32,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::commands::complete::{self, TabCycle};
 use ircord_client::contract::ConversationKind;
+use ircord_client::{features::plain_line_breaks, store::drafts::TEXT_LIMIT};
 
 use crate::registry::{self, ComposerCtx, SendOutcome, Suggestion, SuggestionLook, TokenView};
 use crate::route::Route;
@@ -109,6 +110,7 @@ pub struct ComposerView {
 
 /// The tallest the suggestion list grows before it scrolls.
 const SUGGESTIONS_HEIGHT: f32 = 280.;
+const DRAFT_WARNING: isize = 400;
 
 impl ComposerView {
     pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -188,17 +190,31 @@ impl ComposerView {
         let Some(ctx) = self.ctx(cx) else {
             return;
         };
-        if text.trim().is_empty() {
+        // Text pasted on Windows keeps its `\r\n` line breaks. Count and send
+        // the normalized text, as the web textarea does.
+        let text = plain_line_breaks(&text);
+        let blank = text.trim().is_empty();
+        if text.encode_utf16().count() > TEXT_LIMIT
+            && (!blank || uploads::Uploads::has_pending(cx, &ctx.conversation))
+        {
+            ui::toast::info(window, cx, t!("composer-too-long"));
+            return;
+        }
+        if blank {
             self.after_submit(&ctx, "", window, cx);
             return;
         }
+        self.remember(cx);
         let filters = registry::get(cx).composer.send_filters.to_vec();
-        // Text pasted on Windows keeps its `\r\n` line breaks, which the
-        // server refuses: every send, reply and edit goes out with `\n`.
-        let mut text = ircord_client::features::plain_line_breaks(&text).into_owned();
+        let mut text = text.into_owned();
         for filter in filters {
             match (filter.filter)(&ctx, text, window, cx) {
                 SendOutcome::Continue(next) => text = next,
+                SendOutcome::Sent(sent) => {
+                    self.set_text("", window, cx);
+                    self.after_submit(&ctx, &sent, window, cx);
+                    return;
+                }
                 SendOutcome::Handled => {
                     self.set_text("", window, cx);
                     return;
@@ -286,6 +302,15 @@ impl ComposerView {
     /// Put a suggestion in place of the text it replaces, the caret after it.
     pub fn apply(&mut self, suggestion: &Suggestion, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.text(cx);
+        if let SuggestionLook::Command { name } = suggestion.look
+            && text
+                .get(suggestion.replace.end..)
+                .is_some_and(|tail| tail.trim().is_empty())
+            && let Some(ctx) = self.ctx(cx)
+            && crate::features::commands::open_editor(&ctx, name, &text, window, cx)
+        {
+            return;
+        }
         let range =
             suggestion.replace.start.min(text.len())..suggestion.replace.end.min(text.len());
         if !text.is_char_boundary(range.start) || !text.is_char_boundary(range.end) {
@@ -365,6 +390,16 @@ impl ComposerView {
             return;
         };
         self.remember(cx);
+        if !m.modified() && (key.key == "space" || key.key_char.as_deref() == Some(" ")) {
+            let text = self.text(cx);
+            if self.input.read(cx).selected_range() == (text.len()..text.len())
+                && let Some(spec) = ircord_client::commands::args::exact(&text)
+                && crate::features::commands::open_editor(&ctx, spec.name, &text, window, cx)
+            {
+                cx.stop_propagation();
+                return;
+            }
+        }
         if key.key == "backspace" && !m.modified() && self.restore_typed(window, cx) {
             cx.stop_propagation();
             return;
@@ -481,7 +516,17 @@ impl ComposerView {
         if ch.is_empty() || ch.chars().any(|c| c.is_control() || c.is_whitespace()) {
             return;
         }
-        if event.context_stack.iter().any(|c| c.contains("Input")) {
+        if event
+            .context_stack
+            .iter()
+            .any(|c| c.contains("Input") || c.contains(expressions::KEY_CONTEXT))
+        {
+            return;
+        }
+        if self
+            .ctx(cx)
+            .is_some_and(|ctx| crate::features::commands::editor_is_open(&ctx, cx))
+        {
             return;
         }
         let shown = {
@@ -551,15 +596,24 @@ impl Render for ComposerView {
         }
         self.remember(cx);
         let slots = registry::get(cx);
-        let (above, buttons) = (
+        let (above, input, overlays, buttons) = (
             slots.composer.above.to_vec(),
+            slots.composer.input.to_vec(),
+            slots.composer.overlays.to_vec(),
             slots.composer.buttons.to_vec(),
         );
         let above: Vec<AnyElement> = above
             .iter()
             .filter_map(|s| (s.render)(&ctx, window, cx))
             .collect();
+        if let Some(editor) = input.iter().find_map(|s| (s.render)(&ctx, window, cx)) {
+            return root.children(above).child(editor);
+        }
         let buttons: Vec<AnyElement> = buttons
+            .iter()
+            .filter_map(|s| (s.render)(&ctx, window, cx))
+            .collect();
+        let overlays: Vec<AnyElement> = overlays
             .iter()
             .filter_map(|s| (s.render)(&ctx, window, cx))
             .collect();
@@ -569,7 +623,12 @@ impl Render for ComposerView {
         if !suggestions.is_empty() {
             root = root.child(self.suggestion_list(suggestions, selected, &theme, cx));
         }
-        let has_text = !self.text(cx).trim().is_empty();
+        let draft = self.text(cx);
+        let sendable =
+            !draft.trim().is_empty() || uploads::Uploads::has_pending(cx, &ctx.conversation);
+        // Count the draft the way the web composer counts its input.
+        let remaining =
+            TEXT_LIMIT as isize - plain_line_breaks(&draft).encode_utf16().count() as isize;
         let message_look = crate::message::layout::settings(cx);
         let font = crate::message::layout::message_font(&message_look, &theme);
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
@@ -580,6 +639,9 @@ impl Render for ComposerView {
         };
         root.child(
             div()
+                .id("composer-field")
+                .test_support()
+                .relative()
                 .min_h(px(48.))
                 .rounded(theme.radius_large)
                 .border_1()
@@ -601,6 +663,7 @@ impl Render for ComposerView {
                         .child(
                             Textarea::new(&self.input)
                                 .token(draw_token)
+                                .on_paste(move |item, window, cx| paste(&ctx, item, window, cx))
                                 .appearance(false)
                                 .p_0()
                                 .font_family(font)
@@ -616,9 +679,27 @@ impl Render for ComposerView {
                         .flex()
                         .items_center()
                         .gap_1()
+                        .when(remaining < DRAFT_WARNING, |row| {
+                            row.child(
+                                div()
+                                    .id("composer-remaining")
+                                    .test_support()
+                                    .role(Role::Status)
+                                    .aria_label(SharedString::from(if remaining < 0 {
+                                        t!("composer-characters-over", count = -remaining)
+                                    } else {
+                                        t!("composer-characters-left", count = remaining)
+                                    }))
+                                    .px_1()
+                                    .text_xs()
+                                    .text_color(theme.warning)
+                                    .child(remaining.to_string()),
+                            )
+                        })
                         .children(buttons)
-                        .child(self.send_button(has_text, &theme, cx)),
-                ),
+                        .when(sendable, |row| row.child(self.send_button(&theme, cx))),
+                )
+                .children(overlays),
         )
     }
 }
@@ -705,7 +786,7 @@ impl ComposerView {
                                 .child(detail),
                         )
                     }),
-                SuggestionLook::Stacked => row
+                SuggestionLook::Command { .. } => row
                     .flex()
                     .flex_col()
                     .child(
@@ -767,21 +848,15 @@ impl ComposerView {
         list
     }
 
-    /// The send arrow: quiet while the box is empty, filled once there is
-    /// something to send.
-    fn send_button(
-        &self,
-        has_text: bool,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    /// The send arrow, shown when there is a message or an attachment to send.
+    fn send_button(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let label = SharedString::from(t!("composer-send"));
-        let (fill, ink) = if has_text {
-            (theme.accent, theme.on_accent)
-        } else {
-            (gpui_kit::transparent_black(), theme.faint)
-        };
-        let hover = if has_text { theme.accent } else { theme.hover };
+        let fill = linear_gradient(
+            135.,
+            linear_color_stop(theme.accent, 0.),
+            linear_color_stop(theme.accent.blend(theme.danger.opacity(0.22)), 1.),
+        );
+        let hover = theme.accent;
         div()
             .id("composer-send")
             .test_support()
@@ -798,21 +873,31 @@ impl ComposerView {
             .cursor_pointer()
             .bg(fill)
             .hover(move |d| d.bg(hover))
-            .child(if has_text {
-                div()
-                    .id("composer-send-filled")
-                    .test_support()
-                    .flex()
-                    .child(ui::icon::icon(LucideIcon::Send, ink))
-                    .into_any_element()
-            } else {
-                ui::icon::icon(LucideIcon::Send, ink).into_any_element()
-            })
+            .child(ui::icon::icon(LucideIcon::Send, theme.on_accent))
             .on_click(cx.listener(|this, _, window, cx| {
                 let text = this.text(cx);
                 this.submit(text, window, cx);
             }))
     }
+}
+
+fn paste(ctx: &ComposerCtx, item: &ClipboardItem, window: &mut Window, cx: &mut App) -> bool {
+    if uploads::paste(ctx, item, window, cx) {
+        return true;
+    }
+    use ircord_client::format::{blocks, clipboard};
+    let html = (!cx.is_test())
+        .then(ircord_platform::clipboard::html)
+        .flatten();
+    let text = html
+        .and_then(|html| clipboard::list(&html.source, html.selection))
+        .or_else(|| item.text().and_then(|text| blocks::pasted_bullets(&text)));
+    let Some(text) = text else {
+        return false;
+    };
+    let input = ctx.composer.read(cx).input.clone();
+    input.update(cx, |input, cx| input.replace(text, window, cx));
+    true
 }
 
 /// Mark what the token providers find in the box's text as tokens. A

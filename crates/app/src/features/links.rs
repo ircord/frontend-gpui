@@ -26,10 +26,11 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 
+use crate::ui::icon::LucideIcon;
+use crate::ui::query_field::{self, AcceptSuggestion, SUGGESTION_KEYS, Selection, Suggestion};
 use gpui_kit::TestSupportExt;
-use gpui_kit::component::input::{
-    Backspace, Escape, Input, InputEvent, InputState, MoveDown, MoveUp,
-};
+use gpui_kit::component::date_picker::{DatePickerEvent, DatePickerState};
+use gpui_kit::component::input::{Backspace, Escape, InputEvent, InputState, MoveDown, MoveUp};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::Client;
@@ -39,10 +40,11 @@ use ircord_client::contract::{
     LinkMediaResponseKind, LinkPage, LinkSource,
 };
 use ircord_client::documents;
+use ircord_client::search_filter as dates;
 use ircord_client::store::link_media::{self, Preview};
 use ircord_client::store::{Connection, Workspace};
 
-use crate::features::viewer::Media;
+use crate::features::{shortcuts::MarkRead, viewer::Media};
 use crate::registry::{
     self, ConversationCtx, KeyDefault, MenuItem, Pane, PaneCtx, SidebarCtx, Slot,
 };
@@ -52,6 +54,7 @@ use crate::sidebar::layout;
 use crate::theme::{self, Theme};
 use crate::ui;
 use crate::ui::icon::IconName;
+use crate::ui::page::Hint;
 
 gpui_kit::actions!(
     links,
@@ -618,6 +621,30 @@ enum Chip {
     Until,
 }
 
+struct LinkSuggestions {
+    heading: &'static str,
+    query: String,
+    rows: Vec<(Token, Suggestion)>,
+}
+
+/// The token at the end of the field. Keep the offset so applying a choice
+/// preserves the user's search terms before it.
+fn active_token(input: &str) -> Option<(&'static str, &str, usize)> {
+    if input.ends_with(char::is_whitespace) {
+        return None;
+    }
+    let word = input.split_whitespace().next_back()?;
+    let (key, value) = word.split_once(':')?;
+    let key = if key.eq_ignore_ascii_case("site") {
+        "host"
+    } else {
+        catalog::TOKEN_KEYS
+            .into_iter()
+            .find(|candidate| key.eq_ignore_ascii_case(candidate))?
+    };
+    Some((key, value, input.len() - word.len()))
+}
+
 /// The view, kept across visits so the filters stay.
 struct Page(Entity<LinksView>);
 impl Global for Page {}
@@ -654,6 +681,8 @@ pub struct LinksView {
     /// A typed filter that named nothing.
     notice: Option<String>,
     input: Entity<InputState>,
+    query_calendar: Entity<DatePickerState>,
+    suggestion: Selection,
     list: List,
     selected: usize,
     showing: bool,
@@ -666,7 +695,25 @@ pub struct LinksView {
 impl LinksView {
     fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("links-view-filter")));
+        let query_calendar = query_field::calendar_state(window, cx);
         let subscriptions = vec![
+            cx.subscribe_in(
+                &query_calendar,
+                window,
+                |this: &mut Self, _, event: &DatePickerEvent, window, cx| {
+                    let DatePickerEvent::Change(date) = event;
+                    if let Some(day) = date.start() {
+                        let value = day.format("%Y-%m-%d").to_string();
+                        let raw = this.input.read(cx).value();
+                        let token = match active_token(&raw) {
+                            Some(("since", _, _)) => Token::Since(value),
+                            Some(("until", _, _)) => Token::Until(value),
+                            _ => return,
+                        };
+                        this.choose(token, window, cx);
+                    }
+                },
+            ),
             cx.subscribe_in(
                 &input,
                 window,
@@ -710,6 +757,8 @@ impl LinksView {
             text: String::new(),
             notice: None,
             input,
+            query_calendar,
+            suggestion: Selection::default(),
             list: List::default(),
             selected: 0,
             showing: false,
@@ -822,6 +871,8 @@ impl LinksView {
     /// The filter box changed: take the finished tokens out of it as
     /// filters, and search for the text once typing pauses.
     fn typed(&mut self, input: &Entity<InputState>, window: &mut Window, cx: &mut Context<Self>) {
+        self.suggestion = Selection::default();
+        cx.notify();
         let value = input.read(cx).value().to_string();
         let typed = catalog::parse_typed(&value);
         if !typed.tokens.is_empty() {
@@ -832,10 +883,10 @@ impl LinksView {
             input.update(cx, |i, cx| i.set_value(typed.rest.clone(), window, cx));
             self.changed(cx);
         }
+        self.typing += 1;
         if typed.text == self.text {
             return;
         }
-        self.typing += 1;
         let typing = self.typing;
         let runtime = self.session.read(cx).runtime.clone();
         let settle = runtime.spawn(async { tokio::time::sleep(DEBOUNCE).await });
@@ -850,7 +901,6 @@ impl LinksView {
             .ok();
         })
         .detach();
-        cx.notify();
     }
 
     /// Apply one typed filter, or say it named nothing.
@@ -869,8 +919,15 @@ impl LinksView {
                     .conversations
                     .iter()
                     .filter(|c| c.kind == ConversationKind::Channel && c.party.is_none())
-                    .filter(|c| c.name.trim_start_matches('#').eq_ignore_ascii_case(wanted))
-                    .min_by_key(|c| Some(&c.network_id) != self.session.read(cx).network.as_ref())
+                    .filter(|c| {
+                        c.id == name || c.name.trim_start_matches('#').eq_ignore_ascii_case(wanted)
+                    })
+                    .min_by_key(|c| {
+                        (
+                            c.id != name,
+                            Some(&c.network_id) != self.session.read(cx).network.as_ref(),
+                        )
+                    })
                     .map(|c| c.id.clone());
                 match found {
                     Some(id) if self.chosen.contains(&id) => {}
@@ -959,22 +1016,15 @@ impl LinksView {
         self.changed(cx);
     }
 
-    fn toggle_kind(&mut self, kind: LinkCardKind, cx: &mut Context<Self>) {
-        if self.kinds.contains(&kind) {
-            self.kinds.retain(|k| *k != kind);
-        } else {
-            self.kinds.push(kind);
-        }
-        self.changed(cx);
-    }
-
     fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.suggestion = Selection::default();
         self.network.clear();
         self.kinds.clear();
         self.host.clear();
         self.since.clear();
         self.until.clear();
         self.text.clear();
+        self.typing += 1;
         self.notice = None;
         self.input.update(cx, |i, cx| i.set_value("", window, cx));
         self.changed(cx);
@@ -982,7 +1032,10 @@ impl LinksView {
 
     /// Start typing a filter: `key:` at the end of the box.
     fn start(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.suggestion = Selection::default();
+        cx.notify();
         let value = self.input.read(cx).value().to_string();
+        let value = active_token(&value).map_or(value.as_str(), |(_, _, start)| &value[..start]);
         let sep = if value.is_empty() || value.ends_with(' ') {
             ""
         } else {
@@ -994,6 +1047,9 @@ impl LinksView {
     }
 
     fn enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.accept_suggestion(window, cx) {
+            return;
+        }
         if self.filter(cx).is_err() || !self.list.loaded {
             return;
         }
@@ -1006,6 +1062,190 @@ impl LinksView {
         {
             jump(&self.session, &source, window, cx);
         }
+    }
+
+    fn choose(&mut self, token: Token, window: &mut Window, cx: &mut Context<Self>) {
+        let raw = self.input.read(cx).value();
+        if let Some((_, _, start)) = active_token(&raw) {
+            self.notice = None;
+            self.take(token, cx);
+            self.text = catalog::parse_typed(&raw[..start]).text;
+            self.input.update(cx, |i, cx| {
+                i.set_value(raw[..start].to_string(), window, cx)
+            });
+            self.input.focus_handle(cx).focus(window, cx);
+            self.changed(cx);
+        }
+    }
+
+    fn accept_suggestion(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(suggestions) = self.suggestions(cx) else {
+            return false;
+        };
+        let selected = self.suggestion.index(suggestions.rows.len());
+        if let Some((token, _)) = suggestions.rows.into_iter().nth(selected) {
+            self.choose(token, window, cx);
+        }
+        true
+    }
+
+    fn suggestions(&self, cx: &App) -> Option<LinkSuggestions> {
+        if self.suggestion.dismissed {
+            return None;
+        }
+        let raw = self.input.read(cx).value();
+        let (key, value, _) = active_token(&raw)?;
+        let client = self.client(cx)?;
+        let w = client.read();
+        let theme = theme::get(cx);
+        let query = value.trim_start_matches('#').to_lowercase();
+        let matches = |s: &str| s.to_lowercase().contains(&query);
+        let offer = |token, title, detail, icon| {
+            (
+                token,
+                Suggestion {
+                    title,
+                    detail,
+                    leading: Some(ui::icon::icon(icon, theme.muted).into_any_element()),
+                },
+            )
+        };
+        let (heading, choices) = match key {
+            "in" => (
+                t!("links-view-tag-in"),
+                w.conversations
+                    .iter()
+                    .filter(|c| c.kind == ConversationKind::Channel && c.party.is_none())
+                    .filter(|c| {
+                        self.chosen.len() < catalog::MAX_CHANNELS
+                            && !self.chosen.contains(&c.id)
+                            && matches(&c.name)
+                    })
+                    .take(8)
+                    .map(|c| {
+                        offer(
+                            Token::In(c.id.clone()),
+                            place(&w, &c.id),
+                            w.network(&c.network_id).map(|n| n.name.clone()),
+                            LucideIcon::Hash,
+                        )
+                    })
+                    .collect(),
+            ),
+            "network" => (
+                t!("links-view-tag-network"),
+                w.networks
+                    .iter()
+                    .filter(|n| n.id != self.network && matches(&n.name))
+                    .map(|n| {
+                        offer(
+                            Token::Network(n.id.clone()),
+                            n.name.clone(),
+                            None,
+                            LucideIcon::Globe,
+                        )
+                    })
+                    .collect(),
+            ),
+            "type" => (
+                t!("links-view-tag-type"),
+                catalog::KINDS
+                    .into_iter()
+                    .filter(|kind| !self.kinds.contains(kind))
+                    .filter_map(|kind| {
+                        let value = catalog::kind_value(kind)?;
+                        let label = kind_label(kind);
+                        (matches(label) || matches(value)).then(|| {
+                            offer(
+                                Token::Type(value.to_string()),
+                                label.to_string(),
+                                None,
+                                match kind {
+                                    LinkCardKind::Image => LucideIcon::Image,
+                                    LinkCardKind::Gif => LucideIcon::Clapperboard,
+                                    LinkCardKind::Audio => LucideIcon::Music,
+                                    LinkCardKind::Video | LinkCardKind::Youtube => {
+                                        LucideIcon::Video
+                                    }
+                                    _ => LucideIcon::Link,
+                                },
+                            )
+                        })
+                    })
+                    .collect(),
+            ),
+            "host" => {
+                let typed =
+                    (!value.is_empty() && catalog::host_filter(value).is_ok()).then_some(value);
+                let mut seen = HashSet::new();
+                let choices = typed
+                    .into_iter()
+                    .chain(self.list.items.iter().map(|card| card.host.as_str()))
+                    .filter(|host| {
+                        !host.is_empty() && matches(host) && seen.insert(host.to_lowercase())
+                    })
+                    .take(8)
+                    .map(|host| {
+                        offer(
+                            Token::Host(host.to_string()),
+                            host.to_string(),
+                            None,
+                            LucideIcon::Link,
+                        )
+                    })
+                    .collect();
+                (t!("links-view-tag-host"), choices)
+            }
+            "since" | "until" => {
+                let today = query_field::today();
+                let make_token = |day| {
+                    if key == "since" {
+                        Token::Since(day)
+                    } else {
+                        Token::Until(day)
+                    }
+                };
+                let exact = dates::parse_day(value)
+                    .filter(|day| *day <= today)
+                    .map(|_| {
+                        offer(
+                            make_token(value.to_string()),
+                            value.to_string(),
+                            None,
+                            LucideIcon::Calendar,
+                        )
+                    });
+                let choices = exact
+                    .into_iter()
+                    .chain(
+                        query_field::date_presets()
+                            .into_iter()
+                            .filter(|(name, _)| matches(name))
+                            .map(|(name, offset)| {
+                                let day = dates::days_before(today, offset);
+                                offer(
+                                    make_token(day.clone()),
+                                    name.to_string(),
+                                    Some(day),
+                                    LucideIcon::Calendar,
+                                )
+                            }),
+                    )
+                    .collect();
+                let heading = if key == "since" {
+                    t!("links-view-tag-since")
+                } else {
+                    t!("links-view-tag-until")
+                };
+                (heading, choices)
+            }
+            _ => return None,
+        };
+        Some(LinkSuggestions {
+            heading,
+            query: value.to_string(),
+            rows: choices,
+        })
     }
 
     fn open_posts(&self, card: &LinkCard, window: &mut Window, cx: &mut App) {
@@ -1437,7 +1677,6 @@ impl Render for LinksView {
             })
             .collect();
 
-        let offline = client.read().connection != Some(Connection::Live);
         let count = self.list.items.len();
         let meta: Option<String> = (count > 0).then(|| {
             if self.list.cursor.is_some() {
@@ -1449,7 +1688,7 @@ impl Render for LinksView {
             }
         });
 
-        // The filter box, the buttons that start a filter, the type pills.
+        // The search field and the shortcuts that start filter tokens.
         let (channels, networks) = {
             let w = client.read();
             (
@@ -1461,104 +1700,58 @@ impl Render for LinksView {
             )
         };
         let picked = self.picked(cx);
-        let mut starts = div().flex().flex_wrap().gap_1p5();
-        for (key, label, icon, show) in [
-            ("in", t!("links-view-tag-in"), None, channels > 1),
-            (
-                "network",
-                t!("links-view-tag-network"),
-                Some(IconName::Globe),
-                networks > 1 && picked.is_empty(),
-            ),
-            (
-                "host",
-                t!("links-view-tag-host"),
-                Some(IconName::Globe),
-                true,
-            ),
-            (
-                "since",
-                t!("links-view-tag-since"),
-                Some(IconName::Calendar),
-                true,
-            ),
-            (
-                "until",
-                t!("links-view-tag-until"),
-                Some(IconName::Calendar),
-                true,
-            ),
-        ] {
-            if !show {
-                continue;
-            }
-            starts = starts.child(
-                div()
-                    .id(ElementId::Name(format!("links-start-{key}").into()))
-                    .test_support()
-                    .role(Role::Button)
-                    .reachable(&theme)
-                    .aria_label(label)
-                    .h(px(28.))
-                    .px_3()
-                    .rounded_full()
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .gap_1p5()
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .bg(theme.input)
-                    .border_1()
-                    .border_color(theme.border)
-                    .text_color(theme.muted)
-                    .hover({
-                        let (hover, text) = (theme.hover, theme.text);
-                        move |d| d.bg(hover).text_color(text)
-                    })
-                    .child(match icon {
-                        Some(icon) => ui::icon::icon(icon, theme.muted).into_any_element(),
-                        None => div().child("#").into_any_element(),
-                    })
-                    .child(label)
-                    .on_click(cx.listener(move |this, _, window, cx| this.start(key, window, cx))),
-            );
-        }
-        let mut kinds = div()
-            .id("links-kinds")
+        let mut starts = div()
+            .id("links-quick-filters")
             .test_support()
             .role(Role::Group)
             .aria_label(t!("links-view-filters"))
             .flex()
             .flex_wrap()
             .gap_1p5();
-        for kind in catalog::KINDS {
-            let on = self.kinds.contains(&kind);
-            let label = kind_label(kind);
-            let value = catalog::kind_value(kind).unwrap_or_default();
-            kinds = kinds.child(
-                div()
-                    .id(ElementId::Name(format!("links-kind-{value}").into()))
-                    .test_support()
-                    .role(Role::CheckBox)
-                    .reachable(&theme)
-                    .aria_label(label)
-                    .aria_toggled(if on { Toggled::True } else { Toggled::False })
-                    .px_2p5()
-                    .py_0p5()
-                    .rounded_full()
-                    .cursor_pointer()
-                    .text_xs()
-                    .when(on, |d| d.bg(theme.accent).text_color(theme.on_accent))
-                    .when(!on, |d| {
-                        let hover = theme.hover;
-                        d.bg(theme.input)
-                            .text_color(theme.text)
-                            .hover(move |d| d.bg(hover))
-                    })
-                    .child(label)
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_kind(kind, cx))),
-            );
+        for (key, label, icon, show) in [
+            (
+                "in",
+                t!("links-view-tag-in"),
+                LucideIcon::Hash,
+                channels > 1,
+            ),
+            (
+                "network",
+                t!("links-view-tag-network"),
+                LucideIcon::Globe,
+                networks > 1 && picked.is_empty(),
+            ),
+            (
+                "type",
+                t!("links-view-tag-type"),
+                LucideIcon::Paperclip,
+                true,
+            ),
+            ("host", t!("links-view-tag-host"), LucideIcon::Link, true),
+            (
+                "since",
+                t!("links-view-tag-since"),
+                LucideIcon::Calendar,
+                true,
+            ),
+            (
+                "until",
+                t!("links-view-tag-until"),
+                LucideIcon::Calendar,
+                true,
+            ),
+        ] {
+            if !show {
+                continue;
+            }
+            starts = starts.child(query_field::shortcut(
+                ElementId::Name(format!("links-start-{key}").into()),
+                label,
+                label,
+                Some(ui::icon::icon(icon, theme.muted).into_any_element()),
+                &theme,
+                cx.listener(move |this, _, window, cx| this.start(key, window, cx)),
+            ));
         }
         let chips = self.chips(cx);
         let mut chip_row = div().flex().flex_wrap().gap_1();
@@ -1570,49 +1763,86 @@ impl Render for LinksView {
                 value = value.clone()
             );
             let chip = chip.clone();
-            chip_row = chip_row.child(
-                div()
-                    .id(ElementId::Name(format!("links-chip-{i}").into()))
-                    .test_support()
-                    .role(Role::Button)
-                    .reachable(&theme)
-                    .aria_label(SharedString::from(label))
-                    .px_2()
-                    .py_0p5()
-                    .rounded_full()
-                    .cursor_pointer()
-                    .bg(theme.selected)
-                    .text_sm()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(div().text_color(theme.accent).child(format!("{key}:")))
-                    .child(div().text_color(theme.text).child(value))
-                    .child(ui::icon::icon(IconName::Close, theme.muted))
-                    .on_click(cx.listener(move |this, _, _, cx| this.remove(&chip, cx))),
-            );
+            chip_row = chip_row.child(query_field::chip(
+                format!("links-chip-{i}"),
+                label,
+                key,
+                value,
+                &theme,
+                cx.listener(move |this, _, _, cx| this.remove(&chip, cx)),
+            ));
         }
+        let choices = self.suggestions(cx);
+        let choices_open = choices.is_some();
+        let choice_count = choices.as_ref().map_or(0, |choices| choices.rows.len());
+        let popup = choices.map(|choices| {
+            let rows = choices
+                .rows
+                .into_iter()
+                .enumerate()
+                .map(|(i, (token, suggestion))| {
+                    suggestion
+                        .render(
+                            "links",
+                            i,
+                            choice_count,
+                            &self.suggestion,
+                            &theme,
+                            cx.listener(move |this, _, window, cx| {
+                                this.choose(token.clone(), window, cx)
+                            }),
+                        )
+                        .into_any_element()
+                })
+                .collect();
+            let raw = self.input.read(cx).value();
+            let footer = matches!(active_token(&raw), Some(("since" | "until", _, _)))
+                .then(|| query_field::calendar(&self.query_calendar, &theme).into_any_element());
+            query_field::suggestions(
+                "links",
+                choices.heading,
+                rows,
+                t!("search-no-suggestion", query = choices.query),
+                footer,
+                &self.suggestion,
+                &theme,
+            )
+        });
+        let can_clear = !chips.is_empty() || !self.input.read(cx).value().is_empty();
         let toolbar = div()
-            .px_4()
-            .pt_3()
-            .pb_2()
             .flex()
             .flex_col()
             .gap_2()
             .child(
                 div()
-                    .text_sm()
-                    .text_color(theme.muted)
-                    .child(t!("links-view-description")),
+                    .id("links-query")
+                    .relative()
+                    .when(choice_count > 0, |d| d.key_context(SUGGESTION_KEYS))
+                    .child(
+                        query_field::input(
+                            "links-filter",
+                            &self.input,
+                            t!("links-view-filter-label"),
+                            (!chips.is_empty()).then_some(chip_row),
+                            &theme,
+                        )
+                        .when(can_clear, |field| {
+                            field.suffix(ui::icon::button(
+                                "links-clear-query",
+                                IconName::Close,
+                                t!("search-clear"),
+                                &theme,
+                                cx.listener(|this, _, window, cx| {
+                                    this.chosen.clear();
+                                    this.clear(window, cx);
+                                    this.input.focus_handle(cx).focus(window, cx);
+                                }),
+                            ))
+                        }),
+                    )
+                    .children(popup),
             )
-            .child(
-                Input::new(&self.input)
-                    .id("links-filter")
-                    .aria_label(t!("links-view-filter-label")),
-            )
-            .when(!chips.is_empty(), |d| d.child(chip_row))
             .child(starts)
-            .child(kinds)
             .when_some(problem.clone(), |d, problem| {
                 d.child(
                     div()
@@ -1742,22 +1972,53 @@ impl Render for LinksView {
                 .children(more)
                 .into_any_element()
         };
-        let indexing = l.indexing;
-
+        let notices = toolbar.when(l.indexing, |d| {
+            d.child(notice("links-indexing", t!("links-view-indexing")))
+        });
+        let session = self.session.clone();
+        let mut page = ui::page::Page::new(
+            "links-page",
+            t!("links-view-title"),
+            div().px_4().pb_4().child(body),
+        )
+        .description(t!("links-view-description"))
+        .inherit_background()
+        .toolbar(notices)
+        .close(t!("links-view-close"), move |_, _, cx| {
+            ui::page::leave(&session, cx)
+        })
+        .hints(vec![
+            Hint::new(&["↑", "↓"], t!("links-view-key-choose")),
+            Hint::new(&["↵"], t!("links-view-key-jump")),
+            Hint::new(&[t!("search-key-escape")], t!("links-view-key-return")),
+        ]);
+        if let Some(meta) = meta {
+            page = page.meta("links-meta", meta);
+        }
         let count = self.list.items.len();
-        let page = div()
+        div()
             .id("links-page-root")
+            .flex_1()
+            .min_w_0()
+            .h_full()
             .flex()
-            .flex_col()
-            .capture_action(cx.listener(move |this, _: &MoveDown, _, cx| {
-                if count > 0 {
+            .capture_action(cx.listener(move |this, _: &MoveDown, window, cx| {
+                if choice_count > 0 && this.input.focus_handle(cx).is_focused(window) {
+                    this.suggestion.step(choice_count, false);
+                    cx.stop_propagation();
+                    cx.notify();
+                } else if !choices_open && count > 0 {
                     this.selected = (this.selected + 1) % count;
                     cx.stop_propagation();
                     cx.notify();
                 }
             }))
-            .capture_action(cx.listener(move |this, _: &MoveUp, _, cx| {
-                if count > 0 {
+            .capture_action(cx.listener(move |this, _: &MoveUp, window, cx| {
+                if choice_count > 0 && this.input.focus_handle(cx).is_focused(window) {
+                    this.suggestion.step(choice_count, true);
+                    cx.stop_propagation();
+                    cx.notify();
+                } else if !choices_open && count > 0 {
                     this.selected = (this.selected + count - 1) % count;
                     cx.stop_propagation();
                     cx.notify();
@@ -1771,42 +2032,36 @@ impl Render for LinksView {
                     cx.stop_propagation();
                 }
             }))
-            .capture_action(cx.listener(|this, _: &Escape, window, cx| {
-                this.session.update(cx, |s, cx| s.go_back(cx));
-                window.refresh();
+            .capture_action(cx.listener(|this, _: &AcceptSuggestion, window, cx| {
+                if !this.input.focus_handle(cx).is_focused(window)
+                    || !this.accept_suggestion(window, cx)
+                {
+                    window.focus_next(cx);
+                }
                 cx.stop_propagation();
             }))
-            .child(toolbar)
-            .when(offline, |d| {
-                d.child(notice("links-offline", t!("links-view-offline")))
-            })
-            .when(indexing, |d| {
-                d.child(notice("links-indexing", t!("links-view-indexing")))
-            })
-            .child(div().px_4().pb_4().child(body))
-            .child(
-                div()
-                    .px_4()
-                    .py_1()
-                    .border_t_1()
-                    .border_color(theme.rail)
-                    .text_xs()
-                    .text_color(theme.faint)
-                    .child(t!("links-view-keyboard")),
-            );
-        let mut frame = ui::page::Page::new("links-page", t!("links-view-title"), page);
-        if let Some(meta) = meta {
-            frame = frame.action(
-                div()
-                    .id("links-meta")
-                    .test_support()
-                    .role(Role::Status)
-                    .aria_label(SharedString::from(meta.clone()))
-                    .text_sm()
-                    .text_color(theme.muted)
-                    .child(meta),
-            );
-        }
-        frame.render(&theme).into_any_element()
+            .capture_action(cx.listener(move |this, _: &Escape, window, cx| {
+                if choices_open {
+                    this.suggestion.dismissed = true;
+                    this.input.focus_handle(cx).focus(window, cx);
+                    cx.notify();
+                } else {
+                    ui::page::leave(&this.session, cx);
+                    window.refresh();
+                }
+                cx.stop_propagation();
+            }))
+            .capture_action(cx.listener(move |this, _: &MarkRead, window, cx| {
+                if choices_open {
+                    this.suggestion.dismissed = true;
+                    this.input.focus_handle(cx).focus(window, cx);
+                    cx.notify();
+                } else {
+                    ui::page::leave(&this.session, cx);
+                }
+                cx.stop_propagation();
+            }))
+            .child(page.render(&theme))
+            .into_any_element()
     }
 }
