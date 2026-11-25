@@ -64,6 +64,7 @@ search-key-open = to open
 search-key-remove-filter = remove a filter
 search-key-return = to return
 search-someone = Someone
+search-yourself = Yourself ({ $name })
 search-closed-conversation = Closed conversation
 search-remove-filter = Remove { $filter } filter: { $value }
 search-suggestions = Suggestions for { $filter }:

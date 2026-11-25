@@ -5,7 +5,7 @@
 
 use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
 
-use gpui_kit::{AppContext, MouseButton, TestAppContext};
+use gpui_kit::{AppContext, MouseButton, Role, TestAppContext};
 use ircord_client::contract::*;
 use ircord_client::store::Connection;
 use ircord_client::testing::{CannedServer, Reply};
@@ -149,7 +149,13 @@ fn the_conversation_menu_is_in_the_web_order(cx: &mut TestAppContext) {
     let rows = right_click(&f, cx, "conversation-c-general");
     frame(&f, cx, |window, _| {
         let title = window.find("context-menu-title").bounds();
-        let action = window.find_by_label("Add to favourites").bounds();
+        let content = window.find_by_label("Add to favourites").bounds();
+        let action = window
+            .find_all_by_role(Role::MenuItem)
+            .into_iter()
+            .find(|row| row.label().is_none() && row.bounds().contains(&content.center()))
+            .expect("the action content sits within a popup menu row")
+            .bounds();
         // The title aligns with the padded row edge, before the action icon column.
         let label_edge = action.left() + window.rem_size() * 0.5;
         assert!(

@@ -291,6 +291,31 @@ fn arrow_keys_and_tab_accept_a_workspace_search_suggestion(cx: &mut TestAppConte
 }
 
 #[gpui_kit::test]
+fn filter_suggestions_float_over_results_and_clear_with_the_query(cx: &mut TestAppContext) {
+    let f = open(cx);
+    open_page(&f, cx, None);
+    shows(&f, cx, "search-item-0");
+    frame(&f, cx, |window, cx| {
+        let result = window.find("search-item-0").bounds();
+        window.input("from:", cx);
+        assert_eq!(window.find("search-item-0").bounds(), result);
+        assert_eq!(window.find("search-offer-0").selected(), Some(true));
+    });
+    click(&f, cx, "search-offer-0");
+    shows(&f, cx, "search-chip-0");
+    searched(&f, cx, "the self filter", |request| {
+        param(request, "from") == ["u-me"]
+    });
+    click(&f, cx, "search-clear-query");
+    shows(&f, cx, "search-item-0");
+    frame(&f, cx, |window, _| {
+        assert!(window.try_find("search-chip-0").is_none());
+        assert!(window.try_find("search-offers").is_none());
+        assert_eq!(window.find("search-input").focused(), Some(true));
+    });
+}
+
+#[gpui_kit::test]
 fn workspace_search_scrolls_to_the_selected_result(cx: &mut TestAppContext) {
     let f = open_with_many_results(cx);
     open_page(&f, cx, None);

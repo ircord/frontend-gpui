@@ -38,7 +38,7 @@ use ircord_client::search_filter::{
 };
 use ircord_client::store::Workspace;
 
-use crate::features::inbox;
+use crate::features::{inbox, switcher};
 use crate::registry::{self, HeaderCtx, KeyDefault, Pane, Panel, PanelCtx, Slot};
 use crate::route::{PaneKind, Route};
 use crate::session::{Session, SessionEvent};
@@ -62,7 +62,7 @@ const CONVERSATIONS: usize = 12;
 const CONVERSATIONS_MATCHED: usize = 5;
 const PEOPLE: usize = 4;
 const SERVERS: usize = 4;
-const OFFERS: usize = 6;
+const OFFERS: usize = 8;
 const FILTER_CHOICES: &str = "IrcordSearchFilterChoices";
 
 const MAC: bool = cfg!(target_os = "macos");
@@ -515,6 +515,7 @@ fn chip_label(w: &Workspace, chip: &Chip) -> String {
         Chip::From(id) | Chip::Mentions(id) => w
             .members
             .get(id)
+            .or_else(|| (id == &w.user.id).then_some(&w.user))
             .map(member_name)
             .unwrap_or_else(|| t!("search-someone").to_string()),
         Chip::In(id) => w
@@ -563,6 +564,7 @@ fn resolve(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Option<Chi
         Key::From | Key::Mentions => {
             let m = people(w)
                 .into_iter()
+                .chain((key == Key::From).then_some(&w.user))
                 .find(|m| m.nick.eq_ignore_ascii_case(bare))?;
             Some(if key == Key::From {
                 Chip::From(m.id.clone())
@@ -592,6 +594,8 @@ fn resolve(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Option<Chi
 struct Offer {
     chip: Chip,
     label: String,
+    person: Option<c::Member>,
+    secondary: Option<String>,
 }
 
 /// What the token being typed could be, best first.
@@ -599,8 +603,10 @@ fn offers(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Vec<Offer> 
     let needle = value.trim_start_matches(['@', '#']).to_lowercase();
     let matches = |name: &str| needle.is_empty() || name.to_lowercase().contains(&needle);
     let mut offers: Vec<Offer> = match key {
-        Key::From | Key::Mentions => people(w)
+        Key::From | Key::Mentions => (key == Key::From)
+            .then_some(&w.user)
             .into_iter()
+            .chain(people(w))
             .filter(|m| matches(&m.nick) || matches(&member_name(m)))
             .map(|m| Offer {
                 chip: if key == Key::From {
@@ -608,7 +614,13 @@ fn offers(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Vec<Offer> 
                 } else {
                     Chip::Mentions(m.id.clone())
                 },
-                label: format!("{} (@{})", member_name(m), m.nick),
+                label: if m.id == w.user.id {
+                    t!("search-yourself", name = member_name(m))
+                } else {
+                    member_name(m)
+                },
+                secondary: Some(format!("@{}", m.nick)),
+                person: Some(m.clone()),
             })
             .collect(),
         Key::In => w
@@ -618,6 +630,8 @@ fn offers(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Vec<Offer> 
             .map(|c| Offer {
                 chip: Chip::In(c.id.clone()),
                 label: conversation_label(c),
+                person: None,
+                secondary: None,
             })
             .collect(),
         Key::Has => Has::ALL
@@ -626,6 +640,8 @@ fn offers(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Vec<Offer> 
             .map(|h| Offer {
                 chip: Chip::Has(h),
                 label: kind_label(h).to_string(),
+                person: None,
+                secondary: None,
             })
             .collect(),
         Key::Author => [Author::User, Author::Bot]
@@ -634,6 +650,8 @@ fn offers(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Vec<Offer> 
             .map(|a| Offer {
                 chip: Chip::Author(a),
                 label: author_label(a).to_string(),
+                person: None,
+                secondary: None,
             })
             .collect(),
         Key::Before | Key::After | Key::On => {
@@ -658,6 +676,8 @@ fn offers(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Vec<Offer> 
                     Some(Offer {
                         chip: date_chip(key, day)?,
                         label,
+                        person: None,
+                        secondary: None,
                     })
                 })
                 .collect()
@@ -1240,6 +1260,7 @@ impl EventEmitter<Opened> for SearchModel {}
 struct FilterSelection {
     index: usize,
     dismissed: bool,
+    scroll: ResultScroll,
 }
 
 impl FilterSelection {
@@ -1270,6 +1291,7 @@ impl FilterSelection {
     fn step(&mut self, count: usize, backward: bool) {
         let offset = if backward { count - 1 } else { 1 };
         self.index = (self.index.min(count - 1) + offset) % count;
+        self.scroll.reveal = true;
     }
 
     fn accept(
@@ -1290,17 +1312,25 @@ impl FilterSelection {
     }
 }
 
-/// Offers for the token being typed, as a row of buttons.
+/// Offers float below the field without moving the search results.
 fn offers_row(
     prefix: &'static str,
     input: &Entity<InputState>,
     model: &Entity<SearchModel>,
     choices: Option<(sf::Token, Vec<Offer>)>,
-    selected: usize,
+    selection: &FilterSelection,
     theme: &Theme,
-) -> Option<AnyElement> {
+    cx: &App,
+) -> Option<Deferred> {
     let (token, offers) = choices?;
-    let selected = selected.min(offers.len().saturating_sub(1));
+    let selected = selection.index.min(offers.len().saturating_sub(1));
+    let scroll = &selection.scroll;
+    let server = model
+        .read(cx)
+        .session
+        .read(cx)
+        .server()
+        .map(|server| server.url());
     let mut row = div()
         .id(ElementId::Name(format!("{prefix}-offers").into()))
         .test_support()
@@ -1309,12 +1339,12 @@ fn offers_row(
             "search-suggestions",
             filter = token.key.as_str()
         )))
-        .px_3()
-        .py_1()
+        .max_h(px(320. * theme.scale))
+        .overflow_y_scroll()
+        .track_scroll(&scroll.handle)
+        .p_1()
         .flex()
-        .flex_wrap()
-        .items_center()
-        .gap_1()
+        .flex_col()
         .child(
             div()
                 .text_xs()
@@ -1322,34 +1352,84 @@ fn offers_row(
                 .child(t!("search-suggestions", filter = token.key.as_str())),
         );
     if offers.is_empty() {
-        return Some(
-            row.child(
-                div()
-                    .text_xs()
-                    .text_color(theme.faint)
-                    .child(t!("search-no-suggestion", query = token.value.clone())),
-            )
-            .into_any_element(),
+        row = row.child(
+            div()
+                .text_xs()
+                .text_color(theme.faint)
+                .child(t!("search-no-suggestion", query = token.value.clone())),
         );
     }
     for (i, offer) in offers.into_iter().enumerate() {
         let (input, model) = (input.clone(), model.clone());
         let chip = offer.chip.clone();
-        row = row.child(
-            text_button(
-                ElementId::Name(format!("{prefix}-offer-{i}").into()),
-                offer.label,
+        let picture = offer.person.as_ref().map(|person| {
+            ui::avatar::person(
+                ui::avatar::Person {
+                    member: person,
+                    name: &offer.label,
+                    server,
+                    presence: false,
+                    key: &format!("{prefix}-offer-{i}"),
+                },
+                px(28.),
                 theme,
-                move |_, window, cx| apply_offer(&input, &model, chip.clone(), window, cx),
             )
-            .role(Role::ListBoxOption)
-            .aria_selected(i == selected)
-            .when(i == selected, |button| button.bg(theme.selected))
-            .test_support()
-            .reachable(theme),
+        });
+        row = row.child(
+            div()
+                .id(ElementId::Name(format!("{prefix}-offer-{i}").into()))
+                .role(Role::ListBoxOption)
+                .aria_label(SharedString::from(match &offer.secondary {
+                    Some(detail) => format!("{} {detail}", offer.label),
+                    None => offer.label.clone(),
+                }))
+                .aria_selected(i == selected)
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .cursor_pointer()
+                .when(i == selected, |button| button.bg(theme.selected))
+                .children(picture)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w_0()
+                        .child(div().text_sm().text_color(theme.text).child(offer.label))
+                        .children(
+                            offer
+                                .secondary
+                                .map(|s| div().text_xs().text_color(theme.muted).child(s)),
+                        ),
+                )
+                .on_click(move |_, window, cx| {
+                    apply_offer(&input, &model, chip.clone(), window, cx)
+                })
+                .when_some(scroll.reveal_row(i == selected), |row, reveal| {
+                    row.relative().child(reveal)
+                })
+                .test_support()
+                .reachable(theme),
         );
     }
-    Some(row.into_any_element())
+    Some(deferred(
+        div()
+            .absolute()
+            .top(relative(1.))
+            .left_0()
+            .w_full()
+            .max_w(px(440. * theme.scale))
+            .occlude()
+            .bg(theme.raised)
+            .border_1()
+            .border_color(theme.border)
+            .rounded(theme.radius)
+            .shadow_md()
+            .child(row),
+    ))
 }
 
 /// Start a filter at the end of the field, replacing any unfinished filter.
@@ -1559,7 +1639,7 @@ impl SearchPage {
             let w = client.read();
             let needle = self.needle(cx);
             items.extend(
-                conversations(&w, &needle)
+                conversations(&w, &needle, &switcher::recent_conversations(cx))
                     .into_iter()
                     .map(Item::Conversation),
             );
@@ -1887,6 +1967,25 @@ impl SearchPage {
             Item::Message(_) => return div().into_any_element(),
         };
         let is_selected = selected == Some(index);
+        let person = match item {
+            Item::Conversation(id) => ircord_client::store::people::direct_partner(w, id),
+            Item::Person(id) => w.members.get(id),
+            _ => None,
+        };
+        let picture = person.map(|person| {
+            ui::avatar::person(
+                ui::avatar::Person {
+                    member: person,
+                    name: &member_name(person),
+                    server: self.session.read(cx).server().map(|server| server.url()),
+                    presence: false,
+                    key: &format!("search-item-{index}"),
+                },
+                px(28.),
+                theme,
+            )
+        });
+        let channel_icon = icon.is_none();
         let label = match item {
             Item::Person(_) | Item::Nickname(_) => {
                 t!("search-message-person", name = title.clone())
@@ -1916,17 +2015,33 @@ impl SearchPage {
             })
             .child(
                 div()
-                    .w(px(16.))
-                    .children(icon.map(|icon| ui::icon::icon(icon, theme.muted))),
+                    .w(px(28.))
+                    .children(picture)
+                    .when(person.is_none(), |d| {
+                        d.children(icon.map(|icon| ui::icon::icon(icon, theme.muted)))
+                            .when(channel_icon, |d| d.text_color(theme.muted).child("#"))
+                    }),
             )
-            .child(div().text_sm().text_color(theme.text).child(title))
             .child(
                 div()
                     .flex_1()
-                    .truncate()
-                    .text_xs()
-                    .text_color(theme.faint)
-                    .child(detail),
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .text_color(theme.text)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(theme.faint)
+                            .child(detail),
+                    ),
             )
             .children(badge.map(|b| {
                 div()
@@ -1937,6 +2052,9 @@ impl SearchPage {
                     .text_color(theme.on_accent)
                     .child(b)
             }))
+            .when(is_selected, |row| {
+                row.child(div().text_xs().text_color(theme.muted).child("↵"))
+            })
             .on_click(move |_, window, cx| {
                 if let Some(view) = view.clone() {
                     let item = item.clone();
@@ -2017,9 +2135,8 @@ impl PageGlobalHandle {
     }
 }
 
-/// Conversations by name: without a needle, what needs attention, then the
-/// rest; with one, exact, prefix, then substring matches.
-fn conversations(w: &Workspace, needle: &str) -> Vec<String> {
+/// Rank by name match, unread urgency, and the last visit, then by name.
+fn conversations(w: &Workspace, needle: &str, recent: &[String]) -> Vec<String> {
     let urgency = |c: &c::Conversation| {
         if c.mention_count > 0 {
             0
@@ -2043,10 +2160,22 @@ fn conversations(w: &Workspace, needle: &str) -> Vec<String> {
             None
         }
     };
-    let mut found: Vec<(u8, u8, String, String)> = w
+    let mut found: Vec<_> = w
         .conversations
         .iter()
-        .filter_map(|c| Some((score(c)?, urgency(c), c.name.to_lowercase(), c.id.clone())))
+        .filter_map(|c| {
+            let visit = recent
+                .iter()
+                .position(|id| id == &c.id)
+                .unwrap_or(usize::MAX);
+            Some((
+                score(c)?,
+                urgency(c),
+                visit,
+                c.name.to_lowercase(),
+                c.id.clone(),
+            ))
+        })
         .collect();
     found.sort();
     let limit = if needle.is_empty() {
@@ -2054,7 +2183,11 @@ fn conversations(w: &Workspace, needle: &str) -> Vec<String> {
     } else {
         CONVERSATIONS_MATCHED
     };
-    found.into_iter().take(limit).map(|f| f.3).collect()
+    found
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, _, _, id)| id)
+        .collect()
 }
 
 /// What an empty result says.
@@ -2081,8 +2214,10 @@ impl Render for SearchPage {
         }
         let count = self.items(cx).len();
         let choices = self.filter_selection.choices(&self.input, &self.model, cx);
+        let choices_open = choices.is_some();
         let choice_count = choices.as_ref().map_or(0, |(_, offers)| offers.len());
         let filters = self.model.read(cx).filters.count();
+        let has_query = !self.input.read(cx).value().is_empty() || filters > 0;
         let filters_label = if filters > 0 {
             t!("search-filters-on", count = filters)
         } else {
@@ -2148,15 +2283,49 @@ impl Render for SearchPage {
                     .child(
                         div()
                             .id("search-query")
+                            .relative()
                             .flex_1()
                             .min_w_0()
                             .when(choice_count > 0, |field| field.key_context(FILTER_CHOICES))
                             .child(
                                 Input::new(&self.input)
                                     .id("search-input")
-                                    .prefix(ui::icon::icon(IconName::Search, theme.muted))
-                                    .aria_label(t!("search-field")),
-                            ),
+                                    .prefix(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_1()
+                                            .child(ui::icon::icon(IconName::Search, theme.muted))
+                                            .children(chips_row("search", &self.model, &theme, cx)),
+                                    )
+                                    .aria_label(t!("search-field"))
+                                    .when(has_query, |field| {
+                                        field.suffix(ui::icon::button(
+                                            "search-clear-query",
+                                            IconName::Close,
+                                            t!("search-clear"),
+                                            &theme,
+                                            cx.listener(|this, _, window, cx| {
+                                                this.model.update(cx, |m, cx| {
+                                                    m.set_search("", Filters::default(), cx)
+                                                });
+                                                this.input.update(cx, |input, cx| {
+                                                    input.set_value("", window, cx)
+                                                });
+                                                this.input.focus_handle(cx).focus(window, cx);
+                                            }),
+                                        ))
+                                    }),
+                            )
+                            .children(offers_row(
+                                "search",
+                                &self.input,
+                                &self.model,
+                                choices,
+                                &self.filter_selection,
+                                &theme,
+                                cx,
+                            )),
                     )
                     .child(
                         Button::new("search-filters-button")
@@ -2182,15 +2351,6 @@ impl Render for SearchPage {
                             ),
                     ),
             )
-            .children(chips_row("search", &self.model, &theme, cx))
-            .children(offers_row(
-                "search",
-                &self.input,
-                &self.model,
-                choices,
-                self.filter_selection.index,
-                &theme,
-            ))
             .child(pills);
         let list = div()
             .id("search-results")
@@ -2239,7 +2399,7 @@ impl Render for SearchPage {
                 cx.stop_propagation();
             }))
             .capture_action(cx.listener(move |this, _: &Escape, window, cx| {
-                if choice_count > 0 && this.input.focus_handle(cx).is_focused(window) {
+                if choices_open && this.input.focus_handle(cx).is_focused(window) {
                     this.filter_selection.dismissed = true;
                     cx.notify();
                 } else {
@@ -3100,8 +3260,10 @@ impl Render for ConversationSearch {
         let m = self.model.read(cx);
         let count = m.results.len();
         let choices = self.filter_selection.choices(&self.input, &self.model, cx);
+        let choices_open = choices.is_some();
         let choice_count = choices.as_ref().map_or(0, |(_, offers)| offers.len());
         let filters = m.filters.count();
+        let has_query = !self.input.read(cx).value().is_empty() || filters > 0;
         let text = m.text.clone();
         let quick = self.shows_quick_filters(window, cx);
         let filters_label = if filters > 0 {
@@ -3127,12 +3289,46 @@ impl Render for ConversationSearch {
                     .child(
                         Input::new(&self.input)
                             .id("conversation-search-input")
+                            .prefix(div().flex().items_center().gap_1().children(chips_row(
+                                "conversation-search",
+                                &self.model,
+                                &theme,
+                                cx,
+                            )))
                             .aria_label(SharedString::from(t!(
                                 "search-conversation-field",
                                 place = place.clone()
-                            ))),
+                            )))
+                            .when(has_query, |field| {
+                                field.suffix(ui::icon::button(
+                                    "conversation-search-clear-query",
+                                    IconName::Close,
+                                    t!("search-clear"),
+                                    &theme,
+                                    cx.listener(|this, _, window, cx| {
+                                        this.model.update(cx, |m, cx| {
+                                            m.set_search("", Filters::default(), cx)
+                                        });
+                                        this.input.update(cx, |input, cx| {
+                                            input.set_value("", window, cx)
+                                        });
+                                        this.input.focus_handle(cx).focus(window, cx);
+                                    }),
+                                ))
+                            }),
                     )
-                    .when(quick, |d| d.child(Self::quick_filters(&theme, cx))),
+                    .when(quick && !choices_open, |d| {
+                        d.child(Self::quick_filters(&theme, cx))
+                    })
+                    .children(offers_row(
+                        "conversation-search",
+                        &self.input,
+                        &self.model,
+                        choices,
+                        &self.filter_selection,
+                        &theme,
+                        cx,
+                    )),
             )
             .child(ui::icon::button(
                 "conversation-search-filters",
@@ -3243,7 +3439,7 @@ impl Render for ConversationSearch {
                 cx.stop_propagation();
             }))
             .capture_action(cx.listener(move |this, _: &Escape, window, cx| {
-                if choice_count > 0 && this.input.focus_handle(cx).is_focused(window) {
+                if choices_open && this.input.focus_handle(cx).is_focused(window) {
                     this.filter_selection.dismissed = true;
                     cx.notify();
                 } else if this.shows_quick_filters(window, cx) {
@@ -3256,15 +3452,6 @@ impl Render for ConversationSearch {
                 cx.stop_propagation();
             }))
             .child(header)
-            .children(chips_row("conversation-search", &self.model, &theme, cx).map(|r| r.px_3()))
-            .children(offers_row(
-                "conversation-search",
-                &self.input,
-                &self.model,
-                choices,
-                self.filter_selection.index,
-                &theme,
-            ))
             .child(source_switch(
                 "conversation-search-server-history",
                 &self.model,
@@ -3355,6 +3542,23 @@ mod tests {
     }
 
     #[test]
+    fn from_offers_self_but_mentions_do_not() {
+        let w = workspace();
+        let from = offers(&w, Key::From, "", day());
+        assert_eq!(from[0].chip, Chip::From(w.user.id.clone()));
+        assert_eq!(from[0].secondary.as_deref(), Some("@me"));
+        assert!(
+            !offers(&w, Key::Mentions, "", day())
+                .iter()
+                .any(|offer| offer.chip == Chip::Mentions(w.user.id.clone()))
+        );
+        assert_eq!(
+            resolve(&w, Key::From, "me", day()),
+            Some(Chip::From(w.user.id.clone()))
+        );
+    }
+
+    #[test]
     fn conversations_rank_exact_then_prefix_then_substring() {
         let w = SnapshotBuilder::new()
             .network("n1", "Home")
@@ -3363,7 +3567,8 @@ mod tests {
             .channel("c3", "trusty")
             .channel("c4", "other")
             .workspace();
-        assert_eq!(conversations(&w, "rust"), ["c2", "c1", "c3"]);
-        assert_eq!(conversations(&w, "").len(), 4);
+        let recent = ["c3".into(), "c1".into()];
+        assert_eq!(conversations(&w, "rust", &recent), ["c2", "c1", "c3"]);
+        assert_eq!(conversations(&w, "", &recent), ["c3", "c1", "c4", "c2"]);
     }
 }

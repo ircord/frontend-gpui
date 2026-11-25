@@ -452,7 +452,7 @@ impl PickerView {
 
     fn tabs(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let tab = |id: &'static str, label: SharedString, which: Tab, on: bool| {
-            let focus = self.tab_handle(which).clone().tab_stop(on);
+            let focus = self.tab_handle(which).clone().tab_stop(true);
             div()
                 .id(id)
                 .test_support()
@@ -491,9 +491,10 @@ impl PickerView {
                 {
                     return;
                 }
-                let next = match this.tab {
-                    Tab::Gifs => Tab::Emoji,
-                    Tab::Emoji => Tab::Gifs,
+                let next = if this.tab_handle(Tab::Gifs).is_focused(window) {
+                    Tab::Emoji
+                } else {
+                    Tab::Gifs
                 };
                 this.set_tab(next, window, cx);
                 this.tab_handle(next).focus(window, cx);

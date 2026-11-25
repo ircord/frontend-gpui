@@ -539,6 +539,37 @@ fn the_gif_key_opens_the_gif_picker(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn expression_tabs_are_reachable_in_order_and_escape_restores_focus(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        let timeline = window.find("timeline").bounds();
+        let composer = window.find("composer-field").bounds();
+        window.click("composer-emoji", cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("expression-search").focused(), Some(true));
+        window.press("shift-tab", cx);
+        assert_eq!(window.find("expression-tab-emoji").focused(), Some(true));
+        window.press("shift-tab", cx);
+        assert_eq!(window.find("expression-tab-gifs").focused(), Some(true));
+        window.press("right", cx);
+        assert_eq!(window.find("expression-tab-emoji").focused(), Some(true));
+        window.press("shift-tab", cx);
+        assert_eq!(window.find("expression-tab-gifs").focused(), Some(true));
+        window.press("tab", cx);
+        assert_eq!(window.find("expression-tab-emoji").focused(), Some(true));
+        window.press("tab", cx);
+        assert_eq!(window.find("expression-search").focused(), Some(true));
+        assert_eq!(window.find("timeline").bounds(), timeline);
+        assert_eq!(window.find("composer-field").bounds(), composer);
+        window.press("escape", cx);
+        assert!(window.try_find("expression-picker").is_none());
+        assert_eq!(window.find("composer-emoji").focused(), Some(true));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn the_expression_popover_leaves_the_timeline_and_composer_in_place(cx: &mut TestAppContext) {
     let f = open(cx, |_| {});
     cx.update_window(f.window, |_, window, cx| {
