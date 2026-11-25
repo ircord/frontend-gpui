@@ -22,6 +22,7 @@
 - Search filters use compact multi-select menus, with search for people and conversations.
 - Pick dates from a calendar in Search filters, or type them directly.
 - Search shows the active filter count beside Filters and keeps quick filters in a row of compact pills.
+- Search and filter IRC capabilities beside the server log. Switch between Log and Capabilities when the window is narrow.
 - Search suggestions open over the results and show people's avatars and nicknames. Choose yourself as a sender, clear the search in one click, and find recently visited conversations higher in Jump to.
 - Right-click menus use more consistent widths, align titles to the row edge, and scroll within smaller windows.
 - Context menus have taller action rows and more space between icons and labels.

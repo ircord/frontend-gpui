@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext, TestAppContext};
+use gpui_kit::{AppContext, TestAppContext, px, size};
 use ircord_app::route::Route;
 use ircord_client::store::Connection;
 use ircord_client::store::server_log::Buffer;
@@ -91,6 +91,17 @@ fn shows(f: &Fixture, cx: &mut TestAppContext, id: &'static str) -> bool {
         window.try_find(id).is_some_and(|e| e.visible())
     })
     .unwrap()
+}
+
+fn wait_visible(f: &Fixture, cx: &mut TestAppContext, id: &'static str) {
+    wait(cx, id, |cx| {
+        f.window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find(id).is_some_and(|e| e.visible())
+            })
+            .unwrap_or(false)
+    });
 }
 
 fn click(f: &Fixture, cx: &mut TestAppContext, id: &'static str) {
@@ -308,4 +319,77 @@ fn the_server_window_opens_on_overview_cards_over_the_log(cx: &mut TestAppContex
     assert_eq!(label(&f, cx, "server-window-status-value"), "Connected");
     assert_eq!(label(&f, cx, "server-window-grade"), "Security grade A+");
     assert_eq!(label(&f, cx, "server-window-title"), "Home · Server");
+}
+
+#[gpui_kit::test]
+fn capability_search_and_status_filters(cx: &mut TestAppContext) {
+    let f = open(cx);
+    cx.simulate_window_resize(f.window, size(px(640.), px(480.)));
+    open_window(&f, cx);
+    wait(cx, "capabilities", |cx| {
+        f.session
+            .read(cx)
+            .client()
+            .unwrap()
+            .read()
+            .server_log
+            .connections
+            .get("n1")
+            .is_some_and(|c| c.value.is_some())
+    });
+    click(&f, cx, "server-overview-capabilities");
+    assert!(shows(&f, cx, "server-capability-echo-message"));
+    assert!(shows(&f, cx, "server-capability-sasl"));
+    click(&f, cx, "server-capability-active");
+    assert!(shows(&f, cx, "server-capability-echo-message"));
+    assert!(!shows(&f, cx, "server-capability-sasl"));
+    click(&f, cx, "server-capability-offered");
+    assert!(!shows(&f, cx, "server-capability-echo-message"));
+    assert!(shows(&f, cx, "server-capability-sasl"));
+    click(&f, cx, "server-capability-all");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("server-capability-filter", cx);
+        window.input("authenticates", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(shows(&f, cx, "server-capability-sasl"));
+    assert!(!shows(&f, cx, "server-capability-echo-message"));
+    click(&f, cx, "server-capabilities-group");
+    assert!(!shows(&f, cx, "server-capability-sasl"));
+}
+
+#[gpui_kit::test]
+fn server_layout_tracks_the_content_pane_width(cx: &mut TestAppContext) {
+    let f = open(cx);
+    cx.simulate_window_resize(f.window, size(px(1200.), px(800.)));
+    open_window(&f, cx);
+    wait_visible(&f, cx, "server-overview-capabilities");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("server-window").bounds().size.width <= px(1050.));
+        assert!(window.find("server-window-raw").visible());
+        assert!(window.try_find("server-capabilities-panel").is_none());
+    })
+    .unwrap();
+    click(&f, cx, "server-overview-capabilities");
+    assert!(shows(&f, cx, "server-capabilities-panel"));
+    assert!(!shows(&f, cx, "server-window-raw"));
+    cx.simulate_window_resize(f.window, size(px(1800.), px(800.)));
+    wait_visible(&f, cx, "server-window-raw");
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("server-window").bounds().size.width > px(1050.));
+        assert!(window.find("server-capabilities-panel").visible());
+        assert!(window.try_find("server-overview-views").is_none());
+    })
+    .unwrap();
+    cx.simulate_window_resize(f.window, size(px(1000.), px(800.)));
+    wait_visible(&f, cx, "server-overview-log");
+    assert!(shows(&f, cx, "server-capabilities-panel"));
+    assert!(!shows(&f, cx, "server-window-raw"));
+    click(&f, cx, "server-overview-log");
+    assert!(shows(&f, cx, "server-window-raw"));
+    assert!(!shows(&f, cx, "server-capabilities-panel"));
 }

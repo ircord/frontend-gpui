@@ -100,11 +100,25 @@ pub enum Tab {
     Trace,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CapabilityScope {
+    All,
+    Active,
+    Offered,
+}
+
+const WIDE_SERVER_PANE: Pixels = px(1050.);
+
 pub struct ServerWindowView {
     session: Entity<Session>,
     network: String,
     tab: Tab,
     filter: Entity<InputState>,
+    capability_filter: Entity<InputState>,
+    capability_scope: CapabilityScope,
+    capability_groups: [bool; 3],
+    wide: bool,
+    show_capabilities: bool,
     raw: Entity<InputState>,
     /// Folded groups shown open, by group ID.
     opened: HashSet<String>,
@@ -123,10 +137,18 @@ impl ServerWindowView {
     ) -> Self {
         let filter =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("server-window-filter")));
+        let capability_filter = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("server-window-capability-filter"))
+        });
         let raw = cx
             .new(|cx| InputState::new(window, cx).placeholder(t!("server-window-raw-placeholder")));
         let id = network.clone();
         let subscriptions = vec![
+            cx.subscribe(&capability_filter, |_, _, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    cx.notify();
+                }
+            }),
             cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
                 if let InputEvent::Change = event {
                     cx.notify();
@@ -159,6 +181,11 @@ impl ServerWindowView {
             network,
             tab: Tab::Log,
             filter,
+            capability_filter,
+            capability_scope: CapabilityScope::All,
+            capability_groups: [true; 3],
+            wide: false,
+            show_capabilities: false,
             raw,
             opened: HashSet::new(),
             scroll: ScrollHandle::new(),
@@ -340,6 +367,31 @@ fn family_text(family: Family, count: usize) -> String {
         Family::Away => t!("server-window-group-away", count = count),
         Family::Ping => t!("server-window-group-ping", count = count),
         Family::Batch => t!("server-window-group-batch", count = count),
+    }
+}
+
+fn capability_description(name: &str) -> &'static str {
+    match name {
+        "message-tags" => t!("server-window-cap-desc-message-tags"),
+        "echo-message" => t!("server-window-cap-desc-echo-message"),
+        "server-time" => t!("server-window-cap-desc-server-time"),
+        "batch" => t!("server-window-cap-desc-batch"),
+        "labeled-response" => t!("server-window-cap-desc-labeled-response"),
+        "draft/chathistory" => t!("server-window-cap-desc-chathistory"),
+        "draft/multiline" => t!("server-window-cap-desc-multiline"),
+        "draft/metadata-3" => t!("server-window-cap-desc-metadata"),
+        "draft/message-redaction" => t!("server-window-cap-desc-redaction"),
+        "draft/read-marker" => t!("server-window-cap-desc-read-marker"),
+        "setname" => t!("server-window-cap-desc-setname"),
+        "account-tag" => t!("server-window-cap-desc-account-tag"),
+        "account-notify" => t!("server-window-cap-desc-account-notify"),
+        "away-notify" => t!("server-window-cap-desc-away-notify"),
+        "extended-join" => t!("server-window-cap-desc-extended-join"),
+        "chghost" => t!("server-window-cap-desc-chghost"),
+        "multi-prefix" => t!("server-window-cap-desc-multi-prefix"),
+        "cap-notify" => t!("server-window-cap-desc-cap-notify"),
+        "sasl" => t!("server-window-cap-desc-sasl"),
+        _ => "",
     }
 }
 
@@ -584,18 +636,84 @@ impl Render for ServerWindowView {
                     let w = client.read();
                     overview(&w, &self.network, &theme).into_any_element()
                 };
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .child(cards)
-                    .child(self.render_lines(&client, window, cx))
-                    .into_any_element()
+                let mut content = div().flex_1().min_h_0().min_w_0().flex();
+                if self.wide || !self.show_capabilities {
+                    content = content.child(self.render_lines(&client, window, cx));
+                }
+                if self.wide || self.show_capabilities {
+                    content = content.child(
+                        div()
+                            .when(self.wide, |d| d.w(px(300.)).flex_none().border_l_1())
+                            .when(!self.wide, |d| d.flex_1().min_w_0())
+                            .h_full()
+                            .min_h_0()
+                            .border_color(theme.border)
+                            .child(self.render_capabilities(&client, cx)),
+                    );
+                }
+                let mut body = div().flex_1().min_h_0().flex().flex_col();
+                if !self.wide {
+                    let mut views = div()
+                        .id("server-overview-views")
+                        .test_support()
+                        .role(Role::TabList)
+                        .aria_label(t!("server-window-overview-views"))
+                        .flex()
+                        .gap_1()
+                        .px_4()
+                        .py_1();
+                    for (id, label, capabilities) in [
+                        ("server-overview-log", t!("server-window-log"), false),
+                        (
+                            "server-overview-capabilities",
+                            t!("server-window-capabilities"),
+                            true,
+                        ),
+                    ] {
+                        views = views.child(text_button(
+                            id,
+                            label,
+                            Some(self.show_capabilities == capabilities),
+                            &theme,
+                            cx.listener(move |this, _, _, cx| {
+                                this.show_capabilities = capabilities;
+                                cx.notify();
+                            }),
+                        ));
+                    }
+                    body = body.child(views);
+                }
+                if self.wide || !self.show_capabilities {
+                    body = body.child(cards);
+                }
+                body.child(content).into_any_element()
             }
             Tab::Trace => self.render_lines(&client, window, cx),
         };
 
+        let current_wide = self.wide;
+        let view = cx.entity().downgrade();
+        let measure = canvas(
+            move |bounds, _, cx| {
+                let wide = bounds.size.width > WIDE_SERVER_PANE;
+                if wide != current_wide {
+                    let view = view.clone();
+                    cx.defer(move |cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            if this.wide != wide {
+                                this.wide = wide;
+                                cx.notify();
+                            }
+                        });
+                    });
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
         div()
             .id("server-window")
             .test_support()
@@ -606,7 +724,9 @@ impl Render for ServerWindowView {
             .min_h_0()
             .flex()
             .flex_col()
+            .relative()
             .bg(theme.main)
+            .child(measure)
             .child(header)
             .child(body)
             .into_any_element()
@@ -614,6 +734,286 @@ impl Render for ServerWindowView {
 }
 
 impl ServerWindowView {
+    fn render_capabilities(
+        &mut self,
+        client: &std::rc::Rc<ircord_client::Client>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme::get(cx).clone();
+        let query = self
+            .capability_filter
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
+        let w = client.read();
+        let Some(net) = w.network(&self.network) else {
+            return div().into_any_element();
+        };
+        let connected = net.status == NetworkStatus::Connected;
+        let info = w
+            .server_log
+            .connections
+            .get(&self.network)
+            .and_then(|c| c.value.as_ref());
+        let rows = info.map(connection::capability_rows).unwrap_or_default();
+        let active = rows.iter().filter(|row| row.2).count();
+        let mut content = div().flex().flex_col().gap_1();
+        let group = |id, title: &'static str, index: usize, open: bool, cx: &mut Context<Self>| {
+            div()
+                .id(id)
+                .test_support()
+                .role(Role::Button)
+                .reachable(&theme)
+                .aria_label(title)
+                .aria_expanded(open)
+                .cursor_pointer()
+                .py_1()
+                .text_sm()
+                .font_weight(FontWeight::BOLD)
+                .text_color(theme.text)
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(ui::icon::icon(
+                    if open {
+                        ui::icon::IconName::ChevronDown
+                    } else {
+                        ui::icon::IconName::ChevronRight
+                    },
+                    theme.muted,
+                ))
+                .child(title)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.capability_groups[index] = !this.capability_groups[index];
+                    cx.notify();
+                }))
+        };
+        content = content.child(group(
+            "server-capabilities-group",
+            t!("server-window-capabilities"),
+            0,
+            self.capability_groups[0],
+            cx,
+        ));
+        if self.capability_groups[0] {
+            content = content.child(div().text_xs().text_color(theme.muted).child(t!(
+                "server-window-capability-count",
+                active = active,
+                total = rows.len()
+            )));
+            if !connected && info.is_some() {
+                content = content.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted)
+                        .child(t!("server-window-capabilities-last")),
+                );
+            }
+            let mut shown = 0;
+            for (name, value, on) in rows {
+                let description = capability_description(&name);
+                if (self.capability_scope == CapabilityScope::Active && !on)
+                    || (self.capability_scope == CapabilityScope::Offered && on)
+                    || !format!("{name} {value} {description}")
+                        .to_lowercase()
+                        .contains(&query)
+                {
+                    continue;
+                }
+                shown += 1;
+                let state = if on {
+                    if connected {
+                        t!("server-window-capability-active")
+                    } else {
+                        t!("server-window-capability-last-used")
+                    }
+                } else {
+                    t!("server-window-capability-offered")
+                };
+                content = content.child(
+                    div()
+                        .id(ElementId::Name(format!("server-capability-{name}").into()))
+                        .test_support()
+                        .role(Role::ListItem)
+                        .aria_label(SharedString::from(format!(
+                            "{name} {state} {value} {description}"
+                        )))
+                        .py_1()
+                        .text_sm()
+                        .text_color(theme.text)
+                        .child(
+                            div().flex().justify_between().gap_2().child(name).child(
+                                div()
+                                    .text_xs()
+                                    .text_color(if on && connected {
+                                        theme.online
+                                    } else {
+                                        theme.muted
+                                    })
+                                    .child(state),
+                            ),
+                        )
+                        .when(!description.is_empty(), |d| {
+                            d.child(div().text_xs().text_color(theme.muted).child(description))
+                        })
+                        .when(!value.is_empty(), |d| {
+                            d.child(div().text_xs().text_color(theme.muted).child(value))
+                        }),
+                );
+            }
+            if shown == 0 {
+                content = content.child(div().text_sm().text_color(theme.muted).child(
+                    if info.is_none() {
+                        t!("server-window-capabilities-later")
+                    } else {
+                        t!("server-window-capability-no-matches")
+                    },
+                ));
+            }
+        }
+        content = content.child(group(
+            "server-extensions-group",
+            t!("server-window-extensions"),
+            1,
+            self.capability_groups[1],
+            cx,
+        ));
+        let edit_description = if !connected {
+            t!("server-window-edit-reconnect")
+        } else if net.features.edit {
+            t!("server-window-edit-available")
+        } else {
+            t!("server-window-edit-requirements")
+        };
+        if self.capability_groups[1]
+            && format!(
+                "{} +ircord/edit {edit_description}",
+                t!("server-window-message-editing")
+            )
+            .to_lowercase()
+            .contains(&query)
+        {
+            content = content.child(
+                div()
+                    .text_sm()
+                    .text_color(theme.text)
+                    .child(t!("server-window-message-editing"))
+                    .child(div().text_xs().text_color(theme.muted).child(
+                        if connected && net.features.edit {
+                            t!("server-window-available")
+                        } else {
+                            t!("server-window-unavailable")
+                        },
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child("+ircord/edit"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child(edit_description),
+                    ),
+            );
+        }
+        content = content.child(group(
+            "server-isupport-group",
+            t!("server-window-isupport"),
+            2,
+            self.capability_groups[2],
+            cx,
+        ));
+        if self.capability_groups[2]
+            && let Some(info) = info
+        {
+            let mut settings: Vec<_> = info.isupport.iter().collect();
+            settings.sort_by_key(|(key, _)| *key);
+            for (key, value) in settings {
+                if format!("{key} {value}").to_lowercase().contains(&query) {
+                    content =
+                        content.child(div().text_sm().text_color(theme.muted).child(format!(
+                            "{}: {}",
+                            key,
+                            if value.is_empty() {
+                                t!("server-window-enabled")
+                            } else {
+                                value.as_str()
+                            }
+                        )));
+                }
+            }
+        }
+        drop(w);
+        let mut filters = div()
+            .id("server-capability-scopes")
+            .test_support()
+            .role(Role::TabList)
+            .aria_label(t!("server-window-capability-status"))
+            .flex()
+            .flex_wrap()
+            .gap_1();
+        for (id, label, scope) in [
+            (
+                "server-capability-all",
+                t!("server-window-capability-all"),
+                CapabilityScope::All,
+            ),
+            (
+                "server-capability-active",
+                if connected {
+                    t!("server-window-capability-active")
+                } else {
+                    t!("server-window-capability-last-used")
+                },
+                CapabilityScope::Active,
+            ),
+            (
+                "server-capability-offered",
+                t!("server-window-capability-offered"),
+                CapabilityScope::Offered,
+            ),
+        ] {
+            filters = filters.child(text_button(
+                id,
+                label,
+                Some(self.capability_scope == scope),
+                &theme,
+                cx.listener(move |this, _, _, cx| {
+                    this.capability_scope = scope;
+                    cx.notify();
+                }),
+            ));
+        }
+        div()
+            .id("server-capabilities-panel")
+            .test_support()
+            .role(Role::Region)
+            .aria_label(t!("server-window-capabilities"))
+            .size_full()
+            .flex()
+            .flex_col()
+            .p_2()
+            .gap_2()
+            .child(
+                Input::new(&self.capability_filter)
+                    .id("server-capability-filter")
+                    .aria_label(t!("server-window-capability-filter")),
+            )
+            .child(filters)
+            .child(
+                div()
+                    .id("server-capabilities-list")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(content),
+            )
+            .into_any_element()
+    }
     fn render_lines(
         &mut self,
         client: &std::rc::Rc<ircord_client::Client>,
@@ -792,6 +1192,7 @@ impl ServerWindowView {
         let mut column = div()
             .flex_1()
             .min_h_0()
+            .min_w_0()
             .flex()
             .flex_col()
             .child(toolbar)
@@ -808,7 +1209,7 @@ impl ServerWindowView {
                     .items_center()
                     .gap_2()
                     .child(
-                        div().flex_1().child(
+                        div().flex_1().min_w_0().child(
                             Input::new(&self.raw)
                                 .id("server-window-raw")
                                 .aria_label(t!("server-window-raw-label")),
