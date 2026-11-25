@@ -59,6 +59,11 @@ pub fn open_with(
         ircord_app::notify::identify(cx);
         gpui_kit::init(cx);
         ircord_app::init(cx);
+        // No UI test reaches the real media layer or the sound devices; a
+        // voice test installs its own fake with the answers it needs.
+        let fake: Arc<dyn ircord_client::voice::Connector> =
+            Arc::new(ircord_client::testing::voice::FakeConnector::default());
+        ircord_app::features::voice::use_connector(cx, fake);
     });
     cx.executor().allow_parking();
     let runtime = ircord_client::client::runtime().unwrap();

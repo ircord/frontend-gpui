@@ -30,6 +30,8 @@ pub enum ServerEvent {
     EmotesUpdated(EmoteVersion),
     /// The account's device list changed; re-read it if shown.
     DevicesUpdated,
+    /// Someone joined or left a voice room, or the rooms changed; re-read them.
+    VoiceUpdated,
     Alert(Alert),
     Routing(RoutingSnapshot),
     /// A durable event with its replay sequence number.
@@ -145,6 +147,7 @@ pub const SERVER_EVENT_TYPES: &[&str] = &[
     "attract",
     "emotes.updated",
     "devices.updated",
+    "voice.updated",
     "notification.alert",
     "notification.routing",
     "message.created",
@@ -227,6 +230,7 @@ impl ServerEvent {
             "attract" => data(e.data).map(ServerEvent::Attract),
             "emotes.updated" => data(e.data).map(ServerEvent::EmotesUpdated),
             "devices.updated" => Some(ServerEvent::DevicesUpdated),
+            "voice.updated" => Some(ServerEvent::VoiceUpdated),
             kind => match e.seq {
                 Some(seq) => {
                     Self::durable(kind, e.data).map(|event| ServerEvent::Durable { seq, event })
@@ -287,6 +291,7 @@ impl ServerEvent {
             ServerEvent::Attract(_) => "attract",
             ServerEvent::EmotesUpdated(_) => "emotes.updated",
             ServerEvent::DevicesUpdated => "devices.updated",
+            ServerEvent::VoiceUpdated => "voice.updated",
             ServerEvent::Alert(_) => "notification.alert",
             ServerEvent::Routing(_) => "notification.routing",
             ServerEvent::Durable { event, .. } => event.kind(),

@@ -12,12 +12,14 @@ on:
         required: true
         type: boolean
   # Pull requests that change how installers are made, or the OS-specific
-  # platform crate, build them too, so the pipeline is proven before it
-  # reaches main. Drafts run nothing.
+  # platform and call crates, build them too, so the pipeline is proven
+  # before it reaches main (the Mac job is the only macOS build of the call
+  # crate's LiveKit). Drafts run nothing.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - .github/**
+      - crates/call/**
       - crates/platform/**
       - packaging/**
       - tools/**

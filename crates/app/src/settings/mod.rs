@@ -27,6 +27,7 @@ pub mod notifications;
 pub mod privacy;
 pub mod profile;
 pub mod shortcuts;
+pub mod voice;
 
 use crate::ui::focus::Reachable;
 use std::cell::Cell;
@@ -62,6 +63,7 @@ pub fn init(cx: &mut App) {
     privacy::init(cx);
     profile::init(cx);
     shortcuts::init(cx);
+    voice::init(cx);
     registry::register(cx, |r| {
         r.panes
             .add(Pane::new(PaneKind::Settings, |ctx, window, cx| {

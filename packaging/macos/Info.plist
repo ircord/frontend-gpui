@@ -40,5 +40,7 @@
     <string>11.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>IRCord uses the microphone in voice channels.</string>
 </dict>
 </plist>

@@ -877,6 +877,9 @@ pub struct Registry {
     /// [`Slot::at_bottom`] goes under the list instead (the connection
     /// indicator).
     pub sidebar_footer: List<Slot<SidebarCtx>>,
+    /// At the end of the conversation list, scrolling with it, after the
+    /// direct messages (the voice channels).
+    pub sidebar_list: List<Slot<SidebarCtx>>,
     pub settings_sections: List<SettingsSection>,
     pub inline_renderers: List<InlineRenderer>,
     pub row_filters: List<RowFilter>,

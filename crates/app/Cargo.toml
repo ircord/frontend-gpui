@@ -19,6 +19,8 @@ path = "src/main.rs"
 accesskit = "0.24"
 ircord-client.workspace = true
 ircord-platform = { path = "../platform" }
+# Voice calls (LiveKit).
+ircord-call = { path = "../call" }
 anyhow.workspace = true
 url.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }

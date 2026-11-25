@@ -13,7 +13,8 @@
 //!   so is the right-hand panel ([`side_panel`]).
 //! - Right-clicking a network or a conversation opens its registered menu;
 //!   N1's own entries are in [`menus`]. Slots marked `at_bottom` (the
-//!   connection indicator) sit under the list.
+//!   connection indicator) sit under the list, and `Registry::sidebar_list`
+//!   slots (the voice channels) at its end.
 //!
 //! The open conversation's highlight glides from row to row on a spring
 //! ([`glide`]); with reduced motion the open row draws it itself.
@@ -751,6 +752,7 @@ impl SidebarView {
         heading.into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn list(
         &self,
         w: &Workspace,
@@ -759,6 +761,7 @@ impl SidebarView {
         layout: &order::Layout,
         server: Option<&url::Url>,
         theme: &Theme,
+        listed: Vec<AnyElement>,
     ) -> AnyElement {
         // With motion the highlight is the list's first child, a canvas under
         // the rows; the rows are counted from it to find the open one.
@@ -805,6 +808,8 @@ impl SidebarView {
                 );
             }
         }
+        // Registered sections after the conversations (`Registry::sidebar_list`).
+        items.extend(listed);
         let mut list = div().flex_1().flex().flex_col().gap_0p5().px_2().py_1();
         if gliding {
             let (shared, network) = (self.glide.clone(), network.to_string());
@@ -975,6 +980,12 @@ impl SidebarView {
             session: self.session.clone(),
             network: selected_network.clone(),
         };
+        let listed: Vec<AnyElement> = registry::get(cx)
+            .sidebar_list
+            .to_vec()
+            .iter()
+            .filter_map(|slot| (slot.render)(&slot_ctx, window, cx))
+            .collect();
         let (mut pages, mut bottom) = (Vec::new(), Vec::new());
         for slot in registry::get(cx).sidebar_footer.to_vec() {
             if let Some(element) = (slot.render)(&slot_ctx, window, cx) {
@@ -1170,8 +1181,18 @@ impl SidebarView {
                 &layout,
                 pictures_from.as_ref(),
                 &theme,
+                listed,
             ),
-            None => div().id("conversation-list").flex_1().into_any_element(),
+            None => div()
+                .id("conversation-list")
+                .flex_1()
+                .flex()
+                .flex_col()
+                .px_2()
+                .py_1()
+                .overflow_y_scroll()
+                .children(listed)
+                .into_any_element(),
         };
         drop(w);
 

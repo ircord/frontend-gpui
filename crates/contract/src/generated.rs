@@ -614,6 +614,9 @@ pub struct Capabilities {
     /// Application upload service availability and limits; distinct from IRC network features.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upload: Option<UploadCapability>,
+    /// This instance supports server-wide voice rooms for signed-in accounts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -1251,6 +1254,17 @@ pub struct ConversationUpdatedEvent {
     pub seq: i64,
     pub r#type: String,
     pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Credential {
+    pub id: String,
+    /// Subscribe-only credential for the private microphone test.
+    #[serde(rename = "playbackToken", skip_serializing_if = "Option::is_none")]
+    pub playback_token: Option<String>,
+    pub token: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -3714,13 +3728,13 @@ pub struct PasswordResetResult {
     /// Signed-in IRCord sessions that this reset signed out.
     #[serde(rename = "sessionsRevoked")]
     pub sessions_revoked: i64,
-    /// completed: IRCord, the associated IRC server and the saved IRC login all use the new password. pending: the reset is saved and the backend keeps retrying the remaining steps; sign-in stays blocked until they finish.
+    /// A completed reset updates the password in IRCord, the associated IRC server, and the saved IRC login. A pending reset gets up to three automatic attempts. Sign-in stays blocked until the reset finishes.
     pub status: PasswordResetResultStatus,
     /// The account's username, as stored.
     pub username: String,
 }
 
-/// completed: IRCord, the associated IRC server and the saved IRC login all use the new password. pending: the reset is saved and the backend keeps retrying the remaining steps; sign-in stays blocked until they finish.
+/// A completed reset updates the password in IRCord, the associated IRC server, and the saved IRC login. A pending reset gets up to three automatic attempts. Sign-in stays blocked until the reset finishes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum PasswordResetResultStatus {
     #[serde(rename = "completed")]
@@ -4196,6 +4210,26 @@ pub struct RetrySendInputBody {
 #[serde(default)]
 pub struct RevisionUpdate {
     pub revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Room {
+    pub available: bool,
+    #[serde(rename = "bitrateKbps")]
+    pub bitrate_kbps: i64,
+    pub capacity: i64,
+    pub id: String,
+    pub name: String,
+    pub participants: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoomSettings {
+    #[serde(rename = "bitrateKbps")]
+    pub bitrate_kbps: i64,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -5292,6 +5326,13 @@ pub struct UsernameCheck {
     pub available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceRosterEvent {
+    pub r#type: String,
+    pub v: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

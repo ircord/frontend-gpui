@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New
+
+- Voice channels: on a server that offers them, the sidebar lists its voice rooms and who is in each. Click one to join with your microphone off, then unmute, deafen or leave from the call controls at the foot of the sidebar, and see who is speaking. Settings → Voice chooses the microphone and speaker and turns echo cancellation, noise suppression and automatic gain on or off.
+
 ## v0.6.1 — 2026-11-25
 
 ### Fixed
