@@ -12,16 +12,21 @@ gpui_kit::assets::icon_assets!(
         Bookmark,
         Cloud,
         CloudOff,
+        Clapperboard,
+        Hash,
         Image,
         Link,
+        MessageCircle,
         Monitor,
+        Music,
         Paperclip,
         Pencil,
         Send,
         ShieldCheck,
         Slash,
         Upload,
-        Users
+        Users,
+        Video
     ]
 );
 

@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use chrono::Datelike;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, TestAppContext};
 use ircord_app::features::search;
@@ -316,6 +317,52 @@ fn filter_suggestions_float_over_results_and_clear_with_the_query(cx: &mut TestA
 }
 
 #[gpui_kit::test]
+fn typed_date_suggestions_show_presets_and_accept_a_specific_day(cx: &mut TestAppContext) {
+    let f = open(cx);
+    open_page(&f, cx, None);
+    frame(&f, cx, |window, cx| window.input("on:", cx));
+    shows(&f, cx, "search-offers");
+    let today = chrono::Local::now().date_naive().format("%Y-%m-%d");
+    assert_eq!(
+        label(&f, cx, "search-offer-0").as_deref(),
+        Some(format!("Today {today}").as_str())
+    );
+    frame(&f, cx, |window, cx| {
+        window.input("2020-02-20", cx);
+        window.press("enter", cx);
+    });
+    shows(&f, cx, "search-chip-0");
+    let wanted = ircord_client::search_filter::Query {
+        filters: ircord_client::search_filter::Filters {
+            on: Some("2020-02-20".into()),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+    .pairs();
+    searched(&f, cx, "the chosen day", |request| {
+        wanted
+            .iter()
+            .filter(|(key, _)| matches!(*key, "after" | "before"))
+            .all(|(key, value)| param(request, key) == [value.as_str()])
+    });
+}
+
+#[gpui_kit::test]
+fn the_query_calendar_adds_the_day_as_a_filter(cx: &mut TestAppContext) {
+    let f = open(cx);
+    open_page(&f, cx, None);
+    click(&f, cx, "search-quick-on");
+    click(&f, cx, "query-calendar");
+    let day = chrono::Local::now().date_naive().with_day(1).unwrap();
+    frame(&f, cx, |window, cx| {
+        let id = gpui_kit::ElementId::Name(format!("calendar-{day}-0-0").into());
+        window.click(id, cx);
+    });
+    shows(&f, cx, "search-chip-0");
+}
+
+#[gpui_kit::test]
 fn workspace_search_scrolls_to_the_selected_result(cx: &mut TestAppContext) {
     let f = open_with_many_results(cx);
     open_page(&f, cx, None);
@@ -488,6 +535,10 @@ fn calendar_respects_range_bounds_and_keeps_typed_dates(cx: &mut TestAppContext)
     shows(&f, cx, "calendar-2020-02-15-0-2");
     click(&f, cx, "search-calendar-after");
     click(&f, cx, "search-filters-apply");
+    assert_eq!(
+        label(&f, cx, "search-filters-button").as_deref(),
+        Some("Filters, 2 on")
+    );
     searched(&f, cx, "calendar date range", |r| {
         param(r, "after").len() == 1 && param(r, "before").len() == 1
     });

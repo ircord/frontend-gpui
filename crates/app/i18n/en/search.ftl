@@ -67,7 +67,9 @@ search-someone = Someone
 search-yourself = Yourself ({ $name })
 search-closed-conversation = Closed conversation
 search-remove-filter = Remove { $filter } filter: { $value }
-search-suggestions = Suggestions for { $filter }:
+search-suggest-before = Sent before a date
+search-suggest-after = Sent after a date
+search-pick-day = Pick a day
 search-no-suggestion = Nothing matches “{ $query }”.
 
 # Filter names, as typed and as pills

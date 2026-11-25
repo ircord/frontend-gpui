@@ -15,5 +15,6 @@ pub mod icon;
 pub mod page;
 pub mod people_picker;
 pub mod prompt;
+pub mod query_field;
 pub mod toast;
 pub mod tooltip;

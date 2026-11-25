@@ -22,6 +22,7 @@ use gpui_kit::component::IndexPath;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::calendar::{Calendar, CalendarEvent, CalendarState, Date, Matcher};
 use gpui_kit::component::combobox::{Combobox, ComboboxState};
+use gpui_kit::component::date_picker::{DatePickerEvent, DatePickerState};
 use gpui_kit::component::input::{
     Backspace, Escape, Input, InputEvent, InputState, MoveDown, MoveUp,
 };
@@ -45,13 +46,13 @@ use crate::session::{Session, SessionEvent};
 use crate::sidebar::layout;
 use crate::theme::{self, Theme};
 use crate::ui;
-use crate::ui::icon::IconName;
+use crate::ui::icon::{IconName, LucideIcon};
 use crate::ui::page::Hint;
+use crate::ui::query_field::{
+    self, AcceptSuggestion, SUGGESTION_KEYS, Selection, SelectionScroll as ResultScroll,
+};
 
-gpui_kit::actions!(
-    ircord_search,
-    [OpenSearch, SearchConversation, AcceptFilter]
-);
+gpui_kit::actions!(ircord_search, [OpenSearch, SearchConversation]);
 
 /// The right-hand panel's ID for searching the open conversation.
 pub const PANEL: &str = "conversation-search";
@@ -63,12 +64,15 @@ const CONVERSATIONS_MATCHED: usize = 5;
 const PEOPLE: usize = 4;
 const SERVERS: usize = 4;
 const OFFERS: usize = 8;
-const FILTER_CHOICES: &str = "IrcordSearchFilterChoices";
 
 const MAC: bool = cfg!(target_os = "macos");
 
 pub fn init(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("tab", AcceptFilter, Some(FILTER_CHOICES))]);
+    cx.bind_keys([KeyBinding::new(
+        "tab",
+        AcceptSuggestion,
+        Some(SUGGESTION_KEYS),
+    )]);
     registry::register(cx, |r| {
         r.panes.add(Pane::new(PaneKind::Search, |ctx, window, cx| {
             page_view(&ctx.session, window, cx).into_any_element()
@@ -631,7 +635,7 @@ fn offers(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Vec<Offer> 
                 chip: Chip::In(c.id.clone()),
                 label: conversation_label(c),
                 person: None,
-                secondary: None,
+                secondary: w.network(&c.network_id).map(|n| n.name.clone()),
             })
             .collect(),
         Key::Has => Has::ALL
@@ -655,29 +659,24 @@ fn offers(w: &Workspace, key: Key, value: &str, today: NaiveDate) -> Vec<Offer> 
             })
             .collect(),
         Key::Before | Key::After | Key::On => {
-            let mut days: Vec<(String, String)> = [
-                (t!("search-today"), 0),
-                (t!("search-yesterday"), 1),
-                (t!("search-week-ago"), 7),
-                (t!("search-month-ago"), 30),
-            ]
-            .into_iter()
-            .filter(|(name, _)| matches(name))
-            .map(|(name, back)| {
-                let day = sf::days_before(today, back);
-                (format!("{name} · {day}"), day)
-            })
-            .collect();
+            let mut days: Vec<(String, String)> = query_field::date_presets()
+                .into_iter()
+                .filter(|(name, _)| matches(name))
+                .map(|(name, back)| {
+                    let day = sf::days_before(today, back);
+                    (name.to_string(), day)
+                })
+                .collect();
             if sf::is_day(value) {
                 days.insert(0, (value.to_string(), value.to_string()));
             }
             days.into_iter()
                 .filter_map(|(label, day)| {
                     Some(Offer {
-                        chip: date_chip(key, day)?,
+                        chip: date_chip(key, day.clone())?,
+                        secondary: (label != day).then_some(day),
                         label,
                         person: None,
-                        secondary: None,
                     })
                 })
                 .collect()
@@ -810,8 +809,7 @@ fn text_button(
         .on_click(on_click)
 }
 
-/// A pill that is on or off.
-fn toggle_pill(
+fn segment(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     on: bool,
@@ -821,23 +819,36 @@ fn toggle_pill(
     let label: SharedString = label.into();
     div()
         .id(id)
-        .role(Role::CheckBox)
+        .role(Role::RadioButton)
         .aria_label(label.clone())
         .aria_toggled(if on { Toggled::True } else { Toggled::False })
-        .px_2()
-        .py_0p5()
-        .rounded_full()
+        .px_2p5()
+        .py_1p5()
+        .rounded(theme.radius)
         .cursor_pointer()
-        .text_sm()
-        .when(on, |d| d.bg(theme.accent).text_color(theme.on_accent))
+        .text_xs()
+        .when(on, |d| d.bg(theme.raised).text_color(theme.text))
         .when(!on, |d| {
             let hover = theme.hover;
-            d.bg(theme.input)
-                .text_color(theme.text)
-                .hover(move |d| d.bg(hover))
+            d.text_color(theme.muted).hover(move |d| d.bg(hover))
         })
         .child(label)
         .on_click(on_click)
+}
+
+fn segments(label: &'static str, theme: &Theme) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(label.into()))
+        .role(Role::RadioGroup)
+        .aria_label(label)
+        .flex()
+        .flex_wrap()
+        .gap_0p5()
+        .p_0p5()
+        .bg(theme.sidebar)
+        .border_1()
+        .border_color(theme.border)
+        .rounded(theme.radius)
 }
 
 /// The server history switch, disabled with the reason when it cannot apply.
@@ -925,32 +936,19 @@ fn chips_row(
         let key = chip.key().as_str();
         let label = t!("search-remove-filter", filter = key, value = value.clone());
         let model = model.clone();
-        row = row.child(
-            div()
-                .id(ElementId::Name(format!("{prefix}-chip-{i}").into()))
-                .test_support()
-                .role(Role::Button)
-                .reachable(theme)
-                .aria_label(SharedString::from(label))
-                .px_2()
-                .py_0p5()
-                .rounded_full()
-                .cursor_pointer()
-                .bg(theme.selected)
-                .text_sm()
-                .flex()
-                .items_center()
-                .gap_1()
-                .child(div().text_color(theme.accent).child(format!("{key}:")))
-                .child(div().text_color(theme.text).child(value))
-                .child(ui::icon::icon(IconName::Close, theme.muted))
-                .on_click(move |_, _, cx| {
-                    model.update(cx, |m, cx| {
-                        let next = m.filters.without(&chip);
-                        m.set_filters(next, cx)
-                    })
-                }),
-        );
+        row = row.child(query_field::chip(
+            format!("{prefix}-chip-{i}"),
+            label,
+            key,
+            value,
+            theme,
+            move |_, _, cx| {
+                model.update(cx, |m, cx| {
+                    let next = m.filters.without(&chip);
+                    m.set_filters(next, cx)
+                })
+            },
+        ));
     }
     Some(row)
 }
@@ -1040,52 +1038,6 @@ fn result_row(
             theme,
         ))
         .on_click(on_click)
-}
-
-/// Keep keyboard selection in view without scrolling on every redraw.
-#[derive(Default)]
-struct ResultScroll {
-    handle: ScrollHandle,
-    reveal: bool,
-}
-
-impl ResultScroll {
-    fn reset(&mut self) {
-        self.reveal = false;
-        self.handle.set_offset(Point::default());
-    }
-
-    fn reveal_row(&self, selected: bool) -> Option<impl IntoElement + use<>> {
-        if !self.reveal || !selected {
-            return None;
-        }
-        let handle = self.handle.clone();
-        Some(
-            canvas(
-                move |row, window, _| {
-                    let viewport = handle.bounds();
-                    let old = handle.offset();
-                    let delta =
-                        if row.top() < viewport.top() || row.size.height > viewport.size.height {
-                            viewport.top() - row.top()
-                        } else {
-                            (viewport.bottom() - row.bottom()).min(px(0.))
-                        };
-                    let y = (old.y + delta).clamp(-handle.max_offset().y, px(0.));
-                    if y != old.y {
-                        handle.set_offset(point(old.x, y));
-                        // The current frame has already laid out the viewport at the old offset.
-                        window.on_next_frame(|window, _| window.refresh());
-                    }
-                },
-                |_, _, _, _| {},
-            )
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full(),
-        )
-    }
 }
 
 /// The messages part: status, results and "load older".
@@ -1258,9 +1210,7 @@ impl EventEmitter<Opened> for SearchModel {}
 
 #[derive(Default)]
 struct FilterSelection {
-    index: usize,
-    dismissed: bool,
-    scroll: ResultScroll,
+    selection: Selection,
 }
 
 impl FilterSelection {
@@ -1270,7 +1220,7 @@ impl FilterSelection {
         model: &Entity<SearchModel>,
         cx: &App,
     ) -> Option<(sf::Token, Vec<Offer>)> {
-        if self.dismissed {
+        if self.selection.dismissed {
             return None;
         }
         let token = sf::active_token(&input.read(cx).value())?;
@@ -1289,9 +1239,7 @@ impl FilterSelection {
     }
 
     fn step(&mut self, count: usize, backward: bool) {
-        let offset = if backward { count - 1 } else { 1 };
-        self.index = (self.index.min(count - 1) + offset) % count;
-        self.scroll.reveal = true;
+        self.selection.step(count, backward);
     }
 
     fn accept(
@@ -1304,8 +1252,8 @@ impl FilterSelection {
         let Some((_, choices)) = self.choices(input, model, cx) else {
             return false;
         };
-        let Some(offer) = choices.get(self.index.min(choices.len().saturating_sub(1))) else {
-            return false;
+        let Some(offer) = choices.get(self.selection.index(choices.len())) else {
+            return true;
         };
         apply_offer(input, model, offer.chip.clone(), window, cx);
         true
@@ -1313,123 +1261,121 @@ impl FilterSelection {
 }
 
 /// Offers float below the field without moving the search results.
+#[allow(clippy::too_many_arguments)]
 fn offers_row(
     prefix: &'static str,
     input: &Entity<InputState>,
     model: &Entity<SearchModel>,
     choices: Option<(sf::Token, Vec<Offer>)>,
     selection: &FilterSelection,
+    calendar: &Entity<DatePickerState>,
     theme: &Theme,
     cx: &App,
 ) -> Option<Deferred> {
     let (token, offers) = choices?;
-    let selected = selection.index.min(offers.len().saturating_sub(1));
-    let scroll = &selection.scroll;
     let server = model
         .read(cx)
         .session
         .read(cx)
         .server()
         .map(|server| server.url());
-    let mut row = div()
-        .id(ElementId::Name(format!("{prefix}-offers").into()))
-        .test_support()
-        .role(Role::ListBox)
-        .aria_label(SharedString::from(t!(
-            "search-suggestions",
-            filter = token.key.as_str()
-        )))
-        .max_h(px(320. * theme.scale))
-        .overflow_y_scroll()
-        .track_scroll(&scroll.handle)
-        .p_1()
-        .flex()
-        .flex_col()
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme.muted)
-                .child(t!("search-suggestions", filter = token.key.as_str())),
-        );
-    if offers.is_empty() {
-        row = row.child(
-            div()
-                .text_xs()
-                .text_color(theme.faint)
-                .child(t!("search-no-suggestion", query = token.value.clone())),
-        );
-    }
-    for (i, offer) in offers.into_iter().enumerate() {
-        let (input, model) = (input.clone(), model.clone());
-        let chip = offer.chip.clone();
-        let picture = offer.person.as_ref().map(|person| {
-            ui::avatar::person(
-                ui::avatar::Person {
-                    member: person,
-                    name: &offer.label,
-                    server,
-                    presence: false,
-                    key: &format!("{prefix}-offer-{i}"),
-                },
-                px(28.),
+    let heading = match token.key {
+        Key::From => t!("search-from-label"),
+        Key::Mentions => t!("search-mentions-label"),
+        Key::In => t!("search-in-label"),
+        Key::Has => t!("search-has-label"),
+        Key::On => t!("search-on-label"),
+        Key::Before => t!("search-suggest-before"),
+        Key::After => t!("search-suggest-after"),
+        Key::Author => t!("search-filters-author-type"),
+    };
+    let count = offers.len();
+    let rows = offers
+        .into_iter()
+        .enumerate()
+        .map(|(i, offer)| {
+            let (input, model) = (input.clone(), model.clone());
+            let chip = offer.chip.clone();
+            let leading = offer
+                .person
+                .as_ref()
+                .map(|person| {
+                    ui::avatar::person(
+                        ui::avatar::Person {
+                            member: person,
+                            name: &offer.label,
+                            server,
+                            presence: false,
+                            key: &format!("{prefix}-offer-{i}"),
+                        },
+                        px(24.),
+                        theme,
+                    )
+                    .into_any_element()
+                })
+                .or_else(|| {
+                    let icon = match offer.chip {
+                        Chip::In(_) if offer.label.starts_with('@') => LucideIcon::MessageCircle,
+                        Chip::In(_) => LucideIcon::Hash,
+                        Chip::Has(Has::Link) => LucideIcon::Link,
+                        Chip::Has(Has::Image) => LucideIcon::Image,
+                        Chip::Has(Has::Gif) => LucideIcon::Clapperboard,
+                        Chip::Has(Has::Video) => LucideIcon::Video,
+                        Chip::Has(Has::File) => {
+                            return Some(
+                                ui::icon::icon(IconName::File, theme.muted).into_any_element(),
+                            );
+                        }
+                        Chip::On(_) | Chip::Before(_) | Chip::After(_) => {
+                            return Some(
+                                ui::icon::icon(IconName::Calendar, theme.muted).into_any_element(),
+                            );
+                        }
+                        _ => return None,
+                    };
+                    Some(ui::icon::icon(icon, theme.muted).into_any_element())
+                });
+            query_field::Suggestion {
+                title: offer.label,
+                detail: offer.secondary,
+                leading,
+            }
+            .render(
+                prefix,
+                i,
+                count,
+                &selection.selection,
                 theme,
+                move |_, window, cx| apply_offer(&input, &model, chip.clone(), window, cx),
             )
-        });
-        row = row.child(
-            div()
-                .id(ElementId::Name(format!("{prefix}-offer-{i}").into()))
-                .role(Role::ListBoxOption)
-                .aria_label(SharedString::from(match &offer.secondary {
-                    Some(detail) => format!("{} {detail}", offer.label),
-                    None => offer.label.clone(),
-                }))
-                .aria_selected(i == selected)
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .cursor_pointer()
-                .when(i == selected, |button| button.bg(theme.selected))
-                .children(picture)
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .min_w_0()
-                        .child(div().text_sm().text_color(theme.text).child(offer.label))
-                        .children(
-                            offer
-                                .secondary
-                                .map(|s| div().text_xs().text_color(theme.muted).child(s)),
-                        ),
-                )
-                .on_click(move |_, window, cx| {
-                    apply_offer(&input, &model, chip.clone(), window, cx)
-                })
-                .when_some(scroll.reveal_row(i == selected), |row, reveal| {
-                    row.relative().child(reveal)
-                })
-                .test_support()
-                .reachable(theme),
-        );
-    }
-    Some(deferred(
-        div()
-            .absolute()
-            .top(relative(1.))
-            .left_0()
-            .w_full()
-            .max_w(px(440. * theme.scale))
-            .occlude()
-            .bg(theme.raised)
-            .border_1()
-            .border_color(theme.border)
-            .rounded(theme.radius)
-            .shadow_md()
-            .child(row),
+            .into_any_element()
+        })
+        .collect();
+    let footer = matches!(token.key, Key::On | Key::Before | Key::After)
+        .then(|| query_field::calendar(calendar, theme).into_any_element());
+    Some(query_field::suggestions(
+        prefix,
+        heading,
+        rows,
+        t!("search-no-suggestion", query = token.value),
+        footer,
+        &selection.selection,
+        theme,
     ))
+}
+
+fn pick_search_day(
+    day: NaiveDate,
+    input: &Entity<InputState>,
+    model: &Entity<SearchModel>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if let Some(token) = sf::active_token(&input.read(cx).value())
+        && let Some(chip) = date_chip(token.key, day.format("%Y-%m-%d").to_string())
+    {
+        apply_offer(input, model, chip, window, cx);
+    }
 }
 
 /// Start a filter at the end of the field, replacing any unfinished filter.
@@ -1565,6 +1511,7 @@ pub struct SearchPage {
     selected: usize,
     result_scroll: ResultScroll,
     filter_selection: FilterSelection,
+    query_calendar: Entity<DatePickerState>,
     recent: Vec<RecentSearch>,
     focus: bool,
     error: Option<String>,
@@ -1575,6 +1522,17 @@ impl SearchPage {
     fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = cx.new(|_| SearchModel::new(session.clone(), None));
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("search-placeholder")));
+        let query_calendar = query_field::calendar_state(window, cx);
+        let date = cx.subscribe_in(
+            &query_calendar,
+            window,
+            |this: &mut Self, _, event: &DatePickerEvent, window, cx| {
+                let DatePickerEvent::Change(date) = event;
+                if let Some(day) = date.start() {
+                    pick_search_day(day.date(), &this.input, &this.model, window, cx);
+                }
+            },
+        );
         let field = cx.subscribe_in(
             &input,
             window,
@@ -1610,10 +1568,11 @@ impl SearchPage {
             selected: 0,
             result_scroll: ResultScroll::default(),
             filter_selection: FilterSelection::default(),
+            query_calendar,
             recent,
             focus: true,
             error: None,
-            _subscriptions: vec![field, changed, opened, workspace],
+            _subscriptions: vec![field, changed, opened, workspace, date],
         }
     }
 
@@ -2243,30 +2202,14 @@ impl Render for SearchPage {
             .flex_wrap()
             .gap_1p5();
         for (key, short, label) in quick {
-            pills = pills.child(
-                text_button(
-                    ElementId::Name(format!("search-quick-{}", key.as_str()).into()),
-                    short,
-                    &theme,
-                    cx.listener(move |this, _, window, cx| {
-                        start_filter(&this.input, key, window, cx)
-                    }),
-                )
-                .test_support()
-                .reachable(&theme)
-                .aria_label(label)
-                .h(px(28.))
-                .py_0()
-                .px_3()
-                .flex()
-                .items_center()
-                .rounded_full()
-                .border_1()
-                .border_color(theme.border.opacity(0.55))
-                .bg(theme.raised.opacity(0.45))
-                .text_xs()
-                .text_color(theme.muted),
-            );
+            pills = pills.child(query_field::shortcut(
+                ElementId::Name(format!("search-quick-{}", key.as_str()).into()),
+                short,
+                label,
+                None,
+                &theme,
+                cx.listener(move |this, _, window, cx| start_filter(&this.input, key, window, cx)),
+            ));
         }
         let toolbar = div()
             .id("search-page-root")
@@ -2286,36 +2229,32 @@ impl Render for SearchPage {
                             .relative()
                             .flex_1()
                             .min_w_0()
-                            .when(choice_count > 0, |field| field.key_context(FILTER_CHOICES))
+                            .when(choice_count > 0, |field| field.key_context(SUGGESTION_KEYS))
                             .child(
-                                Input::new(&self.input)
-                                    .id("search-input")
-                                    .prefix(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap_1()
-                                            .child(ui::icon::icon(IconName::Search, theme.muted))
-                                            .children(chips_row("search", &self.model, &theme, cx)),
-                                    )
-                                    .aria_label(t!("search-field"))
-                                    .when(has_query, |field| {
-                                        field.suffix(ui::icon::button(
-                                            "search-clear-query",
-                                            IconName::Close,
-                                            t!("search-clear"),
-                                            &theme,
-                                            cx.listener(|this, _, window, cx| {
-                                                this.model.update(cx, |m, cx| {
-                                                    m.set_search("", Filters::default(), cx)
-                                                });
-                                                this.input.update(cx, |input, cx| {
-                                                    input.set_value("", window, cx)
-                                                });
-                                                this.input.focus_handle(cx).focus(window, cx);
-                                            }),
-                                        ))
-                                    }),
+                                query_field::input(
+                                    "search-input",
+                                    &self.input,
+                                    t!("search-field"),
+                                    chips_row("search", &self.model, &theme, cx),
+                                    &theme,
+                                )
+                                .when(has_query, |field| {
+                                    field.suffix(ui::icon::button(
+                                        "search-clear-query",
+                                        IconName::Close,
+                                        t!("search-clear"),
+                                        &theme,
+                                        cx.listener(|this, _, window, cx| {
+                                            this.model.update(cx, |m, cx| {
+                                                m.set_search("", Filters::default(), cx)
+                                            });
+                                            this.input.update(cx, |input, cx| {
+                                                input.set_value("", window, cx)
+                                            });
+                                            this.input.focus_handle(cx).focus(window, cx);
+                                        }),
+                                    ))
+                                }),
                             )
                             .children(offers_row(
                                 "search",
@@ -2323,6 +2262,7 @@ impl Render for SearchPage {
                                 &self.model,
                                 choices,
                                 &self.filter_selection,
+                                &self.query_calendar,
                                 &theme,
                                 cx,
                             )),
@@ -2331,7 +2271,9 @@ impl Render for SearchPage {
                         Button::new("search-filters-button")
                             .outline()
                             .flex_none()
-                            .h(px(32.))
+                            .h(px(38. * theme.scale))
+                            .bg(theme.raised)
+                            .border_color(theme.border)
                             .icon(IconName::Settings2)
                             .label(t!("search-filters"))
                             .accessibility_label(filters_label)
@@ -2389,7 +2331,7 @@ impl Render for SearchPage {
                     cx.stop_propagation();
                 }
             }))
-            .capture_action(cx.listener(|this, _: &AcceptFilter, window, cx| {
+            .capture_action(cx.listener(|this, _: &AcceptSuggestion, window, cx| {
                 if !this
                     .filter_selection
                     .accept(&this.input, &this.model, window, cx)
@@ -2400,7 +2342,7 @@ impl Render for SearchPage {
             }))
             .capture_action(cx.listener(move |this, _: &Escape, window, cx| {
                 if choices_open && this.input.focus_handle(cx).is_focused(window) {
-                    this.filter_selection.dismissed = true;
+                    this.filter_selection.selection.dismissed = true;
                     cx.notify();
                 } else {
                     ui::page::leave(&this.session, cx);
@@ -2411,6 +2353,7 @@ impl Render for SearchPage {
         let session = self.session.clone();
         ui::page::Page::new("search-page", t!("search-title"), list)
             .description(t!("search-description"))
+            .inherit_background()
             .toolbar(toolbar)
             .body_scroll(&self.result_scroll.handle)
             .close(t!("search-return"), move |_, _, cx| {
@@ -2611,25 +2554,30 @@ impl FilterMenu {
             ),
             _ => unreachable!("a multiselect filter has one of four keys"),
         };
-        field(title, Some(hint), theme).child(
-            div()
-                .id(ElementId::Name(
-                    format!("search-filter-menu-{}", self.key.as_str()).into(),
-                ))
-                .test_support()
-                .role(Role::Group)
-                .aria_label(title)
-                .h(px(32.))
-                .child(
-                    Combobox::new(&self.state)
-                        .w_full()
-                        .small()
-                        .placeholder(placeholder)
-                        .search_placeholder(search)
-                        .menu_max_h(px(220.))
-                        .cleanable(true),
-                ),
-        )
+        field(title, theme)
+            .gap_2()
+            .child(
+                div()
+                    .id(ElementId::Name(
+                        format!("search-filter-menu-{}", self.key.as_str()).into(),
+                    ))
+                    .test_support()
+                    .role(Role::Group)
+                    .aria_label(title)
+                    .h(px(38. * theme.scale))
+                    .child(
+                        Combobox::new(&self.state)
+                            .w_full()
+                            .h_full()
+                            .bg(theme.raised)
+                            .border_color(theme.border)
+                            .placeholder(placeholder)
+                            .search_placeholder(search)
+                            .menu_max_h(px(220.))
+                            .cleanable(true),
+                    ),
+            )
+            .child(div().text_xs().text_color(theme.muted).child(hint))
     }
 }
 
@@ -2700,7 +2648,19 @@ fn open_filters(model: &Entity<SearchModel>, scoped: bool, window: &mut Window, 
         window,
         cx,
         t!("search-filters-title"),
-        move |dialog, _, _| dialog.w(px(560.)).child(view.clone()),
+        move |dialog, window, cx| {
+            let theme = theme::get(cx);
+            dialog
+                .centered()
+                .w(px(480. * theme.scale))
+                .px_5()
+                .py_4()
+                .bg(theme.main)
+                .border_color(theme.border)
+                .on_ok(|_, _, _| false)
+                .child(view.clone())
+                .footer(filters_footer(&view, window, theme))
+        },
     );
 }
 
@@ -2852,6 +2812,7 @@ fn date_field(
                 format!("search-calendar-popover-{id}").into(),
             ))
             .open(calendar == Some(field))
+            .anchor(Anchor::BottomRight)
             .track_focus(&focus)
             .trigger(
                 Button::new(ElementId::Name(format!("search-calendar-{id}").into()))
@@ -2874,25 +2835,18 @@ fn date_field(
         })
 }
 
-fn field(title: &'static str, help: Option<&'static str>, theme: &Theme) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .text_sm()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text)
-                .child(title),
-        )
-        .when_some(help, |d, help| {
-            d.child(div().text_xs().text_color(theme.muted).child(help))
-        })
+fn field(title: &'static str, theme: &Theme) -> Div {
+    div().flex().flex_col().gap_2().child(
+        div()
+            .text_sm()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.text)
+            .child(title),
+    )
 }
 
 impl Render for FiltersDialog {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
         let mut body = div()
             .id("search-filters-dialog")
@@ -2902,18 +2856,16 @@ impl Render for FiltersDialog {
             .flex()
             .flex_col()
             .gap_3()
-            .max_h((window.viewport_size().height * 0.70).min(px(560.)))
-            .pb_3()
-            .overflow_y_scroll()
+            .pb_2()
             .children(self.menus.iter().map(|menu| menu.render(&theme)));
-        let mut when = div().flex().gap_1();
+        let mut when = segments(t!("search-filters-date"), &theme);
         for (value, id, label) in [
             (When::Any, "any", t!("search-filters-any-time")),
             (When::On, "on", t!("search-filters-on-day")),
             (When::Between, "between", t!("search-filters-between")),
         ] {
             when = when.child(
-                toggle_pill(
+                segment(
                     ElementId::Name(format!("search-filter-when-{id}").into()),
                     label,
                     self.when == value,
@@ -2925,11 +2877,10 @@ impl Render for FiltersDialog {
                     }),
                 )
                 .test_support()
-                .reachable(&theme)
-                .role(Role::RadioButton),
+                .reachable(&theme),
             );
         }
-        let mut date = field(t!("search-filters-date"), None, &theme).child(when);
+        let mut date = field(t!("search-filters-date"), &theme).child(when);
         match self.when {
             When::Any => {}
             When::On => {
@@ -2963,14 +2914,14 @@ impl Render for FiltersDialog {
                 )
             }
         }
-        let mut authors = div().flex().gap_1();
+        let mut authors = segments(t!("search-filters-author-type"), &theme);
         for (value, id, label) in [
             (None, "any", t!("search-filters-anyone")),
             (Some(Author::User), "user", t!("search-people")),
             (Some(Author::Bot), "bot", t!("search-bots")),
         ] {
             authors = authors.child(
-                toggle_pill(
+                segment(
                     ElementId::Name(format!("search-filter-author-{id}").into()),
                     label,
                     self.draft.author == value,
@@ -2981,13 +2932,12 @@ impl Render for FiltersDialog {
                     }),
                 )
                 .test_support()
-                .reachable(&theme)
-                .role(Role::RadioButton),
+                .reachable(&theme),
             );
         }
         body = body
             .child(date)
-            .child(field(t!("search-filters-author-type"), None, &theme).child(authors));
+            .child(field(t!("search-filters-author-type"), &theme).child(authors));
         if let Some(error) = &self.error {
             body = body.child(
                 div()
@@ -3000,50 +2950,43 @@ impl Render for FiltersDialog {
                     .child(error.clone()),
             );
         }
-        div().flex().flex_col().child(body).child(
-            div()
-                .flex()
-                .justify_end()
-                .items_center()
-                .gap_2()
-                .border_t_1()
-                .border_color(theme.border)
-                .pt_3()
-                .child(
-                    text_button(
-                        "search-filters-clear",
-                        t!("search-filters-clear"),
-                        &theme,
-                        cx.listener(|this, _, window, cx| this.clear(window, cx)),
-                    )
-                    .test_support()
-                    .reachable(&theme)
-                    .mr_auto(),
-                )
-                .child(
-                    text_button(
-                        "search-filters-cancel",
-                        t!("core-cancel"),
-                        &theme,
-                        |_, window, cx| ui::dialog::close(window, cx),
-                    )
-                    .test_support()
-                    .reachable(&theme),
-                )
-                .child(
-                    text_button(
-                        "search-filters-apply",
-                        t!("search-filters-apply"),
-                        &theme,
-                        cx.listener(|this, _, window, cx| this.apply(window, cx)),
-                    )
-                    .test_support()
-                    .reachable(&theme)
-                    .bg(theme.accent)
-                    .text_color(theme.on_accent),
-                ),
-        )
+        body
     }
+}
+
+fn filters_footer(view: &Entity<FiltersDialog>, window: &Window, theme: &Theme) -> Div {
+    div()
+        .flex()
+        .justify_end()
+        .items_center()
+        .gap_2()
+        .border_t_1()
+        .border_color(theme.border)
+        .pt_3()
+        .child(
+            Button::new("search-filters-clear")
+                .ghost()
+                .label(t!("search-filters-clear"))
+                .h(px(38. * theme.scale))
+                .mr_auto()
+                .on_click(window.listener_for(view, |this, _, window, cx| this.clear(window, cx))),
+        )
+        .child(
+            Button::new("search-filters-cancel")
+                .outline()
+                .label(t!("core-cancel"))
+                .h(px(38. * theme.scale))
+                .bg(theme.raised)
+                .border_color(theme.border)
+                .on_click(|_, window, cx| ui::dialog::close(window, cx)),
+        )
+        .child(
+            Button::new("search-filters-apply")
+                .primary()
+                .label(t!("search-filters-apply"))
+                .h(px(38. * theme.scale))
+                .on_click(window.listener_for(view, |this, _, window, cx| this.apply(window, cx))),
+        )
 }
 
 // ---- Searching inside a conversation ----
@@ -3102,6 +3045,7 @@ pub struct ConversationSearch {
     selected: usize,
     result_scroll: ResultScroll,
     filter_selection: FilterSelection,
+    query_calendar: Entity<DatePickerState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -3117,6 +3061,17 @@ impl ConversationSearch {
         let input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(t!("search-conversation-search", place = place))
         });
+        let query_calendar = query_field::calendar_state(window, cx);
+        let date = cx.subscribe_in(
+            &query_calendar,
+            window,
+            |this: &mut Self, _, event: &DatePickerEvent, window, cx| {
+                let DatePickerEvent::Change(date) = event;
+                if let Some(day) = date.start() {
+                    pick_search_day(day.date(), &this.input, &this.model, window, cx);
+                }
+            },
+        );
         let field = cx.subscribe_in(
             &input,
             window,
@@ -3155,7 +3110,8 @@ impl ConversationSearch {
             selected: 0,
             result_scroll: ResultScroll::default(),
             filter_selection: FilterSelection::default(),
-            _subscriptions: vec![field, changed, focus_in, focus_out],
+            query_calendar,
+            _subscriptions: vec![field, changed, focus_in, focus_out, date],
         }
     }
 
@@ -3282,40 +3238,34 @@ impl Render for ConversationSearch {
                 div()
                     .id("conversation-search-query")
                     .track_focus(&self.query_scope)
-                    .when(choice_count > 0, |field| field.key_context(FILTER_CHOICES))
+                    .when(choice_count > 0, |field| field.key_context(SUGGESTION_KEYS))
                     .relative()
                     .flex_1()
                     .min_w_0()
                     .child(
-                        Input::new(&self.input)
-                            .id("conversation-search-input")
-                            .prefix(div().flex().items_center().gap_1().children(chips_row(
-                                "conversation-search",
-                                &self.model,
+                        query_field::input(
+                            "conversation-search-input",
+                            &self.input,
+                            t!("search-conversation-field", place = place.clone()),
+                            chips_row("conversation-search", &self.model, &theme, cx),
+                            &theme,
+                        )
+                        .when(has_query, |field| {
+                            field.suffix(ui::icon::button(
+                                "conversation-search-clear-query",
+                                IconName::Close,
+                                t!("search-clear"),
                                 &theme,
-                                cx,
-                            )))
-                            .aria_label(SharedString::from(t!(
-                                "search-conversation-field",
-                                place = place.clone()
-                            )))
-                            .when(has_query, |field| {
-                                field.suffix(ui::icon::button(
-                                    "conversation-search-clear-query",
-                                    IconName::Close,
-                                    t!("search-clear"),
-                                    &theme,
-                                    cx.listener(|this, _, window, cx| {
-                                        this.model.update(cx, |m, cx| {
-                                            m.set_search("", Filters::default(), cx)
-                                        });
-                                        this.input.update(cx, |input, cx| {
-                                            input.set_value("", window, cx)
-                                        });
-                                        this.input.focus_handle(cx).focus(window, cx);
-                                    }),
-                                ))
-                            }),
+                                cx.listener(|this, _, window, cx| {
+                                    this.model.update(cx, |m, cx| {
+                                        m.set_search("", Filters::default(), cx)
+                                    });
+                                    this.input
+                                        .update(cx, |input, cx| input.set_value("", window, cx));
+                                    this.input.focus_handle(cx).focus(window, cx);
+                                }),
+                            ))
+                        }),
                     )
                     .when(quick && !choices_open, |d| {
                         d.child(Self::quick_filters(&theme, cx))
@@ -3326,6 +3276,7 @@ impl Render for ConversationSearch {
                         &self.model,
                         choices,
                         &self.filter_selection,
+                        &self.query_calendar,
                         &theme,
                         cx,
                     )),
@@ -3429,7 +3380,7 @@ impl Render for ConversationSearch {
                     cx.stop_propagation();
                 }
             }))
-            .capture_action(cx.listener(|this, _: &AcceptFilter, window, cx| {
+            .capture_action(cx.listener(|this, _: &AcceptSuggestion, window, cx| {
                 if !this
                     .filter_selection
                     .accept(&this.input, &this.model, window, cx)
@@ -3440,7 +3391,7 @@ impl Render for ConversationSearch {
             }))
             .capture_action(cx.listener(move |this, _: &Escape, window, cx| {
                 if choices_open && this.input.focus_handle(cx).is_focused(window) {
-                    this.filter_selection.dismissed = true;
+                    this.filter_selection.selection.dismissed = true;
                     cx.notify();
                 } else if this.shows_quick_filters(window, cx) {
                     this.quick_dismissed = true;

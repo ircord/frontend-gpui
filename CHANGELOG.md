@@ -13,6 +13,8 @@
 
 ### Improved
 
+- Search and Links share filter suggestions, removable chips, and a calendar. The Search Filters dialog has more room for its controls and descriptions.
+
 - Search in the sidebar opens the workspace search page directly.
 - Conversation search shows recent messages as soon as it opens and has more room for results in wide windows.
 - On narrow windows, conversation search opens over the timeline and returns focus to its opener when dismissed.

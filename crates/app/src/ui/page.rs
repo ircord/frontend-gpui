@@ -44,6 +44,7 @@ pub struct Page {
     pub hints: Vec<Hint>,
     toolbar: Option<AnyElement>,
     body_scroll: Option<ScrollHandle>,
+    inherit_background: bool,
     pub body: AnyElement,
 }
 
@@ -63,6 +64,7 @@ impl Page {
             hints: Vec::new(),
             toolbar: None,
             body_scroll: None,
+            inherit_background: false,
             body: body.into_any_element(),
         }
     }
@@ -109,6 +111,12 @@ impl Page {
 
     pub fn body_scroll(mut self, scroll: &ScrollHandle) -> Self {
         self.body_scroll = Some(scroll.clone());
+        self
+    }
+
+    /// Let the workspace surface behind this page show through.
+    pub fn inherit_background(mut self) -> Self {
+        self.inherit_background = true;
         self
     }
 
@@ -234,7 +242,7 @@ impl Page {
             .h_full()
             .flex()
             .flex_col()
-            .bg(theme.main)
+            .when(!self.inherit_background, |page| page.bg(theme.main))
             .child(header)
             .children(
                 self.toolbar
