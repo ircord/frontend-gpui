@@ -16,7 +16,7 @@
 //! is closed costs nothing, and with reduced motion they are not used at all.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use gpui_kit::*;
@@ -42,8 +42,8 @@ pub const BAND: f32 = 3.;
 const SWEEP_FROM: f32 = 210. / 360.;
 
 /// How far the sweep has turned at `t` seconds, in turns.
-pub fn sweep_turn(t: f32) -> f32 {
-    (t / SWEEP_SECS).rem_euclid(1.)
+pub fn sweep_turn(t: f64) -> f32 {
+    (t / f64::from(SWEEP_SECS)).rem_euclid(1.) as f32
 }
 
 /// The colour `k` of the way from `a` to `b`.
@@ -69,7 +69,7 @@ pub fn sweep_color(stops: &[Rgba; 5], u: f32) -> Rgba {
 /// The colour of piece `n` of the spectrum ring at `t` seconds. Pieces are
 /// numbered clockwise from the top; the pattern starts at 210 degrees, as the
 /// web's does, and turns clockwise.
-pub fn segment_color(stops: &[Rgba; 5], n: usize, t: f32) -> Rgba {
+pub fn segment_color(stops: &[Rgba; 5], n: usize, t: f64) -> Rgba {
     let at = (n as f32 + 0.5) / SEGMENTS as f32;
     sweep_color(stops, at - SWEEP_FROM - sweep_turn(t))
 }
@@ -77,8 +77,8 @@ pub fn segment_color(stops: &[Rgba; 5], n: usize, t: f32) -> Rgba {
 /// Where the glint is across the gold frame at `t` seconds, from 0 at the
 /// top left of the ring to 1 at the bottom right, or `None` between glints.
 /// It enters and leaves beyond the ring, so it never pops.
-pub fn glint_at(t: f32) -> Option<f32> {
-    let phase = t.rem_euclid(GLINT_SECS);
+pub fn glint_at(t: f64) -> Option<f32> {
+    let phase = t.rem_euclid(f64::from(GLINT_SECS)) as f32;
     if phase >= GLINT_RUN {
         return None;
     }
@@ -105,8 +105,9 @@ pub fn along_diagonal(n: usize) -> f32 {
 }
 
 /// The blur of the glow at `t` seconds.
-pub fn glow_blur(t: f32) -> f32 {
-    let breath = 0.5 - 0.5 * (std::f32::consts::TAU * t / BREATH_SECS).cos();
+pub fn glow_blur(t: f64) -> f32 {
+    let phase = (t / f64::from(BREATH_SECS)).rem_euclid(1.) as f32;
+    let breath = 0.5 - 0.5 * (std::f32::consts::TAU * phase).cos();
     BLUR_LOW + (BLUR_HIGH - BLUR_LOW) * breath
 }
 
@@ -133,24 +134,24 @@ pub fn segment_corners(n: usize, centre: (f32, f32), inner: f32, outer: f32) -> 
 
 /// Seconds on the clock the frames share: the same for every frame in every
 /// window, so the card and the preview in Settings turn together.
-pub fn now() -> f32 {
-    START.get_or_init(Instant::now).elapsed().as_secs_f32() + skew()
+pub fn now() -> f64 {
+    START.get_or_init(Instant::now).elapsed().as_secs_f64() + skew()
 }
 
 static START: OnceLock<Instant> = OnceLock::new();
-/// Seconds the shared clock is set ahead by, as `f32` bits ([`align`]).
-static SKEW: AtomicU32 = AtomicU32::new(0);
+/// Seconds the shared clock is set ahead by, as `f64` bits ([`align`]).
+static SKEW: AtomicU64 = AtomicU64::new(0);
 
-fn skew() -> f32 {
-    f32::from_bits(SKEW.load(Ordering::Relaxed))
+fn skew() -> f64 {
+    f64::from_bits(SKEW.load(Ordering::Relaxed))
 }
 
 /// Set the clock so that it stands `secs` into a cycle of `cycle` seconds,
 /// for the tests to see a frame at a known moment. It keeps running.
 #[doc(hidden)]
 pub fn align(cycle: f32, secs: f32) {
-    let ran = START.get_or_init(Instant::now).elapsed().as_secs_f32();
-    let set = (secs - ran).rem_euclid(cycle);
+    let ran = START.get_or_init(Instant::now).elapsed().as_secs_f64();
+    let set = (f64::from(secs) - ran).rem_euclid(f64::from(cycle));
     SKEW.store(set.to_bits(), Ordering::Relaxed);
 }
 
@@ -270,21 +271,23 @@ impl Global for Waiting {}
 
 /// Draw the window again when the next glint starts. GPUI draws a frame only
 /// when something changed, so a glint would otherwise wait for an event.
-fn wake_for_next_glint(t: f32, window: &mut Window, cx: &mut App) {
+fn wake_for_next_glint(t: f64, window: &mut Window, cx: &mut App) {
     if std::mem::replace(&mut cx.default_global::<Waiting>().0, true) {
         return;
     }
-    let wait = Duration::from_secs_f32((GLINT_SECS - t.rem_euclid(GLINT_SECS)).max(0.) + 0.02);
-    window
-        .spawn(cx, async move |cx| {
-            cx.background_executor().timer(wait).await;
-            cx.update(|window, cx| {
-                cx.default_global::<Waiting>().0 = false;
-                window.refresh();
-            })
+    let wait = Duration::from_secs_f64(
+        (f64::from(GLINT_SECS) - t.rem_euclid(f64::from(GLINT_SECS))).max(0.) + 0.02,
+    );
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(wait).await;
+        // The flag is cleared even when the window is gone (closed to the
+        // tray meanwhile), or no later window's glint would ever wake.
+        cx.update(|cx| cx.default_global::<Waiting>().0 = false);
+        cx.update_window(handle, |_, window, _| window.refresh())
             .ok();
-        })
-        .detach();
+    })
+    .detach();
 }
 
 /// A canvas filling its parent, the glow frame's inside (its 2 px border
@@ -374,7 +377,11 @@ mod tests {
         assert!((angle - 210.).abs() < 8., "{angle}");
         // A quarter turn later the pattern is a quarter of the ring further on.
         let n = 5;
-        let later = segment_color(&s, (n + SEGMENTS / 4) % SEGMENTS, SWEEP_SECS / 4.);
+        let later = segment_color(
+            &s,
+            (n + SEGMENTS / 4) % SEGMENTS,
+            f64::from(SWEEP_SECS) / 4.,
+        );
         assert!(near(later, segment_color(&s, n, 0.)));
     }
 
@@ -396,18 +403,21 @@ mod tests {
     #[::core::prelude::v1::test]
     fn a_glint_crosses_for_under_a_second_every_four() {
         assert_eq!(glint_at(0.), Some(-0.3));
-        let mid = glint_at(GLINT_RUN / 2.).unwrap();
+        let mid = glint_at(f64::from(GLINT_RUN) / 2.).unwrap();
         assert!((mid - 0.5).abs() < 1e-5, "{mid}");
-        let end = glint_at(GLINT_RUN - 0.001).unwrap();
+        let end = glint_at(f64::from(GLINT_RUN) - 0.001).unwrap();
         assert!(end > 1.2, "it leaves the ring: {end}");
-        assert_eq!(glint_at(GLINT_RUN), None);
+        assert_eq!(glint_at(f64::from(GLINT_RUN)), None);
         assert_eq!(glint_at(3.9), None);
-        assert_eq!(glint_at(GLINT_SECS), glint_at(0.));
-        assert!((glint_at(GLINT_SECS * 5. + 0.3).unwrap() - glint_at(0.3).unwrap()).abs() < 1e-3);
+        assert_eq!(glint_at(f64::from(GLINT_SECS)), glint_at(0.));
+        assert!(
+            (glint_at(f64::from(GLINT_SECS) * 5. + 0.3).unwrap() - glint_at(0.3).unwrap()).abs()
+                < 1e-3
+        );
         // It only goes forward.
         let mut last = f32::MIN;
         for n in 0..90 {
-            let at = glint_at(n as f32 * 0.01).unwrap();
+            let at = glint_at(f64::from(n) * 0.01).unwrap();
             assert!(at >= last);
             last = at;
         }
@@ -433,10 +443,10 @@ mod tests {
     #[::core::prelude::v1::test]
     fn the_glow_breathes_between_its_limits() {
         assert!((glow_blur(0.) - BLUR_LOW).abs() < 1e-4);
-        assert!((glow_blur(BREATH_SECS / 2.) - BLUR_HIGH).abs() < 1e-4);
-        assert!((glow_blur(BREATH_SECS) - BLUR_LOW).abs() < 1e-4);
+        assert!((glow_blur(f64::from(BREATH_SECS) / 2.) - BLUR_HIGH).abs() < 1e-4);
+        assert!((glow_blur(f64::from(BREATH_SECS)) - BLUR_LOW).abs() < 1e-4);
         assert!((0..300).all(|n| {
-            let b = glow_blur(n as f32 * 0.037);
+            let b = glow_blur(f64::from(n) * 0.037);
             (BLUR_LOW - 1e-4..=BLUR_HIGH + 1e-4).contains(&b)
         }));
     }

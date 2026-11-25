@@ -171,11 +171,16 @@ fn the_gold_frame_glints_now_and_then_and_is_idle_between(cx: &mut TestAppContex
     // Between glints nothing is drawn and no frame is asked for: the window
     // is woken when the next one is due.
     cx.update(|_| frame_motion::align(frame_motion::GLINT_SECS, 2.));
+    // A wake-up left from the glint above fires first, between glints too.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(6));
+    cx.run_until_parked();
     let quiet = painted(cx);
     frame(&f, cx);
     frame(&f, cx);
     assert_eq!(painted(cx), quiet);
-    assert_eq!(next_frame_asks(&f, cx), still);
+    // (The card's own lookup may have finished meanwhile: at most its frames.)
+    assert!(next_frame_asks(&f, cx) <= still);
 }
 
 #[gpui_kit::test]
@@ -198,5 +203,28 @@ fn with_reduced_motion_the_card_keeps_its_frames_still(cx: &mut TestAppContext) 
         assert!(shows(&f, cx, id), "{kind}");
         assert_eq!(painted(cx), before, "{kind}");
         assert_eq!(next_frame_asks(&f, cx), still, "{kind}");
+    }
+}
+
+#[gpui_kit::test]
+fn between_glints_the_window_is_woken_for_the_next_one_again_and_again(cx: &mut TestAppContext) {
+    let f = open(cx, "gold");
+    open_card(&f, cx, "avatar-frame-profile-gold");
+    for round in 1..=2 {
+        // Between glints the canvas draws nothing and sets one wake-up.
+        cx.update(|_| frame_motion::align(frame_motion::GLINT_SECS, 2.));
+        frame(&f, cx);
+        // The next glint is due when the wake-up fires: nobody draws, the
+        // timer alone brings the glint.
+        cx.update(|_| frame_motion::align(frame_motion::GLINT_SECS, 0.3));
+        cx.run_until_parked();
+        let before = painted(cx).1;
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(6));
+        cx.run_until_parked();
+        assert!(
+            painted(cx).1 > before,
+            "round {round}: the glint came by itself"
+        );
     }
 }

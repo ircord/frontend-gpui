@@ -46,12 +46,12 @@ pub struct Highlight {
     top: SpringState,
     height: SpringState,
     target: Span,
-    at: f32,
+    at: f64,
 }
 
 impl Highlight {
     /// A highlight at rest on `to`.
-    pub fn at_rest(to: Span, now: f32) -> Self {
+    pub fn at_rest(to: Span, now: f64) -> Self {
         let still = |position| SpringState {
             position,
             velocity: 0.,
@@ -65,8 +65,8 @@ impl Highlight {
     }
 
     /// Run the spring forward to `now`.
-    fn advance(&mut self, now: f32) {
-        let dt = (now - self.at).max(0.);
+    fn advance(&mut self, now: f64) {
+        let dt = (now - self.at).max(0.) as f32;
         self.top = SPRING.step(self.top, self.target.top, dt);
         self.height = SPRING.step(self.height, self.target.height, dt);
         self.at = self.at.max(now);
@@ -82,7 +82,7 @@ impl Highlight {
     }
 
     /// Aim at `to` from wherever the highlight is at `now`, keeping its speed.
-    pub fn retarget(&mut self, to: Span, now: f32) {
+    pub fn retarget(&mut self, to: Span, now: f64) {
         if to != self.target {
             self.advance(now);
             self.target = to;
@@ -90,7 +90,7 @@ impl Highlight {
     }
 
     /// The highlight at `now`.
-    pub fn sample(&mut self, now: f32) -> Span {
+    pub fn sample(&mut self, now: f64) -> Span {
         self.advance(now);
         Span {
             top: self.top.position,
@@ -197,7 +197,7 @@ impl Shared {
 
     /// Draw the highlight for the frame, moving it towards the open row.
     fn paint(&self, canvas: Bounds<Pixels>, theme: &Theme, window: &mut Window, cx: &mut App) {
-        let now = self.epoch.elapsed().as_secs_f32();
+        let now = self.epoch.elapsed().as_secs_f64();
         let mut state = self.state.borrow_mut();
         let Some(target) = state.target.clone() else {
             state.highlight = None;
@@ -285,14 +285,14 @@ pub fn layer(shared: Shared, theme: Theme) -> impl IntoElement {
 mod tests {
     use super::*;
 
-    const FRAME: f32 = 1. / 60.;
+    const FRAME: f64 = 1. / 60.;
 
     fn span(top: f32, height: f32) -> Span {
         Span { top, height }
     }
 
     /// Run the highlight to `until` seconds at 60 frames a second, from `from`.
-    fn run(h: &mut Highlight, from: f32, until: f32) -> Vec<Span> {
+    fn run(h: &mut Highlight, from: f64, until: f64) -> Vec<Span> {
         let mut out = Vec::new();
         let mut t = from;
         while t < until {
@@ -348,7 +348,7 @@ mod tests {
             h.retarget(span(300., 44.), 0.);
             let mut last = span(0., 0.);
             for n in 1..=frames {
-                last = h.sample(0.12 * n as f32 / frames as f32);
+                last = h.sample(0.12 * f64::from(n) / f64::from(frames));
             }
             last
         };
@@ -382,6 +382,20 @@ mod tests {
         let end = run(&mut h, 0., 1.).pop().unwrap();
         assert_eq!(end, span(123.4, 44.));
         assert_eq!(h.top.velocity, 0.);
+    }
+
+    #[::core::prelude::v1::test]
+    fn after_resting_undrawn_it_still_starts_from_its_row() {
+        let mut h = Highlight::at_rest(span(40., 28.), 0.);
+        h.sample(0.);
+        // Nothing asked for a frame for five seconds.
+        h.retarget(span(200., 44.), 5.);
+        assert_eq!(
+            h.sample(5.),
+            span(40., 28.),
+            "it starts from where it rested"
+        );
+        assert!(!h.settled());
     }
 
     #[::core::prelude::v1::test]

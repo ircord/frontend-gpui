@@ -56,7 +56,7 @@ pub struct Shift {
     from: f32,
     to: f32,
     /// Seconds on the caller's clock when it was aimed.
-    since: f32,
+    since: f64,
 }
 
 impl Shift {
@@ -69,8 +69,8 @@ impl Shift {
     }
 
     /// The shift at `now`; exactly the target once it has arrived.
-    pub fn at(&self, now: f32) -> f32 {
-        let shift = ease(self.from, self.to, now - self.since);
+    pub fn at(&self, now: f64) -> f32 {
+        let shift = ease(self.from, self.to, (now - self.since) as f32);
         if (shift - self.to).abs() < ARRIVED {
             self.to
         } else {
@@ -81,7 +81,7 @@ impl Shift {
     /// Head for `to` from wherever the shift is at `now`. A target no
     /// different from the one it already heads for changes nothing, so
     /// the timeline may report on every frame.
-    pub fn aim(&mut self, to: f32, now: f32) {
+    pub fn aim(&mut self, to: f32, now: f64) {
         if (to - self.to).abs() > 0.01 {
             *self = Self {
                 from: self.at(now),
@@ -92,7 +92,7 @@ impl Shift {
     }
 
     /// Whether the shift is at its target.
-    pub fn arrived(&self, now: f32) -> bool {
+    pub fn arrived(&self, now: f64) -> bool {
         self.at(now) == self.to
     }
 
@@ -120,8 +120,8 @@ impl Default for Depth {
 }
 
 impl Depth {
-    fn now(&self) -> f32 {
-        self.epoch.elapsed().as_secs_f32()
+    fn now(&self) -> f64 {
+        self.epoch.elapsed().as_secs_f64()
     }
 }
 
