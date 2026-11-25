@@ -11,6 +11,7 @@
 //! times while it plays (the last two around its landing) and once after it
 //! ends, then restarts the app to show it signs in from there, and opens Settings → Emotes → Discover (emoji.gg's emoji, read by
 //! the backend over the internet).
+//! `CAPTURE_ONLY=attract` captures `/attract` on a first line, a later line, a message with a reaction and a reply.
 //! `CAPTURE_ONLY=fade` captures a change of colours fading, nothing else.
 //! `CAPTURE_ONLY=news` instead sends a conversation taller than the window, a new message, a
 //! reaction and a mention, with a burst of screenshots after each, to look at
@@ -201,6 +202,92 @@ if command -v montage >/dev/null 2>&1; then
   montage "$OUT"/13-news-sparks-*.png "$OUT"/13-news-glint-*.png -tile 4x -geometry 640x400+2+2 "$OUT/news-lights-sheet.png"
 fi
 stop_app news
+exit 0
+fi
+
+if [ "${CAPTURE_ONLY:-}" = attract ]; then
+# `/attract` on the rows that have an avatar: a plain first line, a later
+# line of a group, one with a reaction and a reply with its quoted line. Someone else speaks between them, so each of yours starts a group
+# and shows its avatar. Two stills of each, with the comet at its outline.
+set -- $(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" "$SERVER/api/v1/bootstrap" | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+c = [c for c in s["conversations"] if c["name"].lstrip("#").lower() == "capture"][0]
+print(c["id"], c["networkId"])')
+CONVERSATION=$1
+post() {
+  curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+    -d "{\"clientId\":\"capture-attract-$1\",\"text\":\"$2\"${3:+,\"replyToId\":\"$3\"}}" \
+    "$SERVER/api/v1/conversations/$CONVERSATION/messages"
+}
+newest() {
+  curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" \
+    "$SERVER/api/v1/conversations/$CONVERSATION/messages?limit=1" | python3 -c '
+import json, sys
+print(json.load(sys.stdin)["items"][-1]["id"])'
+}
+rm -f /tmp/say-*
+python3 - "$IRC_HOST" <<'PY' &
+import os, socket, sys, time
+s = socket.create_connection((sys.argv[1], 6667))
+send = lambda line: s.sendall((line + "\r\n").encode())
+send("NICK friend"); send("USER friend 0 * :friend")
+time.sleep(2); send("JOIN #capture")
+deadline = time.time() + 120
+done = set()
+while time.time() < deadline:
+    for n in "123":
+        f = "/tmp/say-" + n
+        if os.path.exists(f) and n not in done:
+            done.add(n); send("PRIVMSG #capture :someone else says something, number " + n)
+    time.sleep(0.05)
+PY
+sleep 6
+# The bot must be on IRC, or the rows would all join one group.
+kill -0 $! 2>/dev/null || { echo "the friend bot is gone"; exit 1; }
+FIRST=1
+attract() {
+  # The server lets a channel attract once in 30 s.
+  [ "$FIRST" = 1 ] || sleep 31
+  FIRST=0
+  xdotool windowfocus --sync "$WIN"
+  xdotool type --delay 30 "/attract"
+  sleep 1
+  xdotool key Return
+  sleep 0.5
+  xdotool key Return
+  sleep 0.3
+  shot "14-attract-$1-a"
+  sleep 0.8
+  shot "14-attract-$1-b"
+}
+say() { touch /tmp/say-$1; sleep 3; }
+# 1. The first line of a group, nothing under it.
+post plain "a plain message, a single line with nothing under it" >/dev/null
+sleep 3
+attract plain
+# 2. A later line of a group: the comet laps the avatar and the line.
+say 1
+post first "the first line of a group" >/dev/null
+sleep 1
+post later "a later line of the same group, which the comet laps" >/dev/null
+sleep 3
+attract later
+# 3. A message with a reaction under it.
+say 2
+post reacted "a message with a reaction under it" >/dev/null
+sleep 3
+REACTED=$(newest)
+curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+  -d "{\"emoji\":\"🎉\",\"messageId\":\"$REACTED\"}" "$SERVER/api/v1/conversations/$CONVERSATION/reactions"
+sleep 2
+attract reaction
+# 4. A reply with its quoted line.
+say 3
+post reply "a reply to the message with a reaction" "$REACTED" >/dev/null
+sleep 3
+attract reply
+stop_app attract
 exit 0
 fi
 
