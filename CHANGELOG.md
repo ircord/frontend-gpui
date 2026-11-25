@@ -55,8 +55,10 @@
 - Switching networks returns to the last channel you viewed on that network, even after restarting IRCord.
 - The collapsed sidebar still gives you access to Search, Inbox, Saved messages, Drafts, Links and Server.
 - In the collapsed sidebar, channels show numbers and direct messages show avatars and presence. Both keep their conversation menus.
+
 ### Fixed
 
+- Custom status emoji appear in the member list and have room to draw in the profile button.
 - A `/gif` search uses the original reply. Failed searches keep the command, and successful searches preserve any newer draft or reply.
 - File-only replies quote the original message. If you reply with text and files, IRCord sends the text reply and uploads the files separately.
 - Keep the custom CSS switch visible when its explanation wraps in Appearance settings.

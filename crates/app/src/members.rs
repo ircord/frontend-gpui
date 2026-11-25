@@ -98,6 +98,11 @@ impl MembersView {
                     this.listing = None;
                     cx.notify()
                 }
+                SessionEvent::Changed(changes)
+                    if changes.touches(ircord_client::store::emoji::TOPIC) =>
+                {
+                    cx.notify()
+                }
                 SessionEvent::Selection | SessionEvent::Phase => {
                     this.listing = None;
                     cx.notify()
@@ -290,8 +295,8 @@ impl Render for MembersView {
             let rows = lines.clone();
             let frame = frame.clone();
             panel = panel.child(
-                list(self.lines.clone(), move |ix, _window, _cx| {
-                    member_line(&frame, &rows[ix])
+                list(self.lines.clone(), move |ix, _window, cx| {
+                    member_line(&frame, &rows[ix], cx)
                 })
                 .flex_1()
                 .min_h_0()
@@ -299,7 +304,7 @@ impl Render for MembersView {
             );
         } else {
             for line in lines.iter() {
-                panel = panel.child(member_line(&frame, line));
+                panel = panel.child(member_line(&frame, line, cx));
             }
         }
         panel.into_any_element()
@@ -307,7 +312,7 @@ impl Render for MembersView {
 }
 
 /// One line of the member list: a group's heading, or a member's row.
-fn member_line(frame: &Frame, line: &Line) -> AnyElement {
+fn member_line(frame: &Frame, line: &Line, cx: &App) -> AnyElement {
     let theme = &frame.theme;
     match line {
         Line::Heading(key, count) => {
@@ -477,8 +482,8 @@ fn member_line(frame: &Frame, line: &Line) -> AnyElement {
                                 .aria_label(SharedString::from(s.clone()))
                                 .text_xs()
                                 .text_color(theme.muted)
-                                .truncate()
-                                .child(s)
+                                .min_w_0()
+                                .child(crate::features::status::detail(m, px(12.), cx))
                         })),
                 )
                 .when(ignored, |d| {

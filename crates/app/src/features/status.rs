@@ -14,7 +14,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::commands::{View, status as command};
-use ircord_client::contract::{MemberStatus, NetworkStatus, ProfileUpdate};
+use ircord_client::contract::{Member, MemberStatus, NetworkStatus, ProfileUpdate};
 use ircord_client::store::people::{self, Expiry, StatusError};
 use std::rc::Rc;
 
@@ -181,43 +181,65 @@ fn self_line(ctx: &SidebarCtx, _window: &mut Window, cx: &mut App) -> Option<Any
         Some(status) => t!("people-status-line", presence = presence, status = status),
         None => presence.to_string(),
     };
-    let detail = status.as_ref().map(|_| {
-        let glyph = me.status_emoji.as_deref().unwrap_or_default();
-        let shortcode = glyph.strip_prefix(':').and_then(|s| s.strip_suffix(':'));
-        let url =
-            shortcode.and_then(|name| cx.try_global::<emoji::Pictures>()?.0.get(name).cloned());
-        let icon = match url {
-            Some(url) => div()
-                .size(px(13.))
-                .flex_none()
-                .child(emoji::picture(url, theme.faint))
-                .into_any_element(),
-            None => div().flex_none().child(glyph.to_owned()).into_any_element(),
-        };
-        div()
-            .flex()
-            .min_w_0()
-            .items_center()
-            .gap(px(4.))
-            .when(!glyph.is_empty(), |d| d.child(icon))
-            .children(
-                me.status_text
-                    .as_ref()
-                    .map(|text| div().min_w_0().truncate().child(text.clone())),
-            )
-            .into_any_element()
-    });
+    let detail = status.as_ref().map(|_| detail(me, px(14.), cx));
     Some(
         div()
             .id("self-status")
             .test_support()
             .aria_label(SharedString::from(line.clone()))
             .text_xs()
+            .line_height(px(16.))
             .text_color(theme.muted)
             .min_w_0()
             .child(detail.unwrap_or_else(|| div().truncate().child(presence).into_any_element()))
             .into_any_element(),
     )
+}
+
+/// The visible parts of a current status. Keep the emoji out of the text's
+/// truncation area so a long status leaves the whole icon visible.
+pub(crate) fn detail(member: &Member, glyph_size: Pixels, cx: &App) -> AnyElement {
+    let theme = theme::get(cx);
+    let glyph = member
+        .status_emoji
+        .as_deref()
+        .filter(|glyph| !glyph.is_empty());
+    let icon = glyph.map(|glyph| {
+        let picture = glyph
+            .strip_prefix(':')
+            .and_then(|glyph| glyph.strip_suffix(':'))
+            .and_then(|name| cx.try_global::<emoji::Pictures>()?.0.get(name).cloned());
+        if let Some(url) = picture {
+            div()
+                .id("custom-status-emoji")
+                .test_support()
+                .size(glyph_size)
+                .flex_none()
+                .child(emoji::picture(url, theme.faint))
+                .into_any_element()
+        } else {
+            div()
+                .text_size(glyph_size)
+                .flex_none()
+                .child(glyph.to_owned())
+                .into_any_element()
+        }
+    });
+    div()
+        .flex()
+        .min_w_0()
+        .min_h(glyph_size + px(2.))
+        .line_height(glyph_size + px(2.))
+        .items_center()
+        .gap_1()
+        .children(icon)
+        .children(
+            member
+                .status_text
+                .as_ref()
+                .map(|text| div().min_w_0().truncate().child(text.clone())),
+        )
+        .into_any_element()
 }
 
 fn set_away(ctx: &SidebarCtx, away: bool, window: &mut Window, cx: &mut App) {

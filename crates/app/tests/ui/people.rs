@@ -20,6 +20,42 @@ use crate::fixture::{Fixture, open_with, snapshot, wait};
 
 const WAIT: Duration = crate::fixture::HANG_GUARD;
 
+#[gpui_kit::test]
+fn your_custom_status_draws_in_the_member_list_and_profile_button(cx: &mut TestAppContext) {
+    let mut s = snapshot();
+    s.user.status_emoji = Some(":party:".into());
+    s.user.status_text = Some("Back soon".into());
+    s.members.push(s.user.clone());
+    s.conversations[0].member_ids.push(s.user.id.clone());
+    let f = open_with(cx, true, |server| {
+        crate::emoji::serve(server);
+        server.snapshot(&s);
+    });
+    crate::fixture::bootstrap(&f, cx);
+    wait(cx, "both status emoji to render", |cx| {
+        f.window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                ["self-status", "member-status-u-me"].iter().all(|id| {
+                    window.try_find(*id).is_some()
+                        && window
+                            .within(*id)
+                            .try_find("custom-status-emoji")
+                            .is_some_and(|emoji| emoji.visible())
+                })
+            })
+            .unwrap_or(false)
+    });
+    frame(&f, cx, |window, _| {
+        let button = window.find("self-menu").bounds();
+        let emoji = window
+            .within("self-status")
+            .find("custom-status-emoji")
+            .bounds();
+        assert!(emoji.top() > button.top() && emoji.bottom() < button.bottom());
+    });
+}
+
 fn settings(ignore: &[&str]) -> Value {
     json!({"allDevicesDelay": 0, "autoAwayDelay": 0, "channelDefault": "all",
         "directDefault": "all", "lastDeviceDelay": 0, "levels": {}, "ignore": ignore,
