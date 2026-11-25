@@ -75,6 +75,10 @@ fn open(cx: &mut TestAppContext, s: Snapshot, setup: impl FnOnce(&CannedServer))
         w.connection == Some(Connection::Live) && w.conversation("c-group").is_some()
     });
     select(&f, cx, "c-general");
+    // The model is ready before the window has swapped its loading screen
+    // for the app, and `shows` does not wait: on a loaded machine the first
+    // query could land on the loading screen. Wait for the sidebar row.
+    label(&f, cx, "conversation-c-general");
     f
 }
 
