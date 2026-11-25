@@ -5,10 +5,13 @@
 //! itself, plays only for news (never for loaded history or rows out of view) and gives way to
 //! today's plain behaviour with reduced motion.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, TestAppContext};
+use ircord_app::session::SessionEvent;
 use ircord_app::timeline::{self, lights::Kind};
 use ircord_client::contract::*;
 use ircord_client::testing::{CannedServer, Reply, frame};
@@ -115,11 +118,34 @@ fn a_message_that_arrives_glides_in_and_ends_at_the_newest(cx: &mut TestAppConte
     assert_eq!(gliding(cx), None);
     let before = place(&f, cx, "message-m100").unwrap().0;
 
+    // The glide runs on the wall clock and is over about 150 ms after the
+    // message lands, and a loaded machine can spend longer than that inside
+    // one `run_until_parked`. So the state is read at the event, not after a
+    // wait: this subscriber is called right after the timeline's own, which
+    // starts the glide from the same event.
+    let began = Rc::new(Cell::new(None));
+    let spy = began.clone();
+    let session = f.session.clone();
+    cx.update(|cx| {
+        cx.subscribe(&session, move |session, event: &SessionEvent, cx| {
+            let arrived = matches!(event, SessionEvent::Changed(_))
+                && session.read(cx).client().is_some_and(|c| {
+                    c.read()
+                        .timelines
+                        .get("c-general")
+                        .is_some_and(|t| t.find("m101").is_some())
+                });
+            if arrived && spy.get().is_none() {
+                spy.set(Some(timeline::glide(cx)));
+            }
+        })
+        .detach();
+    });
     arrive(&f, 4, "m101", "a new message that is long enough to see");
     wait(cx, "the new message", |cx| has_message(&f, cx, "m101"));
-    // The view holds its place and glides: the state says so, whatever the
-    // machine's speed. Today every row would jump at once.
-    let (arrival, gap) = gliding(cx).expect("the arrival glides");
+    // The view holds its place and glides: the state says so. Today every
+    // row would jump at once.
+    let (arrival, gap) = began.get().flatten().expect("the arrival glides");
     assert!(arrival && gap >= 0., "an arrival glide: {arrival} {gap}");
     // The rows only rise, and end one row higher with it home.
     let tops = rise_until_home(&f, cx, before);
