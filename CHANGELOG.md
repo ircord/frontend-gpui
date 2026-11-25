@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New
+
+- A new message glides into the conversation instead of moving every row at once, a reaction sends a few sparks from its chip, a message that mentions you gets one glint across its row, and the sidebar's mention badge sends out a ring when its count rises. They play only for news (never for loaded history), pace themselves by the display's frames, and follow Settings → Appearance → Motion: with reduced motion everything stays as it was.
+
 ### Fixed
 
 - The comet of `/attract` keeps the same distance from the message's text below as above it; its outline used to run close under letters that hang below the line, such as g, p and y.

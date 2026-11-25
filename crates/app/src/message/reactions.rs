@@ -9,11 +9,13 @@ use gpui_kit::*;
 use crate::features::message_actions;
 use crate::registry::MessageCtx;
 use crate::theme::Theme;
+use crate::timeline::lights;
 use crate::timeline::rows::MessageRow;
 
 pub fn render(
     m: &MessageRow,
     ctx: &MessageCtx,
+    lights: Option<&lights::Fx>,
     theme: &Theme,
     _window: &mut Window,
     cx: &mut App,
@@ -34,9 +36,15 @@ pub fn render(
     for (emoji, count) in &m.reactions {
         let own = mine.contains(emoji);
         let (ctx, react) = (ctx.clone(), emoji.clone());
+        // A chip whose reaction was just added reports its place for the
+        // sparks the timeline draws over it.
+        let probe = lights
+            .filter(|fx| fx.chips.contains(emoji))
+            .map(|fx| lights::probe(fx.stage.clone(), lights::chip_key(&m.id, emoji)));
         chips = chips.child(
             div()
                 .id(ElementId::Name(format!("reaction-{}-{emoji}", m.id).into()))
+                .relative()
                 .test_support()
                 .role(Role::Button)
                 .reachable(theme)
@@ -64,6 +72,7 @@ pub fn render(
                     emoji = emoji,
                     count = count
                 ))
+                .children(probe)
                 .on_click(move |_, window, cx| {
                     message_actions::react(
                         &ctx.session,

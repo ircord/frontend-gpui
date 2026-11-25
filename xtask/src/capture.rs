@@ -12,6 +12,9 @@
 //! ends, then restarts the app to show it signs in from there, and opens Settings → Emotes → Discover (emoji.gg's emoji, read by
 //! the backend over the internet).
 //! `CAPTURE_ONLY=fade` captures a change of colours fading, nothing else.
+//! `CAPTURE_ONLY=news` instead sends a conversation taller than the window, a new message, a
+//! reaction and a mention, with a burst of screenshots after each, to look at
+//! the glide-in, the reaction sparks and the glint.
 //! A personal theme's background picture is captured last, behind the window
 //! and behind the conversation, in dark and light.
 //! Screenshots and the app's logs land in `target/capture/`; look at them.
@@ -128,6 +131,79 @@ if [ "${CAPTURE_ONLY:-}" = fade ]; then
   stop_app fade
   exit 0
 fi
+if [ "${CAPTURE_ONLY:-}" = news ]; then
+# News that moves: a message that arrives glides in, a reaction sends sparks
+# from its chip, a message that mentions you gets one glint across its row.
+# A burst of screenshots is taken right after each event; the app draws in
+# software here at about 10 frames a second, so a motion of 150 to 600 ms
+# shows in a few stills. `news-glide-sheet.png` and `news-lights-sheet.png` lay them side by side.
+set -- $(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" "$SERVER/api/v1/bootstrap" | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+c = [c for c in s["conversations"] if c["name"].lstrip("#").lower() == "capture"][0]
+print(c["id"], c["networkId"])')
+CONVERSATION=$1
+post() {
+  curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json'     -d "{\"clientId\":\"capture-news-$1\",\"text\":\"$2\"}" \
+    "$SERVER/api/v1/conversations/$CONVERSATION/messages"
+}
+# Enough lines to be taller than the window, so a new row has somewhere to
+# glide from; the backend lists them slowly and out of order, so wait until
+# every one is listed before the first still.
+LINES=60
+for n in $(seq 1 $LINES); do post "h$n" "history line number $n, a little text to fill the row"; done >/dev/null
+tries=0
+until [ "$(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" "$SERVER/api/v1/conversations/$CONVERSATION/messages?limit=100" | python3 -c '
+import json, sys
+print(len([m for m in json.load(sys.stdin)["items"] if m["text"].startswith("history line")]))')" -ge "$LINES" ]; do
+  tries=$((tries + 1)); [ "$tries" -le 60 ] || { echo "the history was not listed"; exit 1; }
+  sleep 1
+done
+sleep 4
+burst() {
+  # burst NAME COUNT: COUNT screenshots one after another, as fast as they go.
+  b=1; while [ "$b" -le "$2" ]; do shot "13-news-$1-$b" >/dev/null; b=$((b + 1)); done
+}
+shot 13-news-0-before
+# 1. A message arrives while the newest one is in view.
+post glide "a new message arrives while you read the newest one, long enough to be two lines of text so that its height is plain to see in the stills" >/dev/null
+burst glide 8
+sleep 1.5
+# 2. A reaction is added to it (yours: the chip is the same).
+MESSAGE=$(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" \
+  "$SERVER/api/v1/conversations/$CONVERSATION/messages?limit=1" | python3 -c '
+import json, sys
+print(json.load(sys.stdin)["items"][-1]["id"])')
+curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+  -d "{\"emoji\":\"🎉\",\"messageId\":\"$MESSAGE\"}" "$SERVER/api/v1/conversations/$CONVERSATION/reactions" >/dev/null
+burst sparks 6
+sleep 1.5
+# 3. Someone else mentions you.
+rm -f /tmp/mention-go
+python3 - "$IRC_HOST" "$USER_NAME" <<'PY' &
+import os, socket, sys, time
+s = socket.create_connection((sys.argv[1], 6667))
+send = lambda line: s.sendall((line + "\r\n").encode())
+send("NICK friend"); send("USER friend 0 * :friend")
+time.sleep(2); send("JOIN #capture")
+deadline = time.time() + 60
+while not os.path.exists("/tmp/mention-go") and time.time() < deadline:
+    time.sleep(0.02)
+send("PRIVMSG #capture :hey @%s, are you around for a minute?" % sys.argv[2])
+time.sleep(2)
+PY
+sleep 6
+touch /tmp/mention-go
+burst glint 7
+sleep 2
+if command -v montage >/dev/null 2>&1; then
+  montage "$OUT"/13-news-glide-*.png -tile 4x -geometry 640x400+2+2 "$OUT/news-glide-sheet.png"
+  montage "$OUT"/13-news-sparks-*.png "$OUT"/13-news-glint-*.png -tile 4x -geometry 640x400+2+2 "$OUT/news-lights-sheet.png"
+fi
+stop_app news
+exit 0
+fi
+
 if [ -z "${CAPTURE_ONLY:-}" ]; then
 # A server emoji typed into the message box draws as its picture. Typing
 # with nothing focused goes into the box.

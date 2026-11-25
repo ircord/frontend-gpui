@@ -34,6 +34,8 @@ pub struct MessageView {
     pub hovered: bool,
     /// `/attract` is playing on this row, its avatar or both.
     pub attract: Option<crate::timeline::attract::Fx>,
+    /// Reaction sparks or a mention glint are playing on this row.
+    pub lights: Option<crate::timeline::lights::Fx>,
     #[allow(clippy::type_complexity)]
     pub on_hover: Rc<dyn Fn(bool, &mut Window, &mut App)>,
 }
