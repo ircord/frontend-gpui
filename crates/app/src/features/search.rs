@@ -2117,7 +2117,18 @@ impl Render for SearchPage {
                 )
                 .test_support()
                 .reachable(&theme)
-                .aria_label(label),
+                .aria_label(label)
+                .h(px(28.))
+                .py_0()
+                .px_3()
+                .flex()
+                .items_center()
+                .rounded_full()
+                .border_1()
+                .border_color(theme.border.opacity(0.55))
+                .bg(theme.raised.opacity(0.45))
+                .text_xs()
+                .text_color(theme.muted),
             );
         }
         let toolbar = div()
@@ -2136,23 +2147,37 @@ impl Render for SearchPage {
                         div()
                             .id("search-query")
                             .flex_1()
+                            .min_w_0()
                             .when(choice_count > 0, |field| field.key_context(FILTER_CHOICES))
                             .child(
                                 Input::new(&self.input)
                                     .id("search-input")
+                                    .prefix(ui::icon::icon(IconName::Search, theme.muted))
                                     .aria_label(t!("search-field")),
                             ),
                     )
                     .child(
-                        text_button(
-                            "search-filters-button",
-                            filters_label.clone(),
-                            &theme,
-                            cx.listener(|this, _, window, cx| this.open_filters(window, cx)),
-                        )
-                        .test_support()
-                        .reachable(&theme)
-                        .aria_label(SharedString::from(filters_label)),
+                        Button::new("search-filters-button")
+                            .outline()
+                            .flex_none()
+                            .h(px(32.))
+                            .icon(IconName::Settings2)
+                            .label(t!("search-filters"))
+                            .accessibility_label(filters_label)
+                            .when(filters > 0, |button| {
+                                button.child(
+                                    div()
+                                        .px_1p5()
+                                        .rounded_full()
+                                        .bg(theme.selected)
+                                        .text_xs()
+                                        .text_color(theme.accent)
+                                        .child(filters.to_string()),
+                                )
+                            })
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_filters(window, cx)),
+                            ),
                     ),
             )
             .children(chips_row("search", &self.model, &theme, cx))

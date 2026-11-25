@@ -13,7 +13,7 @@
 
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-use gpui_kit::component::{Icon, Sizable};
+use gpui_kit::component::{Icon, Side, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::ConversationKind;
@@ -143,6 +143,15 @@ fn rows<C: Clone + 'static>(
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
+    let viewport = window.viewport_size();
+    let scale = crate::theme::get(cx).scale;
+    let width = (viewport.width - px(16.)).max(px(1.));
+    menu = menu
+        .min_w(px(224. * scale).min(width))
+        .max_w(px(288. * scale).min(width))
+        .max_h((viewport.height - px(16.)).max(px(1.)))
+        .scrollable(true)
+        .check_side(Side::Right);
     let breaks = separators(&items);
     for (item, separate) in items.into_iter().zip(breaks) {
         if separate {
