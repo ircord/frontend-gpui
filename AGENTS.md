@@ -29,6 +29,11 @@ client; it never speaks IRC itself. Layout and commands are in
   run. Linux video is the `ircord-video` helper (`crates/video-gst`), so the
   app itself never links GStreamer. A UI test that needs sound calls
   `media::sound::use_null`; the fixture opens no device.
+- Voice calls are `crates/call` (LiveKit, whose prebuilt libwebrtc needs the
+  image's clang 21); the ladder checks it for Windows only, and CI's Mac job
+  is its only macOS build. The call's rules are `ircord_client::voice::Voice`;
+  a UI test installs `testing::voice::FakeConnector` with
+  `features::voice::use_connector`, never LiveKit.
 - `crates/contract/src/generated.rs` is generated from every schema in the
   pinned contract; change it only through `xtask/src/contract.rs` and
   `cargo xtask contract`. The socket envelope in `crates/contract/src/event.rs`

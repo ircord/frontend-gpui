@@ -51,3 +51,4 @@ mod timeline;
 mod updates;
 mod uploads;
 mod video;
+mod voice;

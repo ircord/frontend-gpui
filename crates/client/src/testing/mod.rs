@@ -14,6 +14,7 @@
 mod server;
 #[cfg(test)]
 mod tests;
+pub mod voice;
 
 use std::time::{Duration, Instant};
 

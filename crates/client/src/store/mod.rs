@@ -61,6 +61,9 @@ pub mod topic {
     pub const REVISIONS: &str = "revisions";
     /// `emotes.updated`: the emoji catalog has a new version.
     pub const EMOTES: &str = "emotes";
+    /// `voice.updated`: someone joined or left a voice room, or the rooms
+    /// changed; the room list is read again.
+    pub const VOICE: &str = "voice";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -401,6 +404,7 @@ impl Workspace {
             ServerEvent::Attract(a) => Changes::topic_id(topic::ATTRACT, &a.conversation_id),
             ServerEvent::EmotesUpdated(_) => Changes::topic(topic::EMOTES),
             ServerEvent::DevicesUpdated => Changes::topic(topic::DEVICES),
+            ServerEvent::VoiceUpdated => Changes::topic(topic::VOICE),
             ServerEvent::Durable { seq, event } => {
                 if let Some(skip) = self.accept(*seq, event, now_ms) {
                     return skip;

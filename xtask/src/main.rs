@@ -167,6 +167,25 @@ fn check(root: &std::path::Path) -> Result<()> {
             "warnings",
         ],
     )?;
+    // The call crate's LiveKit compiles Objective-C++ against the macOS SDK,
+    // which this container lacks: it is checked for Windows here and built
+    // for macOS only by CI's Mac job.
+    step("cargo clippy for Windows (ircord-call)");
+    container::run(
+        root,
+        &[
+            "cargo",
+            "xwin",
+            "clippy",
+            "--target",
+            container::WINDOWS_TARGET,
+            "-p",
+            "ircord-call",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )?;
     step("cargo xtask contract --check");
     contract::run(root, true)?;
     step("cargo test --workspace");

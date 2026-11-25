@@ -18,6 +18,7 @@ crates/contract   types generated from the pinned openapi.json, and the socket e
 crates/client     HTTP, the event socket, the state store, persistence. No GPUI.
 crates/app        GPUI views and the `ircord` binary
 crates/platform   what the app asks of the OS besides drawing: sound, video, notifications. No GPUI.
+crates/call       voice calls on the server's LiveKit: the media connection, microphone, speakers. No GPUI.
 crates/video-gst  `ircord-video`, the Linux video helper: GStreamer in its own process
 xtask/            contract refresh, the build container, builds, integration test, capture
 vendor/           GPUI's Windows backend with the cross-build patch
@@ -36,7 +37,7 @@ Everything that compiles runs in a Docker image built from
 | Command | What it does |
 | --- | --- |
 | `cargo xtask ladder` | `check`, compile checks of the app for Linux and Windows, then the Windows and Linux installers when the change touches a path that makes CI build them |
-| `cargo xtask check` | fmt, clippy (and `crates/platform` for macOS and Windows), contract check and tests: what CI runs on a pull request |
+| `cargo xtask check` | fmt, clippy (and `crates/platform` for macOS and Windows, `crates/call` for Windows), contract check and tests: what CI runs on a pull request |
 | `cargo xtask build windows` | cross-build `dist/ircord.exe`, with its icon and version |
 | `cargo xtask build linux` | build `dist/ircord`, `dist/ircord-video` and `dist/ircord-linux-x86_64.tar.gz` |
 | `cargo xtask build macos` | on a Mac only: build `dist/IRCord GPUI.app` (see below) |

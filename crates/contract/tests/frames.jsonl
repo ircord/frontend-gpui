@@ -6,6 +6,7 @@
 {"v":1,"type":"attract","data":{"conversationId":"c-a","memberId":"m-bob","messageId":"msg-1"}}
 {"v":1,"type":"emotes.updated","data":{"version":4}}
 {"v":1,"type":"devices.updated"}
+{"v":1,"type":"voice.updated"}
 {"v":1,"type":"notification.alert","data":{"delivery":"os","generation":"g1","alertId":"a1","sound":true,"preview":true,"conversationId":"c-a","messageId":"msg-1","title":"#alpha","body":"bob: hello me","kind":"mention","badge":1,"unread":3,"conversations":1,"reminder":false}}
 {"v":1,"type":"notification.routing","data":{"revision":"r1","deviceId":"d1","phase":"active","connectionId":"conn-1"}}
 {"v":1,"seq":1,"type":"message.created","data":{"id":"msg-1","conversationId":"c-a","senderId":"m-bob","text":"hello me","createdAt":"2026-11-21T10:00:00Z","kind":"message","reactions":[{"emoji":"👍","memberIds":["m-me"]}]}}

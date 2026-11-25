@@ -212,8 +212,13 @@ fn the_entry_is_hidden_from_people_who_are_not_owners(cx: &mut TestAppContext) {
             json!({"owner": false}),
         );
     });
-    f.server
-        .wait_for("GET", "/api/v1/administration/access", WAIT);
+    // The question is asked from the UI once the workspace is live, so run
+    // it while waiting rather than blocking on the server.
+    wait(cx, "the ownership question", |_| {
+        !f.server
+            .requests_to("GET", "/api/v1/administration/access")
+            .is_empty()
+    });
     assert!(gone(&f, cx, "sidebar-administration"));
     click(&f, cx, "self-menu");
     frame(&f, cx, |window, _| {

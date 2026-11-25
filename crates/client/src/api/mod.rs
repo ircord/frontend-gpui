@@ -36,6 +36,7 @@ pub mod people;
 mod saved;
 pub mod search;
 pub mod uploads;
+mod voice;
 
 pub const SESSION_COOKIE: &str = "ircord_session";
 

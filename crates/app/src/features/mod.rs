@@ -38,6 +38,7 @@ pub mod text;
 pub mod updates;
 pub mod video;
 pub mod viewer;
+pub mod voice;
 
 pub fn init(cx: &mut App) {
     // Timeline reading (R1) lives with the timeline it extends.
@@ -75,4 +76,5 @@ pub fn init(cx: &mut App) {
     audio_card::init(cx);
     video::init(cx);
     updates::init(cx);
+    voice::init(cx);
 }

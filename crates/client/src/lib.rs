@@ -17,6 +17,8 @@
 //! - [`channel_modes`]: channel modes, list masks and the mask builder.
 //! - [`search_filter`]: message search filters, recent searches and where
 //!   results come from.
+//! - [`voice`]: voice rooms and the call's rules, and the media layer's
+//!   interface (`ircord-call` implements it).
 //! - [`testing`] (feature `test-support`): a canned server and fixtures.
 
 pub mod address;
@@ -38,6 +40,7 @@ pub mod socket;
 pub mod store;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
+pub mod voice;
 
 pub use address::ServerAddress;
 pub use client::Client;
