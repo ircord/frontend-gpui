@@ -545,16 +545,19 @@ fn the_expression_popover_leaves_the_timeline_and_composer_in_place(cx: &mut Tes
         window.render_frame(cx);
         let timeline = window.find("timeline").bounds();
         let composer = window.find("composer-field").bounds();
-        window.click("composer-emoji", cx);
-        window.render_frame(cx);
-        let picker = window.find("expression-picker").bounds();
-        assert!(picker.bottom() <= composer.top());
-        assert_eq!(window.find("timeline").bounds(), timeline);
-        assert_eq!(window.find("composer-field").bounds(), composer);
-        assert_eq!(window.find("expression-search").focused(), Some(true));
-        window.press("escape", cx);
-        assert!(window.try_find("expression-picker").is_none());
-        assert_eq!(window.find("composer-emoji").focused(), Some(true));
+        for (opener, tab) in [("composer-emoji", Tab::Emoji), ("composer-gif", Tab::Gifs)] {
+            window.click(opener, cx);
+            window.render_frame(cx);
+            assert_eq!(klipy::open_tab(cx), Some(tab));
+            let picker = window.find("expression-picker").bounds();
+            assert!(picker.bottom() <= composer.top());
+            assert_eq!(window.find("timeline").bounds(), timeline);
+            assert_eq!(window.find("composer-field").bounds(), composer);
+            assert_eq!(window.find("expression-search").focused(), Some(true));
+            window.press("escape", cx);
+            assert!(window.try_find("expression-picker").is_none());
+            assert_eq!(window.find(opener).focused(), Some(true));
+        }
     })
     .unwrap();
 }
