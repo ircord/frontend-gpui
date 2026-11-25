@@ -1,15 +1,29 @@
-# Build environment for ircord-gpui: the Linux packages GPUI needs, clang,
+# Build environment for ircord-gpui: the Linux packages GPUI needs, clang 21,
 # lld and llvm-rc for the Windows cross-build, cargo-xwin, and cargo-packager
 # with NSIS for the installers, and sccache so checkouts share compiled
 # dependencies. `cargo xtask` builds this image on first use
 # and runs every compile step inside it.
 FROM rust:1.99-bookworm
 
+# Clang 21 from apt.llvm.org: bookworm's clang 14 is too old for LiveKit's
+# prebuilt WebRTC (its libc++ needs clang 21) and for the MSVC headers the
+# Windows cross-build compiles C++ against (they need clang 19). Its bin
+# directory goes first on PATH, so `clang`, `clang-cl`, `lld-link`, `llvm-lib`
+# and `llvm-rc` are all version 21.
+RUN curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+        | gpg --dearmor -o /usr/share/keyrings/apt.llvm.org.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/apt.llvm.org.gpg] http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-21 main" \
+        > /etc/apt/sources.list.d/llvm-21.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends clang-21 lld-21 llvm-21 \
+    && rm -rf /var/lib/apt/lists/*
+ENV PATH=/usr/lib/llvm-21/bin:$PATH
+
 # Build libraries: GPUI's (X11, Wayland, fonts, Vulkan), D-Bus for the tray
 # and notifications, and ALSA for the notification sound's audio output.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        clang lld llvm pkg-config cmake \
+        pkg-config cmake \
         libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev \
         libxcb1-dev libfontconfig1-dev libfreetype6-dev libvulkan-dev \
         libdbus-1-dev libssl-dev libzstd-dev libasound2-dev \
