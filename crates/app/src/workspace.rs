@@ -19,6 +19,7 @@ use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::{ConversationKind, MemberStatus, NetworkStatus};
+use ircord_client::store::appearance::BackdropPlacement;
 use ircord_client::store::{Connection, parties, people};
 
 use crate::composer::ComposerView;
@@ -28,7 +29,6 @@ use crate::registry::{self, BannerCtx, ConversationCtx, HeaderCtx, PaneCtx, Pane
 use crate::route::Route;
 use crate::session::{NO_PANEL, Session, SessionEvent};
 use crate::sidebar::SidebarView;
-use crate::theme::background::{self, Wallpaper};
 use crate::theme::{self, Theme};
 use crate::timeline::TimelineView;
 use crate::ui;
@@ -40,7 +40,6 @@ pub struct WorkspaceView {
     pub timeline: Entity<TimelineView>,
     pub members: Entity<MembersView>,
     pub composer: Entity<ComposerView>,
-    wallpaper: Entity<Wallpaper>,
     notice: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -120,7 +119,6 @@ impl WorkspaceView {
             timeline,
             members,
             composer,
-            wallpaper: cx.new(|_| Wallpaper::default()),
             notice: None,
             _subscriptions: subscriptions,
         }
@@ -591,10 +589,6 @@ impl Render for WorkspaceView {
         let session = self.session.read(cx);
         let settings_open = session.route() == Some(Route::Settings);
         let route = session.workspace_route();
-        let client = session.client().cloned();
-        self.wallpaper.update(cx, |wallpaper, cx| {
-            wallpaper.select(client.as_ref().zip(theme.background.as_ref()), window, cx);
-        });
         let compact = window.viewport_size().width - studio_width < members::DRAWER_BREAKPOINT;
         let drawer = window.use_keyed_state("member-drawer", cx, |_, cx| MembersDrawer {
             conversation: None,
@@ -679,8 +673,14 @@ impl Render for WorkspaceView {
             Some(Route::Conversation(_)) => main
                 .child(self.timeline.clone())
                 .child(self.composer.clone()),
-            Some(route) => main.child(self.route_pane(route, &theme, window, cx)),
-            None => main,
+            other => {
+                // Away from the conversation the picture comes back to rest.
+                theme::depth::release(cx);
+                match other {
+                    Some(route) => main.child(self.route_pane(route, &theme, window, cx)),
+                    None => main,
+                }
+            }
         };
         let searching = conversation.is_some()
             && self.session.read(cx).panel.as_deref() == Some(crate::features::search::PANEL);
@@ -695,16 +695,15 @@ impl Render for WorkspaceView {
                 None,
             )
         };
-        let card_corners = Corners {
+        let backdrop = theme::backdrop::get(cx);
+        let app_wide = backdrop
+            .as_ref()
+            .is_some_and(|b| b.spec.placement == BackdropPlacement::App);
+        let corners = Corners {
             top_left: theme.radius_large,
             top_right: theme.radius_large,
             ..Default::default()
         };
-        let app_background = theme.app_background();
-        let chat_background = theme
-            .background
-            .as_ref()
-            .filter(|_| app_background.is_none());
         let card = div()
             .id("workspace-card")
             .relative()
@@ -718,21 +717,20 @@ impl Render for WorkspaceView {
             .border_1()
             .border_b_0()
             .border_color(theme.border.opacity(0.65))
-            .bg(theme
-                .main
-                .opacity(app_background.map_or(1., |bg| f32::from(bg.dim) / 100.)))
-            .shadow(frame_shadows(&theme))
-            .when_some(chat_background, |card, bg| {
-                card.child(background::layer(
-                    self.wallpaper.clone(),
-                    bg,
-                    1. - f32::from(bg.dim) / 100.,
-                    card_corners,
-                ))
+            .map(|d| match &backdrop {
+                // Over an app-wide picture the card is the main colour at the
+                // dim, so the picture shows through; its shadow would too.
+                Some(b) if app_wide => d.child(theme::backdrop::frosted_card(b, &theme, corners)),
+                other => d
+                    .bg(theme.main)
+                    .shadow(frame_shadows(&theme))
+                    .when_some(other.as_ref(), |d, b| {
+                        d.child(theme::backdrop::layer(b, theme.main, b.spec.dim, corners))
+                    }),
             })
             .when(
                 theme.hibiki && (header.is_some() || route == Some(Route::Search)),
-                |d| d.child(ambient_light(&theme, window, cx)),
+                |d| d.child(ambient_light(backdrop.is_some(), window, cx)),
             )
             .children(header)
             .child(div().flex_1().min_h_0().flex().child(main).children(panel));
@@ -746,11 +744,11 @@ impl Render for WorkspaceView {
             .flex_col()
             .bg(theme.sidebar)
             .text_color(theme.text)
-            .when_some(app_background, |workspace, bg| {
-                workspace.child(background::layer(
-                    self.wallpaper.clone(),
-                    bg,
-                    1. - f32::from(bg.panel_opacity) / 100.,
+            .when_some(backdrop.as_ref().filter(|_| app_wide), |d, b| {
+                d.child(theme::backdrop::layer(
+                    b,
+                    theme.sidebar,
+                    b.spec.panel,
                     Corners::default(),
                 ))
             })
@@ -953,11 +951,15 @@ struct AmbientColors {
 
 const AMBIENT_BLEED: f32 = 8.;
 
-fn ambient_light(theme: &Theme, window: &mut Window, cx: &mut App) -> impl IntoElement {
+fn ambient_light(has_backdrop: bool, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    // The texture is made per colour set: it takes the colours a theme change
+    // fades to at once, not a new one on every frame of the fade.
+    let theme = crate::theme::settled(cx).clone();
+    let theme = &theme;
     let colors = AmbientColors {
         main: theme
             .main
-            .opacity(if theme.background.is_some() { 0. } else { 1. })
+            .opacity(if has_backdrop { 0. } else { 1. })
             .into(),
         warm: theme
             .accent

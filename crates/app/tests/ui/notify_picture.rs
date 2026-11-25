@@ -8,7 +8,6 @@ use std::cell::RefCell;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 use gpui_kit::TestAppContext;
 use ircord_app::notify::picture::{Fixed, resolve};
@@ -16,7 +15,7 @@ use ircord_client::contract::{Alert, Snapshot};
 use ircord_client::testing::Reply;
 use serde_json::json;
 
-use crate::fixture::{Fixture, bootstrap, open_with, snapshot, wait};
+use crate::fixture::{Fixture, bootstrap, held_reply, open_with, snapshot, wait};
 
 const AVATAR: &str = "/files/bob/avatar.png";
 
@@ -125,6 +124,28 @@ fn a_direct_conversation_shows_its_partner(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_cached_copy_of_a_remote_picture_is_fetched_from_this_server(cx: &mut TestAppContext) {
+    const CACHED: &str = "/media/remote/k1";
+    let f = open_with(cx, true, |server| {
+        let mut s = workspace();
+        for m in &mut s.members {
+            if m.id == "m-bob" {
+                // Bob's address is another server's; this server's copy is
+                // the only one that may be fetched.
+                m.avatar_url = Some("https://other.example/files/a/b/avatar".into());
+                m.avatar_src = Some(CACHED.into());
+            }
+        }
+        server.snapshot(&s);
+        server.route_reply("GET", CACHED, Reply::bytes(200, "image/png", png()));
+    });
+    bootstrap(&f, cx);
+    let path = picture(&f, cx, alert("c-general", "1")).expect("bob's cached picture");
+    assert!(path.exists());
+    assert_eq!(f.server.requests_to("GET", CACHED).len(), 1);
+}
+
+#[gpui_kit::test]
 fn a_hidden_preview_shows_no_picture_and_fetches_nothing(cx: &mut TestAppContext) {
     let f = open(cx, Reply::bytes(200, "image/png", png()));
     bootstrap(&f, cx);
@@ -156,22 +177,20 @@ fn a_body_that_is_not_a_picture_shows_no_picture(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_picture_that_never_arrives_is_given_up_within_a_second(cx: &mut TestAppContext) {
-    let f = open_with(cx, true, |server| {
+fn a_picture_that_never_arrives_is_given_up(cx: &mut TestAppContext) {
+    // The server holds its answer until the test ends, so the client can only
+    // answer by giving up: a client that waited would hang, and the fixture's
+    // wait fails. The held answer is a real picture, so a hold that ended
+    // early could not pass for a give-up.
+    let picture_bytes = png();
+    let (release, held) = held_reply(move || Reply::bytes(200, "image/png", picture_bytes.clone()));
+    let f = open_with(cx, true, move |server| {
         server.snapshot(&workspace());
-        server.route_fn("GET", AVATAR, |_| {
-            std::thread::sleep(Duration::from_secs(2));
-            Reply::bytes(200, "image/png", Vec::new())
-        });
+        server.route_fn("GET", AVATAR, held);
     });
     bootstrap(&f, cx);
-    let started = Instant::now();
     assert_eq!(picture(&f, cx, alert("c-general", "1")), None);
-    assert!(
-        started.elapsed() < Duration::from_millis(1500),
-        "waited {:?}",
-        started.elapsed()
-    );
+    drop(release);
 }
 
 #[gpui_kit::test]

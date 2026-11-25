@@ -21,12 +21,14 @@ use std::rc::Rc;
 
 use gpui_kit::base::{TextSelectionHandle, TextSelectionRegistration, TextSelectionRun};
 use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::contract::ConversationKind;
-use ircord_client::format::blocks::{Block, List, Mapped, message_blocks};
+use ircord_client::format::blocks::{Align, Block, List, Mapped, Table, message_blocks};
+use ircord_client::format::diagram::is_diagram;
 use ircord_client::format::highlight::{Kind, highlight};
-use ircord_client::format::inline::{Token, tokens};
+use ircord_client::format::inline::{Masked, Token, masked_links, tokens};
 use ircord_client::format::links::{MessageLink, parse_message_link};
 use ircord_client::format::mentions::{fold, group_mention};
 use ircord_client::format::{Color as IrcColor, Formatted};
@@ -42,6 +44,7 @@ pub fn render(
     ctx: &MessageCtx,
     theme: &Theme,
     inline: &[InlineRenderer],
+    size: f32,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -76,6 +79,12 @@ pub fn render(
         paragraphs: 0,
         codes: 0,
         lists: 0,
+        tables: 0,
+        headings: 0,
+        rules: 0,
+        size,
+        diagrams: 0,
+        selectable: 0,
         mono: cx.theme().mono_font_family.clone(),
     };
     let blocks = message_blocks(&Mapped::new(&m.body.text), m.action);
@@ -204,6 +213,8 @@ struct Piece {
     action: Option<Action>,
     /// Drawn over the piece's place (an emoji picture).
     element: Option<ElementFn>,
+    /// The address a masked link opens, shown on hover instead of the label.
+    address: Option<SharedString>,
 }
 
 struct Body<'a> {
@@ -218,10 +229,26 @@ struct Body<'a> {
     paragraphs: usize,
     codes: usize,
     lists: usize,
+    tables: usize,
+    headings: usize,
+    rules: usize,
+    /// The message text size in pixels, which headings scale.
+    size: f32,
+    diagrams: usize,
+    /// Selectable pieces made so far, to put them in reading order.
+    selectable: usize,
     mono: SharedString,
 }
 
 impl Body<'_> {
+    /// What copying this message's text writes.
+    fn copy_tag(&self, key: String) -> super::copy::Tag {
+        super::copy::Tag {
+            key,
+            entries: Rc::from(vec![self.m.copy.clone()]),
+        }
+    }
+
     fn block(
         &mut self,
         block: &Block,
@@ -232,6 +259,9 @@ impl Body<'_> {
     ) -> AnyElement {
         match block {
             Block::Text(text) => self.paragraph(text, first, last, window, cx),
+            Block::Code { code, lang } if is_diagram(lang.as_deref()) => {
+                self.diagram(&code.text, lang.as_deref(), window, cx)
+            }
             Block::Code { code, lang } => self.code(&code.text, lang.as_deref()),
             Block::Quote(inner) => {
                 let mut quote = div()
@@ -248,7 +278,122 @@ impl Body<'_> {
                 quote.into_any_element()
             }
             Block::List(list) => self.list(list, 0, window, cx),
+            Block::Table(table) => self.table(table, window, cx),
+            Block::Heading { level, text } => self.heading(*level, text, window, cx),
+            Block::Rule => {
+                let n = self.rules;
+                self.rules += 1;
+                div()
+                    .id(ElementId::Name(format!("rule-{}-{n}", self.m.id).into()))
+                    .test_support()
+                    .h(px(1.))
+                    .my_1()
+                    .bg(self.theme.border)
+                    .into_any_element()
+            }
         }
+    }
+
+    /// A heading: the message size times 1.5, 1.25 and 1.1 for levels 1 to 3,
+    /// and the message size in bold for 4 to 6.
+    fn heading(
+        &mut self,
+        level: u8,
+        text: &Mapped,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let n = self.headings;
+        self.headings += 1;
+        let scale = match level {
+            1 => 1.5,
+            2 => 1.25,
+            3 => 1.1,
+            _ => 1.,
+        };
+        div()
+            .id(ElementId::Name(format!("heading-{}-{n}", self.m.id).into()))
+            .test_support()
+            .role(Role::Heading)
+            .min_w_0()
+            .mt_1()
+            .text_size(px(self.size * scale))
+            .font_weight(FontWeight::BOLD)
+            .child(self.paragraph(text, false, false, window, cx))
+            .into_any_element()
+    }
+
+    /// A pipe table as a grid: each column as wide as its widest cell, and
+    /// able to shrink so a long cell wraps. A grid's cells are its direct
+    /// children, so a screen reader meets the table, then its cells, with no
+    /// row between.
+    fn table(&mut self, table: &Table, window: &mut Window, cx: &mut App) -> AnyElement {
+        let n = self.tables;
+        self.tables += 1;
+        let id = format!("table-{}-{n}", self.m.id);
+        let theme = self.theme;
+        let columns = table.align.len();
+        let rows = table.rows.len() + 1;
+        let columns_label = match columns {
+            1 => t!("text-table-column").to_string(),
+            n => t!("text-table-columns", count = n),
+        };
+        let rows_label = match table.rows.len() {
+            1 => t!("text-table-row").to_string(),
+            n => t!("text-table-rows", count = n),
+        };
+        let mut grid = div()
+            .id(ElementId::Name(id.clone().into()))
+            .test_support()
+            .role(Role::Table)
+            .aria_label(t!("text-table", columns = columns_label, rows = rows_label))
+            .grid()
+            .grid_cols_max_content(columns as u16)
+            .min_w_0()
+            .rounded_md()
+            .border_1()
+            .border_color(theme.border)
+            .overflow_hidden();
+        for (r, row) in std::iter::once(&table.header)
+            .chain(&table.rows)
+            .enumerate()
+        {
+            for (c, cell) in row.iter().enumerate() {
+                let mut d = div()
+                    .id(ElementId::Name(format!("{id}-{r}-{c}").into()))
+                    .test_support()
+                    .role(if r == 0 {
+                        Role::ColumnHeader
+                    } else {
+                        Role::Cell
+                    })
+                    .min_w_0()
+                    .px_2()
+                    .py_1()
+                    .border_color(theme.border);
+                if r + 1 < rows {
+                    d = d.border_b_1();
+                }
+                if c + 1 < columns {
+                    d = d.border_r_1();
+                }
+                d = match table.align[c] {
+                    Align::Left => d,
+                    Align::Center => d.text_center(),
+                    Align::Right => d.text_right(),
+                };
+                if r == 0 {
+                    d = d.bg(theme.code).font_weight(FontWeight::BOLD);
+                }
+                grid = grid.child(d.child(self.paragraph(cell, false, false, window, cx)));
+            }
+        }
+        div()
+            .flex()
+            .max_w_full()
+            .my_0p5()
+            .child(grid)
+            .into_any_element()
     }
 
     fn list(&mut self, list: &List, depth: usize, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -267,6 +412,39 @@ impl Body<'_> {
             } else {
                 ["•", "◦", "▪"][depth % 3].to_string()
             };
+            // A task's box is decoration that names its state; it is no
+            // checkbox, so the keyboard has nothing to reach and the item
+            // still reads as its own text.
+            let marker_cell = match item.checked {
+                Some(done) => div().flex_none().min_w(px(18.)).flex().justify_end().child(
+                    div()
+                        .id(ElementId::Name(format!("{list_id}-{i}-box").into()))
+                        .test_support()
+                        .role(Role::Image)
+                        .aria_label(if done {
+                            t!("text-task-done")
+                        } else {
+                            t!("text-task-todo")
+                        })
+                        .size(px(14.))
+                        .mt(px(2.))
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(self.theme.control_border)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_xs()
+                        .text_color(self.theme.accent)
+                        .when(done, |b| b.child("✓")),
+                ),
+                None => div()
+                    .flex_none()
+                    .min_w(px(18.))
+                    .text_right()
+                    .text_color(self.theme.muted)
+                    .child(marker),
+            };
             let mut content = div()
                 .flex_1()
                 .min_w_0()
@@ -284,23 +462,48 @@ impl Body<'_> {
                     .role(Role::ListItem)
                     .flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .flex_none()
-                            .min_w(px(18.))
-                            .text_right()
-                            .text_color(self.theme.muted)
-                            .child(marker),
-                    )
+                    .child(marker_cell)
                     .child(content),
             );
         }
         column.into_any_element()
     }
 
+    /// A `mermaid` fence: the picture, or the code and why it is not drawn.
+    fn diagram(
+        &mut self,
+        code: &str,
+        lang: Option<&str>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let id = format!("diagram-{}-{}", self.m.id, self.diagrams);
+        self.diagrams += 1;
+        let tag = self.copy_tag(format!("{id}-source-text"));
+        match super::diagram::render(&id, code, self.theme, self.mono.clone(), tag, window, cx) {
+            Ok(picture) => picture,
+            Err(why) => div()
+                .flex()
+                .flex_col()
+                .child(self.code(code, lang))
+                .child(
+                    div()
+                        .id(ElementId::Name(format!("{id}-note").into()))
+                        .test_support()
+                        .aria_label(why.clone())
+                        .text_xs()
+                        .text_color(self.theme.faint)
+                        .child(why),
+                )
+                .into_any_element(),
+        }
+    }
+
     fn code(&mut self, code: &str, lang: Option<&str>) -> AnyElement {
         let n = self.codes;
         self.codes += 1;
+        let rank = self.selectable;
+        self.selectable += 1;
         let id = format!("code-{}-{n}", self.m.id);
         let theme = self.theme;
         let highlights: Vec<(Range<usize>, HighlightStyle)> = highlight(code, lang)
@@ -365,7 +568,9 @@ impl Body<'_> {
                             ElementId::Name(format!("{id}-text").into()),
                             code.to_string(),
                         )
-                        .highlights(highlights),
+                        .highlights(highlights)
+                        .document_order(rank as u64)
+                        .copy(self.copy_tag(format!("{id}-text"))),
                     ),
             )
             .into_any_element()
@@ -381,9 +586,15 @@ impl Body<'_> {
     ) -> AnyElement {
         let n = self.paragraphs;
         self.paragraphs += 1;
+        let rank = self.selectable;
+        self.selectable += 1;
         let id = format!("text-{}-{n}", self.m.id);
         let theme = self.theme;
-        let f = text.formatted(&self.m.body);
+        // `[text](url)` shows its words; the rest of the paragraph is
+        // placed through the text without its brackets and addresses.
+        let masked = masked_for(&id, text, &self.m.body, window, cx);
+        let text = &masked.text;
+        let f = masked.formatted;
         let mut spans = highlights_for(&f, theme);
         spans.extend(
             self.extra
@@ -395,6 +606,25 @@ impl Body<'_> {
         let mut replace: Vec<(Range<usize>, String)> = Vec::new();
         for (range, token) in tokens(&f) {
             match token {
+                Token::Link(url) if masked.masked.contains(&range) => {
+                    // The words stay; the tooltip and the name give the address.
+                    let label = t!(
+                        "text-open-masked-link",
+                        text = f.text[range.clone()].to_string(),
+                        url = url.clone()
+                    );
+                    pieces.push(Piece {
+                        range,
+                        background: None,
+                        label: label.into(),
+                        address: Some(url.clone().into()),
+                        action: Some(match self.env.message_link(&url) {
+                            Some(link) => Action::Message(link),
+                            None => Action::Url(url),
+                        }),
+                        element: None,
+                    });
+                }
                 Token::Link(url) => {
                     if let Some(link) = self.env.message_link(&url) {
                         let shown = match self.env.place(&link, cx) {
@@ -409,6 +639,7 @@ impl Body<'_> {
                             label: label.into(),
                             action: Some(Action::Message(link)),
                             element: None,
+                            address: None,
                         });
                     } else {
                         let irc = url.to_ascii_lowercase().starts_with("irc");
@@ -422,6 +653,7 @@ impl Body<'_> {
                                 Action::Url(url)
                             }),
                             element: None,
+                            address: None,
                         });
                     }
                 }
@@ -443,6 +675,7 @@ impl Body<'_> {
                         label: t!("text-mention", name = nick).into(),
                         action: None,
                         element: None,
+                        address: None,
                     });
                 }
                 Token::Channel(name) => {
@@ -466,6 +699,7 @@ impl Body<'_> {
                         },
                         action: Some(Action::Channel(name)),
                         element: None,
+                        address: None,
                     });
                 }
             }
@@ -489,6 +723,7 @@ impl Body<'_> {
                 background: None,
                 action: None,
                 element: Some(draw.clone()),
+                address: None,
             });
         }
         replace.sort_by_key(|(r, _)| r.start);
@@ -536,6 +771,8 @@ impl Body<'_> {
         let element_id = ElementId::Name(id.clone().into());
         let places = places_for(&id, window, cx);
         let text = RichText::new(element_id, shown)
+            .document_order(rank as u64)
+            .copy(self.copy_tag(id.clone()))
             .highlights(highlights)
             .pills(
                 pieces
@@ -544,7 +781,12 @@ impl Body<'_> {
                     .collect(),
             )
             .places(places.clone());
-        let mut wrapper = div().relative().min_w_0().child(text);
+        let mut wrapper = div()
+            .id(ElementId::Name(format!("{id}-block").into()))
+            .test_support()
+            .relative()
+            .min_w_0()
+            .child(text);
         let known = places.borrow().clone();
         for (i, piece) in pieces.into_iter().enumerate() {
             let Some(bounds) = known.get(i) else {
@@ -609,7 +851,12 @@ impl Body<'_> {
                         Role::Button
                     })
                     .cursor_pointer()
-                    .tooltip(ui::tooltip::text(piece.label.clone()))
+                    .when_some(piece.address.clone(), |d, address| {
+                        d.tooltip(address_tooltip(address))
+                    })
+                    .when(piece.address.is_none(), |d| {
+                        d.tooltip(ui::tooltip::text(piece.label.clone()))
+                    })
                     .on_click(move |_, window, cx| {
                         cx.stop_propagation();
                         run(&action, &session, &network, window, cx);
@@ -641,6 +888,32 @@ fn run(
     }
 }
 
+/// A paragraph's masked links, found once and kept under the paragraph's ID
+/// until its text or the message changes.
+fn masked_for(
+    id: &str,
+    text: &Mapped,
+    source: &Formatted,
+    window: &mut Window,
+    cx: &mut App,
+) -> Masked {
+    let state = window.use_keyed_state(
+        ElementId::Name(format!("{id}-masked").into()),
+        cx,
+        |_, _| None::<(Mapped, Formatted, Masked)>,
+    );
+    if let Some((t, s, m)) = state.read(cx)
+        && t == text
+        && s == source
+    {
+        return m.clone();
+    }
+    let masked = masked_links(text, source);
+    let kept = (text.clone(), source.clone(), masked.clone());
+    state.update(cx, |state, _| *state = Some(kept));
+    masked
+}
+
 /// The places a paragraph's pills landed in the last frame, kept between
 /// frames under the paragraph's ID.
 fn places_for(id: &str, window: &mut Window, cx: &mut App) -> Places {
@@ -650,6 +923,22 @@ fn places_for(id: &str, window: &mut Window, cx: &mut App) -> Places {
         |_, _| Places::default(),
     );
     state.read(cx).clone()
+}
+
+/// A masked link's tooltip: the address it opens, named by it so a test
+/// finds it.
+fn address_tooltip(address: SharedString) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    move |window, cx| {
+        let address = address.clone();
+        Tooltip::element(move |_, _| {
+            div()
+                .id("link-address")
+                .test_support()
+                .aria_label(address.clone())
+                .child(address.clone())
+        })
+        .build(window, cx)
+    }
 }
 
 fn pill_style(color: Hsla) -> HighlightStyle {
@@ -838,6 +1127,8 @@ pub struct RichText {
     styled: StyledText,
     pills: Vec<(Range<usize>, Option<Hsla>)>,
     places: Option<Places>,
+    copy: Option<super::copy::Tag>,
+    order: u64,
 }
 
 impl RichText {
@@ -849,7 +1140,22 @@ impl RichText {
             text,
             pills: Vec::new(),
             places: None,
+            copy: None,
+            order: 0,
         }
+    }
+
+    /// Where this text reads among the others of its message.
+    pub fn document_order(mut self, order: u64) -> Self {
+        self.order = order;
+        self
+    }
+
+    /// Copying a selection that takes in this text writes `tag`'s log lines
+    /// (see [`super::copy`]).
+    pub fn copy(mut self, tag: super::copy::Tag) -> Self {
+        self.copy = Some(tag);
+        self
     }
 
     /// Styles ranges, in order and without overlap.
@@ -903,11 +1209,16 @@ impl Element for RichText {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let text = self.text.clone();
+        let copy_key = self.copy.as_ref().map(|c| c.key.clone());
         let handle = window.with_element_state(
             global_id.expect("RichText has an ID"),
             |retained: Option<OwnedSelection>, window| {
                 let retained = retained.unwrap_or_else(|| {
                     let handle = TextSelectionHandle::new(text, cx);
+                    if let Some(key) = copy_key {
+                        let id = window.window_handle().window_id();
+                        handle.copy_with(move |cx| super::copy::answer(id, &key, cx), cx);
+                    }
                     let refresh = handle.refresh_window_on_change(window, cx);
                     OwnedSelection {
                         handle,
@@ -936,6 +1247,7 @@ impl Element for RichText {
             .prepaint(global_id, inspector_id, bounds, &mut (), window, cx);
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let registration = TextSelectionRegistration::new(hitbox.clone(), bounds)
+            .with_document_order(self.order)
             .with_text_bounds(vec![bounds])
             .with_rendered_element(handle, window, cx);
         handle.register(registration, window, cx);
@@ -991,6 +1303,15 @@ impl Element for RichText {
             )],
             cx,
         );
+        if let Some(tag) = &self.copy {
+            let selected: String = projection
+                .ranges()
+                .iter()
+                .flatten()
+                .filter_map(|r| self.text.get(r.clone()))
+                .collect();
+            super::copy::record(window.window_handle().window_id(), tag, handle, selected);
+        }
         let color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
         for range in projection.ranges().iter().flatten().cloned() {
             for q in range_bounds(&layout, range, bounds, false) {

@@ -17,7 +17,10 @@ client; it never speaks IRC itself. Layout and commands are in
 - To look at the app without a screen, `cargo xtask capture` runs the Linux
   build against a disposable backend and leaves screenshots in
   `target/capture/`. Your own Xvfb must run with `-extension COMPOSITE`, or
-  every capture is black (see `xtask/src/capture.rs`).
+  every capture is black (see `xtask/src/capture.rs`, whose header lists the
+  `CAPTURE_ONLY` scenes: `fade`, `news`, `attract`, `theme`).
+- A theme's background picture is `theme::backdrop` (read with the session, decoded once, floors from `store::appearance::theme_backdrop`); a surface it shows through takes its colour from `backdrop::shell`/`get`, never `theme.sidebar` directly. `CAPTURE_ONLY=theme` and `CAPTURE_THEME=<dir with theme.json and picture.*>` narrow `cargo xtask capture` to that scene. `CAPTURE_ONLY=fade` captures a theme change fading (a few frames, light to dark).
+- A theme change fades in over 200 ms (`theme::fade`): `theme::get` holds in-between colours meanwhile, so a UI test that reads colours after an edit, or after the account's look arrives, waits for `!theme::fade::active(cx)`; `theme::set` snaps. Anything costly per colour set (diagrams, the ambient light) reads `theme::settled`, the final colours.
 - `crates/client` must not depend on GPUI: everything except drawing is
   tested there, without a window.
 - Anything that calls the operating system for sound, video or
@@ -90,8 +93,8 @@ Changes are delivered by pull request on `ircord/frontend-gpui`. Pass this
 ladder locally before pushing, push the branch once, and open the pull request
 as a draft. The ladder is the gate: a draft runs no CI. Marking it ready runs
 `check.yaml` (steps 1 to 3), and `build-installers.yaml` as well when it
-touches `.github/`, `crates/platform/`, `packaging/`, `tools/`, `vendor/`,
-`xtask/` or `Cargo.lock`. Keep the pull request a draft until the maintainer
+touches a path under `pull_request: paths:` in that workflow, the one list
+(`cargo xtask ladder` reads it too). Keep the pull request a draft until the maintainer
 marks it ready for review. `cargo xtask ladder` runs steps 1 to 4,
 `cargo xtask check` steps 1 to 3.
 
@@ -99,8 +102,12 @@ marks it ready for review. `cargo xtask ladder` runs steps 1 to 4,
 2. `cargo xtask contract --check`: the committed contract matches the backend
    checkout it names (`IRCORD_BACKEND`, default `../ircord-backend`).
 3. `cargo test --workspace`: contract, client and headless UI tests.
-4. `cargo xtask package windows` and `cargo xtask package linux`: the setup
-   `.exe` and the `.deb` exist in `dist/`.
+4. `cargo check -p ircord-app --bin ircord` and the same with `cargo xwin
+   check` for Windows: the app compiles without test features and for
+   Windows. When the change against `main` touches a path that makes CI build
+   the installers (the `pull_request` paths in `build-installers.yaml`),
+   `cargo xtask package windows` and `cargo xtask package linux` as well: the
+   setup `.exe` and the `.deb` exist in `dist/`. `cargo xtask ladder` decides.
 5. For changes to the client's networking, `cargo xtask integration`: the
    client against a real backend and IRC server in disposable containers.
 6. For a change a user can see: run it against a disposable local backend

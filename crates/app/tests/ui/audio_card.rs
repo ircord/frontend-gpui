@@ -145,7 +145,7 @@ fn until(
     what: &str,
     ok: impl Fn(&Fixture, &mut TestAppContext) -> bool,
 ) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let deadline = std::time::Instant::now() + crate::fixture::HANG_GUARD;
     loop {
         cx.run_until_parked();
         if ok(f, cx) {

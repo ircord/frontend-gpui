@@ -1289,12 +1289,18 @@ impl ProfileView {
                 })
                 .ok();
                 let task = client.handle().request(move |api| async move {
-                    api.upload_file(&network, &file, &Progress::default(), uploads::STALL)
-                        .await
-                        .map_err(|e| ApiError::Http {
-                            status: 0,
-                            detail: e.to_string(),
-                        })
+                    api.upload_file(
+                        &network,
+                        uploads::UploadUse::Other,
+                        &file,
+                        &Progress::default(),
+                        uploads::STALL,
+                    )
+                    .await
+                    .map_err(|e| ApiError::Http {
+                        status: 0,
+                        detail: e.to_string(),
+                    })
                 });
                 let result = task.await.map_err(|e| e.to_string());
                 cx.update(|_, cx| {
@@ -2172,13 +2178,14 @@ impl Render for ProfileView {
                                 .aria_label(t!("profile-frame-preview"))
                                 .p_2()
                                 .child(
-                                    ui::avatar::framed(
+                                    ui::avatar::framed_live(
                                         picture(&pic, &name_now, px(ui::avatar::NORMAL), &theme),
                                         people::AvatarFrame::parse(Some(&self.frame)),
                                         frame_color,
                                         theme.main,
                                         px(ui::avatar::NORMAL),
                                         "settings",
+                                        &theme,
                                     )
                                     .test_support(),
                                 ),

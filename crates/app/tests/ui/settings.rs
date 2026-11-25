@@ -13,7 +13,7 @@ use serde_json::json;
 
 use crate::fixture::{Fixture, bootstrap, open_with, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 fn serve(server: &CannedServer) {
     server.route(
@@ -76,6 +76,24 @@ fn label(f: &Fixture, cx: &mut TestAppContext, id: &'static str) -> Option<Strin
         window.find(id).label().map(str::to_string)
     })
     .unwrap()
+}
+
+/// Wait until `id`'s label is `text`: a control can show before its content
+/// has come from the server.
+fn shows_label(f: &Fixture, cx: &mut TestAppContext, id: &'static str, text: &str) {
+    let window = f.window;
+    wait(cx, id, move |cx| {
+        window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                window
+                    .try_find(id)
+                    .and_then(|e| e.label().map(str::to_string))
+                    .as_deref()
+                    == Some(text)
+            })
+            .unwrap_or(false)
+    });
 }
 
 fn open_settings(f: &Fixture, cx: &mut TestAppContext) {
@@ -226,8 +244,7 @@ fn changes_the_password(cx: &mut TestAppContext) {
         Reply::problem(403, "The current password is not right."),
     );
     open_settings(&f, cx);
-    shows(&f, cx, "account-summary");
-    assert_eq!(label(&f, cx, "account-summary").as_deref(), Some("me"));
+    shows_label(&f, cx, "account-summary", "me");
     cx.update_window(f.window, |_, window, cx| {
         window.click("current-password", cx);
         window.input("wrong", cx);
@@ -290,14 +307,8 @@ fn lists_devices_and_signs_one_out(cx: &mut TestAppContext) {
         assert!(window.find("sign-out-d-phone").visible(), "scrolled to");
     })
     .unwrap();
-    assert_eq!(
-        label(&f, cx, "device-d-here").as_deref(),
-        Some("IRCord-GPUI on Linux, this device")
-    );
-    assert_eq!(
-        label(&f, cx, "device-d-phone").as_deref(),
-        Some("Firefox on Android")
-    );
+    shows_label(&f, cx, "device-d-here", "IRCord-GPUI on Linux, this device");
+    shows_label(&f, cx, "device-d-phone", "Firefox on Android");
     cx.update_window(f.window, |_, window, cx| {
         window.render_frame(cx);
         // This device is listed first.

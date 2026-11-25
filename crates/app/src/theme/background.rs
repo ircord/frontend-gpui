@@ -1,4 +1,4 @@
-//! Draw the active personal theme's background behind the workspace chrome.
+//! Draw the background sample in Theme Studio.
 
 use std::io::Cursor;
 use std::rc::{Rc, Weak};
@@ -8,8 +8,9 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use image::{ImageReader, Limits, Rgba, RgbaImage};
 use ircord_client::Client;
-use ircord_client::contract::{ThemeBackgroundFit as Fit, ThemeBackgroundPosition as Position};
-use ircord_client::store::appearance::background::Background;
+use ircord_client::store::appearance::{
+    Backdrop, BackdropFit as Fit, BackdropPosition as Position,
+};
 
 #[derive(Default)]
 pub(crate) struct Wallpaper {
@@ -32,7 +33,7 @@ impl Drop for Wallpaper {
 impl Wallpaper {
     pub(crate) fn select(
         &mut self,
-        selection: Option<(&Rc<Client>, &Background)>,
+        selection: Option<(&Rc<Client>, &Backdrop)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -138,11 +139,11 @@ impl Wallpaper {
 
 pub(crate) fn layer(
     state: Entity<Wallpaper>,
-    settings: &Background,
+    settings: &Backdrop,
     opacity: f32,
     corners: Corners<Pixels>,
 ) -> impl IntoElement + use<> {
-    let (fit, position, blur) = (settings.fit, settings.position, settings.blur);
+    let (fit, position, blur) = (settings.fit, settings.position, settings.blur as u8);
     canvas(
         move |bounds, window, cx| {
             let width = f32::from(bounds.size.width).ceil() as u32;

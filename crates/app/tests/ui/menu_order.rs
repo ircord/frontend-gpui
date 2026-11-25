@@ -4,7 +4,6 @@
 //! the message, member, network and self menus.
 
 use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
-use std::time::Duration;
 
 use gpui_kit::{AppContext, MouseButton, TestAppContext};
 use ircord_client::contract::*;
@@ -198,7 +197,7 @@ fn the_conversation_menu_is_in_the_web_order(cx: &mut TestAppContext) {
         .wait_for(
             "PUT",
             "/api/v1/conversations/c-general/channel-settings",
-            Duration::from_secs(5),
+            crate::fixture::HANG_GUARD,
         )
         .json();
     assert_eq!(body, json!({"notifications": "all"}));

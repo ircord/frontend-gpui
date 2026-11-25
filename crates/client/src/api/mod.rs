@@ -25,6 +25,7 @@ pub mod admin;
 mod app_data;
 pub use app_data::ThemeSave;
 pub mod auth;
+mod backdrop;
 pub mod channels;
 mod conversations;
 mod devices;

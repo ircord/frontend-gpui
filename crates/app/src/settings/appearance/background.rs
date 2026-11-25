@@ -11,16 +11,14 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::api::{
     ApiError,
-    uploads::{self, FileData, Progress},
+    uploads::{self, FileData, Progress, UploadUse},
 };
 use ircord_client::contract::{
     Theme as UserTheme, ThemeBackground, ThemeBackgroundFit as Fit,
     ThemeBackgroundPlacement as Placement, ThemeBackgroundPosition as Position, UploadCapability,
 };
-use ircord_client::store::appearance::background::{
-    MAX_IMAGE_BYTES, contrast_floors, instance_upload_path,
-};
-use ircord_client::store::appearance::{self as look, Mode};
+use ircord_client::store::appearance::background::MAX_IMAGE_BYTES;
+use ircord_client::store::appearance::{self as look, Backdrop, BackdropPlacement, Mode};
 
 use super::{Editor, option, say};
 use crate::theme::{Theme, appearance, background as wallpaper};
@@ -38,6 +36,7 @@ pub(super) fn render(
     let client = state.session.read(cx).client().cloned();
     let preview = state.background_preview.clone();
     let busy = state.busy;
+    let uploading = state.uploading;
     let can_upload = client.as_ref().is_some_and(|client| {
         client
             .read()
@@ -57,12 +56,9 @@ pub(super) fn render(
     );
     let palette = Theme::from_compiled(&compiled);
     let image = draft.background.as_ref();
+    let background = look::theme_backdrop(draft, &compiled.tokens);
     preview.update(cx, |view, cx| {
-        view.select(
-            client.as_ref().zip(compiled.background.as_ref()),
-            window,
-            cx,
-        )
+        view.select(client.as_ref().zip(background.as_ref()), window, cx)
     });
 
     let choose = editor.clone();
@@ -75,7 +71,9 @@ pub(super) fn render(
             .when(can_upload, |row| {
                 row.child(
                     Button::new("theme-background-choose")
-                        .label(if image.is_some_and(|image| image.url.is_some()) {
+                        .label(if uploading {
+                            t!("appearance-bg-uploading")
+                        } else if image.is_some_and(|image| image.url.is_some()) {
                             t!("appearance-background-replace")
                         } else {
                             t!("appearance-background-choose")
@@ -105,6 +103,8 @@ pub(super) fn render(
     if !can_upload || image.is_some_and(|image| image.url.is_none()) {
         form = form.child(
             div()
+                .id("theme-background-unavailable")
+                .test_support()
                 .text_sm()
                 .text_color(theme.muted)
                 .child(if can_upload {
@@ -117,11 +117,11 @@ pub(super) fn render(
     let Some(image) = image else {
         return form;
     };
-    if let Some(bg) = compiled.background.as_ref() {
+    if let Some(bg) = background.as_ref() {
         form = form.child(render_preview(preview, bg, &palette, cx));
     }
     let placement = image.placement.unwrap_or(Placement::Conversation);
-    let (dim_floor, panel_floor) = contrast_floors(image, &compiled.tokens);
+    let (dim_floor, panel_floor) = look::background_floors(&compiled.tokens, image);
     form.child(options(
         editor,
         "placement",
@@ -178,7 +178,7 @@ pub(super) fn render(
         editor,
         Field::Dim,
         image.dim.unwrap_or(55),
-        (i64::from(dim_floor), 90, 5),
+        (dim_floor, 90, 5),
         window,
         cx,
     ))
@@ -195,7 +195,7 @@ pub(super) fn render(
             editor,
             Field::Panels,
             image.panel_opacity.unwrap_or(85),
-            (i64::from(panel_floor), 100, 5),
+            (panel_floor, 100, 5),
             window,
             cx,
         ))
@@ -204,12 +204,12 @@ pub(super) fn render(
 
 fn render_preview(
     picture: Entity<wallpaper::Wallpaper>,
-    bg: &look::background::Background,
+    bg: &Backdrop,
     theme: &Theme,
     cx: &App,
 ) -> impl IntoElement + use<> {
-    let app = bg.placement == Placement::App;
-    let dim = f32::from(bg.dim) / 100.;
+    let app = bg.placement == BackdropPlacement::App;
+    let dim = bg.dim;
     let sample = div()
         .relative()
         .min_w_0()
@@ -247,7 +247,7 @@ fn render_preview(
             d.child(wallpaper::layer(
                 picture,
                 bg,
-                1. - f32::from(bg.panel_opacity) / 100.,
+                1. - bg.panel,
                 Corners::default(),
             ))
         })
@@ -428,6 +428,7 @@ fn upload(editor: &Entity<Editor>, cx: &mut App) {
     });
     editor.update(cx, |editor, _| {
         editor.busy = true;
+        editor.uploading = true;
         editor.notice = None;
     });
     cx.refresh_windows();
@@ -448,13 +449,19 @@ fn upload(editor: &Entity<Editor>, cx: &mut App) {
                     }
                     let uploaded = client
                         .request(move |api| async move {
-                            api.upload_file(&network, &file, &Progress::default(), uploads::STALL)
-                                .await
-                                .map_err(|err| ApiError::Decode(err.to_string()))
+                            api.upload_file(
+                                &network,
+                                UploadUse::Other,
+                                &file,
+                                &Progress::default(),
+                                uploads::STALL,
+                            )
+                            .await
+                            .map_err(|err| ApiError::Decode(err.to_string()))
                         })
                         .await;
                     match uploaded {
-                        Ok(Ok(upload)) => instance_upload_path(&upload.url, &origin)
+                        Ok(Ok(upload)) => look::instance_file_path(&upload.url, &origin)
                             .map(|path| Some((path, tones)))
                             .ok_or_else(|| t!("appearance-background-not-instance").to_string()),
                         Ok(Err(err)) => Err(t!("appearance-background-upload-failed", error = err)),
@@ -470,13 +477,16 @@ fn upload(editor: &Entity<Editor>, cx: &mut App) {
             if !in_progress(&editor, &client, generation, cx) {
                 return;
             }
-            editor.update(cx, |editor, _| editor.busy = false);
+            editor.update(cx, |editor, _| {
+                editor.busy = false;
+                editor.uploading = false;
+            });
             match result {
                 Ok(Some((path, tones))) => editor.update(cx, |editor, _| {
                     if let Some((draft, _)) = &mut editor.editing {
                         let bg = draft
                             .background
-                            .get_or_insert_with(ThemeBackground::default);
+                            .get_or_insert_with(look::default_background);
                         bg.url = Some(path);
                         bg.tones = tones;
                     }
@@ -543,24 +553,5 @@ fn prepare(
 
 fn measure_tones(picture: &image::RgbaImage) -> Option<Vec<String>> {
     let thumbnail = image::imageops::resize(picture, 24, 24, image::imageops::FilterType::Triangle);
-    let mut samples: Vec<_> = thumbnail
-        .pixels()
-        .filter(|pixel| pixel.0[3] >= 16)
-        .collect();
-    if samples.is_empty() {
-        return None;
-    }
-    samples.sort_by_key(|pixel| {
-        let [r, g, b, _] = pixel.0.map(u32::from);
-        2126 * r + 7152 * g + 722 * b
-    });
-    let end = samples.len() - 1;
-    Some(
-        [end / 10, end * 9 / 10]
-            .map(|index| {
-                let [r, g, b, _] = samples[index].0;
-                format!("#{r:02x}{g:02x}{b:02x}")
-            })
-            .to_vec(),
-    )
+    look::measure_tones(thumbnail.as_raw()).map(Vec::from)
 }

@@ -228,3 +228,5 @@ appearance-reset-keywords = default, restore
 appearance-reset-title = Reset appearance?
 appearance-reset-body = Mode, scheme, accent, font, scale, density, corners and motion go back to their defaults.
 appearance-reset-ok = Reset
+
+appearance-bg-uploading = Uploading…

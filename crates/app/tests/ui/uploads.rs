@@ -14,7 +14,7 @@ use ircord_client::contract::*;
 use ircord_client::testing::{CannedServer, Reply};
 use serde_json::json;
 
-use crate::fixture::{Fixture, bootstrap, message, open_with, snapshot, wait};
+use crate::fixture::{Fixture, bootstrap, held_reply, message, open_with, snapshot, wait};
 
 /// The server accepts pictures and PDFs up to 1 MB; `#general` is not
 /// sensitive, unless `nsfw`.
@@ -323,6 +323,75 @@ fn a_batch_uploads_and_sends_as_one_message(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_message_upload_is_marked_as_one(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |s| {
+        server(s, Some(false));
+        uploads_answer(s, Duration::ZERO);
+    });
+    bootstrap(&f, cx);
+    add(&f, cx, vec![png("one.png")]);
+    cx.update_window(f.window, |_, window, cx| {
+        window.click("composer-input", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    wait(cx, "the upload", |_| {
+        !f.server.requests_to("POST", "/api/v1/uploads").is_empty()
+    });
+    let upload = f.server.requests_to("POST", "/api/v1/uploads").remove(0);
+    assert_eq!(upload.query_param("use").as_deref(), Some("message"));
+}
+
+#[gpui_kit::test]
+fn the_networks_own_limits_decide_what_joins(cx: &mut TestAppContext) {
+    // The server takes pictures and PDFs up to 1 MB; this network's files go
+    // to a host that takes only PDFs, up to 100 bytes.
+    let f = open_with(cx, true, |s| {
+        server(s, Some(false));
+        s.route(
+            "GET",
+            "/api/v1/networks/n1/uploads",
+            200,
+            json!({"available": true, "canDelete": true, "maxBytes": 100,
+                   "provider": "upstream", "types": ["application/pdf"]}),
+        );
+    });
+    bootstrap(&f, cx);
+    // Drawing the composer asks the network; wait until its answer is used,
+    // which shows as the attach button naming the network's size.
+    wait(cx, "the network's limits on the attach button", |cx| {
+        cx.refresh_windows();
+        cx.update_window(f.window, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find("composer-attach")
+                .is_some_and(|b| b.description().is_some_and(|l| l.contains("100 B")))
+        })
+        .unwrap_or(false)
+    });
+    let before = pending(cx).len();
+    add(&f, cx, vec![png("late.png")]);
+    // A picture no longer fits: this network takes PDFs only.
+    assert_eq!(pending(cx).len(), before, "the picture is refused");
+    add(
+        &f,
+        cx,
+        vec![FileData::new("small.pdf", "application/pdf", vec![0; 50])],
+    );
+    assert_eq!(pending(cx).len(), before + 1, "a small PDF joins");
+    add(
+        &f,
+        cx,
+        vec![FileData::new("big.pdf", "application/pdf", vec![0; 500])],
+    );
+    assert_eq!(
+        pending(cx).len(),
+        before + 1,
+        "a PDF over the network's size is refused"
+    );
+}
+
+#[gpui_kit::test]
 fn files_the_server_does_not_take_stay_out(cx: &mut TestAppContext) {
     let f = open_with(cx, true, |s| server(s, Some(false)));
     bootstrap(&f, cx);
@@ -376,9 +445,13 @@ fn a_pasted_picture_joins_the_batch_and_text_pastes_as_usual(cx: &mut TestAppCon
 
 #[gpui_kit::test]
 fn a_stalled_upload_says_so(cx: &mut TestAppContext) {
-    let f = open_with(cx, true, |s| {
+    // The server takes the file and does not answer until the test lets go of
+    // it, so the stall watchdog is the only way out however slow the machine
+    // is; a reply on a timer would race the watchdog.
+    let (release, held) = held_reply(|| Reply::problem(503, "The upload server went away."));
+    let f = open_with(cx, true, move |s| {
         server(s, Some(false));
-        uploads_answer(s, Duration::from_millis(1500));
+        s.route_fn("POST", "/api/v1/uploads", held);
     });
     bootstrap(&f, cx);
     cx.update(|cx| Uploads::set_stall(cx, Duration::from_millis(200)));
@@ -403,6 +476,7 @@ fn a_stalled_upload_says_so(cx: &mut TestAppContext) {
             .requests_to("POST", "/api/v1/conversations/c-general/messages")
             .is_empty()
     );
+    drop(release);
 }
 
 #[gpui_kit::test]
@@ -453,9 +527,25 @@ fn a_refused_upload_shows_the_servers_reason(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn removing_an_uploading_file_cancels_it(cx: &mut TestAppContext) {
-    let f = open_with(cx, true, |s| {
+    // The upload is still in flight when the test cancels it: the server holds
+    // its answer until the cancel is done.
+    let (release, held) = held_reply(|| {
+        Reply::json(
+            201,
+            json!({"id": "u1", "url": "/files/u1/tok/f1.png", "name": "f1.png",
+                   "size": 4, "contentType": "image/png", "width": 10, "height": 10}),
+        )
+    });
+    let f = open_with(cx, true, move |s| {
         server(s, Some(false));
-        uploads_answer(s, Duration::from_millis(800));
+        s.route_fn("POST", "/api/v1/uploads", held);
+        s.route_fn("POST", "/api/v1/conversations/*/messages", |request| {
+            Reply::json(
+                200,
+                json!({"clientId": request.json()["clientId"], "conversationId": "c-general",
+                       "state": "queued"}),
+            )
+        });
     });
     bootstrap(&f, cx);
     add(&f, cx, vec![png("one.png")]);
@@ -478,6 +568,7 @@ fn removing_an_uploading_file_cancels_it(cx: &mut TestAppContext) {
     })
     .unwrap();
     assert!(pending(cx).is_empty());
+    drop(release);
     std::thread::sleep(Duration::from_millis(1200));
     cx.run_until_parked();
     assert!(

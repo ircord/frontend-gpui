@@ -158,6 +158,7 @@ struct Editor {
     /// What the last action said, and whether it was a problem.
     notice: Option<(SharedString, bool)>,
     busy: bool,
+    uploading: bool,
     _session: Subscription,
     _quit: Subscription,
     _inputs: Vec<Subscription>,
@@ -215,6 +216,7 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
             edit_generation: 0,
             notice: None,
             busy: false,
+            uploading: false,
             _session: cx.subscribe(&ctx.session, |editor, _, event: &SessionEvent, cx| {
                 if matches!(event, SessionEvent::Phase) {
                     if let Some(mut recovery) = editor.recovery.take() {
@@ -229,6 +231,7 @@ fn editor(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> Entity<Editor
                     editor.edit_generation = editor.edit_generation.wrapping_add(1);
                     editor.notice = None;
                     editor.busy = false;
+                    editor.uploading = false;
                 }
             }),
             _quit: cx.on_app_quit(|editor, _| {
@@ -1897,6 +1900,10 @@ fn refresh_studio(editor: &Entity<Editor>, cx: &mut App) {
 fn hide_studio(editor: &Entity<Editor>, discard: bool, cx: &mut App) {
     editor.update(cx, |editor, cx| {
         editor.studio_open = false;
+        if editor.uploading {
+            editor.uploading = false;
+            editor.busy = false;
+        }
         editor
             .background_preview
             .update(cx, |preview, cx| preview.clear(None, cx));
@@ -1993,7 +2000,8 @@ pub(crate) fn studio_view(
         .when(!docked && !collapsed, |panel| panel.h(relative(0.58)))
         .on_action(move |_: &crate::features::shortcuts::MarkRead, _, cx| {
             cx.stop_propagation();
-            if !dismiss.read(cx).busy {
+            let editor = dismiss.read(cx);
+            if !editor.busy || editor.uploading {
                 hide_studio(&dismiss, true, cx);
             }
         })
@@ -2046,6 +2054,7 @@ fn theme_editor(
     let state = editor.read(cx);
     let tab = state.tab;
     let busy = state.busy;
+    let can_cancel = !busy || state.uploading;
     let compare = state.compare;
     let conflict = state.conflict.is_some();
     let can_restore = state
@@ -2264,7 +2273,7 @@ fn theme_editor(
                             Button::new("appearance-theme-cancel")
                                 .label(t!("appearance-themes-cancel"))
                                 .ghost()
-                                .disabled(busy)
+                                .disabled(!can_cancel)
                                 .on_click(move |_, _, cx| {
                                     hide_studio(&cancel_editor, true, cx);
                                 }),

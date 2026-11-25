@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, open_with, snapshot, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 fn party(revision: i64, owner: &str, members: &[(&str, &str, &str)]) -> Value {
     json!({
@@ -75,6 +75,10 @@ fn open(cx: &mut TestAppContext, s: Snapshot, setup: impl FnOnce(&CannedServer))
         w.connection == Some(Connection::Live) && w.conversation("c-group").is_some()
     });
     select(&f, cx, "c-general");
+    // The model is ready before the window has swapped its loading screen
+    // for the app, and `shows` does not wait: on a loaded machine the first
+    // query could land on the loading screen. Wait for the sidebar row.
+    label(&f, cx, "conversation-c-general");
     f
 }
 
@@ -118,11 +122,26 @@ fn has_label(f: &Fixture, cx: &mut TestAppContext, label: &str) -> bool {
 }
 
 fn label(f: &Fixture, cx: &mut TestAppContext, id: &'static str) -> String {
-    let mut text = String::new();
-    frame_do(f, cx, |window, _| {
-        text = window.find(id).label().unwrap_or_default().to_string()
-    });
-    text
+    // The model can be ready a frame or more before the window has swapped
+    // its loading screen for the app, so wait for the row to be drawn.
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        cx.run_until_parked();
+        let mut text = None;
+        frame_do(f, cx, |window, _| {
+            text = window
+                .try_find(id)
+                .map(|e| e.label().unwrap_or_default().to_string())
+        });
+        if let Some(text) = text {
+            return text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {id} to be drawn"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 fn select(f: &Fixture, cx: &mut TestAppContext, id: &str) {

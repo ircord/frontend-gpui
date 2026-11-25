@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, message, open_with, snapshot, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 /// The fixture's snapshot on a network that offers every message action,
 /// signed in to the account `me`.
@@ -720,4 +720,33 @@ fn a_failed_reply_or_gif_cannot_move_to_the_draft(cx: &mut TestAppContext) {
         assert!(window.find("failed-send-to-box-plain-1").visible());
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_failed_edit_gives_back_the_markdown_you_typed(cx: &mut TestAppContext) {
+    let f = open(cx, |server| {
+        server.route_fn("PATCH", "/api/v1/conversations/*/messages/*", |_| {
+            Reply::json(500, json!({"error": "no"}))
+        });
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("composer-input", cx);
+        window.press("up", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.input(", **fixed**", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    wait(cx, "the edit to come back to the box", |cx| {
+        matches!(
+            message_actions::mode("c-general", cx),
+            Some(Mode::Edit { .. })
+        ) && message_actions::box_text(cx) == "my words, **fixed**"
+    });
 }

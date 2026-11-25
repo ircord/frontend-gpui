@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, bootstrap, open, open_with, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 fn device(id: &str, current: bool, initialized: bool, delivery: &str) -> Value {
     json!({"id": id, "current": current, "name": "", "browser": if current { "IRCord-GPUI" } else { "Firefox" },

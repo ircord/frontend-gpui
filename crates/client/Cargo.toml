@@ -30,6 +30,25 @@ jiff = "1"
 keyring = "=4.2.0"
 log = "0.4"
 markup5ever_rcdom = "0.3"
+# Mermaid fences as diagrams: the 13 families readable in a host theme,
+# laid out with Cytoscape. ELK (EPL-2.0) is left out.
+merman = { version = "=0.11.0", default-features = false, features = [
+    "svg",
+    "layout-cytoscape",
+    "diagram-class",
+    "diagram-er",
+    "diagram-flowchart",
+    "diagram-gantt",
+    "diagram-git-graph",
+    "diagram-journey",
+    "diagram-mindmap",
+    "diagram-pie",
+    "diagram-quadrant-chart",
+    "diagram-sequence",
+    "diagram-state",
+    "diagram-timeline",
+    "diagram-xychart",
+] }
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 ring = "0.17"

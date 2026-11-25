@@ -178,7 +178,8 @@ fn around_an_old_message_back_to_the_present_and_unread() {
     let _ = rt.block_on(write.write_all(b"QUIT :done\r\n"));
 }
 
-/// Joins, parts, quits and nick changes: what the timeline folds.
+/// Joins, parts, quits and nick changes: the events these tests' runs fold
+/// (the app also folds status modes, which no live test here produces).
 fn chatter(m: &Message) -> bool {
     m.event.as_ref().is_some_and(|e| {
         matches!(

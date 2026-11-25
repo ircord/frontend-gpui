@@ -1128,12 +1128,17 @@ impl Render for ProfileCard {
             .map(theme::hex)
             .unwrap_or(theme.text);
         let server = self.session.read(cx).server().map(|s| s.url().clone());
-        let picture = |url: Option<&str>| people::picture_url(url, server.as_ref()?);
-        let banner_url = picture(m.banner_url.as_deref());
-        let backdrop = picture(m.profile_background_url.as_deref());
+        let picture = |src: Option<&str>, raw: Option<&str>| {
+            people::member_picture(src, raw, server.as_ref()?)
+        };
+        let banner_url = picture(m.banner_src.as_deref(), m.banner_url.as_deref());
+        let backdrop = picture(
+            m.profile_background_src.as_deref(),
+            m.profile_background_url.as_deref(),
+        );
         let fallback_banner = banner_url
             .is_none()
-            .then(|| picture(m.avatar_url.as_deref()))
+            .then(|| picture(m.avatar_src.as_deref(), m.avatar_url.as_deref()))
             .flatten();
         // Their accent, else their name colour, tints the card and colours
         // their picture's frame, as on the web.
@@ -1173,7 +1178,7 @@ impl Render for ProfileCard {
                 linear_color_stop(theme.main, 1.),
             )));
         let face = div().self_start().mt(px(-56.)).ml_3().flex_none().child(
-            ui::avatar::framed(
+            ui::avatar::framed_live(
                 ui::avatar::person(
                     ui::avatar::Person {
                         member: &m,
@@ -1190,6 +1195,7 @@ impl Render for ProfileCard {
                 theme.main,
                 px(ui::avatar::LARGE),
                 "profile",
+                &theme,
             )
             .test_support(),
         );

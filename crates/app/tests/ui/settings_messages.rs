@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, bootstrap, open_with, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 fn notification_settings() -> Value {
     json!({"allDevicesDelay": 0, "autoAwayDelay": 0, "channelDefault": "all",

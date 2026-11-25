@@ -280,7 +280,7 @@ fn new_messages_are_announced_once_per_pace(cx: &mut TestAppContext) {
         w.timelines["c-general"].entries.len() == 5
     });
     assert_eq!(announcement(&f, cx), "bob: are you there?");
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + crate::fixture::HANG_GUARD;
     loop {
         cx.run_until_parked();
         if announcement(&f, cx) == "2 new messages, latest from bob: two" {

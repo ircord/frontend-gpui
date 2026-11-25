@@ -439,7 +439,7 @@ pub fn start_edit(conversation: &str, message: &str, window: &mut Window, cx: &m
         let Some(m) = w.message(conversation, message) else {
             return;
         };
-        format::parse(&m.text).text
+        format::markdown::irc_to_markdown(&m.text)
     };
     let draft = match mode(conversation, cx) {
         Some(Mode::Edit { draft, .. }) => draft,
@@ -638,7 +638,7 @@ fn save_edit(ctx: &ComposerCtx, message: &str, text: String, window: &mut Window
                     let _ = cx.update(|window, cx| {
                         if box_text(cx).is_empty() && mode(&conversation, cx).is_none() {
                             start_edit(&conversation, &message, window, cx);
-                            set_box(&text, window, cx);
+                            set_box(&format::markdown::irc_to_markdown(&text), window, cx);
                         }
                     });
                 }

@@ -90,7 +90,13 @@ fn uploads_a_picture_and_sees_it_in_the_message() {
     // Upload, counting progress, then send it as a one-file batch.
     let progress = Progress::default();
     let upload = rt
-        .block_on(api.upload_file(&network, &file, &progress, uploads::STALL))
+        .block_on(api.upload_file(
+            &network,
+            uploads::UploadUse::Message,
+            &file,
+            &progress,
+            uploads::STALL,
+        ))
         .expect("upload");
     assert_eq!(progress.sent(), PIXEL.len() as u64, "every byte counted");
     assert_eq!(upload.content_type, "image/png");
@@ -127,7 +133,13 @@ fn uploads_a_picture_and_sees_it_in_the_message() {
 
     // An upload that is never sent can be deleted.
     let spare = rt
-        .block_on(api.upload_file(&network, &file, &Progress::default(), uploads::STALL))
+        .block_on(api.upload_file(
+            &network,
+            uploads::UploadUse::Message,
+            &file,
+            &Progress::default(),
+            uploads::STALL,
+        ))
         .expect("second upload");
     rt.block_on(api.delete_upload(&spare.id))
         .expect("delete the unsent upload");

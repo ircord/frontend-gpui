@@ -60,7 +60,65 @@
 - A `/gif` search uses the original reply. Failed searches keep the command, and successful searches preserve any newer draft or reply.
 - File-only replies quote the original message. If you reply with text and files, IRCord sends the text reply and uploads the files separately.
 - Keep the custom CSS switch visible when its explanation wraps in Appearance settings.
+- The comet of `/attract` no longer runs over the sender's avatar on a message of one plain line: its outline now reaches below the avatar and its ring, with the same gap it keeps from the text.
+
+## v0.6.0 — 2026-11-25
+
+### New
+
+- A new message glides into the conversation instead of moving every row at once, a reaction sends a few sparks from its chip, a message that mentions you gets one glint across its row, and the sidebar's mention badge sends out a ring when its count rises. They play only for news (never for loaded history), pace themselves by the display's frames, and follow Settings → Appearance → Motion: with reduced motion everything stays as it was.
+- Three small motions that follow the Motion setting: the conversation list's highlight glides to the conversation you open instead of jumping, a personal theme's background picture drifts a few pixels as you read back into history and returns as you come back to the newest message, and the frames on the profile card and its preview in Settings come alive (the spectrum frame is now the web's four-colour sweep and turns, the gold frame glints, the glow breathes). With reduced motion all three stay as they were.
+
+### Fixed
+
+- The comet of `/attract` keeps the same distance from the message's text below as above it; its outline used to run close under letters that hang below the line, such as g, p and y.
+
+### New
+
+- A change of colours, light or dark, scheme or accent, now fades across the window over a fifth of a second instead of snapping. It follows the Motion setting: with reduced motion the colours change at once.
+
+## v0.5.0 — 2026-11-24
+
+### New
+
+- Files you attach to a message are marked as message files, so a server that keeps them on the IRC network's shared file host can do so, and the attach button and the tray follow that network's own size and type limits. Only files you attach to a message are marked; everything else you upload (banners, profile and theme backgrounds) stays on your server.
+
+### Fixed
+
+- Copying a stretch of the conversation copies it as a log in the web client's format, instead of only the message texts: a line with the day (again wherever the selection crosses midnight), then `[19:10] <nick> text` for each message, `* nick action`, `-nick- notice` and `*** nick joined` for events. The day is written in English, and a message of only an upload or a GIF has no line. A selection inside one message still copies just what is selected.
+
+## v0.4.0 — 2026-11-24
+
+### New
+
+- The theme editor has a Background section, as the web client's: choose an image from your computer for a personal theme, replace or remove it, and set whether it sits behind the conversation or the whole app, how it fits and where, and how much it is dimmed, blurred and covered by the panels.
+
+### Fixed
+
+- Profile pictures and banners of people on other IRCord servers show instead of their initial when your server has cached them, and another server's built-in default pictures show from your own server's copy. Pictures still load only from the server you signed in to.
+
+## v0.3.0 — 2026-11-23
+
+### New
+
+- A personal theme's background picture is drawn behind the conversation or the whole window, as the web client does: the picture is read from your server, the top bar, the conversation list and the conversation turn into frosted panels over it, and a theme without a background looks as before.
+
+## v0.2.0 — 2026-11-23
+
+### New
+
+- A `mermaid` code block in a message draws as its diagram (flowchart, sequence, class, state, ER, gantt, pie, git graph, mind map, timeline, quadrant, XY chart and journey), drawn in the app without a browser or any network request, with Show fullscreen (at full size, scrolling when larger than the window), Show source and Copy source. Other diagram types, and a diagram that cannot be read, show their source as code with a line saying why.
+- Messages show Markdown tables as a grid, headings, horizontal rules and task-list boxes, as the web client does; plain IRC clients still see the Markdown text. Editing a message keeps its bold, italic and other formatting as Markdown instead of dropping it.
+- Masked links, `[text](https://…)`, show their text as a link and the real address on hover. Text that names another site is not masked: the typed text and its real address stay.
+
+### Improved
+
+- Channel activity also covers operator, half-operator, voice and other status changes handed to people: Hide drops them, Fold folds them into the run of joins and parts ("2 status changes"), Show lists them. Channel-wide modes and bans stay visible, as in the web client.
+
+### Fixed
+
 - Text pasted on Windows sends again instead of failing with "invalid message (maximum 4000 characters / 4096 UTF-8 bytes)": its line breaks go out as the server expects, and a long multi-line paste goes out as one message the server splits within the network's limits, as in the web client.
+- The member list draws the profile frame a person picked around their picture, and shows you with the name colour and frame of your profile on that network, as the timeline does, instead of the account's older copy.
 - A message that fails to send stays in the conversation as one row of yours, in red with the reason and Retry, Move to draft, Copy text and Remove from outbox under it, as the web client shows it, instead of a second block over the message box.
 
 ## v0.1.1 — 2026-11-22

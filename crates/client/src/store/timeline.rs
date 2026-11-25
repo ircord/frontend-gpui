@@ -41,6 +41,24 @@ pub struct State {
     pub focus: Option<(String, String)>,
     /// Bumped by every jump, so the view scrolls once per jump.
     pub focus_seq: u64,
+    /// Conversation → the message the last `attract` pointed at.
+    attracts: HashMap<String, Attract>,
+}
+
+/// What an `attract` event pointed at: the message to make sparkle, and
+/// whoever asked (the stand-in when the message itself is not loaded).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attract {
+    pub message_id: String,
+    pub member_id: String,
+}
+
+impl State {
+    /// The last `attract` seen in `conversation`. Nothing expires it: the
+    /// view plays it when the event arrives and ignores it afterwards.
+    pub fn attract(&self, conversation: &str) -> Option<&Attract> {
+        self.attracts.get(conversation)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,8 +71,19 @@ enum Line {
 
 /// Called for every fresh event after the workspace's own handling.
 pub(super) fn apply(w: &mut Workspace, event: &ServerEvent, _now_ms: i64) -> Changes {
-    let ServerEvent::Durable { event, .. } = event else {
-        return Changes::default();
+    let event = match event {
+        ServerEvent::Attract(a) => {
+            w.reading.attracts.insert(
+                a.conversation_id.clone(),
+                Attract {
+                    message_id: a.message_id.clone(),
+                    member_id: a.member_id.clone(),
+                },
+            );
+            return Changes::default();
+        }
+        ServerEvent::Durable { event, .. } => event,
+        _ => return Changes::default(),
     };
     match event {
         Durable::ConversationCounts(c) => {
@@ -81,6 +110,7 @@ pub(super) fn reset(w: &mut Workspace, snapshot: &Snapshot) -> Changes {
         .collect();
     w.reading.lines.clear();
     w.reading.focus = None;
+    w.reading.attracts.clear();
     Changes::topic(TOPIC)
 }
 
@@ -513,6 +543,28 @@ mod tests {
         let frame = serde_json::json!({"v": 1, "seq": seq, "type": "message.created",
             "data": serde_json::to_value(m).unwrap()});
         w.apply(&ServerEvent::decode(&frame.to_string()).unwrap(), 0);
+    }
+
+    #[test]
+    fn an_attract_is_kept_for_its_conversation_and_a_new_one_replaces_it() {
+        let mut w = Workspace::from_snapshot(snapshot(5));
+        let attract = |w: &mut Workspace, message: &str| {
+            let frame = serde_json::json!({"v": 1, "type": "attract",
+                "data": {"conversationId": "c-a", "memberId": "m-bob", "messageId": message}});
+            w.apply(&ServerEvent::decode(&frame.to_string()).unwrap(), 0)
+        };
+        assert!(w.reading.attract("c-a").is_none());
+        let changes = attract(&mut w, "m1");
+        assert!(changes.touches_id(crate::store::topic::ATTRACT, "c-a"));
+        let first = w.reading.attract("c-a").unwrap().clone();
+        assert_eq!(
+            (first.message_id.as_str(), first.member_id.as_str()),
+            ("m1", "m-bob")
+        );
+        attract(&mut w, "m2");
+        let second = w.reading.attract("c-a").unwrap();
+        assert_eq!(second.message_id, "m2");
+        assert!(w.reading.attract("c-b").is_none());
     }
 
     #[test]

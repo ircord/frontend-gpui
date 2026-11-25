@@ -1,8 +1,8 @@
 //! Tests for package T1, message text: code blocks, quotes and lists, mention
 //! and channel pills, joining a channel from its name, message-link pills,
-//! and Markdown in the box sent as IRC formatting; and for package V6, the
-//! message box as the web's (its placeholder, the send arrow, headed
-//! suggestions with pictures) and direct conversations in the sidebar.
+//! masked links, and Markdown in the box sent as IRC formatting; and for
+//! package V6, the message box as the web's (its placeholder, the send arrow,
+//! headed suggestions with pictures) and direct conversations in the sidebar.
 
 use std::time::Duration;
 
@@ -14,7 +14,7 @@ use serde_json::json;
 
 use crate::fixture::{Fixture, message, open_with, snapshot, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 /// The server's origin in the fixture is the canned server's; message links
 /// are built on it.
@@ -31,6 +31,11 @@ fn history(origin: &str) -> Vec<Message> {
             &format!(
                 "hey @me, ask @bob in #random or #newchan, @here. {origin}/channel/c-random?m=9"
             ),
+        ),
+        message(
+            "3",
+            "c-general",
+            "read [the docs](https://example.com/docs), not [paypal.com](https://evil.example)",
         ),
     ]
 }
@@ -69,7 +74,7 @@ fn open_on(
         session.conversation.as_deref() == Some("c-general")
             && w.timelines
                 .get("c-general")
-                .is_some_and(|t| t.loaded && t.entries.len() == 2)
+                .is_some_and(|t| t.loaded && t.entries.len() == 3)
     });
     // Pills are placed from the layout of the frame before.
     draw(&f, cx);
@@ -134,6 +139,35 @@ fn a_message_link_opens_its_conversation(cx: &mut TestAppContext) {
     let f = open(cx, |_| {});
     click_label(&f, cx, "Message in #random");
     assert_eq!(conversation(&f, cx).as_deref(), Some("c-random"));
+}
+
+#[gpui_kit::test]
+fn a_masked_link_shows_its_words_and_its_address_on_hover(cx: &mut TestAppContext) {
+    let f = open(cx, |_| {});
+    cx.update_window(f.window, |_, window, _| {
+        // The words are the link and name the address; words naming another
+        // site are not masked, so the typed address is the link.
+        assert!(
+            window
+                .find_by_label("the docs: opens https://example.com/docs")
+                .visible()
+        );
+        assert!(window.find_by_label("Open https://evil.example/").visible());
+        assert!(window.try_find("link-address").is_none());
+    })
+    .unwrap();
+    cx.update_window(f.window, |_, window, cx| {
+        window.hover("text-3-0-piece-0", cx)
+    })
+    .unwrap();
+    cx.executor().advance_clock(Duration::from_secs(1));
+    draw(&f, cx);
+    cx.update_window(f.window, |_, window, _| {
+        let tip = window.find("link-address");
+        assert!(tip.visible());
+        assert_eq!(tip.label(), Some("https://example.com/docs"));
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]

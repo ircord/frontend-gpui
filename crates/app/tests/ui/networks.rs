@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, bootstrap, open_with, snapshot, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 /// The network the server answers a save with: `n2`, or `n1` edited.
 fn answer(id: &str, name: &str, host: &str) -> Value {

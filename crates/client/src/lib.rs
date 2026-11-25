@@ -4,6 +4,7 @@
 //! - [`address`]: server address rules.
 //! - [`commands`]: slash commands, their arguments and autocomplete.
 //! - [`config`]: the files kept between launches.
+//! - [`copy_log`]: what copying a stretch of the timeline writes.
 //! - [`credentials`]: the sign-in, in the operating system's credential store.
 //! - [`api`]: HTTP commands, one file per area of the contract.
 //! - [`events`] and [`socket`]: the event socket with resume, replay and resync.
@@ -25,6 +26,7 @@ pub mod channel_modes;
 pub mod client;
 pub mod commands;
 pub mod config;
+pub mod copy_log;
 pub mod credentials;
 pub mod documents;
 pub mod emoticons;

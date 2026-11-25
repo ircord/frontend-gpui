@@ -10,12 +10,13 @@
 //! is what settings edit.
 
 pub mod appearance;
+pub mod backdrop;
 pub(crate) mod background;
+pub mod depth;
+pub mod fade;
 pub mod fonts;
 
 use gpui_kit::{App, Global, Hsla, Pixels, Rems, Rgba, SharedString, px, rems, rgb};
-use ircord_client::contract::ThemeBackgroundPlacement;
-use ircord_client::store::appearance::background::Background;
 use ircord_client::store::appearance::{self as look, Compiled, Look, Mode};
 
 /// The colour tokens every view draws with.
@@ -86,8 +87,6 @@ pub struct Theme {
     pub scale: f32,
     /// Leave out non-essential motion.
     pub reduced_motion: bool,
-    /// The selected personal theme's image, if it has one on this server.
-    pub background: Option<Background>,
 }
 
 impl Theme {
@@ -135,14 +134,7 @@ impl Theme {
             compact: c.compact,
             scale: c.scale,
             reduced_motion: c.reduced_motion,
-            background: c.background.clone(),
         }
-    }
-
-    pub(crate) fn app_background(&self) -> Option<&Background> {
-        self.background
-            .as_ref()
-            .filter(|bg| bg.placement == ThemeBackgroundPlacement::App)
     }
 
     /// IRCord's own dark scheme with the default settings.
@@ -185,10 +177,18 @@ fn default_theme() -> &'static Theme {
     DEFAULT.get_or_init(Theme::default)
 }
 
-/// Replace the active tokens and redraw every window.
+/// Replace the active tokens at once, ending any fade, and redraw every window.
 pub fn set(theme: Theme, cx: &mut App) {
+    fade::cancel(cx);
     cx.set_global(theme);
     cx.refresh_windows();
+}
+
+/// The theme the window settles on: while a change fades in (`fade`), the
+/// colours it ends on. For what is costly to redraw per frame (diagrams, the
+/// ambient light); everything else reads [`get`].
+pub fn settled(cx: &App) -> &Theme {
+    fade::settled(cx)
 }
 
 /// A colour from data, `0xRRGGBB`.

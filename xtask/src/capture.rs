@@ -7,9 +7,17 @@
 //! through the app's own form, captures the workspace, checks the sign-in is
 //! in the keyring, types a server emoji into the message box, plays a test
 //! video sent to the channel (printing the app's resident memory 2 s and
-//! 32 s after it starts), then restarts the app to show it signs in from
-//! there, and opens Settings → Emotes → Discover (emoji.gg's emoji, read by
+//! 32 s after it starts), sends `/attract` and captures the comet five
+//! times while it plays (the last two around its landing) and once after it
+//! ends, then restarts the app to show it signs in from there, and opens Settings → Emotes → Discover (emoji.gg's emoji, read by
 //! the backend over the internet).
+//! `CAPTURE_ONLY=attract` captures `/attract` on a first line, a later line, a message with a reaction and a reply.
+//! `CAPTURE_ONLY=fade` captures a change of colours fading, nothing else.
+//! `CAPTURE_ONLY=news` instead sends a conversation taller than the window, a new message, a
+//! reaction and a mention, with a burst of screenshots after each, to look at
+//! the glide-in, the reaction sparks and the glint.
+//! A personal theme's background picture is captured last, behind the window
+//! and behind the conversation, in dark and light.
 //! Screenshots and the app's logs land in `target/capture/`; look at them.
 //!
 //! Xvfb runs without its COMPOSITE extension. With it, GPUI picks a 32-bit
@@ -107,6 +115,183 @@ grep -q 'attribute.service = com.ircord.gpui' "$OUT/keyring.txt" \
   || { echo "the sign-in was not saved in the keyring"; exit 1; }
 echo "the sign-in is in GNOME Keyring (target/capture/keyring.txt)"
 
+# `CAPTURE_ONLY=fade`: a change of colours fades. The account's appearance is
+# switched to dark while the app shows the workspace in light, and the screen
+# is captured as fast as it goes (software drawing, so a few frames per
+# second) until it has settled.
+if [ "${CAPTURE_ONLY:-}" = fade ]; then
+  sleep 2
+  shot fade-0-before
+  curl -fsS -o /dev/null -X PUT -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+    -d '{"settings":{"mode":"dark"}}' "$SERVER/api/v1/app/appearance"
+  for n in 1 2 3 4 5 6; do shot fade-$n-$(date +%s%3N); done
+  sleep 2
+  shot fade-9-after
+  # Fail when nothing changed (the account was not in light to begin with).
+  ! cmp -s "$OUT/fade-0-before.png" "$OUT/fade-9-after.png" || { echo "the colours did not change"; exit 1; }
+  stop_app fade
+  exit 0
+fi
+if [ "${CAPTURE_ONLY:-}" = news ]; then
+# News that moves: a message that arrives glides in, a reaction sends sparks
+# from its chip, a message that mentions you gets one glint across its row.
+# A burst of screenshots is taken right after each event; the app draws in
+# software here at about 10 frames a second, so a motion of 150 to 600 ms
+# shows in a few stills. `news-glide-sheet.png` and `news-lights-sheet.png` lay them side by side.
+set -- $(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" "$SERVER/api/v1/bootstrap" | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+c = [c for c in s["conversations"] if c["name"].lstrip("#").lower() == "capture"][0]
+print(c["id"], c["networkId"])')
+CONVERSATION=$1
+post() {
+  curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json'     -d "{\"clientId\":\"capture-news-$1\",\"text\":\"$2\"}" \
+    "$SERVER/api/v1/conversations/$CONVERSATION/messages"
+}
+# Enough lines to be taller than the window, so a new row has somewhere to
+# glide from; the backend lists them slowly and out of order, so wait until
+# every one is listed before the first still.
+LINES=60
+for n in $(seq 1 $LINES); do post "h$n" "history line number $n, a little text to fill the row"; done >/dev/null
+tries=0
+until [ "$(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" "$SERVER/api/v1/conversations/$CONVERSATION/messages?limit=100" | python3 -c '
+import json, sys
+print(len([m for m in json.load(sys.stdin)["items"] if m["text"].startswith("history line")]))')" -ge "$LINES" ]; do
+  tries=$((tries + 1)); [ "$tries" -le 60 ] || { echo "the history was not listed"; exit 1; }
+  sleep 1
+done
+sleep 4
+burst() {
+  # burst NAME COUNT: COUNT screenshots one after another, as fast as they go.
+  b=1; while [ "$b" -le "$2" ]; do shot "13-news-$1-$b" >/dev/null; b=$((b + 1)); done
+}
+shot 13-news-0-before
+# 1. A message arrives while the newest one is in view.
+post glide "a new message arrives while you read the newest one, long enough to be two lines of text so that its height is plain to see in the stills" >/dev/null
+burst glide 8
+sleep 1.5
+# 2. A reaction is added to it (yours: the chip is the same).
+MESSAGE=$(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" \
+  "$SERVER/api/v1/conversations/$CONVERSATION/messages?limit=1" | python3 -c '
+import json, sys
+print(json.load(sys.stdin)["items"][-1]["id"])')
+curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+  -d "{\"emoji\":\"🎉\",\"messageId\":\"$MESSAGE\"}" "$SERVER/api/v1/conversations/$CONVERSATION/reactions" >/dev/null
+burst sparks 6
+sleep 1.5
+# 3. Someone else mentions you.
+rm -f /tmp/mention-go
+python3 - "$IRC_HOST" "$USER_NAME" <<'PY' &
+import os, socket, sys, time
+s = socket.create_connection((sys.argv[1], 6667))
+send = lambda line: s.sendall((line + "\r\n").encode())
+send("NICK friend"); send("USER friend 0 * :friend")
+time.sleep(2); send("JOIN #capture")
+deadline = time.time() + 60
+while not os.path.exists("/tmp/mention-go") and time.time() < deadline:
+    time.sleep(0.02)
+send("PRIVMSG #capture :hey @%s, are you around for a minute?" % sys.argv[2])
+time.sleep(2)
+PY
+sleep 6
+touch /tmp/mention-go
+burst glint 7
+sleep 2
+if command -v montage >/dev/null 2>&1; then
+  montage "$OUT"/13-news-glide-*.png -tile 4x -geometry 640x400+2+2 "$OUT/news-glide-sheet.png"
+  montage "$OUT"/13-news-sparks-*.png "$OUT"/13-news-glint-*.png -tile 4x -geometry 640x400+2+2 "$OUT/news-lights-sheet.png"
+fi
+stop_app news
+exit 0
+fi
+
+if [ "${CAPTURE_ONLY:-}" = attract ]; then
+# `/attract` on the rows that have an avatar: a plain first line, a later
+# line of a group, one with a reaction and a reply with its quoted line. Someone else speaks between them, so each of yours starts a group
+# and shows its avatar. Two stills of each, with the comet at its outline.
+set -- $(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" "$SERVER/api/v1/bootstrap" | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+c = [c for c in s["conversations"] if c["name"].lstrip("#").lower() == "capture"][0]
+print(c["id"], c["networkId"])')
+CONVERSATION=$1
+post() {
+  curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+    -d "{\"clientId\":\"capture-attract-$1\",\"text\":\"$2\"${3:+,\"replyToId\":\"$3\"}}" \
+    "$SERVER/api/v1/conversations/$CONVERSATION/messages"
+}
+newest() {
+  curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" \
+    "$SERVER/api/v1/conversations/$CONVERSATION/messages?limit=1" | python3 -c '
+import json, sys
+print(json.load(sys.stdin)["items"][-1]["id"])'
+}
+rm -f /tmp/say-*
+python3 - "$IRC_HOST" <<'PY' &
+import os, socket, sys, time
+s = socket.create_connection((sys.argv[1], 6667))
+send = lambda line: s.sendall((line + "\r\n").encode())
+send("NICK friend"); send("USER friend 0 * :friend")
+time.sleep(2); send("JOIN #capture")
+deadline = time.time() + 120
+done = set()
+while time.time() < deadline:
+    for n in "123":
+        f = "/tmp/say-" + n
+        if os.path.exists(f) and n not in done:
+            done.add(n); send("PRIVMSG #capture :someone else says something, number " + n)
+    time.sleep(0.05)
+PY
+sleep 6
+# The bot must be on IRC, or the rows would all join one group.
+kill -0 $! 2>/dev/null || { echo "the friend bot is gone"; exit 1; }
+FIRST=1
+attract() {
+  # The server lets a channel attract once in 30 s.
+  [ "$FIRST" = 1 ] || sleep 31
+  FIRST=0
+  xdotool windowfocus --sync "$WIN"
+  xdotool type --delay 30 "/attract"
+  sleep 1
+  xdotool key Return
+  sleep 0.5
+  xdotool key Return
+  sleep 0.3
+  shot "14-attract-$1-a"
+  sleep 0.8
+  shot "14-attract-$1-b"
+}
+say() { touch /tmp/say-$1; sleep 3; }
+# 1. The first line of a group, nothing under it.
+post plain "a plain message, a single line with nothing under it" >/dev/null
+sleep 3
+attract plain
+# 2. A later line of a group: the comet laps the avatar and the line.
+say 1
+post first "the first line of a group" >/dev/null
+sleep 1
+post later "a later line of the same group, which the comet laps" >/dev/null
+sleep 3
+attract later
+# 3. A message with a reaction under it.
+say 2
+post reacted "a message with a reaction under it" >/dev/null
+sleep 3
+REACTED=$(newest)
+curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+  -d "{\"emoji\":\"🎉\",\"messageId\":\"$REACTED\"}" "$SERVER/api/v1/conversations/$CONVERSATION/reactions"
+sleep 2
+attract reaction
+# 4. A reply with its quoted line.
+say 3
+post reply "a reply to the message with a reaction" "$REACTED" >/dev/null
+sleep 3
+attract reply
+stop_app attract
+exit 0
+fi
+
+if [ -z "${CAPTURE_ONLY:-}" ]; then
 # A server emoji typed into the message box draws as its picture. Typing
 # with nothing focused goes into the box.
 xdotool type --delay 30 "hello :capture: there"
@@ -148,6 +333,36 @@ sleep 30
 echo "resident memory at 32 s: app $(rss "$APP") kB, helper $(rss "$HELPER") kB" | tee -a "$OUT/video-memory.txt"
 shot 8-video-ended
 
+# /attract: a comet laps the newest of your messages twice, shedding sparks
+# over the rows below, and lands on its group's avatar; after three seconds
+# it is gone. The first Return takes the suggested command, the second
+# sends it.
+for n in 1 2; do
+  curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+    -d "{\"clientId\":\"capture-attract-$n\",\"text\":\"attract test $n\"}" \
+    "$SERVER/api/v1/conversations/$CONVERSATION/messages"
+done
+sleep 3
+xdotool windowfocus --sync "$WIN"
+xdotool type --delay 30 "/attract"
+sleep 1
+xdotool key Return
+sleep 0.5
+xdotool key Return
+sleep 0.5
+shot 10-attract-comet-1
+sleep 0.6
+shot 10-attract-comet-2
+sleep 0.9
+shot 10-attract-comet-3
+# The landing: the burst and the landing ring live from 2.6 to 3 s.
+sleep 0.15
+shot 10-attract-comet-4
+sleep 0.1
+shot 10-attract-comet-5
+sleep 4
+shot 10-attract-over
+
 # A fresh start signs in from the keyring alone.
 stop_app 1
 start_app
@@ -173,6 +388,9 @@ xdotool key Return
 sleep 10
 shot 9-emotes-discover
 stop_app 2
+else
+stop_app 1
+fi
 
 # A personal theme whose CSS sets the accent and the rail, switched on for
 # the account, then a fresh start: the app draws the theme's CSS.
@@ -185,6 +403,109 @@ start_app
 sleep 7
 shot 6-css-theme
 stop_app 3
+
+# A personal theme with a background picture (the web's "Personal theme
+# background"): the picture is uploaded, the theme names it, and the app
+# draws it behind the whole window (`app`) or behind the conversation
+# (`conversation`), in dark and in light. `CAPTURE_THEME=<dir>` swaps in a
+# theme file (`theme.json`, an exported `.ircord-theme.json`) and its
+# picture (`picture.*`) for the generated ones.
+set -- $(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" "$SERVER/api/v1/bootstrap" | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+c = [c for c in s["conversations"] if c["name"].lstrip("#").lower() == "capture"][0]
+print(c["id"], c["networkId"])')
+CONVERSATION=$1 NETWORK=$2
+for n in 1 2 3; do
+  curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+    -d "{\"clientId\":\"capture-backdrop-$n\",\"text\":\"a message to read over the picture, number $n\"}" \
+    "$SERVER/api/v1/conversations/$CONVERSATION/messages"
+done
+if [ -n "${CAPTURE_THEME:-}" ]; then
+  PICTURE=$(ls /theme/picture.* | head -1)
+else
+  PICTURE=/tmp/backdrop.png
+  python3 -c '
+import struct, sys, zlib
+w, h = 640, 360
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+rows = b"".join(b"\0" + b"".join(
+    bytes((40 + 150 * x // w, 60 + 100 * y // h, 200 - 120 * x // w)) for x in range(w)) for y in range(h))
+sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+    + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+' >"$PICTURE"
+fi
+TYPE=$(python3 -c 'import sys; print({"png":"image/png","webp":"image/webp","jpg":"image/jpeg","jpeg":"image/jpeg"}[sys.argv[1].rsplit(".",1)[1]])' "$PICTURE")
+PICTURE_URL=$(curl -fsS -H "Origin: $SERVER" -H "Cookie: $COOKIE" \
+  -F "file=@$PICTURE;type=$TYPE" "$SERVER/api/v1/uploads?networkId=$NETWORK" \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["url"])')
+theme() {
+  python3 - "$1" "$PICTURE_URL" <<'PY' >/tmp/backdrop-theme.json
+import json, os, sys
+placement, url = sys.argv[1], sys.argv[2]
+if os.environ.get("CAPTURE_THEME"):
+    file = json.load(open("/theme/theme.json"))
+    theme = {"format": 1, "id": "t-capture-bg-" + placement, "name": file["name"], "updatedAt": "c1",
+             "base": file["base"], "colors": file["colors"], "css": file.get("css", ""),
+             "background": dict(file.get("background") or {}, url=url)}
+else:
+    seeds = lambda c, s, o, i, m, a: {"canvas": c, "surface": s, "overlay": o, "ink": i, "muted": m, "accent": a,
+        "palette": {k: v for k, v in zip(["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"],
+            ["#f87171", "#fb923c", "#fbbf24", "#22c55e", "#5fc4dc", "#86b6ef", "#b3a2ea", "#ee9fc4"])}}
+    theme = {"format": 1, "id": "t-capture-bg-" + placement, "name": "Capture backdrop", "updatedAt": "c1",
+             "base": {"dark": "ircord-dark", "light": "ircord-light"},
+             "colors": {"dark": seeds("#07090d", "#161a22", "#2a3140", "#e8ebf1", "#9aa3b2", "#7ea6ff"),
+                        "light": seeds("#e4e8ef", "#ffffff", "#d3d9e4", "#141821", "#5a6473", "#2b59c3")},
+             "css": "",
+             "background": {"url": url, "placement": placement, "fit": "cover", "position": "center",
+                            "dim": 55, "blur": 0, "panelOpacity": 85}}
+json.dump({"theme": theme}, sys.stdout)
+PY
+  curl -fsS -o /dev/null -X PUT -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+    -d @/tmp/backdrop-theme.json "$SERVER/api/v1/app/themes/t-capture-bg-$1"
+}
+appearance() { api PUT "{\"settings\":{\"mode\":\"$1\",\"theme\":\"t-capture-bg-$2\"}}" /api/v1/app/appearance; }
+theme app
+for mode in dark light; do
+  appearance $mode app
+  start_app
+  sleep 8
+  shot 11-backdrop-app-$mode
+  stop_app backdrop-app-$mode
+done
+if [ -z "${CAPTURE_THEME:-}" ]; then
+  theme conversation
+  appearance dark conversation
+  start_app
+  sleep 8
+  shot 11-backdrop-conversation-dark
+  stop_app backdrop-conversation
+fi
+
+# The theme editor's Background part: Settings → Appearance → Your themes →
+# Edit, on the theme that has the picture.
+appearance dark app
+start_app
+sleep 8
+xdotool windowfocus --sync "$WIN"
+xdotool key ctrl+comma
+sleep 1
+xdotool key Tab
+xdotool type --delay 30 "your themes"
+xdotool key Return
+sleep 2
+shot 12-theme-editor-0
+# Edit on the second theme's row.
+xdotool mousemove 939 506 click 1
+sleep 2
+xdotool mousemove 850 450
+for n in 1 2 3; do
+  xdotool click --repeat 5 --delay 100 5
+  sleep 1
+  shot 12-theme-editor-$n
+done
+stop_app theme-editor
 "##;
 
 pub fn run(root: &Path) -> Result<()> {
@@ -207,6 +528,20 @@ pub fn run(root: &Path) -> Result<()> {
         "--shm-size".into(),
         "256m".into(),
     ]);
+    // `CAPTURE_ONLY=theme` skips the long scenes; `CAPTURE_THEME=<dir>` holds
+    // a `theme.json` and a `picture.*` for the background scene.
+    if let Ok(only) = std::env::var("CAPTURE_ONLY") {
+        extra.extend(["-e".into(), format!("CAPTURE_ONLY={only}")]);
+    }
+    if let Ok(dir) = std::env::var("CAPTURE_THEME") {
+        let dir = std::fs::canonicalize(&dir).with_context(|| format!("CAPTURE_THEME {dir}"))?;
+        extra.extend([
+            "-v".into(),
+            format!("{}:/theme:ro", dir.display()),
+            "-e".into(),
+            "CAPTURE_THEME=1".into(),
+        ]);
+    }
     let result = crate::container::run_with(
         root,
         &extra,

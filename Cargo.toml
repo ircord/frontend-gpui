@@ -4,7 +4,7 @@ members = ["crates/contract", "crates/client", "crates/app", "crates/dev", "crat
 default-members = ["crates/contract", "crates/client", "crates/app"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.6.0"
 edition = "2024"
 publish = false
 
@@ -26,3 +26,158 @@ gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 [profile.release]
 debug = false
 strip = true
+
+# Dev and test builds. Line tables keep file and line numbers in panics and
+# backtraces and halve `target/debug`; set CARGO_PROFILE_DEV_DEBUG=2 to step
+# through variables in a debugger.
+[profile.dev]
+debug = "line-tables-only"
+
+# The headless UI tests spend their time inside GPUI, text shaping and image
+# decoding, which at opt-level 0 cost 11 CPU-minutes a run. These crates are
+# optimised once per dependency change (sccache keeps the result); workspace
+# crates stay unoptimised and incremental. Named rather than `package."*"` so
+# proc macros and build scripts, which sccache cannot cache, stay unoptimised.
+# A dependency missing from this list is only slower, never wrong; a name that
+# leaves the dependency graph (after a gpui-kit bump, say) makes cargo warn on
+# every build, and should be removed then.
+[profile.dev.package.gpui-pre]
+opt-level = 1
+
+[profile.dev.package.gpui-pre-platform]
+opt-level = 1
+
+[profile.dev.package.gpui-pre-linux]
+opt-level = 1
+
+[profile.dev.package.gpui-pre-wgpu]
+opt-level = 1
+
+[profile.dev.package.gpui-pre-scheduler]
+opt-level = 1
+
+[profile.dev.package.gpui-pre-sum-tree]
+opt-level = 1
+
+[profile.dev.package.gpui-pre-collections]
+opt-level = 1
+
+[profile.dev.package.gpui-pre-util]
+opt-level = 1
+
+[profile.dev.package.gpui-base]
+opt-level = 1
+
+[profile.dev.package.gpui-component]
+opt-level = 1
+
+[profile.dev.package.gpui-kit]
+opt-level = 1
+
+[profile.dev.package.taffy]
+opt-level = 1
+
+[profile.dev.package.cosmic-text]
+opt-level = 1
+
+[profile.dev.package.swash]
+opt-level = 1
+
+[profile.dev.package.rustybuzz]
+opt-level = 1
+
+[profile.dev.package.harfrust]
+opt-level = 1
+
+[profile.dev.package.skrifa]
+opt-level = 1
+
+[profile.dev.package.read-fonts]
+opt-level = 1
+
+[profile.dev.package.ttf-parser]
+opt-level = 1
+
+[profile.dev.package.fontdb]
+opt-level = 1
+
+[profile.dev.package.resvg]
+opt-level = 1
+
+[profile.dev.package.usvg]
+opt-level = 1
+
+[profile.dev.package.tiny-skia]
+opt-level = 1
+
+[profile.dev.package.image]
+opt-level = 1
+
+[profile.dev.package.png]
+opt-level = 1
+
+[profile.dev.package.zune-jpeg]
+opt-level = 1
+
+[profile.dev.package.lyon_algorithms]
+opt-level = 1
+
+[profile.dev.package.lyon_geom]
+opt-level = 1
+
+[profile.dev.package.lyon_path]
+opt-level = 1
+
+[profile.dev.package.lyon_tessellation]
+opt-level = 1
+
+[profile.dev.package.etagere]
+opt-level = 1
+
+[profile.dev.package.euclid]
+opt-level = 1
+
+[profile.dev.package.hashbrown]
+opt-level = 1
+
+[profile.dev.package.smallvec]
+opt-level = 1
+
+[profile.dev.package.parking_lot]
+opt-level = 1
+
+[profile.dev.package.regex]
+opt-level = 1
+
+[profile.dev.package.regex-automata]
+opt-level = 1
+
+[profile.dev.package.markdown]
+opt-level = 1
+
+[profile.dev.package.ropey]
+opt-level = 1
+
+[profile.dev.package.icu_segmenter]
+opt-level = 1
+
+[profile.dev.package.unicode-segmentation]
+opt-level = 1
+
+[profile.dev.package.unicode-bidi]
+opt-level = 1
+
+[profile.dev.package.accesskit]
+opt-level = 1
+
+[profile.dev.package.serde_json]
+opt-level = 1
+
+[profile.dev.package.tokio]
+opt-level = 1
+
+[profile.dev.package.async-task]
+opt-level = 1
+
+[profile.dev.package.async-executor]
+opt-level = 1

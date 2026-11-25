@@ -10,6 +10,7 @@ use ircord_client::contract::{Member, MemberRole, MemberStatus};
 use ircord_client::store::people;
 
 use crate::theme::{self, Theme};
+use crate::ui::frame_motion;
 use crate::ui::icon::IconName;
 
 pub const TINY: f32 = 22.;
@@ -90,7 +91,9 @@ pub fn tint(m: &Member, colored_names: bool, theme: &Theme) -> Option<Hsla> {
 
 /// `picture` (a disc `size` across) in the frame `frame`, drawn in `color`
 /// as the web's `.avatar-frame-*` (`identity.css`): in a band 5 px wide
-/// around the picture, on `backdrop`. Without a frame only the band shows.
+/// around the picture. The two gradient frames hollow their band with
+/// `backdrop`; the others draw only their border. Without a frame only the
+/// band's room shows.
 pub fn framed(
     picture: impl IntoElement,
     frame: Option<people::AvatarFrame>,
@@ -98,6 +101,41 @@ pub fn framed(
     backdrop: Hsla,
     size: Pixels,
     key: &str,
+) -> Stateful<Div> {
+    framed_with(picture, frame, color, backdrop, size, key, false)
+}
+
+/// [`framed`] on the profile card and its preview in Settings: the frames
+/// move (`frame_motion`) while they are on screen, unless the theme asks for
+/// reduced motion, which keeps them still.
+pub fn framed_live(
+    picture: impl IntoElement,
+    frame: Option<people::AvatarFrame>,
+    color: Hsla,
+    backdrop: Hsla,
+    size: Pixels,
+    key: &str,
+    theme: &Theme,
+) -> Stateful<Div> {
+    framed_with(
+        picture,
+        frame,
+        color,
+        backdrop,
+        size,
+        key,
+        !theme.reduced_motion,
+    )
+}
+
+fn framed_with(
+    picture: impl IntoElement,
+    frame: Option<people::AvatarFrame>,
+    color: Hsla,
+    backdrop: Hsla,
+    size: Pixels,
+    key: &str,
+    live: bool,
 ) -> Stateful<Div> {
     use people::AvatarFrame;
     let kind = frame.map_or("none", AvatarFrame::key);
@@ -108,11 +146,18 @@ pub fn framed(
         .rounded_full()
         .flex()
         .items_center()
-        .justify_center()
-        .bg(backdrop);
-    // The two gradients are a band of colour with the backdrop inside it.
-    let band = |outer: Stateful<Div>, fill: Background, picture: AnyElement| {
-        outer.bg(fill).child(
+        .justify_center();
+    // The two gradients are a band of colour with the backdrop inside it;
+    // a moving frame draws something over the band, under the picture.
+    let band = |outer: Stateful<Div>,
+                fill: Option<Background>,
+                over: Option<AnyElement>,
+                picture: AnyElement| {
+        let outer = match fill {
+            Some(fill) => outer.bg(fill),
+            None => outer,
+        };
+        outer.children(over).child(
             div()
                 .size(size + px(4.))
                 .rounded_full()
@@ -127,37 +172,53 @@ pub fn framed(
     match frame {
         None => outer.child(picture),
         Some(AvatarFrame::Ring) => outer.border_3().border_color(color).child(picture),
-        Some(AvatarFrame::Glow) => outer
-            .border_2()
-            .border_color(color)
-            .shadow(vec![BoxShadow {
-                color: color.opacity(0.65),
-                offset: point(px(0.), px(0.)),
-                blur_radius: px(18.),
-                spread_radius: px(2.),
-                inset: false,
-            }])
-            .child(picture),
+        Some(AvatarFrame::Glow) => {
+            let outer = outer.border_2().border_color(color);
+            if live {
+                // The glow's blur breathes, so it is drawn rather than styled.
+                outer.child(frame_motion::glow(color)).child(picture)
+            } else {
+                outer
+                    .shadow(vec![BoxShadow {
+                        color: color.opacity(0.65),
+                        offset: point(px(0.), px(0.)),
+                        blur_radius: px(18.),
+                        spread_radius: px(2.),
+                        inset: false,
+                    }])
+                    .child(picture)
+            }
+        }
         // The web's conic sweep from their colour through amber, cyan and
-        // violet; GPUI draws two-stop linear gradients, so it runs from
-        // their colour to cyan.
+        // violet. GPUI draws two-stop linear gradients, so a still frame runs
+        // from their colour to cyan; a moving one is drawn in pieces, as the
+        // sweep itself, turning.
+        Some(AvatarFrame::Gradient) if live => band(
+            outer,
+            None,
+            Some(frame_motion::spectrum(color).into_any_element()),
+            picture,
+        ),
         Some(AvatarFrame::Gradient) => band(
             outer,
-            linear_gradient(
+            Some(linear_gradient(
                 210.,
                 linear_color_stop(color, 0.),
                 linear_color_stop(theme::hex(0x22d3ee), 1.),
-            ),
+            )),
+            None,
             picture,
         ),
-        // Gold whatever their colour, as on the web.
+        // Gold whatever their colour, as on the web; a glint crosses it now
+        // and then when it moves.
         Some(AvatarFrame::Gold) => band(
             outer,
-            linear_gradient(
+            Some(linear_gradient(
                 135.,
                 linear_color_stop(theme::hex(0xfde68a), 0.),
                 linear_color_stop(theme::hex(0xb45309), 1.),
-            ),
+            )),
+            live.then(|| frame_motion::glint().into_any_element()),
             picture,
         ),
         Some(AvatarFrame::Dashed) => outer
@@ -201,7 +262,7 @@ pub fn person(p: Person, size: Pixels, theme: &Theme) -> Div {
     };
     let face = match p
         .server
-        .and_then(|s| people::picture_url(m.avatar_url.as_deref(), s))
+        .and_then(|s| people::member_picture(m.avatar_src.as_deref(), m.avatar_url.as_deref(), s))
     {
         Some(url) => div()
             .id(ElementId::Name(format!("avatar-picture-{}", p.key).into()))

@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::fixture::{Fixture, bootstrap, open_with, snapshot, wait};
 
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = crate::fixture::HANG_GUARD;
 
 fn conversation(id: &str, name: &str) -> Value {
     json!({"id": id, "networkId": "n1", "kind": "channel", "name": name,

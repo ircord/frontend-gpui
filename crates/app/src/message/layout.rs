@@ -321,14 +321,24 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
         },
         _ => m.clone(),
     };
-    let body = (!(m.body.text.trim().is_empty() && !m.attachments.is_empty()))
-        .then(|| body::render(&spoken, &view.ctx, theme, &inline, window, cx));
-    let extras: Vec<AnyElement> = reactions::render(m, &view.ctx, theme, window, cx)
-        .into_iter()
-        .chain(attachments::render(m, &view.ctx, theme, window, cx))
-        .chain(links::render(m, &view.ctx, theme, window, cx))
-        .map(IntoElement::into_any_element)
-        .collect();
+    let body = (!(m.body.text.trim().is_empty() && !m.attachments.is_empty())).then(|| {
+        body::render(
+            &spoken,
+            &view.ctx,
+            theme,
+            &inline,
+            look.size as f32,
+            window,
+            cx,
+        )
+    });
+    let extras: Vec<AnyElement> =
+        reactions::render(m, &view.ctx, view.lights.as_ref(), theme, window, cx)
+            .into_iter()
+            .chain(attachments::render(m, &view.ctx, theme, window, cx))
+            .chain(links::render(m, &view.ctx, theme, window, cx))
+            .map(IntoElement::into_any_element)
+            .collect();
 
     let on_hover = view.on_hover.clone();
     let row_hover = theme.row_hover;
@@ -467,7 +477,11 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                     ),
                     None => ui::avatar::avatar(&m.sender, None, px(avatar), theme),
                 };
-                person(face, format!("sender-avatar-{}", m.id), m.sender.clone())
+                let face = person(face, format!("sender-avatar-{}", m.id), m.sender.clone());
+                match view.attract.clone().filter(|fx| fx.avatar) {
+                    Some(fx) => super::attract::avatar(face, fx, avatar, &m.id, theme),
+                    None => face,
+                }
             } else {
                 // Grouped rows keep the text column, with no time.
                 div().w(px(avatar)).flex_none().into_any_element()
@@ -486,6 +500,16 @@ pub fn render(view: MessageView, theme: &Theme, window: &mut Window, cx: &mut Ap
                 .child(gutter)
                 .child(column);
         }
+    }
+    if let Some(fx) = view.attract.filter(|fx| fx.row) {
+        frame = frame.child(super::attract::row(fx, &m.id, theme));
+    }
+    if let Some(fx) = view.lights.as_ref().filter(|fx| fx.row) {
+        // The glint over the row is painted by the timeline's lights layer.
+        frame = frame.child(crate::timeline::lights::probe(
+            fx.stage.clone(),
+            crate::timeline::lights::row_key(&m.id),
+        ));
     }
     if view.hovered || super::menu_open(&view.ctx, cx) {
         frame = frame.child(toolbar(&view.ctx, theme, window, cx));

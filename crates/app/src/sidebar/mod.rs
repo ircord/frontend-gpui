@@ -15,9 +15,13 @@
 //!   N1's own entries are in [`menus`]. Slots marked `at_bottom` (the
 //!   connection indicator) sit under the list.
 //!
+//! The open conversation's highlight glides from row to row on a spring
+//! ([`glide`]); with reduced motion the open row draws it itself.
+//!
 //! Redraws when the sidebar's data, the documents it reads, the selection,
 //! the connection or the layout change.
 
+pub mod glide;
 pub mod glyph;
 pub mod layout;
 pub mod menus;
@@ -43,6 +47,7 @@ use crate::registry::{self, ConversationCtx, NetworkCtx, SidebarCtx};
 use crate::route::Route;
 use crate::session::{Session, SessionEvent};
 use crate::theme::{self, Theme};
+use crate::timeline::lights;
 use crate::ui;
 use crate::ui::icon::IconName;
 
@@ -236,7 +241,20 @@ pub struct SidebarView {
     /// (bound in the window's root context) work before anything is clicked.
     focus: FocusHandle,
     focused_once: bool,
+    /// The mention badges: the count last drawn for each conversation and
+    /// the ring one is sending out (`timeline::lights::badge_ring`).
+    badges: std::cell::RefCell<std::collections::HashMap<String, BadgeState>>,
+    /// A timer is out that ends the ring being drawn.
+    ring_timer: Cell<bool>,
+    /// The open row's highlight, which glides between rows.
+    glide: glide::Shared,
     _subscription: Subscription,
+}
+
+/// What the sidebar remembers of one conversation's mention badge.
+struct BadgeState {
+    count: i64,
+    ring: Option<std::time::Instant>,
 }
 
 impl SidebarView {
@@ -262,12 +280,17 @@ impl SidebarView {
             session,
             focus: cx.focus_handle(),
             focused_once: false,
+            badges: Default::default(),
+            ring_timer: Cell::new(false),
+            glide: glide::Shared::default(),
             _subscription: subscription,
         }
     }
 }
 
-fn badge(count: i64, theme: &Theme) -> Div {
+/// The mention badge, with the ring it sends out `ring` seconds after its
+/// count rose.
+fn badge(count: i64, ring: Option<f32>, theme: &Theme) -> Div {
     let text = if count > 99 {
         t!("sidebar-badge-many").to_string()
     } else {
@@ -286,6 +309,50 @@ fn badge(count: i64, theme: &Theme) -> Div {
         .bg(theme.mention)
         .text_color(theme.on_accent)
         .child(text)
+        .relative()
+        .when_some(ring.and_then(lights::badge_ring), |d, (reach, alpha)| {
+            d.child(
+                div()
+                    .id("mention-ring")
+                    .test_support()
+                    .absolute()
+                    .top(px(-reach))
+                    .bottom(px(-reach))
+                    .left(px(-reach))
+                    .right(px(-reach))
+                    .rounded_full()
+                    .border_2()
+                    .border_color(theme.mention.opacity(alpha)),
+            )
+        })
+}
+
+impl SidebarView {
+    /// How long ago the mention badge of `c` began its ring, when it is
+    /// sending one: its count has risen since it was last drawn (never the
+    /// first time it is drawn, nor with reduced motion).
+    fn ring(&self, c: &Conversation, theme: &Theme) -> Option<f32> {
+        let mut badges = self.badges.borrow_mut();
+        let now = std::time::Instant::now();
+        let state = badges.entry(c.id.clone()).or_insert(BadgeState {
+            count: c.mention_count,
+            ring: None,
+        });
+        if c.mention_count > state.count && !theme.reduced_motion {
+            state.ring = Some(now);
+        }
+        state.count = c.mention_count;
+        let t = state.ring?.elapsed().as_secs_f32();
+        (t < lights::RING_SECS).then_some(t)
+    }
+
+    /// Whether a ring is on its way, so the window should draw on.
+    fn ringing(&self) -> bool {
+        self.badges.borrow().values().any(|s| {
+            s.ring
+                .is_some_and(|at| at.elapsed().as_secs_f32() < lights::RING_SECS)
+        })
+    }
 }
 
 /// A page in the block at the top of the sidebar (Inbox, Saved, Server):
@@ -389,6 +456,7 @@ impl SidebarView {
         section: Section,
         number: Option<usize>,
         active: bool,
+        gliding: bool,
         server: Option<&url::Url>,
         theme: &Theme,
     ) -> AnyElement {
@@ -459,7 +527,13 @@ impl SidebarView {
                 theme.muted
             })
             .border_1()
-            .when(active, |d| {
+            // The highlight is drawn behind the rows when it glides; the open
+            // row then only takes the open text.
+            .when(active && gliding, |d| {
+                d.border_color(gpui_kit::transparent_black())
+                    .font_weight(FontWeight::SEMIBOLD)
+            })
+            .when(active && !gliding, |d| {
                 let border = if theme.hibiki { 0.58 } else { 0.26 };
                 let d = d
                     .bg(theme.selected)
@@ -512,8 +586,11 @@ impl SidebarView {
         if let Some(n) = number {
             row = row.aria_description(SharedString::from(number_label(n)));
         }
+        // Seen for every drawn row, so a count that fell to nothing and rises
+        // again rings.
+        let ring = self.ring(c, theme);
         if c.mention_count > 0 {
-            row = row.child(badge(c.mention_count, theme));
+            row = row.child(badge(c.mention_count, ring, theme));
         } else if unread && !muted && !active {
             row = row.child(
                 div()
@@ -691,50 +768,65 @@ impl SidebarView {
         server: Option<&url::Url>,
         theme: &Theme,
     ) -> AnyElement {
-        let mut list = div()
-            .id("conversation-list")
-            .test_support()
-            .role(Role::List)
-            .aria_label(t!("sidebar-conversations"))
-            .flex_1()
-            .flex()
-            .flex_col()
-            .gap_0p5()
-            .px_2()
-            .py_1()
-            .overflow_y_scroll();
+        // With motion the highlight is the list's first child, a canvas under
+        // the rows; the rows are counted from it to find the open one.
+        let gliding = !theme.reduced_motion;
+        let mut items: Vec<AnyElement> = Vec::new();
+        let mut open = None;
+        if gliding {
+            items.push(glide::layer(self.glide.clone(), theme.clone()).into_any_element());
+        }
         let numbers = order::numbered(w, network);
         let filter = Filter {
             active: selected,
             unread_only: layout.unread_only,
         };
         for view in order::sections(w, network, &layout.collapsed, filter) {
-            list = list.child(self.section_heading(network, &view, theme));
+            items.push(self.section_heading(network, &view, theme));
             for c in &view.shown {
                 let number = numbers.iter().position(|id| *id == c.id).map(|i| i + 1);
                 let active = selected == Some(c.id.as_str());
-                list = list.child(self.conversation_row(
+                if active {
+                    open = Some(items.len());
+                }
+                items.push(self.conversation_row(
                     w,
                     c,
                     view.section,
                     number,
                     active,
+                    gliding,
                     server,
                     theme,
                 ));
             }
             if view.section == Section::Directs && view.items.is_empty() && !view.collapsed {
-                list = list.child(
+                items.push(
                     div()
                         .id("sidebar-no-directs")
                         .px_2()
                         .py_1()
                         .text_xs()
                         .text_color(theme.faint)
-                        .child(t!("sidebar-no-directs")),
+                        .child(t!("sidebar-no-directs"))
+                        .into_any_element(),
                 );
             }
         }
+        let mut list = div().flex_1().flex().flex_col().gap_0p5().px_2().py_1();
+        if gliding {
+            let (shared, network) = (self.glide.clone(), network.to_string());
+            list = list.on_children_prepainted(move |rows, _, _| {
+                shared.report(network.clone(), &rows, open)
+            });
+        }
+        let list = list
+            .id("conversation-list")
+            .test_support()
+            .role(Role::List)
+            .aria_label(t!("sidebar-conversations"))
+            .overflow_y_scroll()
+            .children(items);
         list.into_any_element()
     }
 
@@ -938,7 +1030,14 @@ impl SidebarView {
             .when(active, |d| d.bg(theme.selected))
             .when(!active, |d| d.hover(|d| d.bg(theme.hover)))
             .child(body)
-            .when(mention || unread, |d| {
+            .when(mention, |d| {
+                d.child(div().absolute().top(px(-4.)).right(px(-4.)).child(badge(
+                    c.mention_count,
+                    self.ring(c, theme),
+                    theme,
+                )))
+            })
+            .when(!mention && unread, |d| {
                 d.child(
                     div()
                         .absolute()
@@ -946,7 +1045,7 @@ impl SidebarView {
                         .right(px(2.))
                         .size(px(6.))
                         .rounded_full()
-                        .bg(if mention { theme.danger } else { theme.text }),
+                        .bg(theme.text),
                 )
             })
             .on_click(move |_, _, cx| {
@@ -972,6 +1071,7 @@ impl SidebarView {
         server: Option<&url::Url>,
         theme: &Theme,
         route: Option<&Route>,
+        frost: Option<AnyElement>,
     ) -> Div {
         let selected = route.and_then(Route::conversation);
         let (channels, directs): (Vec<_>, Vec<_>) = order::ordered(w, network)
@@ -1027,7 +1127,13 @@ impl SidebarView {
             .flex()
             .flex_col()
             .items_center()
-            .when(theme.app_background().is_none(), |d| d.bg(theme.sidebar))
+            .bg(if frost.is_some() {
+                hsla(0., 0., 0., 0.)
+            } else {
+                theme.sidebar
+            })
+            .relative()
+            .children(frost)
             .child(div().h(px(48.)).flex().items_center().child(restore))
             .child(column)
     }
@@ -1035,6 +1141,33 @@ impl SidebarView {
 
 impl Render for SidebarView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sidebar = self.build(window, cx);
+        if self.ringing() {
+            // A badge's ring plays at the display's rate, and the view draws
+            // once more when it is over (the timer also ends it where
+            // frames are not drawn on their own: the headless tests).
+            window.request_animation_frame();
+            if !self.ring_timer.replace(true) {
+                let runtime = self.session.read(cx).runtime.clone();
+                let over = std::time::Duration::from_secs_f32(lights::RING_SECS);
+                let paced = runtime.spawn(async move { tokio::time::sleep(over).await });
+                cx.spawn(async move |this, cx| {
+                    let _ = paced.await;
+                    this.update(cx, |this, cx| {
+                        this.ring_timer.set(false);
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+        }
+        sidebar
+    }
+}
+
+impl SidebarView {
+    fn build(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // The workspace takes the keyboard when it appears (the sign-in
         // form's field may still hold it, though it is gone), and whenever
         // nothing else has it.
@@ -1044,6 +1177,8 @@ impl Render for SidebarView {
         }
         let theme = theme::get(cx).clone();
         let layout = layout::get(cx);
+        // The highlight draws itself again when the frame is painted.
+        glide::forget(cx);
         let session = self.session.read(cx);
         let Some(client) = session.client().cloned() else {
             return div().w(px(8.)).into_any_element();
@@ -1070,10 +1205,20 @@ impl Render for SidebarView {
         let w = client.read();
         let network = selected_network.as_deref().and_then(|id| w.network(id));
 
+        let shell = theme::backdrop::shell(&theme, cx);
         if !layout.show_list {
             let folded = network
-                .map(|n| self.folded(&w, &n.id, pictures_from.as_ref(), &theme, route.as_ref()))
-                .unwrap_or_else(|| div().w(px(FOLDED)).h_full().bg(theme.sidebar));
+                .map(|n| {
+                    self.folded(
+                        &w,
+                        &n.id,
+                        pictures_from.as_ref(),
+                        &theme,
+                        route.as_ref(),
+                        theme::backdrop::panel(&theme, Corners::default(), cx),
+                    )
+                })
+                .unwrap_or_else(|| div().w(px(FOLDED)).h_full().bg(shell));
             return div()
                 .id("sidebar")
                 .track_focus(&self.focus)
@@ -1269,10 +1414,9 @@ impl Render for SidebarView {
                     .flex_none()
                     .flex()
                     .flex_col()
-                    .when(
-                        theme.app_background().is_none() || window.viewport_size().width < px(900.),
-                        |d| d.bg(theme.sidebar),
-                    )
+                    .bg(shell)
+                    .relative()
+                    .children(theme::backdrop::panel(&theme, Corners::default(), cx))
                     .child(search)
                     .child(
                         div()
