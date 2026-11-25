@@ -69,9 +69,8 @@ whose `target/` is up to date gains nothing from it. CI does not use it.
 
 Install [Dioxus CLI 0.7.10](https://github.com/DioxusLabs/dioxus/releases/tag/v0.7.10)
 and run `cargo xtask dev` from the repository root. If multiple tools supply
-`dx`, set `IRCORD_DX` to the absolute path of the Dioxus executable. Quit
-your other GPUI instance first so the development build can use your saved
-session. Leave the dev command running while editing Rust code.
+`dx`, set `IRCORD_DX` to the absolute path of the Dioxus executable.
+Leave the dev command running while editing Rust code.
 
 The development launcher has its own package so the watcher recompiles the
 UI library for a hot patch. GPUI applies compatible view changes in the
@@ -80,14 +79,15 @@ at startup can require a restart. In the interactive terminal, press `r`
 to force a full build. Use `cargo xtask dev --restart` to rebuild and
 replace the app on each edit. Press Ctrl+C to stop the watcher and app.
 
-On macOS, sign development builds with the same identity to keep Keychain
-approval across rebuilds. The watcher uses a valid `IRCord Local Development`
-code-signing identity when present. Set `IRCORD_DEV_SIGNING_IDENTITY` to use a
-different identity by name or fingerprint. The first signed launch may ask for
-access to the saved sign-in. Choose **Always Allow** for the signed dev app.
-The signed watcher rebuilds and restarts the app at a fixed bundle path.
-Dioxus 0.7.10 writes a web page into the bundle when it applies a hot patch,
-which invalidates the bundle signature.
+On macOS, sign in once in the dev client. It keeps its own session in a private
+SQLite database under `~/Library/Application Support/com.ircord.gpui/development`.
+The installed client keeps its session in Keychain.
+
+The watcher uses a valid `IRCord Local Development` code-signing identity when
+present. Set `IRCORD_DEV_SIGNING_IDENTITY` to use a different identity by name
+or fingerprint. The signed watcher rebuilds and restarts the app at a fixed
+bundle path. Dioxus 0.7.10 writes a web page into the bundle when it applies a
+hot patch, which invalidates the bundle signature.
 
 ### Installers
 

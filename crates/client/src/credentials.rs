@@ -12,6 +12,11 @@ use std::sync::Mutex;
 use crate::address::ServerAddress;
 use crate::config::APP_ID;
 
+#[cfg(target_os = "macos")]
+mod dev;
+#[cfg(target_os = "macos")]
+pub use dev::DevStore;
+
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct StoreError(pub String);
