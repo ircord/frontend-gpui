@@ -124,7 +124,9 @@ fn click(f: &Fixture, cx: &mut TestAppContext, id: &str) {
     cx.run_until_parked();
 }
 
+/// The tokens drawn once a change has finished fading in.
 fn colour(cx: &mut TestAppContext) -> theme::Theme {
+    wait(cx, "the colours to settle", |cx| !theme::fade::active(cx));
     cx.update(|cx| theme::get(cx).clone())
 }
 
@@ -197,6 +199,7 @@ fn switching_scheme_accent_and_font_redraws_and_saves_to_the_account(cx: &mut Te
     assert_eq!(before, theme::hex(dark_tokens("ircord-dark", None).main));
 
     click(&f, cx, "appearance-scheme-nord");
+    colour(cx);
     let nord = dark_tokens("nord-dark", None);
     wait(cx, "Nord", |cx| {
         theme::get(cx).main == theme::hex(nord.main)

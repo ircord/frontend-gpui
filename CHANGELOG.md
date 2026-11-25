@@ -6,6 +6,10 @@
 
 - The comet of `/attract` keeps the same distance from the message's text below as above it; its outline used to run close under letters that hang below the line, such as g, p and y.
 
+### New
+
+- A change of colours, light or dark, scheme or accent, now fades across the window over a fifth of a second instead of snapping. It follows the Motion setting: with reduced motion the colours change at once.
+
 ## v0.5.0 — 2026-11-24
 
 ### New

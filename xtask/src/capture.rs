@@ -11,6 +11,7 @@
 //! times while it plays (the last two around its landing) and once after it
 //! ends, then restarts the app to show it signs in from there, and opens Settings → Emotes → Discover (emoji.gg's emoji, read by
 //! the backend over the internet).
+//! `CAPTURE_ONLY=fade` captures a change of colours fading, nothing else.
 //! A personal theme's background picture is captured last, behind the window
 //! and behind the conversation, in dark and light.
 //! Screenshots and the app's logs land in `target/capture/`; look at them.
@@ -110,6 +111,23 @@ grep -q 'attribute.service = com.ircord.gpui' "$OUT/keyring.txt" \
   || { echo "the sign-in was not saved in the keyring"; exit 1; }
 echo "the sign-in is in GNOME Keyring (target/capture/keyring.txt)"
 
+# `CAPTURE_ONLY=fade`: a change of colours fades. The account's appearance is
+# switched to dark while the app shows the workspace in light, and the screen
+# is captured as fast as it goes (software drawing, so a few frames per
+# second) until it has settled.
+if [ "${CAPTURE_ONLY:-}" = fade ]; then
+  sleep 2
+  shot fade-0-before
+  curl -fsS -o /dev/null -X PUT -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+    -d '{"settings":{"mode":"dark"}}' "$SERVER/api/v1/app/appearance"
+  for n in 1 2 3 4 5 6; do shot fade-$n-$(date +%s%3N); done
+  sleep 2
+  shot fade-9-after
+  # Fail when nothing changed (the account was not in light to begin with).
+  ! cmp -s "$OUT/fade-0-before.png" "$OUT/fade-9-after.png" || { echo "the colours did not change"; exit 1; }
+  stop_app fade
+  exit 0
+fi
 if [ -z "${CAPTURE_ONLY:-}" ]; then
 # A server emoji typed into the message box draws as its picture. Typing
 # with nothing focused goes into the box.
