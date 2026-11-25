@@ -20,10 +20,12 @@ use chrono::{Local, NaiveDate};
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::IndexPath;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::calendar::{Calendar, CalendarEvent, CalendarState, Date, Matcher};
 use gpui_kit::component::combobox::{Combobox, ComboboxState};
 use gpui_kit::component::input::{
     Backspace, Escape, Input, InputEvent, InputState, MoveDown, MoveUp,
 };
+use gpui_kit::component::popover::Popover;
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::{Selectable, Sizable};
 use gpui_kit::prelude::*;
@@ -2279,6 +2281,13 @@ enum When {
     Between,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum DateField {
+    On,
+    After,
+    Before,
+}
+
 struct FiltersDialog {
     model: Entity<SearchModel>,
     draft: Filters,
@@ -2287,6 +2296,9 @@ struct FiltersDialog {
     on: Entity<InputState>,
     after: Entity<InputState>,
     before: Entity<InputState>,
+    calendar: Option<DateField>,
+    calendar_state: Entity<CalendarState>,
+    _calendar_subscription: Subscription,
     error: Option<String>,
 }
 
@@ -2492,15 +2504,37 @@ fn open_filters(model: &Entity<SearchModel>, scoped: bool, window: &mut Window, 
     } else {
         When::Any
     };
-    let view = cx.new(|_| FiltersDialog {
-        model: model.clone(),
-        draft,
-        menus,
-        when,
-        on,
-        after,
-        before,
-        error: None,
+    let calendar_state = cx.new(|cx| CalendarState::new(window, cx));
+    let view = cx.new(|cx| {
+        let subscription = cx.subscribe_in(
+            &calendar_state,
+            window,
+            |this: &mut FiltersDialog, _, event: &CalendarEvent, window, cx| {
+                if let (Some(field), CalendarEvent::Selected(Date::Single(Some(day)))) =
+                    (this.calendar, event)
+                {
+                    this.date_input(field).update(cx, |input, cx| {
+                        input.set_value(day.format("%Y-%m-%d").to_string(), window, cx)
+                    });
+                    this.calendar = None;
+                    this.error = None;
+                    cx.notify();
+                }
+            },
+        );
+        FiltersDialog {
+            model: model.clone(),
+            draft,
+            menus,
+            when,
+            on,
+            after,
+            before,
+            calendar: None,
+            calendar_state,
+            _calendar_subscription: subscription,
+            error: None,
+        }
     });
     ui::dialog::open(
         window,
@@ -2511,6 +2545,43 @@ fn open_filters(model: &Entity<SearchModel>, scoped: bool, window: &mut Window, 
 }
 
 impl FiltersDialog {
+    fn date_input(&self, field: DateField) -> &Entity<InputState> {
+        match field {
+            DateField::On => &self.on,
+            DateField::After => &self.after,
+            DateField::Before => &self.before,
+        }
+    }
+
+    fn open_calendar(&mut self, field: DateField, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = sf::parse_day(self.date_input(field).read(cx).value().trim());
+        let (min, max) = self.calendar_bounds(field, cx);
+        self.calendar_state.update(cx, |state, cx| {
+            state.set_disabled_matcher_shared(None);
+            state.set_date(
+                Date::Single(Some(selected.unwrap_or_else(today))),
+                window,
+                cx,
+            );
+            state.set_date(Date::Single(selected), window, cx);
+            state.set_disabled_matcher(Matcher::interval(min, Some(max)), window, cx);
+        });
+        self.calendar = Some(field);
+        cx.notify();
+    }
+
+    fn calendar_bounds(&self, field: DateField, cx: &App) -> (Option<NaiveDate>, NaiveDate) {
+        let parsed = |input: &Entity<InputState>| sf::parse_day(input.read(cx).value().trim());
+        match field {
+            DateField::On => (None, today()),
+            DateField::After => (
+                None,
+                parsed(&self.before).unwrap_or_else(today).min(today()),
+            ),
+            DateField::Before => (parsed(&self.after), today()),
+        }
+    }
+
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut result = self.draft.clone();
         let existing = result.chips();
@@ -2576,6 +2647,7 @@ impl FiltersDialog {
     fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.draft = Filters::default();
         self.when = When::Any;
+        self.calendar = None;
         self.error = None;
         for menu in &self.menus {
             menu.state
@@ -2586,6 +2658,60 @@ impl FiltersDialog {
         }
         cx.notify();
     }
+}
+
+fn date_field(
+    field: DateField,
+    input: &Entity<InputState>,
+    calendar: Option<DateField>,
+    calendar_state: &Entity<CalendarState>,
+    cx: &mut Context<FiltersDialog>,
+) -> Div {
+    let (id, label) = match field {
+        DateField::On => ("on", t!("search-filters-sent-on")),
+        DateField::After => ("after", t!("search-filters-sent-after")),
+        DateField::Before => ("before", t!("search-filters-sent-before")),
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .min_w_0()
+        .child(
+            div().flex_1().min_w_0().child(
+                Input::new(input)
+                    .id(ElementId::Name(format!("search-filter-{id}").into()))
+                    .aria_label(label),
+            ),
+        )
+        .child({
+            let state = calendar_state.clone();
+            let focus = state.read(cx).focus_handle.clone();
+            let view = cx.entity().downgrade();
+            Popover::new(ElementId::Name(
+                format!("search-calendar-popover-{id}").into(),
+            ))
+            .open(calendar == Some(field))
+            .track_focus(&focus)
+            .trigger(
+                Button::new(ElementId::Name(format!("search-calendar-{id}").into()))
+                    .ghost()
+                    .small()
+                    .icon(IconName::Calendar)
+                    .accessibility_label(t!("search-calendar-open", field = label)),
+            )
+            .on_open_change(move |open, window, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    if *open {
+                        this.open_calendar(field, window, cx);
+                    } else if this.calendar == Some(field) {
+                        this.calendar = None;
+                        cx.notify();
+                    }
+                });
+            })
+            .content(move |_, _, _| Calendar::new(&state))
+        })
 }
 
 fn field(title: &'static str, help: Option<&'static str>, theme: &Theme) -> Div {
@@ -2634,6 +2760,7 @@ impl Render for FiltersDialog {
                     &theme,
                     cx.listener(move |this, _, _, cx| {
                         this.when = value;
+                        this.calendar = None;
                         cx.notify();
                     }),
                 )
@@ -2646,31 +2773,33 @@ impl Render for FiltersDialog {
         match self.when {
             When::Any => {}
             When::On => {
-                date = date.child(
-                    Input::new(&self.on)
-                        .id("search-filter-on")
-                        .aria_label(t!("search-filters-sent-on")),
-                )
+                date = date.child(date_field(
+                    DateField::On,
+                    &self.on,
+                    self.calendar,
+                    &self.calendar_state,
+                    cx,
+                ))
             }
             When::Between => {
                 date = date.child(
                     div()
                         .flex()
                         .gap_2()
-                        .child(
-                            div().flex_1().min_w_0().child(
-                                Input::new(&self.after)
-                                    .id("search-filter-after")
-                                    .aria_label(t!("search-filters-sent-after")),
-                            ),
-                        )
-                        .child(
-                            div().flex_1().min_w_0().child(
-                                Input::new(&self.before)
-                                    .id("search-filter-before")
-                                    .aria_label(t!("search-filters-sent-before")),
-                            ),
-                        ),
+                        .child(div().flex_1().min_w_0().child(date_field(
+                            DateField::After,
+                            &self.after,
+                            self.calendar,
+                            &self.calendar_state,
+                            cx,
+                        )))
+                        .child(div().flex_1().min_w_0().child(date_field(
+                            DateField::Before,
+                            &self.before,
+                            self.calendar,
+                            &self.calendar_state,
+                            cx,
+                        ))),
                 )
             }
         }

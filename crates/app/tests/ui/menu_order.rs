@@ -147,6 +147,16 @@ fn the_conversation_menu_is_in_the_web_order(cx: &mut TestAppContext) {
     // A channel you are an operator in: the web's
     // favourite, notifications | channel tools | history | leave.
     let rows = right_click(&f, cx, "conversation-c-general");
+    frame(&f, cx, |window, _| {
+        let title = window.find("context-menu-title").bounds();
+        let action = window.find_by_label("Add to favourites").bounds();
+        // The title aligns with the padded row edge, before the action icon column.
+        let label_edge = action.left() + window.rem_size() * 0.5;
+        assert!(
+            (title.left() - label_edge).abs() <= gpui_kit::px(2.),
+            "title {title:?}, action {action:?}"
+        );
+    });
     // Only this client: Links and Gallery, with the history.
     assert_eq!(
         rows,

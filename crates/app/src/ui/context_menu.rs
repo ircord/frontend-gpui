@@ -125,9 +125,29 @@ pub fn fill<C: Clone + MenuTitle + 'static>(
     if items.is_empty() {
         return menu;
     }
-    // The title row: not a menu item, so arrow keys pass over it.
+    // The kit reserves an icon column for every row when any row has an
+    // icon. The web's title starts at the row edge, not in that column.
     if let Some(title) = ctx.menu_title(cx) {
-        menu = menu.item(PopupMenuItem::label(title)).separator();
+        let has_icons = items
+            .iter()
+            .any(|item| item.parent.is_none() && item.icon.is_some());
+        menu = menu
+            .item(
+                PopupMenuItem::element(move |_, cx| {
+                    div()
+                        .id("context-menu-title")
+                        .test_support()
+                        .role(Role::MenuItem)
+                        .aria_label(title.clone())
+                        .when(has_icons, |this| this.ml_neg_4())
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(crate::theme::get(cx).muted)
+                        .child(title.clone())
+                })
+                .disabled(true),
+            )
+            .separator();
     }
     let (top, nested): (Vec<_>, Vec<_>) = items.into_iter().partition(|i| i.parent.is_none());
     rows(menu, top, nested, ctx, window, cx)
@@ -167,7 +187,10 @@ fn rows<C: Clone + 'static>(
             continue;
         }
         let (ctx, rest) = (ctx.clone(), nested.clone());
-        let icon = item.icon.clone().map(Icon::new);
+        let icon = item
+            .icon
+            .clone()
+            .map(|icon| Icon::new(icon).text_color(crate::theme::get(cx).muted));
         menu = menu.submenu_with_icon(
             icon,
             item.label.clone(),
@@ -261,7 +284,7 @@ fn entry<C: Clone + 'static>(item: MenuItem<C>, ctx: C, cx: &App) -> PopupMenuIt
         .disabled(item.disabled)
         .on_click(move |_, window, cx| run(&ctx, window, cx));
     if let Some(icon) = item.icon.clone() {
-        entry = entry.icon(icon);
+        entry = entry.icon(Icon::new(icon).text_color(crate::theme::get(cx).muted));
     }
     entry
 }

@@ -110,6 +110,7 @@ search-filters-between = Between
 search-filters-sent-on = Sent on (YYYY-MM-DD)
 search-filters-sent-after = Sent after (YYYY-MM-DD)
 search-filters-sent-before = Sent before (YYYY-MM-DD)
+search-calendar-open = Choose { $field } from calendar
 search-filters-bad-day = Enter dates as YYYY-MM-DD, such as { $example }.
 search-filters-future-day = Choose a date on or before today.
 search-filters-date-order = The start date must be on or before the end date.

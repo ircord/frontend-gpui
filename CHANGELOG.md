@@ -20,8 +20,9 @@
 - Use the arrow keys to choose a typed search filter, then press Enter or Tab to apply it. Escape closes the suggestions first.
 - Search scrolls to the highlighted result as you use the arrow keys, with the search field and filters kept in view.
 - Search filters use compact multi-select menus, with search for people and conversations.
+- Pick dates from a calendar in Search filters, or type them directly.
 - Search shows the active filter count beside Filters and keeps quick filters in a row of compact pills.
-- Right-click menus use more consistent widths and scroll within the window on smaller screens.
+- Right-click menus use more consistent widths, align titles to the row edge, and scroll within smaller windows.
 - The offline archive follows new messages, edits, and deletions as they happen and catches up after reconnecting.
 - Settings opens over the workspace, so the view you were using stays in place.
 - The Settings header provides quick access to appearance sync on wider windows.

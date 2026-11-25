@@ -435,6 +435,40 @@ fn the_filters_dialog_rejects_future_dates_and_reversed_ranges(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
+fn calendar_respects_range_bounds_and_keeps_typed_dates(cx: &mut TestAppContext) {
+    let f = open(cx);
+    open_page(&f, cx, None);
+    click(&f, cx, "search-filters-button");
+    click(&f, cx, "search-filter-when-between");
+    frame(&f, cx, |window, cx| {
+        window.click("search-filter-after", cx);
+        window.input("2020-02-10", cx);
+        window.click("search-filter-before", cx);
+        window.input("2020-02-20", cx);
+    });
+    click(&f, cx, "search-calendar-before");
+    shows(&f, cx, "calendar-2020-02-10-0-2");
+    frame(&f, cx, |window, _| {
+        assert_eq!(
+            window.find("calendar-2020-02-09-0-2").label(),
+            Some("2020-02-09")
+        );
+    });
+    click(&f, cx, "calendar-2020-02-09-0-2");
+    shows(&f, cx, "calendar-2020-02-10-0-2");
+    click(&f, cx, "calendar-2020-02-15-0-2");
+    click(&f, cx, "search-calendar-after");
+    shows(&f, cx, "calendar-2020-02-15-0-2");
+    click(&f, cx, "calendar-2020-02-16-0-3");
+    shows(&f, cx, "calendar-2020-02-15-0-2");
+    click(&f, cx, "search-calendar-after");
+    click(&f, cx, "search-filters-apply");
+    searched(&f, cx, "calendar date range", |r| {
+        param(r, "after").len() == 1 && param(r, "before").len() == 1
+    });
+}
+
+#[gpui_kit::test]
 fn searching_one_conversation_beside_it_with_server_history(cx: &mut TestAppContext) {
     let f = open(cx);
     click(&f, cx, "search-conversation-toggle");
