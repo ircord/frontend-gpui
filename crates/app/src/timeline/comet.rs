@@ -141,13 +141,22 @@ pub struct Track {
     h: f32,
 }
 
+/// How far the track sits inside the row at the top, in px.
+const INSET: f32 = 1.;
+/// How far the track reaches past the row's bottom edge, in px. Letters hang
+/// below the baseline (g, p, y), so with the track inside the row by
+/// [`INSET`] at the bottom too, the outline sat about 1 px from them where
+/// it keeps 3 px from the capitals. Moving it 2 px down (1 px past the row)
+/// levels the gap under the text with the gap above it.
+const DESCENT: f32 = 1.;
+
 impl Track {
     pub fn new(row: Bounds<Pixels>) -> Self {
         Track {
             x: f(row.left()) + 5.,
-            y: f(row.top()) + 1.,
+            y: f(row.top()) + INSET,
             w: (f(row.size.width) - 10.).max(1.),
-            h: (f(row.size.height) - 2.).max(1.),
+            h: (f(row.size.height) - INSET + DESCENT).max(1.),
         }
     }
 
@@ -485,7 +494,9 @@ fn paint(shape: &Shape, window: &mut Window) {
 /// The canvas over the timeline that paints `comets` (oldest first) from
 /// the places their rows and avatars reported to `stage` while they were
 /// painted. A comet whose row is out of view draws nothing. The layer takes
-/// no clicks; `bottom` leaves the typing line under the list alone.
+/// no clicks; `bottom` leaves the typing line under the list alone, except
+/// for the [`DESCENT`] px the layer reaches into it so the outline of the
+/// last row is not cut off (the typing line has room above its text).
 pub fn layer(
     stage: Stage,
     comets: Vec<(Target, Moment)>,
@@ -499,7 +510,7 @@ pub fn layer(
         .top_0()
         .left_0()
         .right_0()
-        .bottom(bottom)
+        .bottom(bottom - px(DESCENT))
         .child(
             canvas(
                 |_, _, _| (),
@@ -525,7 +536,9 @@ pub fn layer(
 
 #[cfg(test)]
 mod tests {
-    use super::{BURST, LANDS, LAP, Moment, Palette, SPARK_LIFE, Shape, f, head, rect, shapes};
+    use super::{
+        BURST, LANDS, LAP, Moment, Palette, SPARK_LIFE, Shape, Track, f, head, rect, shapes,
+    };
     use crate::theme::Theme;
     use gpui_kit::{Bounds, Pixels};
 
@@ -565,7 +578,7 @@ mod tests {
         assert!(f(later.x) > 200. && f(later.y) == 101.);
         // Half a lap later it is on the bottom edge.
         let below = head(r, LAP / 2. + 0.01).unwrap();
-        assert!((f(below.y) - 139.).abs() < 0.01, "{below:?}");
+        assert!((f(below.y) - 141.).abs() < 0.01, "{below:?}");
         // After a lap it is back where it started.
         let lap = head(r, LAP).unwrap();
         assert!((f(lap.x) - 5.).abs() < 0.5 && (f(lap.y) - 101.).abs() < 0.5);
@@ -576,7 +589,17 @@ mod tests {
     fn a_lap_takes_the_same_time_on_a_tall_row() {
         let tall = rect(0., 100., 800., 400.);
         let half = head(tall, LAP / 2. + 0.01).unwrap();
-        assert!((f(half.y) - 499.).abs() < 0.01);
+        assert!((f(half.y) - 501.).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_outline_clears_the_descenders_as_far_as_the_capitals() {
+        // The top is inset into the row; the bottom reaches past the row.
+        let r = row();
+        let track = Track::new(r);
+        let top = f(track.bounds().top()) - f(r.top());
+        let bottom = f(track.bounds().bottom()) - f(r.bottom());
+        assert_eq!((top, bottom), (1., 1.), "gap above equals gap below");
     }
 
     #[test]
