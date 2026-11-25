@@ -13,8 +13,15 @@
 //! client does (`stopMicTrackOnMute`).
 //!
 //! The server gives a signalling address under its own host
-//! (`wss://<host>/voice`); LiveKit's library sends the token as an
-//! `Authorization: Bearer` header there.
+//! (`wss://<host>/voice`). LiveKit's library sends the token as an
+//! `Authorization: Bearer` header there, which the IRCord backend does not
+//! read; it reads the `access_token` query parameter, as the web client
+//! sends it. So the token goes into the address's query as well
+//! ([`signal_url`]), and the library keeps that query when it adds its own
+//! path and parameters. The query keeps the first token for the whole call:
+//! a reconnect after that token has expired (30 seconds) is refused, and
+//! the call ends, until the backend prefers the bearer header, which carries
+//! the refreshed token.
 
 use std::collections::HashSet;
 
@@ -122,7 +129,15 @@ async fn run(request: Connect, events: Events, mut commands: mpsc::UnboundedRece
     let mut options = RoomOptions::default();
     options.auto_subscribe = true;
     let mut settings = request.settings.clone();
-    let connecting = Room::connect(&request.url, &request.token, options);
+    let url = match signal_url(&request.url, &request.token) {
+        Ok(url) => url,
+        Err(e) => {
+            log::warn!("voice: the server's signalling address is not usable: {e}");
+            let _ = events.send(MediaEvent::Failed(t_connect_failed()));
+            return;
+        }
+    };
+    let connecting = Room::connect(&url, &request.token, options);
     let (room, mut room_events) = tokio::select! {
         connected = connecting => match connected {
             Ok(connected) => connected,
@@ -165,6 +180,13 @@ async fn run(request: Connect, events: Events, mut commands: mpsc::UnboundedRece
                 Some(Command::Apply(settings)) => {
                     if let Some(audio) = &call.audio {
                         configure(audio, &settings, &call.settings);
+                        // Switching the microphone restarts recording where
+                        // it was still initialised; a closed microphone stays
+                        // closed.
+                        if call.microphone.is_none() && audio.is_recording_initialized() {
+                            let _ = audio.stop_recording();
+                            call.recording_stopped = true;
+                        }
                     }
                     call.settings = settings;
                 }
@@ -364,6 +386,14 @@ fn t_connect_failed() -> String {
     "could not connect to the media server".into()
 }
 
+/// The signalling address `url` with `token` as its `access_token`, the
+/// form the IRCord backend reads.
+fn signal_url(url: &str, token: &str) -> Result<String, url::ParseError> {
+    let mut url = url::Url::parse(url)?;
+    url.query_pairs_mut().append_pair("access_token", token);
+    Ok(url.into())
+}
+
 /// `text` without `token`, for the log.
 fn redact(text: &str, token: &str) -> String {
     if token.is_empty() {
@@ -376,6 +406,15 @@ fn redact(text: &str, token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_token_rides_in_the_signalling_query() {
+        assert_eq!(
+            signal_url("wss://chat.example/voice", "a.b+c").unwrap(),
+            "wss://chat.example/voice?access_token=a.b%2Bc"
+        );
+        assert!(signal_url("not an address", "t").is_err());
+    }
 
     #[test]
     fn tokens_stay_out_of_the_log() {

@@ -105,6 +105,8 @@ pub struct VoiceModel {
     call: Option<Box<dyn Call>>,
     /// Reads the open call's events.
     _events: Option<Task<()>>,
+    /// Counts room list requests, so only the newest answer is used.
+    rooms_asked: u64,
     _subscription: Subscription,
 }
 
@@ -133,6 +135,7 @@ impl VoiceModel {
             settings,
             call: None,
             _events: None,
+            rooms_asked: 0,
             _subscription: subscription,
         };
         model.load_rooms(cx);
@@ -159,10 +162,16 @@ impl VoiceModel {
             }
             return;
         }
+        // Answers can overtake each other; only the newest request's counts.
+        self.rooms_asked += 1;
+        let asked = self.rooms_asked;
         let task = client.request(|api| async move { api.voice_rooms().await });
         cx.spawn(async move |this, cx| {
             let rooms = task.await;
             let _ = this.update(cx, |this, cx| {
+                if asked != this.rooms_asked {
+                    return;
+                }
                 match rooms {
                     Ok(Ok(rooms)) => {
                         if let Some(hangup) = this.voice.set_rooms(rooms) {
@@ -231,9 +240,13 @@ impl VoiceModel {
             while let Some(event) = receiver.recv().await {
                 let alive = this.update(cx, |this, cx| this.media(attempt, event, cx));
                 if alive.is_err() {
-                    break;
+                    return;
                 }
             }
+            // The media layer went away without a word (its task ended):
+            // the call is over. After a hangup this task is dropped first,
+            // and a call that already ended ignores it.
+            let _ = this.update(cx, |this, cx| this.media(attempt, MediaEvent::Ended, cx));
         }));
     }
 

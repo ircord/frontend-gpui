@@ -5069,6 +5069,7 @@ dependencies = [
  "livekit",
  "log",
  "tokio",
+ "url",
 ]
 
 [[package]]

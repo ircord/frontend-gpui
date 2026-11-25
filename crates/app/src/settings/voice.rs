@@ -4,9 +4,9 @@
 //! device (`ircord_client::voice::AudioSettings`) and apply at once, to a
 //! call under way too.
 //!
-//! The devices are read from the media layer when the section shows, and
-//! again when it is drawn after a few seconds, off the UI thread: opening
-//! the system's sound devices can take a moment.
+//! The devices are read from the media layer when the section is drawn,
+//! off the UI thread (opening the system's sound devices can take a
+//! moment), and read again when it is next drawn after five seconds.
 
 use std::time::{Duration, Instant};
 
@@ -69,8 +69,8 @@ struct DeviceList {
 }
 impl Global for DeviceList {}
 
-/// How long a read of the devices holds while the section shows, so a
-/// headset plugged in meanwhile appears.
+/// How long a read of the devices holds: a headset plugged in meanwhile
+/// appears the next time the section is drawn after that.
 const DEVICES_FRESH: Duration = Duration::from_secs(5);
 
 fn read_devices(ctx: &SettingsCtx, cx: &mut App) {

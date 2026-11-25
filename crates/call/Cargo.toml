@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 ircord-client.workspace = true
 log = "0.4"
+url.workspace = true
 tokio = { version = "1", features = ["rt", "sync", "macros"] }
 # The media connection, with WebRTC's own audio device module (microphone,
 # speakers, echo cancellation). Its prebuilt libwebrtc needs clang 21 to

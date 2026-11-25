@@ -229,6 +229,23 @@ fn the_call_ending_on_its_own_says_so_and_gives_the_place_back(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
+fn a_call_without_sound_devices_says_so_and_stays(cx: &mut TestAppContext) {
+    let fake = FakeConnector::automatic(vec![person("i-me", "me", true)]);
+    let f = with_voice(cx, &fake);
+    wait_drawn(&f, cx, "voice-room-r1");
+    click(&f, cx, "voice-room-r1");
+    labelled(&f, cx, "voice-status", "Voice connected");
+    fake.report(MediaEvent::AudioUnavailable);
+    labelled(
+        &f,
+        cx,
+        "voice-call-error",
+        "No sound device could be opened: you cannot hear or be heard in this call.",
+    );
+    labelled(&f, cx, "voice-status", "Voice connected");
+}
+
+#[gpui_kit::test]
 fn a_refused_join_shows_the_servers_reason(cx: &mut TestAppContext) {
     let fake = FakeConnector::default();
     let f = with_voice_and(cx, &fake, |server| {

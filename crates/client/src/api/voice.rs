@@ -15,8 +15,9 @@ fn room_path(id: &str, rest: &str) -> String {
 }
 
 impl Api {
-    /// `GET /voice/rooms`: every room, by name. An older or voiceless server
-    /// answers an empty list.
+    /// `GET /voice/rooms`: every room, by name. A server without voice
+    /// answers an empty list (one without the route, an error); a `null`
+    /// body is read as empty too.
     pub async fn voice_rooms(&self) -> Result<Vec<c::Room>, ApiError> {
         self.get::<Option<Vec<c::Room>>>("/api/v1/voice/rooms")
             .await

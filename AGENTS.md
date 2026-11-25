@@ -30,8 +30,8 @@ client; it never speaks IRC itself. Layout and commands are in
   app itself never links GStreamer. A UI test that needs sound calls
   `media::sound::use_null`; the fixture opens no device.
 - Voice calls are `crates/call` (LiveKit, whose prebuilt libwebrtc needs the
-  image's clang 21); the ladder checks it for Windows only, and CI's Mac job
-  is its only macOS build. The call's rules are `ircord_client::voice::Voice`;
+  image's clang 21); the ladder builds it for Linux and Windows, never for
+  macOS: CI's Mac job is its only macOS build. The call's rules are `ircord_client::voice::Voice`;
   a UI test installs `testing::voice::FakeConnector` with
   `features::voice::use_connector`, never LiveKit.
 - `crates/contract/src/generated.rs` is generated from every schema in the
@@ -74,8 +74,10 @@ client; it never speaks IRC itself. Layout and commands are in
   `impl IntoElement` and call `.test_support()` at the use.
   Enter in a dialog's field also fires the dialog's Confirm, which closes
   it: a form that submits on Enter gives the dialog `.on_ok(|_, _, _| false)`.
-  Icons: the app embeds only gpui-kit's default set (`ui::icon::IconName`);
-  a Lucide-only `gpui_kit::assets::IconName` compiles but draws nothing.
+  Icons: the app embeds gpui-kit's default set (`ui::icon::IconName`) and
+  the Lucide icons listed in `ui/icon.rs`'s `WorkspaceIcons`; any other
+  Lucide-only `gpui_kit::assets::IconName` compiles but draws nothing, so
+  add it there.
   GPUI timers never fire in the headless tests: a debounce sleeps on the
   session's tokio runtime (`Session::runtime`), as `features/links.rs` does.
   A full page is a `ui::page::Page` (description, count chip, close, key
