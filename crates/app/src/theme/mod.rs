@@ -175,7 +175,7 @@ fn default_theme() -> &'static Theme {
     DEFAULT.get_or_init(Theme::default)
 }
 
-/// Replace the active tokens and redraw every window.
+/// Replace the active tokens at once, ending any fade, and redraw every window.
 pub fn set(theme: Theme, cx: &mut App) {
     fade::cancel(cx);
     cx.set_global(theme);

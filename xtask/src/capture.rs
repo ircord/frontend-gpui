@@ -123,6 +123,8 @@ if [ "${CAPTURE_ONLY:-}" = fade ]; then
   for n in 1 2 3 4 5 6; do shot fade-$n-$(date +%s%3N); done
   sleep 2
   shot fade-9-after
+  # Fail when nothing changed (the account was not in light to begin with).
+  ! cmp -s "$OUT/fade-0-before.png" "$OUT/fade-9-after.png" || { echo "the colours did not change"; exit 1; }
   stop_app fade
   exit 0
 fi

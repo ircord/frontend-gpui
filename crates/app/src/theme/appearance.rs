@@ -57,11 +57,13 @@ pub(super) fn init(cx: &mut App) {
         };
         set_rem_size(window, cx);
         cx.observe_window_appearance(window, |_, window, cx| {
-            system_changed(mode_of(window.appearance()), cx);
+            system_changed(mode_of(window.appearance()), true, cx);
         })
         .detach();
         let system = mode_of(window.appearance());
-        cx.defer(move |cx| system_changed(system, cx));
+        // The first read is of what the window opens in: nothing was drawn
+        // in other colours to fade from.
+        cx.defer(move |cx| system_changed(system, false, cx));
     })
     .detach();
     apply(cx);
@@ -74,11 +76,11 @@ fn mode_of(appearance: WindowAppearance) -> Mode {
     }
 }
 
-fn system_changed(mode: Mode, cx: &mut App) {
+fn system_changed(mode: Mode, fade: bool, cx: &mut App) {
     let state = cx.global_mut::<State>();
     if state.system != Some(mode) {
         state.system = Some(mode);
-        apply(cx);
+        apply_with(cx, fade);
     }
 }
 
@@ -95,7 +97,8 @@ fn attach(session: Entity<Session>, cx: &mut App) {
     state.session = Some(session.downgrade());
     state._session = Some(subscription);
     watch(&session, cx);
-    apply(cx);
+    // This device's copy is what the window opens in: it shows at once.
+    apply_with(cx, false);
 }
 
 fn on_session(session: &Entity<Session>, event: &SessionEvent, cx: &mut App) {
@@ -192,7 +195,7 @@ pub fn sync(cx: &App) -> bool {
     cx.try_global::<State>().is_none_or(|s| s.device.sync)
 }
 
-/// The appearance as drawn now.
+/// The appearance as drawn, or as drawn once a fade in progress ends.
 pub fn compiled(cx: &App) -> Compiled {
     cx.try_global::<State>()
         .and_then(|s| s.compiled.clone())
@@ -301,8 +304,15 @@ pub fn set_custom_css(cx: &mut App, on: bool) {
     apply(cx);
 }
 
-/// Recompile and, when anything changed, apply to every window.
+/// Recompile and, when anything changed, apply to every window, fading the
+/// colours in.
 pub fn apply(cx: &mut App) {
+    apply_with(cx, true);
+}
+
+/// [`apply`]; with `fade` false the change shows at once, for what a window
+/// opens in.
+fn apply_with(cx: &mut App, fade: bool) {
     let look = look(cx);
     let mode = look.resolve_mode(system_mode(cx));
     let compiled = look::compile_with_css(&look, mode, &themes(cx), false, css_allowed(cx));
@@ -315,7 +325,7 @@ pub fn apply(cx: &mut App) {
     let mut theme = super::Theme::from_compiled(&compiled);
     apply_css_fonts(&mut theme, &compiled, cx);
     cx.set_reduce_motion(theme.reduced_motion);
-    let runtime = state_runtime(cx);
+    let runtime = fade.then(|| state_runtime(cx)).flatten();
     if !super::fade::start(theme.clone(), runtime, show, cx) {
         show(theme, cx);
     }

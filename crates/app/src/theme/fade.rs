@@ -15,23 +15,23 @@ use gpui_kit::{App, Global, Hsla, Rgba};
 use super::Theme;
 
 /// How long the colours take to arrive.
-pub const DURATION: Duration = Duration::from_millis(200);
+const DURATION: Duration = Duration::from_millis(200);
 /// The pause between frames.
 const FRAME: Duration = Duration::from_millis(16);
 
 /// How far the fade has come, 0 to 1, eased out: quick at first, then settling.
-pub fn progress(elapsed: Duration) -> f32 {
+fn progress(elapsed: Duration) -> f32 {
     let t = (elapsed.as_secs_f32() / DURATION.as_secs_f32()).clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
 }
 
 /// Whether the fade is over.
-pub fn finished(elapsed: Duration) -> bool {
+fn finished(elapsed: Duration) -> bool {
     elapsed >= DURATION
 }
 
 /// A colour `t` of the way from `from` to `to`, mixed in sRGB with its alpha.
-pub fn colour(from: Hsla, to: Hsla, t: f32) -> Hsla {
+fn colour(from: Hsla, to: Hsla, t: f32) -> Hsla {
     // The ends are the colours themselves, not a round trip through sRGB.
     if t <= 0.0 {
         return from;
@@ -49,39 +49,65 @@ pub fn colour(from: Hsla, to: Hsla, t: f32) -> Hsla {
     })
 }
 
-/// The theme `t` of the way from `from` to `to`: colours are mixed, every
-/// other token is `to`'s.
-pub fn mix(from: &Theme, to: &Theme, t: f32) -> Theme {
-    let c = |f: Hsla, o: Hsla| colour(f, o, t);
-    let mut theme = to.clone();
-    theme.rail = c(from.rail, to.rail);
-    theme.sidebar = c(from.sidebar, to.sidebar);
-    theme.footer = c(from.footer, to.footer);
-    theme.main = c(from.main, to.main);
-    theme.input = c(from.input, to.input);
-    theme.hover = c(from.hover, to.hover);
-    theme.row_hover = c(from.row_hover, to.row_hover);
-    theme.selected = c(from.selected, to.selected);
-    theme.text = c(from.text, to.text);
-    theme.muted = c(from.muted, to.muted);
-    theme.faint = c(from.faint, to.faint);
-    theme.accent = c(from.accent, to.accent);
-    theme.on_accent = c(from.on_accent, to.on_accent);
-    theme.link = c(from.link, to.link);
-    theme.danger = c(from.danger, to.danger);
-    theme.warning = c(from.warning, to.warning);
-    theme.online = c(from.online, to.online);
-    theme.away = c(from.away, to.away);
-    theme.offline = c(from.offline, to.offline);
-    theme.mention = c(from.mention, to.mention);
-    theme.code = c(from.code, to.code);
-    theme.panel = c(from.panel, to.panel);
-    theme.raised = c(from.raised, to.raised);
-    theme.border = c(from.border, to.border);
-    theme.control_border = c(from.control_border, to.control_border);
-    theme.body = c(from.body, to.body);
-    theme
+/// The colour tokens of a [`Theme`], named once: [`mix`] blends them and
+/// [`same_colours`] compares them. The exhaustive pattern in `listed` fails
+/// to compile when a field of `Theme` is in neither this list nor the
+/// non-colour one, so a new colour cannot be left out of the fade.
+macro_rules! colours {
+    ($($field:ident),* $(,)?) => {
+        /// The theme `t` of the way from `from` to `to`: colours are mixed,
+        /// every other token is `to`'s.
+        pub(super) fn mix(from: &Theme, to: &Theme, t: f32) -> Theme {
+            let mut theme = to.clone();
+            $(theme.$field = colour(from.$field, to.$field, t);)*
+            theme
+        }
+
+        /// Whether no colour differs.
+        fn same_colours(a: &Theme, b: &Theme) -> bool {
+            true $(&& a.$field == b.$field)*
+        }
+
+        #[allow(dead_code)]
+        fn listed(theme: Theme) {
+            let Theme {
+                $($field: _,)*
+                dark: _, hibiki: _, font: _, mono_font: _, message_font: _,
+                message_size: _, group_gap: _, row_padding: _, radius: _,
+                radius_large: _, compact: _, scale: _, reduced_motion: _,
+            } = theme;
+        }
+    };
 }
+
+colours!(
+    rail,
+    sidebar,
+    footer,
+    main,
+    input,
+    hover,
+    row_hover,
+    selected,
+    text,
+    muted,
+    faint,
+    accent,
+    on_accent,
+    link,
+    danger,
+    warning,
+    online,
+    away,
+    offline,
+    mention,
+    code,
+    panel,
+    raised,
+    border,
+    control_border,
+    body,
+);
 
 /// The fade in progress: the theme it ends on, which what is expensive to
 /// redraw (diagrams, the ambient light) reads at once.
@@ -121,7 +147,8 @@ pub(super) fn cancel(cx: &mut App) {
 
 /// Fade from the active tokens to `to`, drawing each frame through `show`.
 /// Returns false, leaving everything to the caller, when the change should
-/// snap: reduced motion, nothing open to show it, or no runtime to pace it.
+/// snap: reduced motion, nothing open to show it, no runtime to pace it, or
+/// no colour that changes.
 pub(super) fn start(
     to: Theme,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
@@ -135,7 +162,11 @@ pub(super) fn start(
     let Some(runtime) = runtime else {
         return false;
     };
-    if to.reduced_motion || from.reduced_motion || cx.windows().is_empty() || from == to {
+    if to.reduced_motion
+        || from.reduced_motion
+        || cx.windows().is_empty()
+        || same_colours(&from, &to)
+    {
         return false;
     }
     if !cx.has_global::<Fades>() {
