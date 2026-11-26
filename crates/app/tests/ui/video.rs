@@ -1,6 +1,7 @@
 //! The video player (package M5), against fake backends: the view drawing
 //! pictures one per frame, and the player in a message: its box, play and
-//! pause, failures, one at a time, the large viewer.
+//! pause, failures, one at a time, the large viewer; and the banner when the
+//! system's GStreamer lacks what video needs.
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
@@ -8,13 +9,13 @@ use std::time::Duration;
 use gpui_kit::prelude::*;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{Bounds, Point, TestAppContext, WindowBounds, WindowOptions, point, px, size};
-use ircord_app::features::video::{self, Available, Opener};
+use ircord_app::features::video::{self, Available, Opener, Prober};
 use ircord_app::media::{self, video_view::VideoView};
 use ircord_client::contract::{Attachment, ChannelSettings, MessagePage};
 use ircord_client::testing::Reply;
-use ircord_platform::video::{Frame, State, Video};
+use ircord_platform::video::{Frame, Part, Probe, State, Video};
 
-use crate::fixture::{Fixture, open_with, wait};
+use crate::fixture::{Fixture, bootstrap, open_with, wait};
 
 struct Fake {
     serial: Rc<Cell<u64>>,
@@ -605,4 +606,79 @@ fn the_audit_passes_with_a_video_playing(cx: &mut TestAppContext) {
         })
         .unwrap();
     assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// A signed-in window whose probe of GStreamer found `parts` missing; Check
+/// again answers with what `next` holds then.
+fn missing_gstreamer(
+    cx: &mut TestAppContext,
+    parts: Vec<Part>,
+) -> (Fixture, std::sync::Arc<std::sync::Mutex<Probe>>) {
+    let f = open_with(cx, true, |_| {});
+    bootstrap(&f, cx);
+    let next = std::sync::Arc::new(std::sync::Mutex::new(Probe::Missing(parts.clone())));
+    let answer = next.clone();
+    cx.update(|cx| {
+        cx.set_global(Prober(std::sync::Arc::new(move || {
+            answer.lock().unwrap().clone()
+        })));
+        video::set_probe(cx, Probe::Missing(parts));
+    });
+    (f, next)
+}
+
+#[gpui_kit::test]
+fn missing_gstreamer_plugins_are_named_until_check_again_finds_them(cx: &mut TestAppContext) {
+    let (f, next) = missing_gstreamer(cx, vec![Part::Good, Part::Libav]);
+    assert!(shown(&f, cx, "gstreamer-banner"));
+    assert!(!cx.update(|cx| video::available(cx)), "video stays off");
+    let missing = label(&f, cx, "gstreamer-missing").unwrap();
+    assert!(
+        missing.contains("lacks the good plugins, the libav plugin"),
+        "{missing}"
+    );
+    // The command, where this distribution has one (the test container is
+    // Debian), installs all three plugin sets.
+    if let Some(command) = label(&f, cx, "gstreamer-command") {
+        for part in ["base", "good", "libav"] {
+            assert!(command.contains(part), "{command}");
+        }
+        assert!(shown(&f, cx, "gstreamer-copy"));
+    }
+    let problems = cx
+        .update_window(f.window, |_, window, cx| {
+            crate::audit::audit("gstreamer banner", window, cx)
+        })
+        .unwrap();
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    // Still missing: the banner stays.
+    click(&f, cx, "gstreamer-check");
+    wait(cx, "the second probe", |cx| !video::checking(cx));
+    assert!(shown(&f, cx, "gstreamer-banner"));
+
+    *next.lock().unwrap() = Probe::Ready;
+    click(&f, cx, "gstreamer-check");
+    wait(cx, "video to turn on", |cx| video::available(cx));
+    assert!(!shown(&f, cx, "gstreamer-banner"));
+}
+
+#[gpui_kit::test]
+fn no_gstreamer_at_all_says_so_and_not_now_puts_it_off(cx: &mut TestAppContext) {
+    let (f, _) = missing_gstreamer(cx, vec![Part::Gstreamer]);
+    let missing = label(&f, cx, "gstreamer-missing").unwrap();
+    assert!(missing.contains("which is not installed"), "{missing}");
+    click(&f, cx, "gstreamer-dismiss");
+    assert!(!shown(&f, cx, "gstreamer-banner"));
+    assert!(!cx.update(|cx| video::available(cx)));
+}
+
+#[gpui_kit::test]
+fn nothing_to_install_shows_no_banner(cx: &mut TestAppContext) {
+    let f = open_with(cx, true, |_| {});
+    bootstrap(&f, cx);
+    for probe in [Probe::Ready, Probe::Off] {
+        cx.update(|cx| video::set_probe(cx, probe));
+        assert!(!shown(&f, cx, "gstreamer-banner"));
+    }
 }

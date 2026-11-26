@@ -93,10 +93,43 @@ jobs:
             '
             echo "::endgroup::"
           done
-      - name: Collect the installer and source revisions
+      # Without FUSE in the container the AppImage unpacks itself and runs.
+      # Without GStreamer the video helper names what is missing; with the
+      # packages the .deb depends on, it has all it needs.
+      - name: Start the AppImage on clean Ubuntu, without and with GStreamer
+        timeout-minutes: 15
+        run: |
+          docker run --rm -v "$PWD/dist:/dist:ro" -e DEBIAN_FRONTEND=noninteractive -e APPIMAGE_EXTRACT_AND_RUN=1 ubuntu:24.04 bash -euxc '
+            sed -i -E "s#https?://(archive|security)\.ubuntu\.com/ubuntu/?#http://azure.archive.ubuntu.com/ubuntu/#" /etc/apt/sources.list.d/ubuntu.sources
+            apt="apt-get -q -o Acquire::Retries=3 -o Acquire::http::Timeout=30"
+            $apt update
+            $apt install -y xvfb x11-utils libasound2t64 libvulkan1 mesa-vulkan-drivers libxkbcommon-x11-0 libwayland-client0
+            cp /dist/IRCord-GPUI-Linux-x64.AppImage /tmp/
+            cd /tmp
+            ./IRCord-GPUI-Linux-x64.AppImage --appimage-extract >/dev/null
+            if squashfs-root/usr/bin/ircord-video --probe; then
+              echo "the video helper found GStreamer where there is none" >&2
+              exit 1
+            fi
+            $apt install -y gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+            squashfs-root/usr/bin/ircord-video --probe
+            Xvfb :9 -screen 0 1280x800x24 &
+            export DISPLAY=:9
+            sleep 1
+            ./IRCord-GPUI-Linux-x64.AppImage &
+            app=$!
+            for _ in $(seq 60); do
+              xwininfo -root -tree | grep -q "\"IRCord\"" && break
+              kill -0 "$app"
+              sleep 0.5
+            done
+            xwininfo -root -tree | grep "\"IRCord\""
+            kill "$app"
+          '
+      - name: Collect the installers and source revisions
         run: |
           mkdir installers
-          cp dist/IRCord-GPUI-Linux-x64.deb installers/
+          cp dist/IRCord-GPUI-Linux-x64.deb dist/IRCord-GPUI-Linux-x64.AppImage installers/
           printf 'frontend-gpui=%s\nbackend-contract=%s\n' "$(git rev-parse HEAD)" "$(cat crates/contract/backend-commit)" \
             > installers/build-info.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

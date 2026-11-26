@@ -38,3 +38,10 @@ desktop-tray-missing = This desktop shows no tray icon; the mark appears where i
 
 # A second copy started while one runs
 desktop-already-running = You already have an instance of IRCord running.
+
+# Started from an AppImage with no menu entry for it (Linux)
+desktop-appimage-label = Add to the applications menu
+desktop-appimage-offer = Add IRCord GPUI to your applications menu? The entry starts the AppImage at { $path }.
+desktop-appimage-add = Add to menu
+desktop-appimage-decline = Not now
+desktop-appimage-failed = Could not add the menu entry: { $error }

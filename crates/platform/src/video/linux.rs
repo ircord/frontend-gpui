@@ -4,10 +4,10 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::{Frame, State, Video};
+use super::{Frame, Part, Probe, State, Video};
 
 struct Shared {
     frame: Option<Frame>,
@@ -31,25 +31,63 @@ fn helper() -> Option<PathBuf> {
     beside.is_file().then_some(beside)
 }
 
-/// The helper is there and GStreamer has what it needs. Asked once.
-pub fn available() -> bool {
-    static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
-        helper().is_some_and(|path| {
-            Command::new(path)
-                .arg("--probe")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success())
+/// What the helper says of this machine's GStreamer. Runs it: call it off
+/// the interface thread.
+pub fn probe() -> Probe {
+    let Some(path) = helper() else {
+        return Probe::Off;
+    };
+    let mut command = Command::new(path);
+    command
+        .arg("--probe")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    crate::appimage::system_env(&mut command);
+    match command.output() {
+        Ok(out) if out.status.success() => Probe::Ready,
+        Ok(out) if out.status.code() == Some(1) => {
+            Probe::Missing(parts(&String::from_utf8_lossy(&out.stdout)))
+        }
+        // The loader found no GStreamer library to start the helper with.
+        Ok(out) if out.status.code() == Some(127) => Probe::Missing(vec![Part::Gstreamer]),
+        // A crash is not something to install: no video, and the log says why.
+        Ok(out) => {
+            log::warn!("the video helper's probe failed: {}", out.status);
+            Probe::Off
+        }
+        Err(e) => {
+            log::warn!("the video helper did not start: {e}");
+            Probe::Off
+        }
+    }
+}
+
+/// The parts `ircord-video --probe` named, one per line; GStreamer itself
+/// when it named none it knows.
+pub(super) fn parts(out: &str) -> Vec<Part> {
+    let parts: Vec<Part> = out
+        .lines()
+        .filter_map(|line| match line.trim() {
+            "gstreamer" => Some(Part::Gstreamer),
+            "base" => Some(Part::Base),
+            "good" => Some(Part::Good),
+            "libav" => Some(Part::Libav),
+            _ => None,
         })
-    })
+        .collect();
+    if parts.is_empty() {
+        vec![Part::Gstreamer]
+    } else {
+        parts
+    }
 }
 
 pub fn open(url: &str, width: u32, height: u32) -> Result<HelperVideo, String> {
     let path = helper().ok_or("the video helper is not installed")?;
-    let mut child = Command::new(path)
+    let mut command = Command::new(path);
+    crate::appimage::system_env(&mut command);
+    let mut child = command
         .args([url, &width.to_string(), &height.to_string()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -176,5 +214,20 @@ impl Drop for HelperVideo {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_probe_names_the_missing_parts() {
+        assert_eq!(parts("good\nlibav\n"), vec![Part::Good, Part::Libav]);
+        assert_eq!(parts("base\n"), vec![Part::Base]);
+        assert_eq!(parts("gstreamer\n"), vec![Part::Gstreamer]);
+        // An answer it cannot read: GStreamer as a whole.
+        assert_eq!(parts(""), vec![Part::Gstreamer]);
+        assert_eq!(parts("something else\n"), vec![Part::Gstreamer]);
     }
 }

@@ -7,24 +7,32 @@
 //! [`available`] says this machine plays video (on Linux: the
 //! `ircord-video` helper and GStreamer). Otherwise, and for a video that
 //! cannot play, the person gets the card that opens the browser.
+//!
+//! On Linux the helper uses the system's GStreamer. When that lacks what
+//! video needs (as an AppImage can find it; the `.deb` depends on it), a
+//! banner across the main pane says what is missing and the command that
+//! installs it on this distribution, with Check again to turn video on once
+//! it is there.
 
 use std::collections::HashSet;
 use std::rc::Rc;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::Disableable;
 use gpui_kit::component::WindowExt;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use ircord_platform::video::{self, State, Video};
+use ircord_platform::video::{self, Part, Probe, State, Video};
 use tokio::runtime::Runtime;
 
 use crate::features::shortcuts::MarkRead;
 use crate::features::viewer::{self, Media};
 use crate::media::controls::{self, Controls, Transport};
 use crate::media::{self, video_view::VideoView};
-use crate::registry::{self, PlayableCtx, PlayableKind, Slot};
+use crate::registry::{self, BannerCtx, PlayableCtx, PlayableKind, Slot};
 use crate::session::{Session, SessionEvent};
 use crate::theme::{self, Theme};
 use crate::ui;
@@ -48,10 +56,31 @@ pub type Open = Rc<dyn Fn(&str, u32, u32) -> Result<Box<dyn Video>, String>>;
 pub struct Opener(pub Open);
 impl Global for Opener {}
 
-/// Whether video plays here, set by tests; without it, what
-/// [`ircord_platform::video::available`] says, asked once at start.
+/// Whether video plays here, set by tests; without it, what the probe of
+/// this machine ([`ircord_platform::video::probe`]) found.
 pub struct Available(pub bool);
 impl Global for Available {}
+
+/// How this machine is probed: [`ircord_platform::video::probe`] unless a
+/// test installs a fake. Check again runs it.
+pub struct Prober(pub Arc<dyn Fn() -> Probe + Send + Sync>);
+impl Global for Prober {}
+
+/// What the last probe found, and the GStreamer banner's own state.
+#[derive(Default)]
+struct Probed {
+    /// `None` until the first probe answers.
+    probe: Option<Probe>,
+    /// A probe is running.
+    checking: bool,
+    /// Not now was pressed: no banner until the next start.
+    dismissed: bool,
+    /// Copy command was pressed.
+    copied: bool,
+    /// A test set `probe`: the probe at start does not replace it.
+    set_by_test: bool,
+}
+impl Global for Probed {}
 
 /// Keys whose video failed to play: they show the card that opens the
 /// browser until played again.
@@ -97,19 +126,16 @@ pub fn init(cx: &mut App) {
     cx.default_global::<Playing>();
     cx.default_global::<Fullscreened>();
     cx.default_global::<Failed>();
-    // Asking runs the helper once (GStreamer can take seconds the first
-    // time), so it runs on a background thread, not the UI's. A thread of our
-    // own would wake the UI from outside the executor, which the headless
-    // tests' scheduler aborts on. A first draw before the answer showed the
-    // card; draw again once it is in.
-    let probe = cx.background_spawn(async { video::available() });
-    cx.spawn(async move |cx| {
-        let _ = PROBED.set(probe.await);
-        cx.update(|cx| cx.refresh_windows());
-    })
-    .detach();
+    cx.default_global::<Probed>();
+    probe(cx, true);
     registry::register(cx, |r| {
         r.playables.add(Slot::new("video", render));
+        r.banners.add(
+            Slot::new("gstreamer", |_: &BannerCtx, _, cx| {
+                gstreamer_banner(cx).map(IntoElement::into_any_element)
+            })
+            .order(20),
+        );
     });
     // Another video or a sound started: this one stops.
     cx.observe_global::<media::NowPlaying>(|cx| {
@@ -138,8 +164,48 @@ pub fn init(cx: &mut App) {
     .detach();
 }
 
-/// What [`ircord_platform::video::available`] said, once it has.
-static PROBED: OnceLock<bool> = OnceLock::new();
+/// Probe this machine for video. Asking runs the helper (GStreamer can take
+/// seconds the first time), so it runs on a background thread, not the UI's.
+/// A thread of our own would wake the UI from outside the executor, which the
+/// headless tests' scheduler aborts on. A first draw before the answer showed
+/// the card; draw again once it is in. `at_start` leaves a probe a test set.
+fn probe(cx: &mut App, at_start: bool) {
+    let prober = cx
+        .try_global::<Prober>()
+        .map(|p| p.0.clone())
+        .unwrap_or_else(|| Arc::new(video::probe));
+    cx.global_mut::<Probed>().checking = true;
+    cx.refresh_windows();
+    let task = cx.background_spawn(async move { prober() });
+    cx.spawn(async move |cx| {
+        let found = task.await;
+        log::info!("video: {found:?}");
+        cx.update(|cx| {
+            let probed = cx.global_mut::<Probed>();
+            probed.checking = false;
+            if !(at_start && probed.set_by_test) {
+                probed.probe = Some(found);
+                probed.set_by_test = false;
+            }
+            cx.refresh_windows();
+        });
+    })
+    .detach();
+}
+
+/// Set what the probe of this machine found, as a test does to see the
+/// banner; the probe at start does not replace it.
+pub fn set_probe(cx: &mut App, probe: Probe) {
+    let probed = cx.default_global::<Probed>();
+    probed.probe = Some(probe);
+    probed.set_by_test = true;
+    cx.refresh_windows();
+}
+
+/// Whether a probe of this machine is running.
+pub fn checking(cx: &App) -> bool {
+    cx.try_global::<Probed>().is_some_and(|p| p.checking)
+}
 
 /// Whether this machine plays video: [`Available`] when set, else the
 /// probe started by [`init`]. Until the probe answers, videos show their
@@ -147,8 +213,146 @@ static PROBED: OnceLock<bool> = OnceLock::new();
 pub fn available(cx: &App) -> bool {
     match cx.try_global::<Available>() {
         Some(a) => a.0,
-        None => PROBED.get().copied().unwrap_or(false),
+        None => cx
+            .try_global::<Probed>()
+            .is_some_and(|p| p.probe == Some(Probe::Ready)),
     }
+}
+
+/// What the GStreamer banner says GStreamer lacks: one sentence.
+fn missing_text(parts: &[Part]) -> String {
+    if parts.contains(&Part::Gstreamer) {
+        return t!("video-gstreamer-absent").to_string();
+    }
+    let named: Vec<String> = parts
+        .iter()
+        .map(|part| match part {
+            Part::Gstreamer => t!("video-gstreamer-part-gstreamer").to_string(),
+            Part::Base => t!("video-gstreamer-part-base").to_string(),
+            Part::Good => t!("video-gstreamer-part-good").to_string(),
+            Part::Libav => t!("video-gstreamer-part-libav").to_string(),
+        })
+        .collect();
+    t!("video-gstreamer-missing", parts = named.join(", ")).to_string()
+}
+
+/// The banner saying the system's GStreamer lacks what video needs, with the
+/// command that installs it; `None` when nothing is missing or it was put off.
+fn gstreamer_banner(cx: &mut App) -> Option<impl IntoElement + use<>> {
+    let probed = cx.try_global::<Probed>()?;
+    let Some(Probe::Missing(parts)) = &probed.probe else {
+        return None;
+    };
+    if probed.dismissed {
+        return None;
+    }
+    let (checking, copied) = (probed.checking, probed.copied);
+    let missing = missing_text(parts);
+    let command = video::install_command(video::this_family());
+    let theme = theme::get(cx).clone();
+    let how = match command {
+        // The command wraps inside the banner rather than running past it.
+        Some(command) => div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .child(t!("video-gstreamer-install"))
+            .child(
+                div()
+                    .id("gstreamer-command")
+                    .test_support()
+                    .role(Role::Group)
+                    .aria_label(SharedString::from(command))
+                    .w_full()
+                    .px_1p5()
+                    .rounded_sm()
+                    .bg(theme.code)
+                    .text_color(theme.text)
+                    .font_family(theme.mono_font.clone())
+                    .child(command),
+            ),
+        None => div().child(t!("video-gstreamer-install-other")),
+    };
+    Some(
+        div()
+            .id("gstreamer-banner")
+            .test_support()
+            .role(Role::Status)
+            .aria_label(SharedString::from(t!("video-gstreamer-label")))
+            .aria_description(SharedString::from(missing.clone()))
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_4()
+            .py_1p5()
+            .flex_none()
+            .text_sm()
+            .text_color(theme.muted)
+            .bg(theme.sidebar)
+            .border_b_1()
+            .border_color(theme.border)
+            .child(ui::icon::icon(IconName::Info, theme.muted))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .id("gstreamer-missing")
+                            .test_support()
+                            .role(Role::Group)
+                            .aria_label(SharedString::from(missing.clone()))
+                            .text_color(theme.text)
+                            .child(missing),
+                    )
+                    .child(how),
+            )
+            .when_some(command, |d, command| {
+                d.child(
+                    Button::new("gstreamer-copy")
+                        .ghost()
+                        .icon(if copied {
+                            IconName::Check
+                        } else {
+                            IconName::Copy
+                        })
+                        .label(if copied {
+                            t!("video-gstreamer-copied")
+                        } else {
+                            t!("video-gstreamer-copy")
+                        })
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(command.to_string()));
+                            cx.global_mut::<Probed>().copied = true;
+                            cx.refresh_windows();
+                        }),
+                )
+            })
+            .child(
+                Button::new("gstreamer-check")
+                    .ghost()
+                    .label(if checking {
+                        t!("video-gstreamer-checking")
+                    } else {
+                        t!("video-gstreamer-check")
+                    })
+                    .disabled(checking)
+                    .on_click(|_, _, cx| probe(cx, false)),
+            )
+            .child(
+                Button::new("gstreamer-dismiss")
+                    .ghost()
+                    .label(t!("video-gstreamer-dismiss"))
+                    .on_click(|_, _, cx| {
+                        cx.global_mut::<Probed>().dismissed = true;
+                        cx.refresh_windows();
+                    }),
+            ),
+    )
 }
 
 /// The key of the video playing, inline or in the large viewer.

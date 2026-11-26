@@ -13,6 +13,11 @@
 //! the backend over the internet).
 //! `CAPTURE_ONLY=attract` captures `/attract` on a first line, a later line, a message with a reaction and a reply.
 //! `CAPTURE_ONLY=fade` captures a change of colours fading, nothing else.
+//! `CAPTURE_ONLY=appimage` runs `dist/IRCord-GPUI-Linux-x64.AppImage` (from
+//! `cargo xtask package linux`) instead of `dist/ircord`, unpacked as the
+//! container has no FUSE: first with GStreamer's good and libav plugins
+//! hidden (the GStreamer banner and the menu entry offer show), then with
+//! them.
 //! `CAPTURE_ONLY=news` instead sends a conversation taller than the window, a new message, a
 //! reaction and a mention, with a burst of screenshots after each, to look at
 //! the glide-in, the reaction sparks and the glint.
@@ -78,8 +83,20 @@ Xvfb :99 -screen 0 1280x800x24 -extension COMPOSITE >/tmp/xvfb.log 2>&1 &
 export DISPLAY=:99
 i=0; until xdpyinfo >/dev/null 2>&1; do i=$((i + 1)); [ "$i" -lt 50 ] || exit 1; sleep 0.1; done
 
+APP_BIN=dist/ircord
+if [ "${CAPTURE_ONLY:-}" = appimage ]; then
+  APP_BIN=dist/IRCord-GPUI-Linux-x64.AppImage
+  [ -x "$APP_BIN" ] || { echo "run cargo xtask package linux first"; exit 1; }
+  export APPIMAGE_EXTRACT_AND_RUN=1
+  # GStreamer loads only its base plugins (the AppImage's launcher replaces
+  # the plugin path, not this), in a registry of their own: the video helper
+  # finds the good and libav plugins missing.
+  export GST_PLUGIN_LOADING_WHITELIST=gstreamer:gst-plugins-base
+  export GST_REGISTRY_1_0=/tmp/gst-registry-base-only.bin
+fi
+
 start_app() {
-  IRCORD_SERVER=$SERVER RUST_LOG=${RUST_LOG:-info} dist/ircord >>"$OUT/stderr.log" 2>&1 &
+  IRCORD_SERVER=$SERVER RUST_LOG=${RUST_LOG:-info} "$APP_BIN" >>"$OUT/stderr.log" 2>&1 &
   APP=$!
   i=0; until xdotool search --name '^IRCord$' >/dev/null 2>&1; do
     i=$((i + 1)); [ "$i" -lt 100 ] || { echo "no window"; exit 1; }; sleep 0.2
@@ -91,6 +108,11 @@ shot() { import -window root "$OUT/$1.png"; echo "captured target/capture/$1.png
 # The app logs to its settings folder, a fresh file each start.
 stop_app() {
   kill "$APP"; wait "$APP" 2>/dev/null || true
+  # The AppImage runtime starts the app as a child of its own.
+  if [ "$APP_BIN" != dist/ircord ]; then
+    pkill -x ircord 2>/dev/null || true
+    i=0; while pgrep -x ircord >/dev/null; do i=$((i + 1)); [ "$i" -lt 50 ] || break; sleep 0.1; done
+  fi
   cp "$XDG_CONFIG_HOME/com.ircord.gpui/ircord.log" "$OUT/ircord-$1.log"
 }
 
@@ -114,6 +136,21 @@ secret-tool search --all service com.ircord.gpui 2>&1 | grep -v '^secret' >"$OUT
 grep -q 'attribute.service = com.ircord.gpui' "$OUT/keyring.txt" \
   || { echo "the sign-in was not saved in the keyring"; exit 1; }
 echo "the sign-in is in GNOME Keyring (target/capture/keyring.txt)"
+
+# `CAPTURE_ONLY=appimage`: the AppImage's banners, then the same start with
+# GStreamer's plugins back, where only the menu entry offer is left.
+if [ "${CAPTURE_ONLY:-}" = appimage ]; then
+  shot appimage-1-no-plugins
+  stop_app appimage-no-plugins
+  unset GST_PLUGIN_LOADING_WHITELIST GST_REGISTRY_1_0
+  start_app
+  sleep 7
+  shot appimage-2-plugins
+  stop_app appimage-plugins
+  [ ! -e "$XDG_DATA_HOME/applications/com.ircord.gpui.desktop" ] \
+    || { echo "a menu entry was written without asking"; exit 1; }
+  exit 0
+fi
 
 # `CAPTURE_ONLY=fade`: a change of colours fades. The account's appearance is
 # switched to dark while the app shows the workspace in light, and the screen

@@ -1,4 +1,5 @@
-# cargo-packager configuration for the Linux .deb and the Windows setup.
+# cargo-packager configuration for the Linux .deb and AppImage and the Windows
+# setup.
 # `cargo xtask package linux|windows` fills in @VERSION@ (the workspace
 # version) and @ROOT@ (the repository root in the build container), writes the
 # result to target/packager/Packager.toml and runs cargo-packager on it. The
@@ -48,6 +49,43 @@ depends = [
 [deb.files]
 "@ROOT@/dist/ircord-video" = "usr/bin/ircord-video"
 "@ROOT@/packaging/linux/com.ircord.gpui.desktop" = "usr/share/applications/com.ircord.gpui.desktop"
+"@ROOT@/packaging/linux/ircord.svg" = "usr/share/icons/hicolor/scalable/apps/com.ircord.gpui.svg"
+"@ROOT@/packaging/linux/ircord.png" = "usr/share/icons/hicolor/256x256/apps/com.ircord.gpui.png"
+
+# The AppImage carries the same files as the .deb. Inside it the menu entry
+# is ircord.desktop: cargo-packager links the AppImage's own entry to
+# usr/share/applications/<binary>.desktop. Video uses the system's GStreamer
+# (the app says what to install when it is missing), so GStreamer, the GLib
+# under it and what those two need stay out of the AppImage, as do X's own
+# libraries: a library bundled here would also be what the programs the app
+# starts (xdg-open, zenity) load. What is left is libxkbcommon.
+[appimage]
+excludedLibs = [
+    "libgst*",
+    "libglib-2.0*",
+    "libgobject-2.0*",
+    "libgmodule-2.0*",
+    "libgio-2.0*",
+    "liborc-0.4*",
+    "libffi*",
+    "libpcre2*",
+    "libmount*",
+    "libblkid*",
+    "libselinux*",
+    "libdw*",
+    "libelf*",
+    "libunwind*",
+    "liblzma*",
+    "libbz2*",
+    "libXau*",
+    "libXdmcp*",
+    "libbsd*",
+    "libmd*",
+]
+
+[appimage.files]
+"@ROOT@/dist/ircord-video" = "usr/bin/ircord-video"
+"@ROOT@/packaging/linux/com.ircord.gpui.desktop" = "usr/share/applications/ircord.desktop"
 "@ROOT@/packaging/linux/ircord.svg" = "usr/share/icons/hicolor/scalable/apps/com.ircord.gpui.svg"
 "@ROOT@/packaging/linux/ircord.png" = "usr/share/icons/hicolor/256x256/apps/com.ircord.gpui.png"
 

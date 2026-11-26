@@ -4,7 +4,8 @@
 //!
 //! - the installers under their release names,
 //! - `build-info.txt`, after checking every build job built the same commit,
-//! - a `.sig` beside the Windows setup and the macOS `.app.tar.gz`, signed
+//! - a `.sig` beside the Windows setup, the macOS `.app.tar.gz` and the Linux
+//!   AppImage, signed
 //!   with the key in `CARGO_PACKAGER_SIGN_PRIVATE_KEY` (password in
 //!   `CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD`) and checked against
 //!   `packaging/updater.pub`, the key the app trusts,
@@ -14,7 +15,7 @@
 //! signature whose trusted comment names the file), so the app checks them
 //! with cargo-packager-updater.
 
-use crate::package::{LINUX_DEB, MACOS_DMG, MACOS_UPDATE, WINDOWS_SETUP};
+use crate::package::{LINUX_APPIMAGE, LINUX_DEB, MACOS_DMG, MACOS_UPDATE, WINDOWS_SETUP};
 use anyhow::{Context, Result, bail, ensure};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -26,15 +27,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Each build job's artifact and the release assets it holds.
 const ARTIFACTS: [(&str, &[&str]); 3] = [
-    ("ircord-gpui-linux-x64", &[LINUX_DEB]),
+    ("ircord-gpui-linux-x64", &[LINUX_DEB, LINUX_APPIMAGE]),
     ("ircord-gpui-windows-x64", &[WINDOWS_SETUP]),
     ("ircord-gpui-macos-arm64", &[MACOS_DMG, MACOS_UPDATE]),
 ];
 
 /// The updater's entries: manifest key, asset, cargo-packager-updater format.
-const UPDATES: [(&str, &str, &str); 2] = [
+/// The `.deb` has none: it does not update itself.
+const UPDATES: [(&str, &str, &str); 3] = [
     ("macos-aarch64", MACOS_UPDATE, "app"),
     ("windows-x86_64", WINDOWS_SETUP, "nsis"),
+    ("linux-x86_64", LINUX_APPIMAGE, "appimage"),
 ];
 
 pub fn run(root: &Path, version: &str, installers: &Path, out: &Path, repo: &str) -> Result<()> {
@@ -321,7 +324,7 @@ mod tests {
     #[test]
     fn the_manifest_has_the_updater_keys_and_formats() {
         let url = "https://github.com/ircord/frontend-gpui/releases/download/v1.2.3";
-        let m = manifest("1.2.3", url, &["mac".into(), "win".into()]);
+        let m = manifest("1.2.3", url, &["mac".into(), "win".into(), "linux".into()]);
         assert_eq!(m["version"], "1.2.3");
         assert_eq!(m["platforms"]["macos-aarch64"]["format"], "app");
         assert_eq!(m["platforms"]["macos-aarch64"]["signature"], "mac");
@@ -334,7 +337,13 @@ mod tests {
             m["platforms"]["windows-x86_64"]["url"],
             format!("{url}/{WINDOWS_SETUP}")
         );
-        assert_eq!(m["platforms"].as_object().unwrap().len(), 2);
+        assert_eq!(m["platforms"]["linux-x86_64"]["format"], "appimage");
+        assert_eq!(m["platforms"]["linux-x86_64"]["signature"], "linux");
+        assert_eq!(
+            m["platforms"]["linux-x86_64"]["url"],
+            format!("{url}/{LINUX_APPIMAGE}")
+        );
+        assert_eq!(m["platforms"].as_object().unwrap().len(), 3);
     }
 
     #[test]

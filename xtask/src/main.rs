@@ -28,7 +28,7 @@ usage: cargo xtask <command>
   build linux          build dist/ircord and dist/ircord-linux-x86_64.tar.gz in the build container
   build macos          build dist/IRCord GPUI.app (run on a Mac; needs Xcode, no Docker)
   dev [--restart]      watch native code with hot-patching or full restarts (Dioxus CLI 0.7.10)
-  package linux        build dist/IRCord-GPUI-Linux-x64.deb in the build container
+  package linux        build dist/IRCord-GPUI-Linux-x64.deb and .AppImage in the build container
   package windows      build dist/IRCord-GPUI-Windows-x64-setup.exe in the build container
   package macos        build the .dmg and the updater's .app.tar.gz in dist/ (on a Mac)
   check                fmt, clippy, contract check and tests: what CI runs on a pull request

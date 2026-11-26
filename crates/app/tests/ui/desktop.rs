@@ -1,6 +1,6 @@
 //! Tests for package DK1, desktop integration: links handed to the app (as
-//! a second copy or the system hands them), the tray mark's count, and
-//! Settings → This device. The single-copy hand-over itself, link parsing
+//! a second copy or the system hands them), the tray mark's count,
+//! Settings → This device, and the offer of a menu entry to an AppImage. The single-copy hand-over itself, link parsing
 //! and window placement are tested without a window in
 //! `features/desktop.rs`.
 
@@ -161,5 +161,154 @@ fn the_window_place_is_saved_when_it_changes(cx: &mut TestAppContext) {
     wait(cx, "the new size in the device state", move |_| {
         let saved: desktop::Saved = config.section(desktop::SECTION);
         saved.get("width") == Some(&900.0) && saved.get("maximized") == Some(&0.0)
+    });
+}
+
+/// A folder of the test's own under the system's temp folder, removed when
+/// dropped.
+#[cfg(target_os = "linux")]
+struct Scratch(std::path::PathBuf);
+
+#[cfg(target_os = "linux")]
+impl Scratch {
+    fn new() -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "ircord-appimage-{}",
+            ircord_client::client::random_id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Scratch(dir)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn offer_menu_entry(
+    f: &Fixture,
+    cx: &mut TestAppContext,
+    appimage: &std::path::Path,
+    data: &std::path::Path,
+) {
+    let (session, appimage, data) = (f.session.clone(), appimage.to_owned(), data.to_owned());
+    cx.update(|cx| desktop::check_menu_entry(&session, appimage, data, cx));
+}
+
+/// Whether the offer shows, once the window has drawn it so (waiting for
+/// `expected`, then reading what is drawn).
+#[cfg(target_os = "linux")]
+fn menu_offered_is(f: &Fixture, cx: &mut TestAppContext, expected: bool) -> bool {
+    let window = f.window;
+    let drawn = move |cx: &mut gpui_kit::App| {
+        window
+            .update(cx, |_, window, cx| {
+                window.refresh();
+                window.render_frame(cx);
+                window
+                    .try_find("appimage-menu-banner")
+                    .is_some_and(|e| e.visible())
+            })
+            .unwrap_or(false)
+    };
+    wait(cx, "the menu entry offer", move |cx| drawn(cx) == expected);
+    cx.update(drawn)
+}
+
+#[cfg(target_os = "linux")]
+fn menu_offered(f: &Fixture, cx: &mut TestAppContext) -> bool {
+    menu_offered_is(f, cx, true)
+}
+
+#[cfg(target_os = "linux")]
+fn no_menu_offer(f: &Fixture, cx: &mut TestAppContext) -> bool {
+    !menu_offered_is(f, cx, false)
+}
+
+#[cfg(target_os = "linux")]
+#[gpui_kit::test]
+fn an_appimage_without_a_menu_entry_is_offered_one_that_starts_it(cx: &mut TestAppContext) {
+    let f = signed_in(cx, |_| {});
+    let scratch = Scratch::new();
+    let data = scratch.0.join("share");
+    let appimage = scratch.0.join("Applications/IRCord GPUI.AppImage");
+    offer_menu_entry(&f, cx, &appimage, &data);
+    assert!(menu_offered(&f, cx));
+    let problems = cx
+        .update_window(f.window, |_, window, cx| {
+            crate::audit::audit("menu entry offer", window, cx)
+        })
+        .unwrap();
+    assert!(problems.is_empty(), "{problems:#?}");
+    cx.update_window(f.window, |_, window, cx| {
+        let text = window
+            .find("appimage-menu-text")
+            .label()
+            .unwrap()
+            .to_string();
+        assert!(text.contains("IRCord GPUI.AppImage"), "{text}");
+        window.click("appimage-menu-add", cx);
+    })
+    .unwrap();
+    let entry = data.join("applications/com.ircord.gpui.desktop");
+    wait(cx, "the menu entry", |_| entry.is_file());
+    wait(cx, "the offer to go", |cx| {
+        f.window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find("appimage-menu-banner").is_none()
+            })
+            .unwrap_or(false)
+    });
+    let text = std::fs::read_to_string(&entry).unwrap();
+    assert!(
+        text.contains(&format!("Exec=\"{}\" %u", appimage.display())),
+        "{text}"
+    );
+    // The next start finds it in place and asks nothing.
+    offer_menu_entry(&f, cx, &appimage, &data);
+    assert!(no_menu_offer(&f, cx));
+}
+
+#[cfg(target_os = "linux")]
+#[gpui_kit::test]
+fn not_now_is_remembered_for_that_appimage(cx: &mut TestAppContext) {
+    let f = signed_in(cx, |_| {});
+    let scratch = Scratch::new();
+    let data = scratch.0.join("share");
+    let appimage = scratch.0.join("IRCord.AppImage");
+    offer_menu_entry(&f, cx, &appimage, &data);
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("appimage-menu-decline", cx);
+    })
+    .unwrap();
+    assert!(no_menu_offer(&f, cx));
+    assert!(!data.join("applications").exists(), "nothing was written");
+    offer_menu_entry(&f, cx, &appimage, &data);
+    assert!(no_menu_offer(&f, cx), "asked again after Not now");
+    // Another AppImage is asked about.
+    offer_menu_entry(&f, cx, &scratch.0.join("Other.AppImage"), &data);
+    assert!(menu_offered(&f, cx));
+}
+
+#[cfg(target_os = "linux")]
+#[gpui_kit::test]
+fn an_entry_for_a_moved_appimage_follows_it_without_asking(cx: &mut TestAppContext) {
+    let f = signed_in(cx, |_| {});
+    let scratch = Scratch::new();
+    let data = scratch.0.join("share");
+    let before = scratch.0.join("Downloads/IRCord.AppImage");
+    let after = scratch.0.join("Applications/IRCord.AppImage");
+    ircord_platform::appimage::add_menu_entry(&data, &before).unwrap();
+    offer_menu_entry(&f, cx, &after, &data);
+    assert!(no_menu_offer(&f, cx));
+    wait(cx, "the entry to move", |_| {
+        ircord_platform::appimage::menu_entry(&data, &after)
+            == ircord_platform::appimage::MenuEntry::Current
     });
 }

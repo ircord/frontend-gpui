@@ -16,15 +16,26 @@
 //!   messages wait, as the web client's app badge counts them ([`attention`]).
 //! - **Window placement.** The main window opens where it was last, maximised
 //!   if it was, as long as that place is still on a screen ([`placement`]).
+//! - **The AppImage's menu entry.** Started from an AppImage with no menu
+//!   entry for it, the app offers to add one for the current user, starting
+//!   the AppImage where it is; Not now is remembered for that path. An entry
+//!   the app wrote for an AppImage at a path that is gone follows it here
+//!   ([`check_menu_entry`]). Updates replace the file in place, so the entry
+//!   stays right.
 //!
 //! What this device keeps lives in the `desktop` section of the device state.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use futures::StreamExt;
 use futures::channel::mpsc;
+use gpui_kit::TestSupportExt;
+use gpui_kit::component::Disableable;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::config::ConfigDir;
 use ircord_client::contract::{Conversation, ConversationKind};
@@ -33,7 +44,10 @@ use ircord_client::store::Workspace;
 use ircord_client::store::sidebar_order::{self, Level};
 
 use crate::features::{network_form, text};
+use crate::registry::{self, BannerCtx, Slot};
 use crate::session::{Phase, Session, SessionEvent};
+use crate::theme;
+use crate::ui::icon::IconName;
 use crate::{MainView, loading, tray, ui};
 
 /// The device state section DK1 keeps.
@@ -61,7 +75,24 @@ impl Global for Desktop {}
 
 pub fn init(cx: &mut App) {
     cx.default_global::<Desktop>();
+    cx.default_global::<MenuOffer>();
+    registry::register(cx, |r| {
+        r.banners.add(
+            Slot::new("appimage-menu", |_: &BannerCtx, _, cx| {
+                menu_banner(cx).map(IntoElement::into_any_element)
+            })
+            .order(30),
+        );
+    });
     cx.observe_new::<Session>(|session: &mut Session, _, cx| {
+        #[cfg(target_os = "linux")]
+        if let (Some(appimage), Ok(data)) = (
+            ircord_platform::appimage::path(),
+            ircord_platform::appimage::data_home(),
+        ) {
+            let session = cx.entity();
+            cx.defer(move |cx| check_menu_entry(&session, appimage, data, cx));
+        }
         let weak = cx.weak_entity();
         let mark_on = tray_mark_on(&session.config.section(SECTION));
         let desktop = cx.global_mut::<Desktop>();
@@ -710,6 +741,206 @@ fn remember(bounds: WindowBounds, cx: &mut App) {
     .detach();
 }
 
+// ---- The AppImage's menu entry ----------------------------------------
+
+/// The device state section for the AppImage's menu entry: `menuDeclined`,
+/// the AppImage for which Not now was pressed.
+pub const APPIMAGE_SECTION: &str = "appimage";
+
+/// The offer to add the AppImage to the applications menu.
+#[derive(Default)]
+struct MenuOffer {
+    /// The AppImage offered, with the data home its entry goes under; `None`
+    /// when nothing is offered.
+    offered: Option<(PathBuf, PathBuf)>,
+    session: Option<WeakEntity<Session>>,
+    busy: bool,
+    error: Option<String>,
+}
+impl Global for MenuOffer {}
+
+/// Looks at the menu entry for the AppImage at `appimage` under `data` (a
+/// data home) when a session starts: offers to add one when there is none for
+/// it and Not now was not pressed for this path; moves one the app wrote for
+/// this AppImage at another path that is gone. Linux only; [`init`] calls it with the
+/// running AppImage, tests with their own.
+pub fn check_menu_entry(session: &Entity<Session>, appimage: PathBuf, data: PathBuf, cx: &mut App) {
+    #[cfg(target_os = "linux")]
+    {
+        use ircord_platform::appimage::{MenuEntry, menu_entry};
+        match menu_entry(&data, &appimage) {
+            MenuEntry::Current => {}
+            MenuEntry::Moved => {
+                cx.background_spawn(async move {
+                    if let Err(e) = ircord_platform::appimage::add_menu_entry(&data, &appimage) {
+                        log::warn!("move the menu entry to {}: {e}", appimage.display());
+                    }
+                })
+                .detach();
+            }
+            MenuEntry::Missing | MenuEntry::Other => {
+                let saved: BTreeMap<String, String> =
+                    session.read(cx).config.section(APPIMAGE_SECTION);
+                if saved.get("menuDeclined").map(Path::new) == Some(appimage.as_path()) {
+                    return;
+                }
+                let offer = cx.global_mut::<MenuOffer>();
+                offer.offered = Some((appimage, data));
+                offer.session = Some(session.downgrade());
+                cx.refresh_windows();
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (session, appimage, data, cx);
+}
+
+/// Add the offered menu entry, off the interface thread.
+fn add_menu_entry(cx: &mut App) {
+    let offer = cx.global_mut::<MenuOffer>();
+    let Some((appimage, data)) = offer.offered.clone() else {
+        return;
+    };
+    if offer.busy {
+        return;
+    }
+    offer.busy = true;
+    offer.error = None;
+    cx.refresh_windows();
+    #[cfg(target_os = "linux")]
+    let task = cx.background_spawn(async move {
+        ircord_platform::appimage::add_menu_entry(&data, &appimage).map_err(|e| e.to_string())
+    });
+    #[cfg(not(target_os = "linux"))]
+    let task = {
+        let _ = (appimage, data);
+        cx.background_spawn(async { Err::<(), String>("not an AppImage".into()) })
+    };
+    cx.spawn(async move |cx| {
+        let result = task.await;
+        cx.update(|cx| {
+            let offer = cx.global_mut::<MenuOffer>();
+            offer.busy = false;
+            match result {
+                Ok(()) => offer.offered = None,
+                Err(e) => {
+                    log::warn!("add the menu entry: {e}");
+                    offer.error = Some(e);
+                }
+            }
+            cx.refresh_windows();
+        });
+    })
+    .detach();
+}
+
+/// The AppImage's menu entry was written elsewhere (making IRCord the
+/// handler for `irc://` links does it): the offer goes.
+pub fn menu_entry_written(cx: &mut App) {
+    if let Some(offer) = cx.try_global::<MenuOffer>()
+        && offer.offered.is_some()
+        && !offer.busy
+    {
+        cx.global_mut::<MenuOffer>().offered = None;
+        cx.refresh_windows();
+    }
+}
+
+/// Not now: no offer for this AppImage again.
+fn decline_menu_entry(cx: &mut App) {
+    let offer = cx.global_mut::<MenuOffer>();
+    let Some((appimage, _)) = offer.offered.take() else {
+        return;
+    };
+    let session = offer.session.as_ref().and_then(WeakEntity::upgrade);
+    cx.refresh_windows();
+    let Some(session) = session else { return };
+    let config = session.read(cx).config.clone();
+    let mut saved: BTreeMap<String, String> = config.section(APPIMAGE_SECTION);
+    saved.insert(
+        "menuDeclined".into(),
+        appimage.to_string_lossy().into_owned(),
+    );
+    if let Err(e) = config.save_section(APPIMAGE_SECTION, &saved) {
+        log::warn!("remember the menu entry was declined: {e}");
+    }
+}
+
+/// The banner offering the menu entry, while it is offered.
+fn menu_banner(cx: &mut App) -> Option<impl IntoElement + use<>> {
+    let offer = cx.try_global::<MenuOffer>()?;
+    let (appimage, _) = offer.offered.as_ref()?;
+    let text = t!(
+        "desktop-appimage-offer",
+        path = appimage.to_string_lossy().into_owned()
+    )
+    .to_string();
+    let (busy, error) = (offer.busy, offer.error.clone());
+    let theme = theme::get(cx).clone();
+    Some(
+        div()
+            .id("appimage-menu-banner")
+            .test_support()
+            .role(Role::Status)
+            .aria_label(SharedString::from(t!("desktop-appimage-label")))
+            .aria_description(SharedString::from(text.clone()))
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_4()
+            .py_1p5()
+            .flex_none()
+            .text_sm()
+            .text_color(theme.muted)
+            .bg(theme.sidebar)
+            .border_b_1()
+            .border_color(theme.border)
+            .child(ui::icon::icon(IconName::Info, theme.muted))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id("appimage-menu-text")
+                            .test_support()
+                            .role(Role::Group)
+                            .aria_label(SharedString::from(text.clone()))
+                            .text_color(theme.text)
+                            .child(text),
+                    )
+                    .when_some(error, |d, error| {
+                        let error = t!("desktop-appimage-failed", error = error).to_string();
+                        d.child(
+                            div()
+                                .id("appimage-menu-error")
+                                .test_support()
+                                .role(Role::Alert)
+                                .aria_label(SharedString::from(error.clone()))
+                                .text_color(theme.danger)
+                                .child(error),
+                        )
+                    }),
+            )
+            .child(
+                Button::new("appimage-menu-add")
+                    .ghost()
+                    .label(t!("desktop-appimage-add"))
+                    .disabled(busy)
+                    .on_click(|_, _, cx| add_menu_entry(cx)),
+            )
+            .child(
+                Button::new("appimage-menu-decline")
+                    .ghost()
+                    .label(t!("desktop-appimage-decline"))
+                    .disabled(busy)
+                    .on_click(|_, _, cx| decline_menu_entry(cx)),
+            ),
+    )
+}
+
 // ---- The system's handler for irc:// ----------------------------------
 
 /// Registering IRCord as the system's handler for `irc://` and `ircs://`.
@@ -761,8 +992,18 @@ pub mod links {
         }
     }
 
+    /// The AppImage this copy runs from, if it does (Linux).
+    fn appimage() -> Option<PathBuf> {
+        #[cfg(target_os = "linux")]
+        return ircord_platform::appimage::path();
+        #[allow(unreachable_code)]
+        None
+    }
+
+    /// The program a link starts: the AppImage when this copy runs from
+    /// one (its own path inside is gone once it quits), else this program.
     fn exe() -> io::Result<PathBuf> {
-        std::env::current_exe()
+        appimage().map_or_else(std::env::current_exe, Ok)
     }
 
     /// Who opens `irc://` links now. Runs helper programs: call it off the
@@ -853,7 +1094,11 @@ pub mod links {
             }
             return Ok(());
         }
-        if !installed_entry() {
+        // An AppImage's entry starts the AppImage, wherever other entries are.
+        if appimage().is_some() {
+            #[cfg(target_os = "linux")]
+            ircord_platform::appimage::add_menu_entry(&data_home()?, &exe)?;
+        } else if !installed_entry() {
             let dir = data_home()?.join("applications");
             std::fs::create_dir_all(&dir)?;
             let entry = desktop_entry(
