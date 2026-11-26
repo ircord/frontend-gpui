@@ -3,9 +3,10 @@
 //!
 //! Only builds with `IRCORD_UPDATES=1` check at all
 //! ([`ircord_platform::update::available`]). The check runs on the session's
-//! runtime, off the interface thread. Windows and macOS download and install
-//! the update, and macOS then restarts IRCord; Linux opens the release page,
-//! since a `.deb` cannot replace itself.
+//! runtime, off the interface thread. Windows, macOS and a Linux AppImage
+//! download and install the update, and macOS and the AppImage then restart
+//! IRCord; elsewhere Linux opens the release page, since a `.deb` cannot
+//! replace itself.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -229,7 +230,8 @@ fn save_state(updates: &Entity<Updates>, cx: &mut App) {
     }
 }
 
-/// Download and install the update, or on Linux open the release page.
+/// Download and install the update, or where this copy cannot (a Linux
+/// `.deb`) open the release page.
 pub fn install(updates: &Entity<Updates>, update: &Update, cx: &mut App) {
     if !update::installs() {
         cx.open_url(update::RELEASES_URL);
@@ -264,8 +266,9 @@ fn start_install(updates: &Entity<Updates>, update: &Update, cx: &mut App) {
             Err(e) => Err(e.to_string()),
         };
         cx.update(|cx| match result {
-            // Windows' installer ends this process itself; macOS has replaced
-            // the app and starts the new copy once this one quits.
+            // Windows' installer ends this process itself; macOS and an
+            // AppImage have replaced the app and start the new copy once this
+            // one quits.
             Ok(()) => cx.quit(),
             Err(e) => {
                 log::warn!("update install: {e}");

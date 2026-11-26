@@ -4886,9 +4886,11 @@ name = "ircord-platform"
 version = "0.6.1"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "block2 0.6.2",
  "cargo-packager-updater",
  "log",
+ "minisign",
  "notify-rust",
  "objc2 0.6.5",
  "objc2-av-foundation",
@@ -7970,6 +7972,7 @@ dependencies = [
  "pin-project-lite",
  "quinn",
  "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "serde",
  "serde_json",

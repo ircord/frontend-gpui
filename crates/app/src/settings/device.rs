@@ -80,6 +80,10 @@ fn refresh(register: bool, cx: &mut App) {
     cx.spawn(async move |cx| {
         let (registered, handler) = task.await;
         cx.update(|cx| {
+            if register && registered.is_ok() {
+                // Under an AppImage, registering wrote its menu entry.
+                desktop::menu_entry_written(cx);
+            }
             let links = cx.global_mut::<Links>();
             links.busy = false;
             links.error = registered.err();

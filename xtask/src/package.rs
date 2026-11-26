@@ -2,8 +2,10 @@
 //! left in `dist/` under their release names.
 //!
 //! Linux and Windows build in the build container and are packaged there by
-//! cargo-packager from `packaging/Packager.toml`: a `.deb`, and an NSIS setup
-//! made from the cross-built `.exe`. macOS builds on a Mac; `macos.rs`
+//! cargo-packager from `packaging/Packager.toml`: a `.deb` and an AppImage,
+//! and an NSIS setup made from the cross-built `.exe`. The AppImage tools
+//! cargo-packager would otherwise fetch unchecked are fetched here, pinned by
+//! checksum ([`APPIMAGE_TOOLS`]). macOS builds on a Mac; `macos.rs`
 //! assembles and signs the bundle, and this packs it as a disk image and as the
 //! `.app.tar.gz` the updater installs.
 
@@ -17,6 +19,7 @@ use std::process::Command;
 pub const PRODUCT_NAME: &str = "IRCord GPUI";
 
 pub const LINUX_DEB: &str = "IRCord-GPUI-Linux-x64.deb";
+pub const LINUX_APPIMAGE: &str = "IRCord-GPUI-Linux-x64.AppImage";
 pub const WINDOWS_SETUP: &str = "IRCord-GPUI-Windows-x64-setup.exe";
 pub const MACOS_DMG: &str = "IRCord-GPUI-macOS-Apple-Silicon.dmg";
 pub const MACOS_UPDATE: &str = "IRCord-GPUI-macOS-Apple-Silicon.app.tar.gz";
@@ -24,10 +27,67 @@ pub const MACOS_UPDATE: &str = "IRCord-GPUI-macOS-Apple-Silicon.app.tar.gz";
 /// Where the repository is mounted in the build container.
 const CONTAINER_ROOT: &str = "/work";
 
+/// The tools cargo-packager builds an AppImage with, as it names them in its
+/// tools folder: name, address, SHA-256. Its own addresses for the first two;
+/// its AppImage plugin address is a moving `continuous` release, so a dated
+/// release of the same plugin stands in.
+const APPIMAGE_TOOLS: [(&str, &str, &str); 3] = [
+    (
+        "AppRun-x86_64",
+        "https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64",
+        "f30140a43a0a59e46db21bdefdf749b9e9f2c6946e92afabbacf98b8ae73fb4f",
+    ),
+    (
+        "linuxdeploy-x86_64.AppImage",
+        "https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage",
+        "e762bea85c8eb0d4b3508d46e5c1f037f717d0f9303ae3b4aafc8b04991fa1ef",
+    ),
+    (
+        "linuxdeploy-plugin-appimage.AppImage",
+        "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-appimage-x86_64.AppImage",
+        "992d502a248e14ab185448ddf6f6e7d25558cb84d4623c354c3af350c25fccb3",
+    ),
+];
+
+/// Where the checked AppImage tools are kept between runs, and where
+/// cargo-packager's tools folder is made from them for each run (it edits
+/// linuxdeploy in place, so it always gets a fresh copy). Both under
+/// `target/packager`, relative to the repository root.
+const APPIMAGE_DOWNLOADS: &str = "target/packager/appimage-tools";
+const PACKAGER_CACHE: &str = "target/packager/cache";
+
 pub fn linux(root: &Path) -> Result<()> {
     container::build_linux(root)?;
-    let out = packager(root, &["--formats", "deb"], "linux")?;
-    collect(root, &out, ".deb", LINUX_DEB)
+    appimage_tools(root)?;
+    let out = packager(root, &["--formats", "deb,appimage"], "linux")?;
+    collect(root, &out, ".deb", LINUX_DEB)?;
+    collect(root, &out, ".AppImage", LINUX_APPIMAGE)
+}
+
+/// Fetches the AppImage tools that are missing or fail their checksum, then
+/// puts fresh copies where cargo-packager looks (`$XDG_CACHE_HOME/
+/// .cargo-packager/AppImage`, with `XDG_CACHE_HOME` set by [`packager`]).
+fn appimage_tools(root: &Path) -> Result<()> {
+    let mut script = String::from("set -eu\n");
+    script.push_str(&format!(
+        "mkdir -p {CONTAINER_ROOT}/{APPIMAGE_DOWNLOADS}\ncd {CONTAINER_ROOT}/{APPIMAGE_DOWNLOADS}\n"
+    ));
+    for (name, url, sha) in APPIMAGE_TOOLS {
+        script.push_str(&format!(
+            "if ! echo '{sha}  {name}' | sha256sum -c --status 2>/dev/null; then\n\
+             \x20 curl -fsSL --retry 3 -o '{name}' '{url}'\n\
+             \x20 echo '{sha}  {name}' | sha256sum -c -\n\
+             fi\n"
+        ));
+    }
+    let tools = format!("{CONTAINER_ROOT}/{PACKAGER_CACHE}/.cargo-packager/AppImage");
+    script.push_str(&format!(
+        "rm -rf '{tools}'\nmkdir -p '{tools}'\ncp {} '{tools}/'\nchmod 764 '{tools}'/*\n",
+        APPIMAGE_TOOLS
+            .map(|(name, _, _)| format!("'{name}'"))
+            .join(" ")
+    ));
+    container::run(root, &["sh", "-c", &script])
 }
 
 pub fn windows(root: &Path) -> Result<()> {
@@ -130,7 +190,14 @@ fn packager(root: &Path, args: &[&str], platform: &str) -> Result<PathBuf> {
         &out_arg,
     ];
     cmd.extend_from_slice(args);
-    container::run(root, &cmd)?;
+    // The AppImage tools are AppImages themselves; the container has no FUSE.
+    let env = [
+        "-e".to_string(),
+        format!("XDG_CACHE_HOME={CONTAINER_ROOT}/{PACKAGER_CACHE}"),
+        "-e".to_string(),
+        "APPIMAGE_EXTRACT_AND_RUN=1".to_string(),
+    ];
+    container::run_with(root, &env, &cmd)?;
     Ok(out)
 }
 
@@ -210,7 +277,13 @@ mod tests {
 
     #[test]
     fn asset_names_carry_the_product_name() {
-        for name in [LINUX_DEB, WINDOWS_SETUP, MACOS_DMG, MACOS_UPDATE] {
+        for name in [
+            LINUX_DEB,
+            LINUX_APPIMAGE,
+            WINDOWS_SETUP,
+            MACOS_DMG,
+            MACOS_UPDATE,
+        ] {
             assert!(name.starts_with("IRCord-GPUI-"), "{name}");
         }
     }

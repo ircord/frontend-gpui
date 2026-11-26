@@ -42,7 +42,7 @@ Everything that compiles runs in a Docker image built from
 | `cargo xtask build macos` | on a Mac only: build `dist/IRCord GPUI.app` (see below) |
 | `cargo xtask dev` | run the native app and apply supported Rust edits while it is running |
 | `cargo xtask package windows` | the Windows build, then its setup, `dist/IRCord-GPUI-Windows-x64-setup.exe` |
-| `cargo xtask package linux` | the Linux build, then `dist/IRCord-GPUI-Linux-x64.deb` |
+| `cargo xtask package linux` | the Linux build, then `dist/IRCord-GPUI-Linux-x64.deb` and `dist/IRCord-GPUI-Linux-x64.AppImage` |
 | `cargo xtask package macos` | on an Apple Silicon Mac: the bundle, `dist/IRCord-GPUI-macOS-Apple-Silicon.dmg` and the updater's `.app.tar.gz` |
 | `cargo xtask release-assets …` | the release job's signing, `latest.json` and `SHA256SUMS` (see "Publishing a release") |
 | `cargo xtask contract` | refresh `crates/contract` from the backend checkout |
@@ -101,6 +101,24 @@ Manager under `com.ircord.gpui`.
 **Linux** (x86-64; X11 or Wayland). On Debian 12, Ubuntu 22.04 or later,
 `sudo apt install ./IRCord-GPUI-Linux-x64.deb` installs `ircord`, its video
 helper, the menu entry and the GStreamer plugins it plays videos with.
+The `.deb` does not update itself: when a newer release is out, the app
+links to its page.
+
+`IRCord-GPUI-Linux-x64.AppImage` runs on other distributions too, without
+root, and installs updates itself, as Windows and macOS do. Keep it in a
+folder of your own that it can be replaced in, such as `~/Applications`
+(`chmod +x` it after downloading); on its first start it offers to add a menu
+entry and icon for you, which keep starting it there after an update. It
+mounts itself with FUSE through the `fusermount3` (or `fusermount`) program
+that desktops ship (Debian and Ubuntu: the `fuse3` package); its runtime is
+the static one, so unlike older AppImages it does not need libfuse2. Where
+FUSE is not available (some containers),
+`./IRCord-GPUI-Linux-x64.AppImage --appimage-extract-and-run` unpacks it into
+a temporary folder and runs it from there. Videos use the system's GStreamer
+(below); when it lacks something, the app says what and the command that
+installs it on Debian, Ubuntu, Fedora or Arch, and turns videos on once it is
+there.
+
 Elsewhere, unpack `dist/ircord-linux-x86_64.tar.gz` and run
 `ircord/install.sh`, which puts `ircord` in `~/.local/bin` with a menu
 entry and icon (`install.sh --uninstall` removes them). Settings live in
@@ -155,8 +173,9 @@ screenshots, so a change can be looked at without a screen.
 
 Pull requests run `.github/workflows/check.yaml` once they are marked ready
 (drafts run nothing). Those that change how installers are made, or
-`crates/platform`, also run `build-installers.yaml`, which builds the `.deb`,
-cross-builds the Windows setup and installs and starts it on Windows, and
+`crates/platform`, also run `build-installers.yaml`, which builds the `.deb`
+and the AppImage and starts them on clean Debian and Ubuntu, cross-builds the
+Windows setup and installs and starts it on Windows, and
 builds the Mac disk image on macOS.
 
 A release is `.github/workflows/publish.yaml`, started by hand:
@@ -166,13 +185,14 @@ A release is `.github/workflows/publish.yaml`, started by hand:
    `CHANGELOG.md` under `## v<version> — <date>`.
 2. Run the workflow with that version and **verify only** ticked. It checks
    the version, runs the checks, builds every installer, signs the Windows
-   setup and the macOS `.app.tar.gz` for the updater, writes `latest.json`
+   setup, the macOS `.app.tar.gz` and the AppImage for the updater, writes `latest.json`
    and `SHA256SUMS`, and keeps them as the `ircord-gpui-release` artifact.
 3. Run it again without **verify only** to tag `v<version>` and publish the
    release, with that version's changelog section as its notes.
 
 The release holds `IRCord-GPUI-Windows-x64-setup.exe`,
-`IRCord-GPUI-macOS-Apple-Silicon.dmg`, `IRCord-GPUI-Linux-x64.deb`, the
+`IRCord-GPUI-macOS-Apple-Silicon.dmg`, `IRCord-GPUI-Linux-x64.deb`,
+`IRCord-GPUI-Linux-x64.AppImage`, the
 updater's `IRCord-GPUI-macOS-Apple-Silicon.app.tar.gz`, a `.sig` for each
 update, `latest.json`, `build-info.txt` (the commit and the backend contract
 it was built against) and `SHA256SUMS`.

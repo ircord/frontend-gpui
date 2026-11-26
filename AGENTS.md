@@ -18,7 +18,7 @@ client; it never speaks IRC itself. Layout and commands are in
   build against a disposable backend and leaves screenshots in
   `target/capture/`. Your own Xvfb must run with `-extension COMPOSITE`, or
   every capture is black (see `xtask/src/capture.rs`, whose header lists the
-  `CAPTURE_ONLY` scenes: `fade`, `news`, `attract`, `theme`).
+  `CAPTURE_ONLY` scenes: `fade`, `news`, `attract`, `theme`, `appimage`).
 - A theme's background picture is `theme::backdrop` (read with the session, decoded once, floors from `store::appearance::theme_backdrop`); a surface it shows through takes its colour from `backdrop::shell`/`get`, never `theme.sidebar` directly. `CAPTURE_ONLY=theme` and `CAPTURE_THEME=<dir with theme.json and picture.*>` narrow `cargo xtask capture` to that scene. `CAPTURE_ONLY=fade` captures a theme change fading (a few frames, light to dark).
 - A theme change fades in over 200 ms (`theme::fade`): `theme::get` holds in-between colours meanwhile, so a UI test that reads colours after an edit, or after the account's look arrives, waits for `!theme::fade::active(cx)`; `theme::set` snaps. Anything costly per colour set (diagrams, the ambient light) reads `theme::settled`, the final colours.
 - `crates/client` must not depend on GPUI: everything except drawing is
@@ -27,7 +27,10 @@ client; it never speaks IRC itself. Layout and commands are in
   notifications lives in `crates/platform` (no GPUI). The ladder clippies it
   for macOS and Windows too, the only compile gate for code nobody here can
   run. Linux video is the `ircord-video` helper (`crates/video-gst`), so the
-  app itself never links GStreamer. A UI test that needs sound calls
+  app itself never links GStreamer. In the AppImage, the launcher points
+  `LD_LIBRARY_PATH`, GStreamer's plugin path and more into the image;
+  `main` gives the process the system's back
+  (`appimage::restore_system_env`) before anything starts a program. A UI test that needs sound calls
   `media::sound::use_null`; the fixture opens no device.
 - `crates/contract/src/generated.rs` is generated from every schema in the
   pinned contract; change it only through `xtask/src/contract.rs` and
@@ -107,7 +110,8 @@ marks it ready for review. `cargo xtask ladder` runs steps 1 to 4,
    Windows. When the change against `main` touches a path that makes CI build
    the installers (the `pull_request` paths in `build-installers.yaml`),
    `cargo xtask package windows` and `cargo xtask package linux` as well: the
-   setup `.exe` and the `.deb` exist in `dist/`. `cargo xtask ladder` decides.
+   setup `.exe`, the `.deb` and the AppImage exist in `dist/`. `cargo xtask
+   ladder` decides.
 5. For changes to the client's networking, `cargo xtask integration`: the
    client against a real backend and IRC server in disposable containers.
 6. For a change a user can see: run it against a disposable local backend

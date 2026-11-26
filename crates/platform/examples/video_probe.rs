@@ -6,7 +6,7 @@ fn main() {
     let url = args.next().expect("a URL");
     let width: u32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(480);
     let height: u32 = args.next().and_then(|a| a.parse().ok()).unwrap_or(270);
-    println!("available: {}", ircord_platform::video::available());
+    println!("probe: {:?}", ircord_platform::video::probe());
     let video = ircord_platform::video::open(&url, width, height).expect("open");
     video.set_muted(true);
     video.play();

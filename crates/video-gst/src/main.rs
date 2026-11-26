@@ -12,7 +12,10 @@
 //! In (text lines): `play`, `pause`, `seek <ms>`, `volume <0..1>`,
 //! `mute <0|1>`. End of input ends the program.
 //!
-//! `ircord-video --probe` exits 0 when GStreamer has what this needs.
+//! `ircord-video --probe` exits 0 when GStreamer has what this needs, and
+//! otherwise 1 after naming each missing part on its own line of stdout:
+//! `gstreamer` (it does not start), `base`, `good` or `libav` (its plugins
+//! of those names).
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
@@ -36,17 +39,46 @@ mod linux {
     use gstreamer_app as gst_app;
     use gstreamer_video as gst_video;
 
+    /// The plugin sets playing needs, each with elements that prove it is
+    /// there: `playbin`'s own path (base), fetching over HTTP and the MP4
+    /// and WebM containers (good), and the decoders (libav).
+    const PARTS: [(&str, &[&str]); 3] = [
+        (
+            "base",
+            &["playbin", "appsink", "videoconvert", "videoscale"],
+        ),
+        ("good", &["souphttpsrc", "qtdemux", "matroskademux"]),
+        ("libav", &["avdec_h264"]),
+    ];
+
+    /// The parts GStreamer lacks; empty when it has all of them.
+    fn missing() -> Vec<&'static str> {
+        if gst::init().is_err() {
+            return vec!["gstreamer"];
+        }
+        PARTS
+            .iter()
+            .filter(|(_, elements)| {
+                !elements
+                    .iter()
+                    .all(|name| gst::ElementFactory::find(name).is_some())
+            })
+            .map(|(part, _)| *part)
+            .collect()
+    }
+
     fn ready() -> bool {
-        gst::init().is_ok()
-            && ["playbin", "appsink", "videoconvert", "videoscale"]
-                .iter()
-                .all(|name| gst::ElementFactory::find(name).is_some())
+        missing().is_empty()
     }
 
     pub fn run() -> i32 {
         let args: Vec<String> = std::env::args().skip(1).collect();
         if args.first().map(String::as_str) == Some("--probe") {
-            return if ready() { 0 } else { 1 };
+            let missing = missing();
+            for part in &missing {
+                println!("{part}");
+            }
+            return if missing.is_empty() { 0 } else { 1 };
         }
         let (Some(url), Some(width), Some(height)) = (
             args.first(),

@@ -109,13 +109,14 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q minisign
           base64 -d packaging/updater.pub > updater.pub
-          for asset in IRCord-GPUI-macOS-Apple-Silicon.app.tar.gz IRCord-GPUI-Windows-x64-setup.exe; do
+          for asset in IRCord-GPUI-macOS-Apple-Silicon.app.tar.gz IRCord-GPUI-Windows-x64-setup.exe IRCord-GPUI-Linux-x64.AppImage; do
             base64 -d "release/$asset.sig" > updater.sig
             minisign -Vm "release/$asset" -p updater.pub -x updater.sig
             grep -Eq "^trusted comment:.*[[:space:]]file:${asset//./\\.}$" updater.sig
           done
           (cd release && sha256sum -c SHA256SUMS)
           jq -e --arg v "$VERSION" '.version == $v' release/latest.json
+          jq -e '.platforms["linux-x86_64"].format == "appimage"' release/latest.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ircord-gpui-release
