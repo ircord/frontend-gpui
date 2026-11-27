@@ -21,6 +21,8 @@ use ircord_client::ircoid::{self as rules, FIELD_H, FIELD_W, Game, Input, MAX_DT
 use crate::session::Session;
 use crate::theme;
 
+pub mod stage;
+
 /// Presses on the logo that open the game.
 pub const PRESSES: u32 = 5;
 /// A pause this long between presses starts the count again.
@@ -29,6 +31,8 @@ pub const PRESS_GAP: Duration = Duration::from_millis(1500);
 const MAX_WIDTH: f32 = 848.;
 /// The status bar under the field, in game units.
 pub const BAR_H: f32 = 16.;
+/// How fast the grid runs toward the viewer, in cross lines a second.
+const GRID_SPEED: f32 = 0.8;
 
 /// Counts presses on About's logo. It is given the time of each press, so
 /// it needs no timer.
@@ -139,6 +143,8 @@ pub struct Ircoid {
     stage: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// When the last frame was drawn while playing.
     last_frame: Option<Instant>,
+    /// How far the grid has run, in cross lines.
+    travel: f32,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -163,6 +169,7 @@ impl Ircoid {
             pointer: None,
             stage: Rc::default(),
             last_frame: None,
+            travel: 0.,
             _subscriptions: subscriptions,
         }
     }
@@ -198,7 +205,9 @@ impl Ircoid {
             launch: std::mem::take(&mut self.launch),
             pointer: self.pointer,
         };
-        let events = self.game.step(&input, dt.min(MAX_DT));
+        let dt = dt.min(MAX_DT);
+        self.travel = (self.travel + dt * GRID_SPEED).fract();
+        let events = self.game.step(&input, dt);
         if events.game_over {
             self.set_phase(Phase::Over);
         }
@@ -397,12 +406,10 @@ impl Focusable for Ircoid {
 #[derive(Clone)]
 struct Picture {
     game: Game,
-    wall: Hsla,
     brick: Hsla,
     ban: Hsla,
     paddle: Hsla,
     ball: Hsla,
-    bar: Hsla,
 }
 
 /// Game units to pixels inside `bounds`.
@@ -415,14 +422,11 @@ fn to_px(bounds: Bounds<Pixels>, x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixel
 }
 
 fn paint_plain(picture: &Picture, bounds: Bounds<Pixels>, window: &mut Window) {
-    use rules::{BALL_R, BRICK_H, BRICK_W, BrickKind, PADDLE_H, PADDLE_Y, WALL};
+    use rules::{BALL_R, BRICK_H, BRICK_W, BrickKind, PADDLE_H, PADDLE_Y};
     let game = &picture.game;
     let quad = |window: &mut Window, x, y, w, h, color: Hsla| {
         window.paint_quad(fill(to_px(bounds, x, y, w, h), color));
     };
-    quad(window, 0., 0., WALL, FIELD_H, picture.wall);
-    quad(window, FIELD_W - WALL, 0., WALL, FIELD_H, picture.wall);
-    quad(window, 0., 0., FIELD_W, WALL, picture.wall);
     for brick in &game.bricks {
         let (x, y) = brick.origin();
         let color = match brick.kind {
@@ -450,21 +454,23 @@ fn paint_plain(picture: &Picture, bounds: Bounds<Pixels>, window: &mut Window) {
         );
         window.paint_quad(fill(b, picture.ball).corner_radii(b.size.width / 2.));
     }
-    quad(window, 0., FIELD_H, FIELD_W, BAR_H, picture.bar);
 }
 
 impl Render for Ircoid {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.frame(window);
         let theme = theme::get(cx).clone();
+        let scroll = if theme.reduced_motion {
+            0.
+        } else {
+            self.travel
+        };
         let picture = Picture {
             game: self.game.clone(),
-            wall: theme.border,
-            brick: theme.accent,
-            ban: theme.faint,
-            paddle: theme.text,
-            ball: theme.text,
-            bar: theme.sidebar,
+            brick: stage::color(stage::palette::VIOLET, 1.),
+            ban: stage::color(stage::palette::SLATE, 1.),
+            paddle: stage::color(stage::palette::CYAN, 1.),
+            ball: stage::color(stage::palette::WHITE_HOT, 1.),
         };
         div()
             .id("ircoid")
@@ -494,7 +500,7 @@ impl Render for Ircoid {
                     .aspect_ratio(FIELD_W / (FIELD_H + BAR_H))
                     .rounded_md()
                     .overflow_hidden()
-                    .bg(theme.rail)
+                    .bg(stage::color(stage::palette::VOID, 1.))
                     .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                         this.pointer_moved(e.position, cx);
                     }))
@@ -518,11 +524,28 @@ impl Render for Ircoid {
                         let stage = self.stage.clone();
                         canvas(
                             move |bounds, _, _| stage.set(Some(bounds)),
-                            move |bounds, _, window, _| paint_plain(&picture, bounds, window),
+                            move |bounds, _, window, _| {
+                                let (w, h) =
+                                    (f32::from(bounds.size.width), f32::from(bounds.size.height));
+                                stage::paint(&stage::backdrop(w, h, scroll), bounds.origin, window);
+                                paint_plain(&picture, bounds, window);
+                            },
                         )
                         .absolute()
                         .size_full()
-                    }),
+                    })
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            |bounds, _, window, _| {
+                                let (w, h) =
+                                    (f32::from(bounds.size.width), f32::from(bounds.size.height));
+                                stage::paint(&stage::overlay(w, h), bounds.origin, window);
+                            },
+                        )
+                        .absolute()
+                        .size_full(),
+                    ),
             )
             .child(div().flex().justify_end().child(self.buttons(cx)))
     }
