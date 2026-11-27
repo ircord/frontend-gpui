@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.8.0 — 2026-11-27
+
 ### New
 
 - Settings → About shows the IRCord mark at the top again. It is said to do more than sit there.
