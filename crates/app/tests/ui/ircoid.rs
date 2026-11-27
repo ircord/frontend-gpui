@@ -6,7 +6,10 @@ use ircord_app::features::ircoid::{self, Ircoid, Phase};
 use ircord_app::route::Route;
 use ircord_client::ircoid::{Ball, Brick, BrickKind, CapsuleKind, Game};
 
-use crate::fixture::{Fixture, bootstrap, open, wait};
+use ircord_client::testing::{CannedServer, Reply};
+use serde_json::json;
+
+use crate::fixture::{Fixture, bootstrap, wait};
 
 /// Draw the window and click the element with `id`.
 fn click(f: &Fixture, cx: &mut TestAppContext, id: &'static str) {
@@ -49,7 +52,12 @@ fn shows(f: &Fixture, cx: &mut TestAppContext, id: &'static str) {
 
 /// Settings → About, signed in.
 pub(crate) fn about(cx: &mut TestAppContext) -> Fixture {
-    let f = open(cx, true);
+    about_with(cx, |_| {})
+}
+
+/// [`about`], with `setup` run on the server first.
+fn about_with(cx: &mut TestAppContext, setup: impl FnOnce(&CannedServer)) -> Fixture {
+    let f = crate::fixture::open_with(cx, true, setup);
     bootstrap(&f, cx);
     click(&f, cx, "open-settings");
     shows(&f, cx, "settings-section-about");
@@ -60,7 +68,12 @@ pub(crate) fn about(cx: &mut TestAppContext) -> Fixture {
 
 /// About with the game open.
 pub(crate) fn game(cx: &mut TestAppContext) -> Fixture {
-    let f = about(cx);
+    game_with(cx, |_| {})
+}
+
+/// [`game`], with `setup` run on the server first.
+fn game_with(cx: &mut TestAppContext, setup: impl FnOnce(&CannedServer)) -> Fixture {
+    let f = about_with(cx, setup);
     for _ in 0..5 {
         click(&f, cx, "about-logo");
     }
@@ -267,7 +280,9 @@ fn three_lost_balls_end_the_game_and_only_restart_starts_another(cx: &mut TestAp
     assert_eq!(phase(cx), Phase::Over);
     press(&f, cx, "space");
     assert_eq!(phase(cx), Phase::Over, "Space does not start a game");
-    click(&f, cx, "ircoid-restart");
+    assert!(!shown(&f, cx, "ircoid-restart"), "only Play again");
+    std::thread::sleep(ircoid::AGAIN_GUARD);
+    click(&f, cx, "ircoid-again");
     assert_eq!(phase(cx), Phase::Playing);
     assert_eq!(cx.update(|cx| view.read(cx).game().lives), 3);
 }
@@ -454,4 +469,154 @@ fn the_key_hints_name_the_game_keys(cx: &mut TestAppContext) {
         label_of(&f, cx, "ircoid-hints").as_deref(),
         Some("← → Move, Space Launch, P Pause, Esc Back to About")
     );
+}
+
+const SCORES: &str = "/api/v1/ircoid/scores";
+
+fn two_rows(server: &CannedServer) {
+    server.route(
+        "GET",
+        SCORES,
+        200,
+        json!({"items": [
+            {"rank": 1, "name": "Peter Petermann", "score": 225357},
+            {"rank": 2, "name": "Michael Karbowiak", "score": 2102}
+        ]}),
+    );
+}
+
+/// Ends the game with `score`: one life left, and that ball lost.
+fn end_game(f: &Fixture, cx: &mut TestAppContext, score: u32) {
+    click(f, cx, "ircoid-play");
+    let view = game_view(cx);
+    let mut game = Game::new(1);
+    game.bricks = vec![Brick::new(12, 0, BrickKind::Message)];
+    game.score = score;
+    game.lives = 1;
+    view.update(cx, |v, cx| v.set_game(game, cx));
+    lose_a_ball(f, cx);
+    assert_eq!(phase(cx), Phase::Over);
+}
+
+#[gpui_kit::test]
+fn high_scores_pause_the_game_and_list_the_table(cx: &mut TestAppContext) {
+    let f = game_with(cx, two_rows);
+    click(&f, cx, "ircoid-play");
+    assert_eq!(phase(cx), Phase::Playing);
+    click(&f, cx, "ircoid-scores");
+    let view = game_view(cx);
+    assert!(
+        cx.update(|cx| view.read(cx).scores_shown()),
+        "the table opened"
+    );
+    assert_eq!(phase(cx), Phase::Paused);
+    shows(&f, cx, "ircoid-score-2");
+    assert_eq!(
+        label_of(&f, cx, "ircoid-score-1").as_deref(),
+        Some("1. Peter Petermann, 225357")
+    );
+    assert_eq!(
+        label_of(&f, cx, "ircoid-score-2").as_deref(),
+        Some("2. Michael Karbowiak, 2102")
+    );
+    click(&f, cx, "ircoid-scores-back");
+    assert!(!shown(&f, cx, "ircoid-scores-panel"));
+    assert_eq!(phase(cx), Phase::Paused);
+}
+
+#[gpui_kit::test]
+fn a_placing_score_asks_for_a_name_and_saves_it(cx: &mut TestAppContext) {
+    let f = game_with(cx, |server| {
+        two_rows(server);
+        server.route(
+            "POST",
+            SCORES,
+            200,
+            json!({"placed": true, "rank": 2, "items": [
+                {"rank": 1, "name": "Peter Petermann", "score": 225357},
+                {"rank": 2, "name": "me", "score": 4560},
+                {"rank": 3, "name": "Michael Karbowiak", "score": 2102}
+            ]}),
+        );
+    });
+    end_game(&f, cx, 4560);
+    shows(&f, cx, "ircoid-name");
+    click(&f, cx, "ircoid-save");
+    shows(&f, cx, "ircoid-scores-outcome");
+    assert_eq!(
+        label_of(&f, cx, "ircoid-scores-outcome").as_deref(),
+        Some("Saved at rank 2.")
+    );
+    assert_eq!(
+        label_of(&f, cx, "ircoid-score-2").as_deref(),
+        Some("2. me, 4560, your new entry")
+    );
+    assert!(!shown(&f, cx, "ircoid-name"));
+    let sent = f.server.requests_to("POST", SCORES);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].json(), json!({"name": "me", "score": 4560}));
+}
+
+#[gpui_kit::test]
+fn a_score_that_does_not_place_asks_for_nothing(cx: &mut TestAppContext) {
+    let f = game_with(cx, |server| {
+        let items: Vec<_> = (0..10)
+            .map(|n| json!({"rank": n + 1, "name": format!("p{n}"), "score": 100000 - n * 10}))
+            .collect();
+        server.route("GET", SCORES, 200, json!({ "items": items }));
+    });
+    end_game(&f, cx, 470);
+    shows(&f, cx, "ircoid-score-10");
+    assert!(!shown(&f, cx, "ircoid-name"));
+}
+
+#[gpui_kit::test]
+fn a_server_without_the_table_still_plays(cx: &mut TestAppContext) {
+    let f = game(cx);
+    end_game(&f, cx, 470);
+    shows(&f, cx, "ircoid-scores-unavailable");
+    assert_eq!(
+        label_of(&f, cx, "ircoid-scores-unavailable").as_deref(),
+        Some("High scores are not available on this server.")
+    );
+    std::thread::sleep(ircoid::AGAIN_GUARD);
+    click(&f, cx, "ircoid-again");
+    assert_eq!(phase(cx), Phase::Playing);
+    assert!(!shown(&f, cx, "ircoid-scores-panel"));
+}
+
+#[gpui_kit::test]
+fn a_refused_name_shows_the_servers_reason(cx: &mut TestAppContext) {
+    let f = game_with(cx, |server| {
+        two_rows(server);
+        server.route_reply(
+            "POST",
+            SCORES,
+            Reply::problem(422, "That name is already taken by a ghost."),
+        );
+    });
+    end_game(&f, cx, 4560);
+    shows(&f, cx, "ircoid-name");
+    click(&f, cx, "ircoid-save");
+    shows(&f, cx, "ircoid-name-error");
+    assert_eq!(
+        label_of(&f, cx, "ircoid-name-error").as_deref(),
+        Some("That name is already taken by a ghost.")
+    );
+    assert!(
+        shown(&f, cx, "ircoid-name"),
+        "the field stays for another try"
+    );
+}
+
+#[gpui_kit::test]
+fn escape_in_the_name_field_skips_the_entry(cx: &mut TestAppContext) {
+    let f = game_with(cx, two_rows);
+    end_game(&f, cx, 4560);
+    shows(&f, cx, "ircoid-name");
+    press(&f, cx, "escape");
+    assert!(shown(&f, cx, "ircoid"), "the game stays open");
+    assert!(!shown(&f, cx, "ircoid-name"));
+    assert!(shown(&f, cx, "ircoid-score-2"), "the table stays");
+    assert!(f.server.requests_to("POST", SCORES).is_empty());
 }

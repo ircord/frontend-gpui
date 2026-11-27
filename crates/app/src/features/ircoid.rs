@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::ircoid::{self as rules, FIELD_H, FIELD_W, Game, Input, MAX_DT};
@@ -21,6 +22,7 @@ use ircord_client::ircoid::{self as rules, FIELD_H, FIELD_W, Game, Input, MAX_DT
 use crate::session::Session;
 use crate::theme;
 
+mod scores;
 pub mod stage;
 
 /// Presses on the logo that open the game.
@@ -33,6 +35,9 @@ const MAX_WIDTH: f32 = 848.;
 pub const BAR_H: f32 = 16.;
 /// How fast the grid runs toward the viewer, in cross lines a second.
 const GRID_SPEED: f32 = 0.8;
+/// Play again ignores a press this soon after the game ends: Space may still
+/// be held.
+pub const AGAIN_GUARD: Duration = Duration::from_millis(500);
 /// How long the level's new topic shows, in seconds of game time.
 pub const LEVEL_NOTICE_SECS: f32 = 1.5;
 
@@ -109,6 +114,12 @@ pub fn open(session: &Entity<Session>, window: &mut Window, cx: &mut App) {
                 game.update(cx, |game, cx| game.primary(cx));
                 false
             })
+            // Escape in the name field skips the entry instead of closing
+            // the game.
+            .on_cancel({
+                let game = view.clone();
+                move |_, window, cx| game.update(cx, |game, cx| !game.skip_entry(window, cx))
+            })
             .child(view.clone())
     });
     window.focus(&focus, cx);
@@ -131,7 +142,6 @@ struct Held {
 
 /// The open game.
 pub struct Ircoid {
-    #[allow(dead_code)]
     session: Entity<Session>,
     focus: FocusHandle,
     game: Game,
@@ -157,6 +167,14 @@ pub struct Ircoid {
     level_notice: f32,
     /// The live region's text.
     announcement: String,
+    /// The high score table.
+    scores: scores::Scores,
+    /// The game just ended; the table loads on the next update.
+    just_over: bool,
+    /// When the game ended.
+    over_at: Option<Instant>,
+    /// Focus goes back to the game on the next frame (the name field went).
+    refocus: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -187,6 +205,10 @@ impl Ircoid {
             rng: rules::Rng::new(seed()),
             level_notice: 0.,
             announcement: String::new(),
+            scores: scores::Scores::default(),
+            just_over: false,
+            over_at: None,
+            refocus: false,
             _subscriptions: subscriptions,
         }
     }
@@ -209,7 +231,200 @@ impl Ircoid {
     /// held now. Frames call it while playing; tests call it directly.
     pub fn advance(&mut self, dt: f32, cx: &mut Context<Self>) {
         self.step(dt);
+        self.after_step(cx);
         cx.notify();
+    }
+
+    /// At game over, the table loads and opens.
+    fn after_step(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.just_over) {
+            self.scores.shown = true;
+            self.load_scores(Some(self.game.score), cx);
+        }
+    }
+
+    /// Whether the table is drawn over the stage.
+    pub fn scores_shown(&self) -> bool {
+        self.scores.shown
+    }
+
+    /// The High scores button: pause, and show the table.
+    pub fn show_scores(&mut self, cx: &mut Context<Self>) {
+        self.pause(cx);
+        self.scores.shown = true;
+        if self.phase != Phase::Over || self.scores.table == scores::Table::Unavailable {
+            self.load_scores(None, cx);
+        }
+        cx.notify();
+    }
+
+    fn hide_scores(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.scores.shown = false;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Loads the table; with `asking`, a score that places asks for a name.
+    fn load_scores(&mut self, asking: Option<u32>, cx: &mut Context<Self>) {
+        self.scores.generation += 1;
+        let generation = self.scores.generation;
+        if self.scores.table != scores::Table::Unavailable {
+            self.scores.table = scores::Table::Loading;
+        }
+        let Some(client) = self.session.read(cx).client().cloned() else {
+            self.scores.table = scores::Table::Unavailable;
+            return;
+        };
+        let task = client.request(|api| async move { api.ircoid_scores().await });
+        cx.spawn(async move |this, cx| {
+            let result = task.await.ok().and_then(Result::ok);
+            let _ = this.update(cx, |this, cx| {
+                if this.scores.generation != generation {
+                    return;
+                }
+                let table = match result {
+                    Some(table) => scores::Table::Ready(table.items.unwrap_or_default()),
+                    None => scores::Table::Unavailable,
+                };
+                this.scores.loaded(table, asking.filter(|s| *s > 0));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The name the table offers: the person's display name, clipped.
+    fn default_name(&self, cx: &App) -> String {
+        let name = self
+            .session
+            .read(cx)
+            .client()
+            .map(|client| {
+                let w = client.read();
+                let user = &w.user;
+                [&user.display_name, &user.nick, &user.account]
+                    .into_iter()
+                    .find(|n| !n.trim().is_empty())
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+        rules::scores::clip_name(&name)
+    }
+
+    /// Makes the name field a placing score asked for.
+    fn make_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.scores.wanted || self.scores.entry.is_some() {
+            return;
+        }
+        self.scores.wanted = false;
+        let name = self.default_name(cx);
+        let input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx);
+            state.set_value(name, window, cx);
+            state
+        });
+        self._subscriptions.push(cx.subscribe_in(
+            &input,
+            window,
+            |this: &mut Self, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    this.save(window, cx);
+                }
+            },
+        ));
+        let focus = input.read(cx).focus_handle(cx);
+        self.scores.entry = Some(input);
+        window.focus(&focus, cx);
+    }
+
+    /// Save: the name is checked, then sent with the score.
+    pub fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.scores.entry.clone() else {
+            return;
+        };
+        if self.scores.saving {
+            return;
+        }
+        let raw = input.read(cx).value().to_string();
+        let name = match rules::scores::table_name(&raw) {
+            Ok(name) => name,
+            Err(error) => {
+                self.scores.error = Some(scores::name_error(error));
+                cx.notify();
+                return;
+            }
+        };
+        let Some(client) = self.session.read(cx).client().cloned() else {
+            return;
+        };
+        self.scores.error = None;
+        self.scores.saving = true;
+        self.scores.generation += 1;
+        let generation = self.scores.generation;
+        let score = self.scores.score;
+        let task =
+            client.request(move |api| async move { api.submit_ircoid_score(&name, score).await });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.scores.generation != generation {
+                    return;
+                }
+                this.scores.saving = false;
+                match result {
+                    Ok(Ok(result)) => {
+                        this.scores.table = scores::Table::Ready(result.items.unwrap_or_default());
+                        this.scores.entry = None;
+                        if result.placed {
+                            this.scores.mark = Some(result.rank);
+                            this.scores.outcome = Some(scores::Outcome::Saved(result.rank));
+                        } else {
+                            this.scores.outcome = Some(scores::Outcome::TookPlace);
+                        }
+                        this.refocus = true;
+                    }
+                    Ok(Err(ircord_client::api::ApiError::Http {
+                        status: 422,
+                        detail,
+                    })) => {
+                        this.scores.error = Some(detail);
+                    }
+                    Ok(Err(e)) => {
+                        this.scores.error = Some(t!("ircoid-save-failed", reason = e.to_string()));
+                    }
+                    Err(e) => {
+                        this.scores.error = Some(t!("ircoid-save-failed", reason = e.to_string()));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Skip, or Escape in the name field: no entry, the table stays. True
+    /// when there was an entry to skip.
+    pub fn skip_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.scores.asking() {
+            return false;
+        }
+        self.scores.entry = None;
+        self.scores.wanted = false;
+        self.scores.error = None;
+        self.scores.saving = false;
+        self.scores.generation += 1;
+        window.focus(&self.focus, cx);
+        cx.notify();
+        true
+    }
+
+    /// Play again, which ignores a press in the first moment after the end.
+    pub fn play_again(&mut self, cx: &mut Context<Self>) {
+        if self.over_at.is_some_and(|at| at.elapsed() < AGAIN_GUARD) {
+            return;
+        }
+        self.restart(cx);
     }
 
     fn step(&mut self, dt: f32) {
@@ -239,6 +454,8 @@ impl Ircoid {
         self.announce(&events);
         if events.game_over {
             self.set_phase(Phase::Over);
+            self.just_over = true;
+            self.over_at = Some(Instant::now());
         }
     }
 
@@ -333,6 +550,9 @@ impl Ircoid {
         self.game = Game::new(seed());
         self.fx = stage::Fx::default();
         self.level_notice = 0.;
+        self.scores.reset();
+        self.just_over = false;
+        self.over_at = None;
         self.set_phase(Phase::Playing);
         cx.notify();
     }
@@ -347,13 +567,17 @@ impl Ircoid {
             }
             Phase::Paused => self.set_phase(Phase::Playing),
             Phase::Playing => self.launch = true,
-            // Only Restart starts a new game: Space may still be held.
+            // Only Play again starts a new game: Space may still be held.
             Phase::Over => return,
         }
         cx.notify();
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        // The name field and the table take their own keys.
+        if self.scores.shown {
+            return false;
+        }
         let k = &event.keystroke;
         if k.modifiers.secondary(cx) || k.modifiers.alt || k.modifiers.control {
             return false;
@@ -434,13 +658,18 @@ impl Ircoid {
 
     /// While playing, step by the time since the last frame and ask for the
     /// next one.
-    fn frame(&mut self, window: &mut Window) {
+    fn frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.make_entry(window, cx);
+        if std::mem::take(&mut self.refocus) {
+            window.focus(&self.focus, cx);
+        }
         if self.phase != Phase::Playing {
             return;
         }
         let now = Instant::now();
         if let Some(last) = self.last_frame {
             self.step(now.saturating_duration_since(last).as_secs_f32());
+            self.after_step(cx);
         }
         if self.phase == Phase::Playing {
             self.last_frame = Some(now);
@@ -455,6 +684,15 @@ impl Ircoid {
             Phase::Paused => Some((t!("ircoid-resume"), false)),
             Phase::Over => None,
         };
+        let again = (self.phase == Phase::Over).then(|| {
+            Button::new("ircoid-again")
+                .primary()
+                .label(t!("ircoid-play-again"))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.play_again(cx);
+                    window.focus(&this.focus, cx);
+                }))
+        });
         div()
             .flex()
             .gap_2()
@@ -471,14 +709,23 @@ impl Ircoid {
                         window.focus(&this.focus, cx);
                     }))
             }))
+            .children(again)
             .child(
-                Button::new("ircoid-restart")
-                    .label(t!("ircoid-restart"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.restart(cx);
-                        window.focus(&this.focus, cx);
-                    })),
+                Button::new("ircoid-scores")
+                    .label(t!("ircoid-scores"))
+                    .on_click(cx.listener(|this, _, _, cx| this.show_scores(cx))),
             )
+            // At game over only Play again starts a new game.
+            .when(self.phase != Phase::Over, |d| {
+                d.child(
+                    Button::new("ircoid-restart")
+                        .label(t!("ircoid-restart"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.restart(cx);
+                            window.focus(&this.focus, cx);
+                        })),
+                )
+            })
             .child(
                 Button::new("ircoid-back")
                     .label(t!("ircoid-back"))
@@ -706,7 +953,7 @@ pub fn capsule_label(kind: rules::CapsuleKind) -> &'static str {
 
 impl Render for Ircoid {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.frame(window);
+        self.frame(window, cx);
         let theme = theme::get(cx).clone();
         self.reduced = theme.reduced_motion;
         let scroll = if self.reduced { 0. } else { self.travel };
@@ -720,7 +967,31 @@ impl Render for Ircoid {
             .unwrap_or(MAX_WIDTH - 48.);
         let labels = stage_labels(&self.game, width);
         let status = status_bar(&self.game, width, self.status());
-        let notice = notice(self).map(|(id, lines, hex)| notice_box(id, lines, hex, width));
+        let over_lines = notice(self).filter(|(id, _, _)| *id == "ircoid-notice-over");
+        let notice = notice(self)
+            .filter(|_| !self.scores.shown)
+            .map(|(id, lines, hex)| notice_box(id, lines, hex, width));
+        let overlay = self.scores.shown.then(|| {
+            let (back, save, skip) = (
+                cx.listener(|this: &mut Self, _: &ClickEvent, window, cx| {
+                    this.hide_scores(window, cx)
+                }),
+                cx.listener(|this: &mut Self, _: &ClickEvent, window, cx| this.save(window, cx)),
+                cx.listener(|this: &mut Self, _: &ClickEvent, window, cx| {
+                    this.skip_entry(window, cx);
+                }),
+            );
+            let over = over_lines.map(|(_, lines, _)| lines);
+            scores::overlay(
+                &self.scores,
+                &theme,
+                self.phase != Phase::Over,
+                over,
+                back,
+                save,
+                skip,
+            )
+        });
         let hints = crate::ui::page::hint_bar(
             "ircoid-hints".into(),
             &[
@@ -753,71 +1024,94 @@ impl Render for Ircoid {
             }))
             .child(
                 div()
-                    .id("ircoid-stage")
-                    .test_support()
-                    .role(Role::Image)
-                    .aria_label(t!("ircoid-stage"))
                     .relative()
                     .w_full()
-                    .aspect_ratio(FIELD_W / (FIELD_H + BAR_H))
-                    .rounded_md()
-                    .overflow_hidden()
-                    .bg(stage::color(stage::palette::VOID, 1.))
-                    .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
-                        this.pointer_moved(e.position, cx);
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, e: &MouseDownEvent, window, cx| {
-                            this.pointer_moved(e.position, cx);
-                            this.primary(cx);
-                            window.focus(&this.focus, cx);
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .on_scroll(cx.listener(|this, e: &ScrollEvent, window, cx| {
-                        let delta = e.delta.pixel_delta(window.line_height());
-                        if delta.x.abs() > delta.y.abs() {
-                            this.scrolled(delta.x, cx);
-                            cx.stop_propagation();
-                        }
-                    }))
-                    .child({
-                        let stage = self.stage.clone();
-                        canvas(
-                            move |bounds, window, _| {
-                                // A first or new size places the labels again.
-                                if stage.replace(Some(bounds)).map(|b| b.size) != Some(bounds.size)
-                                {
-                                    window.refresh();
-                                }
-                            },
-                            move |bounds, _, window, _| {
-                                let (w, h) =
-                                    (f32::from(bounds.size.width), f32::from(bounds.size.height));
-                                stage::paint(&stage::backdrop(w, h, scroll), bounds.origin, window);
-                                let scene = stage::scene(&game, w, &fx, reduced);
-                                stage::paint(scene.iter().map(|(_, s)| s), bounds.origin, window);
-                            },
-                        )
-                        .absolute()
-                        .size_full()
-                    })
-                    .children(labels)
-                    .child(status)
-                    .children(notice)
                     .child(
-                        canvas(
-                            |_, _, _| (),
-                            |bounds, _, window, _| {
-                                let (w, h) =
-                                    (f32::from(bounds.size.width), f32::from(bounds.size.height));
-                                stage::paint(&stage::overlay(w, h), bounds.origin, window);
-                            },
-                        )
-                        .absolute()
-                        .size_full(),
-                    ),
+                        div()
+                            .id("ircoid-stage")
+                            .test_support()
+                            .role(Role::Image)
+                            .aria_label(t!("ircoid-stage"))
+                            .relative()
+                            .w_full()
+                            .aspect_ratio(FIELD_W / (FIELD_H + BAR_H))
+                            .rounded_md()
+                            .overflow_hidden()
+                            .bg(stage::color(stage::palette::VOID, 1.))
+                            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                                this.pointer_moved(e.position, cx);
+                            }))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                                    // The table over the stage takes its own clicks.
+                                    if this.scores.shown {
+                                        return;
+                                    }
+                                    this.pointer_moved(e.position, cx);
+                                    this.primary(cx);
+                                    window.focus(&this.focus, cx);
+                                    cx.stop_propagation();
+                                }),
+                            )
+                            .on_scroll(cx.listener(|this, e: &ScrollEvent, window, cx| {
+                                let delta = e.delta.pixel_delta(window.line_height());
+                                if delta.x.abs() > delta.y.abs() {
+                                    this.scrolled(delta.x, cx);
+                                    cx.stop_propagation();
+                                }
+                            }))
+                            .child({
+                                let stage = self.stage.clone();
+                                canvas(
+                                    move |bounds, window, _| {
+                                        // A first or new size places the labels again.
+                                        if stage.replace(Some(bounds)).map(|b| b.size)
+                                            != Some(bounds.size)
+                                        {
+                                            window.refresh();
+                                        }
+                                    },
+                                    move |bounds, _, window, _| {
+                                        let (w, h) = (
+                                            f32::from(bounds.size.width),
+                                            f32::from(bounds.size.height),
+                                        );
+                                        stage::paint(
+                                            &stage::backdrop(w, h, scroll),
+                                            bounds.origin,
+                                            window,
+                                        );
+                                        let scene = stage::scene(&game, w, &fx, reduced);
+                                        stage::paint(
+                                            scene.iter().map(|(_, s)| s),
+                                            bounds.origin,
+                                            window,
+                                        );
+                                    },
+                                )
+                                .absolute()
+                                .size_full()
+                            })
+                            .children(labels)
+                            .child(status)
+                            .children(notice)
+                            .child(
+                                canvas(
+                                    |_, _, _| (),
+                                    |bounds, _, window, _| {
+                                        let (w, h) = (
+                                            f32::from(bounds.size.width),
+                                            f32::from(bounds.size.height),
+                                        );
+                                        stage::paint(&stage::overlay(w, h), bounds.origin, window);
+                                    },
+                                )
+                                .absolute()
+                                .size_full(),
+                            ),
+                    )
+                    .children(overlay),
             )
             .child(
                 div()
