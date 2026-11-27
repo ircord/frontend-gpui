@@ -519,9 +519,13 @@ fn high_scores_pause_the_game_and_list_the_table(cx: &mut TestAppContext) {
         label_of(&f, cx, "ircoid-score-2").as_deref(),
         Some("2. Michael Karbowiak, 2102")
     );
+    assert!(!shown(&f, cx, "ircoid-play"), "no Resume under the table");
+    view.update(cx, |v, cx| v.play(cx));
+    assert_eq!(phase(cx), Phase::Paused, "nothing plays under the table");
     click(&f, cx, "ircoid-scores-back");
     assert!(!shown(&f, cx, "ircoid-scores-panel"));
     assert_eq!(phase(cx), Phase::Paused);
+    assert!(shown(&f, cx, "ircoid-play"));
 }
 
 #[gpui_kit::test]

@@ -77,3 +77,4 @@ ircoid-credits-scroll-5 = This intro has no music, so hum your favourite chiptun
 ircoid-credits-scroll-6 = Want your name in here? Send a pull request
 ircoid-credits-scroll-7 = Press Esc to get back to the high scores
 ircoid-credits-scroll-8 = And now the text wraps
+ircoid-status-seconds = { $seconds }s

@@ -383,7 +383,9 @@ impl Ircoid {
 
     /// Makes the name field a placing score asked for.
     fn make_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.scores.wanted || self.scores.entry.is_some() {
+        // On the credits the field would be out of sight: it waits for the
+        // table to show again.
+        if !self.scores.wanted || self.scores.entry.is_some() || self.credits.is_some() {
             return;
         }
         self.scores.wanted = false;
@@ -477,6 +479,10 @@ impl Ircoid {
     pub fn skip_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !self.scores.asking() {
             return false;
+        }
+        // A save on its way is not dropped: its answer shows the table.
+        if self.scores.saving {
+            return true;
         }
         self.scores.entry = None;
         self.scores.wanted = false;
@@ -600,6 +606,10 @@ impl Ircoid {
 
     /// Start, or resume: Space, Up, Enter and the Start button.
     pub fn play(&mut self, cx: &mut Context<Self>) {
+        // Under the table the game stays still; Back returns to it.
+        if self.scores.shown {
+            return;
+        }
         match self.phase {
             Phase::Ready | Phase::Paused => self.set_phase(Phase::Playing),
             Phase::Playing | Phase::Over => return,
@@ -733,7 +743,11 @@ impl Ircoid {
             return;
         }
         let units = f32::from(dx) / f32::from(stage.size.width) * FIELD_W;
-        self.pointer = Some(self.pointer.unwrap_or(self.game.paddle.x) + units);
+        let x = self.pointer.unwrap_or(self.game.paddle.x) + units;
+        // The game keeps the paddle inside the walls; keep the target near
+        // them too, so scrolling back answers at once.
+        let half = self.game.paddle.w / 2.;
+        self.pointer = Some(x.clamp(half, FIELD_W - half));
         cx.notify();
     }
 
@@ -778,7 +792,9 @@ impl Ircoid {
                     .on_click(cx.listener(|this, _, window, cx| this.close_credits(window, cx))),
             );
         }
+        // Under the table only its own Back starts the game again.
         let primary = match self.phase {
+            _ if self.scores.shown => None,
             Phase::Ready => Some((t!("ircoid-start"), false)),
             Phase::Playing => Some((t!("ircoid-pause"), true)),
             Phase::Paused => Some((t!("ircoid-resume"), false)),
@@ -949,7 +965,13 @@ fn status_bar(game: &Game, width: f32, line: String) -> impl IntoElement {
     for (label, seconds) in running(game) {
         let mut parts = vec![span(label, CYAN)];
         if let Some(seconds) = seconds {
-            parts.push(span(format!(" {seconds:02}s"), SUN));
+            parts.push(span(
+                format!(
+                    " {}",
+                    t!("ircoid-status-seconds", seconds = format!("{seconds:02}"))
+                ),
+                SUN,
+            ));
         }
         items.push(item(parts));
     }

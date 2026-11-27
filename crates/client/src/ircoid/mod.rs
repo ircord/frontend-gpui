@@ -565,10 +565,12 @@ impl Game {
                 index += 1;
             }
         }
-        if self.balls.is_empty() {
-            self.lose_life(&mut events);
-        } else if !self.bricks.iter().any(|b| b.kind != BrickKind::Ban) {
+        // A level cleared by the last ball as it was lost still counts, and
+        // costs no life.
+        if !self.bricks.iter().any(|b| b.kind != BrickKind::Ban) {
             self.clear_level(&mut events);
+        } else if self.balls.is_empty() {
+            self.lose_life(&mut events);
         }
         events
     }
@@ -957,6 +959,28 @@ mod tests {
         assert_eq!(game.channel(), "#motd");
         assert!(game.held, "the ball is back on the paddle");
         assert_eq!(game.speed(), BALL_SPEED + BALL_SPEED_STEP);
+    }
+
+    #[test]
+    fn clearing_the_level_with_the_last_ball_costs_no_life() {
+        // The last breakable brick is gone and the only ball leaves the
+        // field in the same step.
+        let mut game = Game::new(1);
+        game.bricks = vec![Brick::new(6, 6, BrickKind::Ban)];
+        game.held = false;
+        game.lives = 1;
+        game.balls = vec![Ball {
+            x: 300.0,
+            y: FIELD_H + BALL_R - 0.1,
+            vx: 0.0,
+            vy: BALL_SPEED,
+        }];
+        let events = game.step(&Input::default(), DT);
+        assert!(events.level_cleared);
+        assert!(!events.life_lost);
+        assert_eq!(game.lives, 1);
+        assert!(!game.over);
+        assert!(game.held, "the next level starts on the paddle");
     }
 
     #[test]
