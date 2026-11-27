@@ -145,6 +145,12 @@ pub struct Ircoid {
     last_frame: Option<Instant>,
     /// How far the grid has run, in cross lines.
     travel: f32,
+    /// The balls' trails and the sparks.
+    fx: stage::Fx,
+    /// Reduced motion, as the theme last said.
+    reduced: bool,
+    /// For the sparks' directions.
+    rng: rules::Rng,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -170,6 +176,9 @@ impl Ircoid {
             stage: Rc::default(),
             last_frame: None,
             travel: 0.,
+            fx: stage::Fx::default(),
+            reduced: false,
+            rng: rules::Rng::new(seed()),
             _subscriptions: subscriptions,
         }
     }
@@ -208,6 +217,16 @@ impl Ircoid {
         let dt = dt.min(MAX_DT);
         self.travel = (self.travel + dt * GRID_SPEED).fract();
         let events = self.game.step(&input, dt);
+        if self.reduced {
+            self.fx = stage::Fx::default();
+        } else {
+            self.fx.tick(dt);
+            for hit in events.hits.iter().filter(|hit| hit.broken) {
+                let brick = rules::Brick::new(hit.col, hit.row, hit.kind);
+                self.fx.burst(&brick, &mut self.rng);
+            }
+            self.fx.follow(&self.game);
+        }
         if events.game_over {
             self.set_phase(Phase::Over);
         }
@@ -402,57 +421,47 @@ impl Focusable for Ircoid {
     }
 }
 
-/// What the stage draws: a copy of the game.
-#[derive(Clone)]
-struct Picture {
-    game: Game,
-    brick: Hsla,
-    ban: Hsla,
-    paddle: Hsla,
-    ball: Hsla,
+/// The glyphs on bricks and the labels on capsules, as text over the
+/// picture, for a stage `width` pixels wide.
+fn stage_labels(game: &Game, width: f32) -> Vec<Div> {
+    let k = stage::scale(width);
+    stage::labels(game, width)
+        .into_iter()
+        .map(|label| {
+            let (text, size) = match label.text {
+                stage::LabelText::Op => (t!("ircoid-glyph-op"), 8.5),
+                stage::LabelText::Owner => (t!("ircoid-glyph-owner"), 8.5),
+                stage::LabelText::Capsule(kind) => (capsule_label(kind), 6.5),
+            };
+            div()
+                .absolute()
+                .left(px(label.at.x))
+                .top(px(label.at.y))
+                .w(px(label.at.w))
+                .h(px(label.at.h))
+                .flex()
+                .items_center()
+                .justify_center()
+                .font_family(stage::FONT)
+                .font_weight(FontWeight::BOLD)
+                .text_size(px(size * k))
+                .line_height(px(label.at.h))
+                .text_color(stage::color(label.color, 1.))
+                .child(text)
+        })
+        .collect()
 }
 
-/// Game units to pixels inside `bounds`.
-fn to_px(bounds: Bounds<Pixels>, x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
-    let k = f32::from(bounds.size.width) / FIELD_W;
-    Bounds::new(
-        point(bounds.origin.x + px(x * k), bounds.origin.y + px(y * k)),
-        size(px(w * k), px(h * k)),
-    )
-}
-
-fn paint_plain(picture: &Picture, bounds: Bounds<Pixels>, window: &mut Window) {
-    use rules::{BALL_R, BRICK_H, BRICK_W, BrickKind, PADDLE_H, PADDLE_Y};
-    let game = &picture.game;
-    let quad = |window: &mut Window, x, y, w, h, color: Hsla| {
-        window.paint_quad(fill(to_px(bounds, x, y, w, h), color));
-    };
-    for brick in &game.bricks {
-        let (x, y) = brick.origin();
-        let color = match brick.kind {
-            BrickKind::Ban => picture.ban,
-            _ => picture.brick,
-        };
-        quad(window, x, y, BRICK_W, BRICK_H, color);
-    }
-    let paddle = &game.paddle;
-    quad(
-        window,
-        paddle.left(),
-        PADDLE_Y,
-        paddle.w,
-        PADDLE_H,
-        picture.paddle,
-    );
-    for ball in &game.balls {
-        let b = to_px(
-            bounds,
-            ball.x - BALL_R,
-            ball.y - BALL_R,
-            BALL_R * 2.,
-            BALL_R * 2.,
-        );
-        window.paint_quad(fill(b, picture.ball).corner_radii(b.size.width / 2.));
+/// A capsule's label: its IRC command or mode.
+pub fn capsule_label(kind: rules::CapsuleKind) -> &'static str {
+    use rules::CapsuleKind::*;
+    match kind {
+        Op => t!("ircoid-capsule-op"),
+        Join => t!("ircoid-capsule-join"),
+        Moderated => t!("ircoid-capsule-moderated"),
+        Kick => t!("ircoid-capsule-kick"),
+        Bouncer => t!("ircoid-capsule-bouncer"),
+        Lag => t!("ircoid-capsule-lag"),
     }
 }
 
@@ -460,18 +469,17 @@ impl Render for Ircoid {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.frame(window);
         let theme = theme::get(cx).clone();
-        let scroll = if theme.reduced_motion {
-            0.
-        } else {
-            self.travel
-        };
-        let picture = Picture {
-            game: self.game.clone(),
-            brick: stage::color(stage::palette::VIOLET, 1.),
-            ban: stage::color(stage::palette::SLATE, 1.),
-            paddle: stage::color(stage::palette::CYAN, 1.),
-            ball: stage::color(stage::palette::WHITE_HOT, 1.),
-        };
+        self.reduced = theme.reduced_motion;
+        let scroll = if self.reduced { 0. } else { self.travel };
+        let (game, fx, reduced) = (self.game.clone(), self.fx.clone(), self.reduced);
+        // Labels sit on the stage as text; they are placed by the width the
+        // stage was last drawn at (a guess before the first frame).
+        let width = self
+            .stage
+            .get()
+            .map(|b| f32::from(b.size.width))
+            .unwrap_or(MAX_WIDTH - 48.);
+        let labels = stage_labels(&self.game, width);
         div()
             .id("ircoid")
             .test_support()
@@ -523,17 +531,25 @@ impl Render for Ircoid {
                     .child({
                         let stage = self.stage.clone();
                         canvas(
-                            move |bounds, _, _| stage.set(Some(bounds)),
+                            move |bounds, window, _| {
+                                // A first or new size places the labels again.
+                                if stage.replace(Some(bounds)).map(|b| b.size) != Some(bounds.size)
+                                {
+                                    window.refresh();
+                                }
+                            },
                             move |bounds, _, window, _| {
                                 let (w, h) =
                                     (f32::from(bounds.size.width), f32::from(bounds.size.height));
                                 stage::paint(&stage::backdrop(w, h, scroll), bounds.origin, window);
-                                paint_plain(&picture, bounds, window);
+                                let scene = stage::scene(&game, w, &fx, reduced);
+                                stage::paint(scene.iter().map(|(_, s)| s), bounds.origin, window);
                             },
                         )
                         .absolute()
                         .size_full()
                     })
+                    .children(labels)
                     .child(
                         canvas(
                             |_, _, _| (),
