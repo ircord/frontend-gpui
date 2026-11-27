@@ -63,6 +63,38 @@ pub const CLEAR_BONUS: u32 = 500;
 /// The highest score, the bound the server's score table accepts.
 pub const MAX_SCORE: u32 = 10_000_000;
 
+/// A capsule's width and height.
+pub const CAPSULE_W: f32 = 26.0;
+pub const CAPSULE_H: f32 = 10.0;
+/// How fast a capsule falls, in units a second.
+pub const CAPSULE_SPEED: f32 = 70.0;
+/// A broken brick drops a capsule one time in this many...
+pub const DROP_ONE_IN: u32 = 8;
+/// ...and at most this many fall at once.
+pub const MAX_CAPSULES: usize = 2;
+/// Catching a capsule adds this times the level.
+pub const CATCH_POINTS: u32 = 50;
+/// The paddle's width with Op.
+pub const PADDLE_W_OP: f32 = 84.0;
+/// Join makes no more balls than this.
+pub const MAX_BALLS: usize = 6;
+/// How long the timed capsules last, in seconds of game time.
+pub const OP_SECS: f32 = 15.0;
+pub const MODERATED_SECS: f32 = 10.0;
+pub const KICK_SECS: f32 = 8.0;
+pub const LAG_SECS: f32 = 8.0;
+/// Moderated and Lag change the ball's speed by these.
+pub const MODERATED_SPEED: f32 = 0.7;
+pub const LAG_SPEED: f32 = 1.3;
+/// The Bouncer's line, just above the floor.
+pub const BOUNCER_Y: f32 = FIELD_H - 4.0;
+/// A life every this many points...
+pub const LIFE_EVERY: u32 = 20_000;
+/// ...up to this many.
+pub const MAX_LIVES: u32 = 5;
+/// Join's new balls leave this far either side of the old one, in degrees.
+const JOIN_ANGLE: f32 = 20.0;
+
 /// A launch leaves the paddle this far off vertical, in degrees.
 const LAUNCH_ANGLE: f32 = 15.0;
 /// A ball off the paddle's end leaves at this angle off vertical, in degrees.
@@ -76,11 +108,12 @@ pub struct Rng(u64);
 
 impl Rng {
     pub fn new(seed: u64) -> Self {
-        Self(if seed == 0 {
-            0x9e37_79b9_7f4a_7c15
-        } else {
-            seed
-        })
+        // splitmix64 spreads near seeds (1, 2, 3…) apart.
+        let mut z = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^= z >> 31;
+        Self(if z == 0 { 0x9e37_79b9_7f4a_7c15 } else { z })
     }
 
     pub fn next_u64(&mut self) -> u64 {
@@ -194,6 +227,60 @@ pub struct Hit {
     pub broken: bool,
 }
 
+/// What a capsule does when the paddle catches it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapsuleKind {
+    /// `+o`: a wider paddle for a while.
+    Op,
+    /// `/join`: each ball becomes three.
+    Join,
+    /// `+m`: a slower ball for a while.
+    Moderated,
+    /// `/kick`: for a while the ball breaks bricks without bouncing off.
+    Kick,
+    /// `BNC`: a line at the floor saves one ball.
+    Bouncer,
+    /// `lag`: a faster ball for a while; the one to avoid.
+    Lag,
+}
+
+impl CapsuleKind {
+    pub const ALL: [Self; 6] = [
+        Self::Op,
+        Self::Join,
+        Self::Moderated,
+        Self::Kick,
+        Self::Bouncer,
+        Self::Lag,
+    ];
+}
+
+/// A falling capsule: its centre across, its top, and what it is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Capsule {
+    pub x: f32,
+    pub y: f32,
+    pub kind: CapsuleKind,
+}
+
+/// A change of the ball's speed that lasts a while.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pace {
+    Moderated,
+    Lag,
+}
+
+/// The capsules working now, with the seconds each has left.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Effects {
+    pub op: f32,
+    /// Moderated or Lag; one replaces the other.
+    pub pace: Option<(Pace, f32)>,
+    pub kick: f32,
+    /// The Bouncer's line is there.
+    pub bouncer: bool,
+}
+
 /// A ball: its centre and velocity.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ball {
@@ -232,6 +319,12 @@ pub struct Events {
     pub hits: Vec<Hit>,
     /// The last breakable brick broke: the game is on the next level now.
     pub level_cleared: bool,
+    /// Capsules the paddle caught.
+    pub caught: Vec<CapsuleKind>,
+    /// The score passed another [`LIFE_EVERY`] and a life came with it.
+    pub life_gained: bool,
+    /// The Bouncer's line saved a ball.
+    pub bounced_off_bouncer: bool,
 }
 
 /// A game of Ircoid.
@@ -240,6 +333,10 @@ pub struct Game {
     pub paddle: Paddle,
     pub balls: Vec<Ball>,
     pub bricks: Vec<Brick>,
+    pub capsules: Vec<Capsule>,
+    pub effects: Effects,
+    /// The score that brings the next life.
+    pub next_life: u32,
     /// The ball waits on the paddle for a launch.
     pub held: bool,
     pub lives: u32,
@@ -261,6 +358,9 @@ impl Game {
             },
             balls: Vec::new(),
             bricks: levels::parse(levels::layout(1).map),
+            capsules: Vec::new(),
+            effects: Effects::default(),
+            next_life: LIFE_EVERY,
             held: true,
             lives: LIVES,
             level: 1,
@@ -278,14 +378,133 @@ impl Game {
         levels::layout(self.level).channel
     }
 
-    /// Adds `points` to the score, up to [`MAX_SCORE`].
-    fn add_points(&mut self, points: u32) {
+    /// Adds `points` to the score, up to [`MAX_SCORE`], and a life for
+    /// each [`LIFE_EVERY`] passed, up to [`MAX_LIVES`].
+    fn add_points(&mut self, points: u32, events: &mut Events) {
         self.score = self.score.saturating_add(points).min(MAX_SCORE);
+        while self.score >= self.next_life {
+            self.next_life = self.next_life.saturating_add(LIFE_EVERY);
+            if self.lives < MAX_LIVES {
+                self.lives += 1;
+                events.life_gained = true;
+            }
+            if self.next_life == u32::MAX {
+                break;
+            }
+        }
+    }
+
+    /// The levels' speed for the ball, without capsules.
+    pub fn level_speed(&self) -> f32 {
+        (BALL_SPEED + BALL_SPEED_STEP * (self.level.saturating_sub(1)) as f32).min(BALL_SPEED_MAX)
     }
 
     /// The ball's speed now, in units a second.
     pub fn speed(&self) -> f32 {
-        (BALL_SPEED + BALL_SPEED_STEP * (self.level.saturating_sub(1)) as f32).min(BALL_SPEED_MAX)
+        let pace = match self.effects.pace {
+            Some((Pace::Moderated, _)) => MODERATED_SPEED,
+            Some((Pace::Lag, _)) => LAG_SPEED,
+            None => 1.0,
+        };
+        self.level_speed() * pace
+    }
+
+    /// The points multiplier on this level.
+    fn multiplier(&self) -> u32 {
+        self.level.min(MAX_MULTIPLIER)
+    }
+
+    /// Counts the timed capsules down by `dt` seconds.
+    fn tick(&mut self, dt: f32) {
+        let effects = &mut self.effects;
+        if effects.op > 0.0 {
+            effects.op = (effects.op - dt).max(0.0);
+            if effects.op == 0.0 {
+                self.paddle.w = PADDLE_W;
+                self.clamp_paddle();
+            }
+        }
+        let effects = &mut self.effects;
+        effects.kick = (effects.kick - dt).max(0.0);
+        if let Some((pace, left)) = effects.pace {
+            let left = left - dt;
+            effects.pace = (left > 0.0).then_some((pace, left));
+        }
+    }
+
+    /// Ends the timed capsules: a life was lost.
+    fn clear_effects(&mut self) {
+        self.effects.op = 0.0;
+        self.effects.kick = 0.0;
+        self.effects.pace = None;
+        self.paddle.w = PADDLE_W;
+        self.clamp_paddle();
+        self.capsules.clear();
+    }
+
+    /// What a caught capsule does.
+    pub fn apply(&mut self, kind: CapsuleKind) {
+        match kind {
+            CapsuleKind::Op => {
+                self.effects.op = OP_SECS;
+                self.paddle.w = PADDLE_W_OP;
+                self.clamp_paddle();
+            }
+            CapsuleKind::Join => {
+                if self.held {
+                    return;
+                }
+                let turn = JOIN_ANGLE * PI / 180.0;
+                let mut more = Vec::new();
+                for ball in &self.balls {
+                    for angle in [-turn, turn] {
+                        if self.balls.len() + more.len() >= MAX_BALLS {
+                            break;
+                        }
+                        let (sin, cos) = angle.sin_cos();
+                        let mut new = Ball {
+                            x: ball.x,
+                            y: ball.y,
+                            vx: ball.vx * cos - ball.vy * sin,
+                            vy: ball.vx * sin + ball.vy * cos,
+                        };
+                        keep_vertical(&mut new, self.speed());
+                        more.push(new);
+                    }
+                }
+                self.balls.extend(more);
+            }
+            CapsuleKind::Moderated => {
+                self.effects.pace = Some((Pace::Moderated, MODERATED_SECS));
+            }
+            CapsuleKind::Lag => self.effects.pace = Some((Pace::Lag, LAG_SECS)),
+            CapsuleKind::Kick => self.effects.kick = KICK_SECS,
+            CapsuleKind::Bouncer => self.effects.bouncer = true,
+        }
+    }
+
+    /// Capsules fall; the paddle catches them or they are lost.
+    fn fall(&mut self, dt: f32, events: &mut Events) {
+        let paddle = self.paddle.clone();
+        let mut caught = Vec::new();
+        self.capsules.retain_mut(|capsule| {
+            capsule.y += CAPSULE_SPEED * dt;
+            let bottom = capsule.y + CAPSULE_H;
+            let on_paddle = bottom >= PADDLE_Y
+                && capsule.y <= PADDLE_Y + PADDLE_H
+                && capsule.x + CAPSULE_W / 2.0 >= paddle.left()
+                && capsule.x - CAPSULE_W / 2.0 <= paddle.right();
+            if on_paddle {
+                caught.push(capsule.kind);
+                return false;
+            }
+            capsule.y <= FIELD_H
+        });
+        for kind in caught {
+            self.apply(kind);
+            self.add_points(CATCH_POINTS * self.multiplier(), events);
+            events.caught.push(kind);
+        }
     }
 
     /// One ball, held on the paddle.
@@ -306,6 +525,7 @@ impl Game {
             return events;
         }
         let dt = dt.clamp(0.0, MAX_DT);
+        self.tick(dt);
         self.move_paddle(input, dt);
         if self.held {
             for ball in &mut self.balls {
@@ -319,6 +539,7 @@ impl Game {
                 return events;
             }
         }
+        self.fall(dt, &mut events);
         let speed = self.speed();
         let mut index = 0;
         while index < self.balls.len() {
@@ -352,9 +573,10 @@ impl Game {
 
     /// The bonus, then the next level with the ball back on the paddle.
     fn clear_level(&mut self, events: &mut Events) {
-        self.add_points(CLEAR_BONUS * self.level);
+        self.add_points(CLEAR_BONUS.saturating_mul(self.level), events);
         self.level += 1;
         self.bricks = levels::parse(levels::layout(self.level).map);
+        self.capsules.clear();
         self.serve();
         events.level_cleared = true;
     }
@@ -416,6 +638,14 @@ impl Game {
 
         self.hit_brick(ball, speed, events);
 
+        if self.effects.bouncer && ball.vy > 0.0 && ball.y + BALL_R >= BOUNCER_Y {
+            ball.y = BOUNCER_Y - BALL_R;
+            ball.vy = -ball.vy.abs();
+            keep_vertical(ball, speed);
+            self.effects.bouncer = false;
+            events.bounced_off_bouncer = true;
+        }
+
         let bottom = ball.y + BALL_R;
         let paddle = &self.paddle;
         if ball.vy > 0.0
@@ -459,6 +689,12 @@ impl Game {
             return;
         };
         let (left, top) = self.bricks[index].origin();
+        if self.effects.kick > 0.0 && self.bricks[index].kind != BrickKind::Ban {
+            // Kick: straight through, and the brick goes in one.
+            self.bricks[index].hits = 1;
+            self.strike(index, events);
+            return;
+        }
         if over_x < over_y {
             if ball.x < left + BRICK_W / 2.0 {
                 ball.vx = -ball.vx.abs();
@@ -493,12 +729,22 @@ impl Game {
             broken,
         });
         if broken {
-            self.bricks.remove(index);
-            self.add_points(kind.points() * self.level.min(MAX_MULTIPLIER));
+            let removed = self.bricks.remove(index);
+            self.add_points(kind.points() * self.multiplier(), events);
+            if self.capsules.len() < MAX_CAPSULES && self.rng.below(DROP_ONE_IN) == 0 {
+                let (x, y) = removed.origin();
+                let kind = CapsuleKind::ALL[self.rng.below(CapsuleKind::ALL.len() as u32) as usize];
+                self.capsules.push(Capsule {
+                    x: x + BRICK_W / 2.0,
+                    y,
+                    kind,
+                });
+            }
         }
     }
 
     fn lose_life(&mut self, events: &mut Events) {
+        self.clear_effects();
         self.lives = self.lives.saturating_sub(1);
         events.life_lost = true;
         if self.lives == 0 {
@@ -906,5 +1152,217 @@ mod tests {
             game
         };
         assert_eq!(play(42), play(42));
+    }
+    /// A capsule of `kind` just above the paddle's middle.
+    fn catch(game: &mut Game, kind: CapsuleKind) -> Events {
+        game.capsules = vec![Capsule {
+            x: game.paddle.x,
+            y: PADDLE_Y - CAPSULE_H - 0.5,
+            kind,
+        }];
+        game.step(&Input::default(), DT)
+    }
+
+    /// A game with one ball high in the field, going up, and nothing else.
+    fn open_field() -> Game {
+        flying(100.0, 200.0, 60.0, -150.0)
+    }
+
+    #[test]
+    fn op_widens_the_paddle_for_fifteen_seconds() {
+        let mut game = open_field();
+        let events = catch(&mut game, CapsuleKind::Op);
+        assert_eq!(events.caught, [CapsuleKind::Op]);
+        assert_eq!(game.score, 50);
+        assert_eq!(game.paddle.w, PADDLE_W_OP);
+        game.balls.clear();
+        game.held = true;
+        game.balls.push(Ball {
+            x: 0.0,
+            y: 0.0,
+            vx: 0.0,
+            vy: 0.0,
+        });
+        for _ in 0..(14 * 60) {
+            game.step(&Input::default(), DT);
+        }
+        assert_eq!(game.paddle.w, PADDLE_W_OP, "still wide after 14 s");
+        for _ in 0..(2 * 60) {
+            game.step(&Input::default(), DT);
+        }
+        assert_eq!(game.paddle.w, PADDLE_W, "narrow again after 15 s");
+    }
+
+    #[test]
+    fn join_makes_three_balls_and_never_a_seventh() {
+        let mut game = open_field();
+        catch(&mut game, CapsuleKind::Join);
+        assert_eq!(game.balls.len(), 3);
+        for ball in &game.balls {
+            let speed = (ball.vx * ball.vx + ball.vy * ball.vy).sqrt();
+            assert!((speed - BALL_SPEED).abs() < 0.5);
+        }
+        catch(&mut game, CapsuleKind::Join);
+        assert_eq!(game.balls.len(), MAX_BALLS);
+        catch(&mut game, CapsuleKind::Join);
+        assert_eq!(game.balls.len(), MAX_BALLS, "never a seventh");
+    }
+
+    #[test]
+    fn moderated_and_lag_change_the_speed_and_replace_each_other() {
+        let mut game = open_field();
+        catch(&mut game, CapsuleKind::Moderated);
+        assert!((game.speed() - BALL_SPEED * MODERATED_SPEED).abs() < 0.01);
+        game.step(&Input::default(), DT);
+        let ball = &game.balls[0];
+        let speed = (ball.vx * ball.vx + ball.vy * ball.vy).sqrt();
+        assert!(
+            (speed - BALL_SPEED * MODERATED_SPEED).abs() < 0.5,
+            "{speed}"
+        );
+        catch(&mut game, CapsuleKind::Lag);
+        assert!((game.speed() - BALL_SPEED * LAG_SPEED).abs() < 0.01);
+        assert_eq!(game.effects.pace.map(|(pace, _)| pace), Some(Pace::Lag));
+        catch(&mut game, CapsuleKind::Moderated);
+        assert_eq!(
+            game.effects.pace.map(|(pace, _)| pace),
+            Some(Pace::Moderated)
+        );
+        for _ in 0..(11 * 60) {
+            game.step(&Input::default(), DT);
+            if game.balls.is_empty() || game.held {
+                break;
+            }
+        }
+        assert_eq!(game.effects.pace, None);
+    }
+
+    #[test]
+    fn kick_breaks_an_op_in_one_pass_and_still_bounces_off_a_ban() {
+        let (x, y) = centre(4, 4);
+        let mut game = with_bricks(
+            vec![Brick::new(4, 4, BrickKind::Op)],
+            x,
+            y + 20.0,
+            0.0,
+            -BALL_SPEED,
+        );
+        game.apply(CapsuleKind::Kick);
+        let hits = until_hit(&mut game);
+        assert!(hits[0].broken, "one pass breaks the op");
+        assert!(game.balls[0].vy < 0.0, "no bounce");
+        assert_eq!(game.score, 30);
+
+        let (x, y) = centre(6, 6);
+        let mut game = with_bricks(
+            vec![Brick::new(6, 6, BrickKind::Ban)],
+            x,
+            y + 20.0,
+            0.0,
+            -BALL_SPEED,
+        );
+        game.apply(CapsuleKind::Kick);
+        let hits = until_hit(&mut game);
+        assert!(!hits[0].broken);
+        assert!(game.balls[0].vy > 0.0, "a ban still bounces");
+    }
+
+    #[test]
+    fn the_bouncer_saves_exactly_one_ball() {
+        let mut game = flying(40.0, 280.0, 0.0, BALL_SPEED);
+        game.paddle.x = 300.0;
+        game.apply(CapsuleKind::Bouncer);
+        let mut saved = 0;
+        let mut lost = false;
+        for _ in 0..600 {
+            let events = game.step(&Input::default(), DT);
+            saved += usize::from(events.bounced_off_bouncer);
+            if events.life_lost {
+                lost = true;
+                break;
+            }
+            // Send the ball straight back down each time it goes up.
+            if let Some(ball) = game.balls.first_mut()
+                && ball.vy < 0.0
+                && ball.y < 250.0
+            {
+                ball.vy = ball.vy.abs();
+                ball.vx = 0.0;
+            }
+        }
+        assert_eq!(saved, 1);
+        assert!(lost, "the second time the ball is lost");
+        assert!(!game.effects.bouncer);
+    }
+
+    #[test]
+    fn timers_run_on_game_time_only() {
+        let mut game = open_field();
+        catch(&mut game, CapsuleKind::Kick);
+        let left = game.effects.kick;
+        // A paused game is not stepped: nothing counts down.
+        let paused = game.clone();
+        assert_eq!(paused.effects.kick, left);
+        game.step(&Input::default(), 0.5 * MAX_DT);
+        assert!(game.effects.kick < left);
+    }
+
+    #[test]
+    fn losing_a_life_ends_the_timed_capsules() {
+        let mut game = flying(40.0, 290.0, 0.0, BALL_SPEED);
+        game.paddle.x = 300.0;
+        game.apply(CapsuleKind::Op);
+        game.apply(CapsuleKind::Lag);
+        game.apply(CapsuleKind::Kick);
+        let mut lost = false;
+        for _ in 0..60 {
+            lost |= game.step(&Input::default(), DT).life_lost;
+        }
+        assert!(lost);
+        assert_eq!(game.paddle.w, PADDLE_W);
+        assert_eq!(game.effects.pace, None);
+        assert_eq!(game.effects.kick, 0.0);
+    }
+
+    #[test]
+    fn a_life_every_twenty_thousand_up_to_five() {
+        let mut game = Game::new(1);
+        let mut events = Events::default();
+        game.add_points(19_990, &mut events);
+        assert_eq!(game.lives, LIVES);
+        game.add_points(10, &mut events);
+        assert!(events.life_gained);
+        assert_eq!(game.lives, LIVES + 1);
+        game.add_points(100_000, &mut events);
+        assert_eq!(game.lives, MAX_LIVES, "not past five");
+        game.add_points(MAX_SCORE, &mut events);
+        assert_eq!(game.score, MAX_SCORE, "the score stops at the bound");
+    }
+
+    #[test]
+    fn broken_bricks_drop_capsules_now_and_then() {
+        let mut drops = 0;
+        let mut kinds = std::collections::HashSet::new();
+        for seed in 1..400 {
+            let mut game = Game::new(seed);
+            // The bottom row, so the ball touches one brick only.
+            let brick = game.bricks.last().unwrap().clone();
+            let (x, y) = centre(brick.col, brick.row);
+            game.held = false;
+            game.balls = vec![Ball {
+                x,
+                y: y + 7.0,
+                vx: 0.0,
+                vy: -BALL_SPEED,
+            }];
+            game.step(&Input::default(), DT);
+            assert!(game.capsules.len() <= MAX_CAPSULES);
+            if let Some(capsule) = game.capsules.first() {
+                drops += 1;
+                kinds.insert(format!("{:?}", capsule.kind));
+            }
+        }
+        assert!((25..75).contains(&drops), "about one in eight: {drops}");
+        assert_eq!(kinds.len(), 6, "every kind drops");
     }
 }
