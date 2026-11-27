@@ -13,6 +13,7 @@ use gpui_kit::*;
 use ircord_client::contract as c;
 
 use super::block;
+use crate::features::ircoid;
 use crate::features::updates::{self, Status, Updates};
 use crate::registry::{self, SettingsCtx, SettingsGroup, SettingsRow, SettingsSection};
 use crate::session::Session;
@@ -102,6 +103,7 @@ fn view(session: &Entity<Session>, _window: &mut Window, cx: &mut App) -> Entity
             ctx: None,
             server: Server::Loading,
             updates: tracked,
+            presses: ircoid::Presses::default(),
         };
         view.load(cx);
         view
@@ -122,6 +124,8 @@ pub struct AboutView {
     server: Server,
     /// The update check, in a build that makes one.
     updates: Option<Entity<Updates>>,
+    /// Presses on the logo; five in a row open Ircoid.
+    presses: ircoid::Presses,
 }
 
 /// The line under the versions: the check button, what it last found, and
@@ -348,10 +352,36 @@ impl Render for AboutView {
             .read(cx)
             .client()
             .map(|client| client.api().server().origin());
+        let session = self.session.clone();
+        // The mark as the sign-in draws it. It is a button that names only
+        // IRCord: five presses in a row open the game, as on the web.
+        let logo = div()
+            .id("about-logo")
+            .test_support()
+            .role(Role::Button)
+            .aria_label(t!("core-app-name"))
+            .reachable(&theme)
+            .size(px(56.))
+            .rounded(px(14.))
+            .bg(theme.accent.opacity(0.55))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_3xl()
+            .font_weight(FontWeight::BOLD)
+            .text_color(theme.text)
+            .cursor_pointer()
+            .child("#")
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if this.presses.press(std::time::Instant::now()) {
+                    ircoid::open(&session, window, cx);
+                }
+            }));
         let hero = div()
             .flex()
             .flex_col()
             .gap_3()
+            .child(logo)
             .child(
                 div()
                     .text_sm()

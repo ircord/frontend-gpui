@@ -25,6 +25,7 @@ mod emoji;
 mod emotes;
 mod emoticons;
 mod inbox_saved;
+mod ircoid;
 mod link_previews;
 mod links_view;
 mod media;

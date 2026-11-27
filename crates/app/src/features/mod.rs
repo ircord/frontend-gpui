@@ -16,6 +16,7 @@ pub mod drafts;
 pub mod gallery;
 pub mod inbox;
 pub mod invitations;
+pub mod ircoid;
 pub mod join;
 pub mod klipy;
 pub mod link_cards;
