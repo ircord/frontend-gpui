@@ -13,6 +13,8 @@
 //! the backend over the internet).
 //! `CAPTURE_ONLY=attract` captures `/attract` on a first line, a later line, a message with a reaction and a reply.
 //! `CAPTURE_ONLY=fade` captures a change of colours fading, nothing else.
+//! `CAPTURE_ONLY=ircoid` captures the game behind About's logo: ready, moving, paused, its
+//! high score table and its credits (point `IRCORD_BACKEND` at a backend with the table).
 //! `CAPTURE_ONLY=appimage` runs `dist/IRCord-GPUI-Linux-x64.AppImage` (from
 //! `cargo xtask package linux`) instead of `dist/ircord`, unpacked as the
 //! container has no FUSE: first with GStreamer's good and libav plugins
@@ -167,6 +169,51 @@ if [ "${CAPTURE_ONLY:-}" = fade ]; then
   # Fail when nothing changed (the account was not in light to begin with).
   ! cmp -s "$OUT/fade-0-before.png" "$OUT/fade-9-after.png" || { echo "the colours did not change"; exit 1; }
   stop_app fade
+  exit 0
+fi
+# `CAPTURE_ONLY=ircoid`: the game behind About's logo. Settings → About,
+# five presses on the logo, the ready screen, a game moving (four frames
+# while Right is held), paused, and About again after Escape.
+if [ "${CAPTURE_ONLY:-}" = ircoid ]; then
+  xdotool windowfocus --sync "$WIN"
+  xdotool key ctrl+comma
+  sleep 1
+  # About, the last row of Settings' list.
+  xdotool mousemove --window "$WIN" 280 620 click 1
+  sleep 2
+  shot ircoid-0-about
+  for n in 1 2 3 4 5; do
+    xdotool mousemove --window "$WIN" ${LOGO_X:-496} ${LOGO_Y:-241} click 1
+    sleep 0.2
+  done
+  sleep 1
+  shot ircoid-1-ready
+  xdotool key space
+  sleep 0.6
+  xdotool keydown Right
+  for n in 1 2 3 4; do shot ircoid-2-playing-$n; done
+  xdotool keyup Right
+  xdotool key p
+  sleep 0.5
+  shot ircoid-3-paused
+  sleep 0.5
+  shot ircoid-3-paused-later
+  cmp -s "$OUT/ircoid-3-paused.png" "$OUT/ircoid-3-paused-later.png" \
+    || echo "note: the paused game changed between two shots"
+  # The table, from the High scores button; then the credits under it.
+  xdotool mousemove --window "$WIN" ${SCORES_X:-771} ${SCORES_Y:-746} click 1
+  sleep 2
+  shot ircoid-4-table
+  xdotool mousemove --window "$WIN" ${CREDITS_X:-601} ${CREDITS_Y:-426} click 1
+  sleep 1
+  for n in 1 2 3; do shot ircoid-5-credits-$n; sleep 0.4; done
+  xdotool key Escape
+  sleep 1
+  shot ircoid-6-table-again
+  xdotool key Escape
+  sleep 1
+  shot ircoid-7-about-again
+  stop_app ircoid
   exit 0
 fi
 if [ "${CAPTURE_ONLY:-}" = news ]; then

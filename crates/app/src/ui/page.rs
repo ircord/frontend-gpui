@@ -235,7 +235,7 @@ impl Page {
 
 /// The bar of key hints, as the web's `WorkspaceFooter`: each key in a
 /// small framed cap, then what it does.
-fn hint_bar(id: String, hints: &[Hint], theme: &Theme) -> impl IntoElement + use<> {
+pub fn hint_bar(id: String, hints: &[Hint], theme: &Theme) -> impl IntoElement + use<> {
     let text: Vec<String> = hints
         .iter()
         .map(|h| format!("{} {}", h.keys.join(" "), h.text))

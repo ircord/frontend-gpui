@@ -47,6 +47,8 @@ Everything that compiles runs in a Docker image built from
 | `cargo xtask release-assets …` | the release job's signing, `latest.json` and `SHA256SUMS` (see "Publishing a release") |
 | `cargo xtask contract` | refresh `crates/contract` from the backend checkout |
 | `cargo xtask contract --check` | fail if the committed contract is stale |
+| `cargo xtask credits` | write the contributor list Ircoid's credits show, from git history (a release step) |
+| `cargo xtask credits --check` | fail if that list is out of date |
 | `cargo xtask integration` | the client against a real backend and IRC server in containers |
 | `cargo xtask capture` | screenshot the Linux app against a disposable backend, in `target/capture/` |
 | `cargo xtask shell -- <cmd>` | run any command in the build container |
@@ -181,8 +183,11 @@ builds the Mac disk image on macOS.
 A release is `.github/workflows/publish.yaml`, started by hand:
 
 1. On `main`, set `version` under `[workspace.package]` in `Cargo.toml`
-   (and `Cargo.lock` with it), and move the `## Unreleased` entries in
-   `CHANGELOG.md` under `## v<version> — <date>`.
+   (and `Cargo.lock` with it), move the `## Unreleased` entries in
+   `CHANGELOG.md` under `## v<version> — <date>`, and run `cargo xtask
+   credits`. Commit `crates/client/src/ircoid/contributors.txt` with the
+   release if it changed. If a new name is a second spelling of someone
+   already listed, add a line to `.mailmap` and run it again.
 2. Run the workflow with that version and **verify only** ticked. It checks
    the version, runs the checks, builds every installer, signs the Windows
    setup, the macOS `.app.tar.gz` and the AppImage for the updater, writes `latest.json`

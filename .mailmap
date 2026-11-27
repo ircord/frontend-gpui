@@ -1,0 +1,4 @@
+# One line per extra spelling of a contributor, so that git and `cargo xtask credits`
+# count each person once:
+#   Proper Name <proper@address> Commit Name <commit@address>
+# See `git help check-mailmap`. No entry is needed yet.

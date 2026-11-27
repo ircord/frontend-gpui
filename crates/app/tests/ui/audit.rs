@@ -318,6 +318,10 @@ fn tab_reaches_every_control_in_the_dialogs(cx: &mut TestAppContext) {
                 ircord_app::features::create_channel::open(&session, "n1", window, cx)
             })
         }),
+        ("ircoid", {
+            let session = session.clone();
+            Box::new(move |window, cx| ircord_app::features::ircoid::open(&session, window, cx))
+        }),
     ];
     let mut problems = Vec::new();
     for (view, opener) in dialogs {
@@ -393,5 +397,39 @@ fn tab_reaches_every_control_in_the_popovers(cx: &mut TestAppContext) {
         .unwrap();
         cx.run_until_parked();
     }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[gpui_kit::test]
+fn tab_reaches_every_control_over_ircoids_table_and_credits(cx: &mut TestAppContext) {
+    let f = open(cx, true);
+    bootstrap(&f, cx);
+    let session = f.session.clone();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        ircord_app::features::ircoid::open(&session, window, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let game = cx.update(|cx| ircord_app::features::ircoid::current(cx).unwrap());
+    game.update(cx, |g, cx| g.show_scores(cx));
+    wait(cx, "the table", |_| true);
+    let mut problems = cx
+        .update_window(f.window, |_, window, cx| {
+            audit_where("ircoid table", window, cx, in_dialog)
+        })
+        .unwrap();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("ircoid-credits-open", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    problems.extend(
+        cx.update_window(f.window, |_, window, cx| {
+            audit_where("ircoid credits", window, cx, in_dialog)
+        })
+        .unwrap(),
+    );
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
