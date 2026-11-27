@@ -7,6 +7,8 @@
 //! ready, paused and game over screens cost nothing. The game pauses when
 //! the window loses focus, when focus leaves the game, and on P.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::TestSupportExt;
@@ -51,6 +53,15 @@ impl Presses {
         }
         false
     }
+}
+
+/// The field's x under a window's `x`, for a stage drawn `left` to
+/// `left + width`; `None` off the stage.
+pub fn field_x(x: f32, left: f32, width: f32) -> Option<f32> {
+    if width <= 0. || x < left || x > left + width {
+        return None;
+    }
+    Some((x - left) / width * FIELD_W)
 }
 
 /// Where a game is.
@@ -122,6 +133,10 @@ pub struct Ircoid {
     held: Held,
     /// A launch asked for since the last step.
     launch: bool,
+    /// Where the pointer put the paddle, until a key moves it.
+    pointer: Option<f32>,
+    /// Where the stage was last drawn.
+    stage: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// When the last frame was drawn while playing.
     last_frame: Option<Instant>,
     _subscriptions: Vec<Subscription>,
@@ -145,6 +160,8 @@ impl Ircoid {
             phase: Phase::Ready,
             held: Held::default(),
             launch: false,
+            pointer: None,
+            stage: Rc::default(),
             last_frame: None,
             _subscriptions: subscriptions,
         }
@@ -179,7 +196,7 @@ impl Ircoid {
             left: self.held.left,
             right: self.held.right,
             launch: std::mem::take(&mut self.launch),
-            pointer: None,
+            pointer: self.pointer,
         };
         let events = self.game.step(&input, dt.min(MAX_DT));
         if events.game_over {
@@ -193,6 +210,7 @@ impl Ircoid {
         self.launch = false;
         if phase != Phase::Playing {
             self.held = Held::default();
+            self.pointer = None;
         }
     }
 
@@ -275,6 +293,42 @@ impl Ircoid {
         } else {
             self.held.right = true;
         }
+        // The keys act last: the paddle stops following the pointer.
+        self.pointer = None;
+        cx.notify();
+    }
+
+    /// The field's x under a window position, if it is over the stage.
+    fn stage_x(&self, x: Pixels) -> Option<f32> {
+        let stage = self.stage.get()?;
+        field_x(
+            f32::from(x),
+            f32::from(stage.origin.x),
+            f32::from(stage.size.width),
+        )
+    }
+
+    /// The pointer moved over the stage: the paddle follows it.
+    pub fn pointer_moved(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        if self.phase != Phase::Playing {
+            return;
+        }
+        if let Some(x) = self.stage_x(position.x) {
+            self.pointer = Some(x);
+            cx.notify();
+        }
+    }
+
+    /// A sideways scroll nudges the paddle by the distance scrolled.
+    fn scrolled(&mut self, dx: Pixels, cx: &mut Context<Self>) {
+        let Some(stage) = self.stage.get() else {
+            return;
+        };
+        if self.phase != Phase::Playing || dx == px(0.) {
+            return;
+        }
+        let units = f32::from(dx) / f32::from(stage.size.width) * FIELD_W;
+        self.pointer = Some(self.pointer.unwrap_or(self.game.paddle.x) + units);
         cx.notify();
     }
 
@@ -441,14 +495,34 @@ impl Render for Ircoid {
                     .rounded_md()
                     .overflow_hidden()
                     .bg(theme.rail)
-                    .child(
+                    .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                        this.pointer_moved(e.position, cx);
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                            this.pointer_moved(e.position, cx);
+                            this.primary(cx);
+                            window.focus(&this.focus, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .on_scroll(cx.listener(|this, e: &ScrollEvent, window, cx| {
+                        let delta = e.delta.pixel_delta(window.line_height());
+                        if delta.x.abs() > delta.y.abs() {
+                            this.scrolled(delta.x, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .child({
+                        let stage = self.stage.clone();
                         canvas(
-                            |_, _, _| (),
+                            move |bounds, _, _| stage.set(Some(bounds)),
                             move |bounds, _, window, _| paint_plain(&picture, bounds, window),
                         )
                         .absolute()
-                        .size_full(),
-                    ),
+                        .size_full()
+                    }),
             )
             .child(div().flex().justify_end().child(self.buttons(cx)))
     }
@@ -458,7 +532,16 @@ impl Render for Ircoid {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::Presses;
+    use super::{Presses, field_x};
+
+    #[test]
+    fn the_pointer_maps_to_the_field() {
+        assert_eq!(field_x(100., 100., 800.), Some(0.));
+        assert_eq!(field_x(500., 100., 800.), Some(200.));
+        assert_eq!(field_x(900., 100., 800.), Some(400.));
+        assert_eq!(field_x(99., 100., 800.), None);
+        assert_eq!(field_x(901., 100., 800.), None);
+    }
 
     #[test]
     fn five_quick_presses_open_the_game() {

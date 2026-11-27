@@ -271,3 +271,63 @@ fn three_lost_balls_end_the_game_and_only_restart_starts_another(cx: &mut TestAp
     assert_eq!(phase(cx), Phase::Playing);
     assert_eq!(cx.update(|cx| view.read(cx).game().lives), 3);
 }
+
+/// The stage's bounds in the window.
+fn stage(f: &Fixture, cx: &mut TestAppContext) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.find("ircoid-stage").bounds()
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn the_paddle_follows_the_pointer_and_a_click_launches(cx: &mut TestAppContext) {
+    let f = game(cx);
+    click(&f, cx, "ircoid-play");
+    let bounds = stage(&f, cx);
+    // A quarter of the way across the stage.
+    let at = gpui_kit::point(
+        bounds.origin.x + bounds.size.width * 0.25,
+        bounds.origin.y + bounds.size.height * 0.5,
+    );
+    cx.update_window(f.window, |_, window, cx| window.pointer_move(at, None, cx))
+        .unwrap();
+    advance(cx, 1);
+    let view = game_view(cx);
+    let x = cx.update(|cx| view.read(cx).game().paddle.x);
+    assert!(
+        (x - 100.).abs() < 1.,
+        "the paddle is under the pointer: {x}"
+    );
+    assert!(cx.update(|cx| view.read(cx).game().held));
+    cx.update_window(f.window, |_, window, cx| {
+        window.pointer_down(at, gpui_kit::MouseButton::Left, cx);
+        window.pointer_up(at, gpui_kit::MouseButton::Left, cx);
+    })
+    .unwrap();
+    advance(cx, 1);
+    assert!(
+        !cx.update(|cx| view.read(cx).game().held),
+        "the click launched"
+    );
+}
+
+#[gpui_kit::test]
+fn a_key_takes_the_paddle_back_from_the_pointer(cx: &mut TestAppContext) {
+    let f = game(cx);
+    click(&f, cx, "ircoid-play");
+    let bounds = stage(&f, cx);
+    let at = gpui_kit::point(
+        bounds.origin.x + bounds.size.width * 0.25,
+        bounds.origin.y + bounds.size.height * 0.5,
+    );
+    cx.update_window(f.window, |_, window, cx| window.pointer_move(at, None, cx))
+        .unwrap();
+    advance(cx, 1);
+    key(&f, cx, "right", true);
+    advance(cx, 10);
+    let view = game_view(cx);
+    let x = cx.update(|cx| view.read(cx).game().paddle.x);
+    assert!(x > 140., "the keys moved it from under the pointer: {x}");
+}
