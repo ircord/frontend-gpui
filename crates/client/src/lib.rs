@@ -14,6 +14,7 @@
 //! - [`client`]: the handle the app holds, with the generic `call`, and
 //!   [`documents`]: the server's revisioned documents.
 //! - [`features`] and [`irc`]: what a network allows, channel ranks.
+//! - [`ircoid`]: the rules of the game behind About's logo.
 //! - [`channel_modes`]: channel modes, list masks and the mask builder.
 //! - [`search_filter`]: message search filters, recent searches and where
 //!   results come from.
@@ -33,6 +34,7 @@ pub mod events;
 pub mod features;
 pub mod format;
 pub mod irc;
+pub mod ircoid;
 pub mod search_filter;
 pub mod socket;
 pub mod store;
