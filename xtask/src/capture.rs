@@ -169,6 +169,41 @@ if [ "${CAPTURE_ONLY:-}" = fade ]; then
   stop_app fade
   exit 0
 fi
+# `CAPTURE_ONLY=ircoid`: the game behind About's logo. Settings → About,
+# five presses on the logo, the ready screen, a game moving (four frames
+# while Right is held), paused, and About again after Escape.
+if [ "${CAPTURE_ONLY:-}" = ircoid ]; then
+  xdotool windowfocus --sync "$WIN"
+  xdotool key ctrl+comma
+  sleep 1
+  # About, the last row of Settings' list.
+  xdotool mousemove --window "$WIN" 280 620 click 1
+  sleep 2
+  shot ircoid-0-about
+  for n in 1 2 3 4 5; do
+    xdotool mousemove --window "$WIN" ${LOGO_X:-496} ${LOGO_Y:-241} click 1
+    sleep 0.2
+  done
+  sleep 1
+  shot ircoid-1-ready
+  xdotool key space
+  sleep 0.6
+  xdotool keydown Right
+  for n in 1 2 3 4; do shot ircoid-2-playing-$n; done
+  xdotool keyup Right
+  xdotool key p
+  sleep 0.5
+  shot ircoid-3-paused
+  sleep 0.5
+  shot ircoid-3-paused-later
+  cmp -s "$OUT/ircoid-3-paused.png" "$OUT/ircoid-3-paused-later.png" \
+    || echo "note: the paused game changed between two shots"
+  xdotool key Escape
+  sleep 1
+  shot ircoid-4-about-again
+  stop_app ircoid
+  exit 0
+fi
 if [ "${CAPTURE_ONLY:-}" = news ]; then
 # News that moves: a message that arrives glides in, a reaction sends sparks
 # from its chip, a message that mentions you gets one glint across its row.
