@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.7.0 — 2026-11-27
+
 ### New
 
 - Linux releases now also come as an AppImage, beside the `.deb`. It runs without root on other distributions and installs updates itself, as Windows and macOS do; on its first start it offers to add itself to the applications menu. Videos use the system's GStreamer: when it lacks something, a notice names it with the command that installs it on Debian, Ubuntu, Fedora or Arch, and videos turn on once it is there.
