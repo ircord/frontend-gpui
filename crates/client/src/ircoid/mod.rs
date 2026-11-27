@@ -11,6 +11,8 @@
 
 use std::f32::consts::PI;
 
+pub mod levels;
+
 /// The field's width.
 pub const FIELD_W: f32 = 400.0;
 /// The field's height. It is open at the bottom: a ball past it is lost.
@@ -43,6 +45,23 @@ pub const MAX_DT: f32 = 1.0 / 30.0;
 
 /// Lives at the start of a game.
 pub const LIVES: u32 = 3;
+
+/// A brick's width and height.
+pub const BRICK_W: f32 = 28.0;
+pub const BRICK_H: f32 = 11.0;
+/// From one brick to the next, across and down.
+pub const BRICK_PITCH_X: f32 = 30.0;
+pub const BRICK_PITCH_Y: f32 = 13.0;
+/// The top left of the first brick.
+pub const BRICK_X0: f32 = 5.0;
+pub const BRICK_Y0: f32 = 30.0;
+
+/// Points are multiplied by the level, up to this.
+pub const MAX_MULTIPLIER: u32 = 20;
+/// Clearing a level adds this times the level.
+pub const CLEAR_BONUS: u32 = 500;
+/// The highest score, the bound the server's score table accepts.
+pub const MAX_SCORE: u32 = 10_000_000;
 
 /// A launch leaves the paddle this far off vertical, in degrees.
 const LAUNCH_ANGLE: f32 = 15.0;
@@ -96,6 +115,85 @@ impl Paddle {
     }
 }
 
+/// What a brick is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrickKind {
+    /// One hit.
+    Message,
+    /// `@`: two hits.
+    Op,
+    /// `~`: three hits.
+    Owner,
+    /// `+b`: never breaks, and does not count toward clearing a level.
+    Ban,
+}
+
+impl BrickKind {
+    /// Hits it takes to break.
+    pub fn hits(self) -> u8 {
+        match self {
+            Self::Message => 1,
+            Self::Op => 2,
+            Self::Owner => 3,
+            Self::Ban => u8::MAX,
+        }
+    }
+
+    /// Points for breaking it on level 1.
+    pub fn points(self) -> u32 {
+        match self {
+            Self::Message => 10,
+            Self::Op => 30,
+            Self::Owner => 50,
+            Self::Ban => 0,
+        }
+    }
+}
+
+/// A brick in the field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Brick {
+    pub col: u8,
+    pub row: u8,
+    pub kind: BrickKind,
+    /// Hits it still takes.
+    pub hits: u8,
+}
+
+impl Brick {
+    pub fn new(col: u8, row: u8, kind: BrickKind) -> Self {
+        Self {
+            col,
+            row,
+            kind,
+            hits: kind.hits(),
+        }
+    }
+
+    /// Its left and top edges.
+    pub fn origin(&self) -> (f32, f32) {
+        (
+            BRICK_X0 + f32::from(self.col) * BRICK_PITCH_X,
+            BRICK_Y0 + f32::from(self.row) * BRICK_PITCH_Y,
+        )
+    }
+
+    /// Whether it has been hit and not broken yet.
+    pub fn cracked(&self) -> bool {
+        self.kind != BrickKind::Ban && self.hits < self.kind.hits()
+    }
+}
+
+/// A brick a ball hit during a step.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hit {
+    pub col: u8,
+    pub row: u8,
+    pub kind: BrickKind,
+    /// The hit broke it.
+    pub broken: bool,
+}
+
 /// A ball: its centre and velocity.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ball {
@@ -130,6 +228,10 @@ pub struct Events {
     pub life_lost: bool,
     /// The last life was lost.
     pub game_over: bool,
+    /// Bricks hit, in order.
+    pub hits: Vec<Hit>,
+    /// The last breakable brick broke: the game is on the next level now.
+    pub level_cleared: bool,
 }
 
 /// A game of Ircoid.
@@ -137,6 +239,7 @@ pub struct Events {
 pub struct Game {
     pub paddle: Paddle,
     pub balls: Vec<Ball>,
+    pub bricks: Vec<Brick>,
     /// The ball waits on the paddle for a launch.
     pub held: bool,
     pub lives: u32,
@@ -157,6 +260,7 @@ impl Game {
                 w: PADDLE_W,
             },
             balls: Vec::new(),
+            bricks: levels::parse(levels::layout(1).map),
             held: true,
             lives: LIVES,
             level: 1,
@@ -167,6 +271,16 @@ impl Game {
         };
         game.serve();
         game
+    }
+
+    /// The current level's channel name.
+    pub fn channel(&self) -> &'static str {
+        levels::layout(self.level).channel
+    }
+
+    /// Adds `points` to the score, up to [`MAX_SCORE`].
+    fn add_points(&mut self, points: u32) {
+        self.score = self.score.saturating_add(points).min(MAX_SCORE);
     }
 
     /// The ball's speed now, in units a second.
@@ -230,8 +344,19 @@ impl Game {
         }
         if self.balls.is_empty() {
             self.lose_life(&mut events);
+        } else if !self.bricks.iter().any(|b| b.kind != BrickKind::Ban) {
+            self.clear_level(&mut events);
         }
         events
+    }
+
+    /// The bonus, then the next level with the ball back on the paddle.
+    fn clear_level(&mut self, events: &mut Events) {
+        self.add_points(CLEAR_BONUS * self.level);
+        self.level += 1;
+        self.bricks = levels::parse(levels::layout(self.level).map);
+        self.serve();
+        events.level_cleared = true;
     }
 
     fn move_paddle(&mut self, input: &Input, dt: f32) {
@@ -264,7 +389,7 @@ impl Game {
         }
     }
 
-    /// Moves one ball through one slice: walls, then the paddle.
+    /// Moves one ball through one slice: walls, a brick, then the paddle.
     fn slice(&mut self, ball: &mut Ball, dt: f32, events: &mut Events) {
         let speed = self.speed();
         let before_bottom = ball.y + BALL_R;
@@ -289,6 +414,8 @@ impl Game {
             events.bounced = true;
         }
 
+        self.hit_brick(ball, speed, events);
+
         let bottom = ball.y + BALL_R;
         let paddle = &self.paddle;
         if ball.vy > 0.0
@@ -304,6 +431,70 @@ impl Game {
             ball.y = PADDLE_Y - BALL_R;
             keep_vertical(ball, speed);
             events.bounced = true;
+        }
+    }
+
+    /// At most one brick a slice: the one the ball overlaps most. The ball
+    /// reflects on the axis it overlaps least.
+    fn hit_brick(&mut self, ball: &mut Ball, speed: f32, events: &mut Events) {
+        let mut best: Option<(usize, f32, f32)> = None;
+        for (index, brick) in self.bricks.iter().enumerate() {
+            let (left, top) = brick.origin();
+            let (right, bottom) = (left + BRICK_W, top + BRICK_H);
+            // The nearest point of the brick to the ball's centre.
+            let nx = ball.x.clamp(left, right);
+            let ny = ball.y.clamp(top, bottom);
+            let (dx, dy) = (ball.x - nx, ball.y - ny);
+            if dx * dx + dy * dy > BALL_R * BALL_R {
+                continue;
+            }
+            let over_x = (ball.x + BALL_R - left).min(right - (ball.x - BALL_R));
+            let over_y = (ball.y + BALL_R - top).min(bottom - (ball.y - BALL_R));
+            let depth = over_x.min(over_y);
+            if best.is_none_or(|(_, x, y)| depth > x.min(y)) {
+                best = Some((index, over_x, over_y));
+            }
+        }
+        let Some((index, over_x, over_y)) = best else {
+            return;
+        };
+        let (left, top) = self.bricks[index].origin();
+        if over_x < over_y {
+            if ball.x < left + BRICK_W / 2.0 {
+                ball.vx = -ball.vx.abs();
+                ball.x -= over_x;
+            } else {
+                ball.vx = ball.vx.abs();
+                ball.x += over_x;
+            }
+        } else if ball.y < top + BRICK_H / 2.0 {
+            ball.vy = -ball.vy.abs();
+            ball.y -= over_y;
+        } else {
+            ball.vy = ball.vy.abs();
+            ball.y += over_y;
+        }
+        keep_vertical(ball, speed);
+        self.strike(index, events);
+    }
+
+    /// One hit on the brick at `index`.
+    fn strike(&mut self, index: usize, events: &mut Events) {
+        let brick = &mut self.bricks[index];
+        let kind = brick.kind;
+        let broken = kind != BrickKind::Ban && {
+            brick.hits = brick.hits.saturating_sub(1);
+            brick.hits == 0
+        };
+        events.hits.push(Hit {
+            col: brick.col,
+            row: brick.row,
+            kind,
+            broken,
+        });
+        if broken {
+            self.bricks.remove(index);
+            self.add_points(kind.points() * self.level.min(MAX_MULTIPLIER));
         }
     }
 
@@ -364,8 +555,198 @@ mod tests {
     fn flying(x: f32, y: f32, vx: f32, vy: f32) -> Game {
         let mut game = Game::new(1);
         game.held = false;
+        // One brick out of the way, so the level is not cleared.
+        game.bricks = vec![far()];
         game.balls = vec![Ball { x, y, vx, vy }];
         game
+    }
+
+    fn far() -> Brick {
+        Brick::new(12, 0, BrickKind::Message)
+    }
+
+    /// A game with only `bricks`, and one ball at `x`, `y` moving at
+    /// `vx`, `vy`; a brick far away keeps the level from clearing.
+    fn with_bricks(bricks: Vec<Brick>, x: f32, y: f32, vx: f32, vy: f32) -> Game {
+        let mut game = flying(x, y, vx, vy);
+        game.bricks = bricks;
+        game.bricks.push(far());
+        game
+    }
+
+    /// The centre of the brick at `col`, `row`.
+    fn centre(col: u8, row: u8) -> (f32, f32) {
+        let (x, y) = Brick::new(col, row, BrickKind::Message).origin();
+        (x + BRICK_W / 2.0, y + BRICK_H / 2.0)
+    }
+
+    /// Steps until a brick is hit, or a second has passed.
+    fn until_hit(game: &mut Game) -> Vec<Hit> {
+        for _ in 0..60 {
+            let events = game.step(&Input::default(), DT);
+            if !events.hits.is_empty() {
+                return events.hits;
+            }
+        }
+        Vec::new()
+    }
+
+    #[test]
+    fn an_op_needs_two_hits() {
+        let (x, y) = centre(4, 4);
+        let mut game = with_bricks(
+            vec![Brick::new(4, 4, BrickKind::Op)],
+            x,
+            y + 20.0,
+            0.0,
+            -BALL_SPEED,
+        );
+        let hits = until_hit(&mut game);
+        assert!(!hits[0].broken);
+        assert!(game.bricks[0].cracked());
+        assert_eq!(game.score, 0);
+        game.balls[0] = Ball {
+            x,
+            y: y + 20.0,
+            vx: 0.0,
+            vy: -BALL_SPEED,
+        };
+        let hits = until_hit(&mut game);
+        assert!(hits[0].broken);
+        assert_eq!(game.score, 30);
+        assert_eq!(game.bricks, [far()], "only the far brick is left");
+    }
+
+    #[test]
+    fn a_ban_reflects_and_stays() {
+        let (x, y) = centre(6, 6);
+        let mut game = with_bricks(
+            vec![Brick::new(6, 6, BrickKind::Ban)],
+            x,
+            y + 20.0,
+            0.0,
+            -BALL_SPEED,
+        );
+        for _ in 0..5 {
+            let hits = until_hit(&mut game);
+            assert_eq!(hits[0].kind, BrickKind::Ban);
+            assert!(!hits[0].broken);
+            assert!(game.balls[0].vy > 0.0);
+            game.balls[0].vy = -BALL_SPEED;
+        }
+        assert_eq!(game.bricks.len(), 2);
+        assert_eq!(game.score, 0);
+    }
+
+    #[test]
+    fn a_brick_reflects_the_ball_on_the_side_it_hits() {
+        let (x, y) = centre(6, 5);
+        let brick = || vec![Brick::new(6, 5, BrickKind::Owner)];
+        // From below and above.
+        let mut game = with_bricks(brick(), x, y + 15.0, 0.0, -BALL_SPEED);
+        until_hit(&mut game);
+        assert!(game.balls[0].vy > 0.0, "from below");
+        let mut game = with_bricks(brick(), x, y - 15.0, 0.0, BALL_SPEED);
+        until_hit(&mut game);
+        assert!(game.balls[0].vy < 0.0, "from above");
+        // From the left and the right, nearly level.
+        let mut game = with_bricks(brick(), x - 25.0, y, 160.0, 57.0);
+        until_hit(&mut game);
+        assert!(game.balls[0].vx < 0.0, "from the left");
+        let mut game = with_bricks(brick(), x + 25.0, y, -160.0, 57.0);
+        until_hit(&mut game);
+        assert!(game.balls[0].vx > 0.0, "from the right");
+    }
+
+    #[test]
+    fn a_ball_at_top_speed_never_passes_through_a_row() {
+        for n in 0..40 {
+            let row: Vec<Brick> = (0..13)
+                .map(|col| Brick::new(col, 5, BrickKind::Ban))
+                .collect();
+            let (_, top) = row[0].origin();
+            let bottom = top + BRICK_H;
+            let angle = (n as f32 - 20.0) * 3.0 * PI / 180.0;
+            let x = 30.0 + n as f32 * 8.5;
+            let mut game = with_bricks(
+                row,
+                x,
+                bottom + 30.0,
+                BALL_SPEED_MAX * angle.sin(),
+                -BALL_SPEED_MAX * angle.cos(),
+            );
+            game.level = 99;
+            for _ in 0..30 {
+                game.step(&Input::default(), MAX_DT);
+                assert!(
+                    game.balls[0].y - BALL_R > top,
+                    "angle {n}: the ball got into or past the row"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clearing_level_one_without_a_miss_scores_1120() {
+        let mut game = Game::new(3);
+        let mut events = Events::default();
+        // Break every brick in turn by aiming the ball at it from below.
+        while !events.level_cleared {
+            let brick = game.bricks[0].clone();
+            let (x, y) = centre(brick.col, brick.row);
+            game.held = false;
+            game.balls = vec![Ball {
+                x,
+                y: y + 7.0,
+                vx: 0.0,
+                vy: -BALL_SPEED,
+            }];
+            events = game.step(&Input::default(), DT);
+            assert!(!events.hits.is_empty());
+        }
+        assert_eq!(game.score, 1120);
+        assert_eq!(game.level, 2);
+        assert_eq!(game.channel(), "#motd");
+        assert!(game.held, "the ball is back on the paddle");
+        assert_eq!(game.speed(), BALL_SPEED + BALL_SPEED_STEP);
+    }
+
+    #[test]
+    fn level_seven_uses_the_first_layout() {
+        let mut game = Game::new(1);
+        game.level = 6;
+        game.bricks = vec![Brick::new(0, 0, BrickKind::Message)];
+        let (x, y) = centre(0, 0);
+        game.held = false;
+        game.balls = vec![Ball {
+            x,
+            y: y + 7.0,
+            vx: 0.0,
+            vy: -BALL_SPEED,
+        }];
+        assert!(game.step(&Input::default(), DT).level_cleared);
+        assert_eq!(game.level, 7);
+        assert_eq!(game.channel(), "#the-hash");
+        assert_eq!(game.bricks, levels::parse(levels::layout(1).map));
+        assert_eq!(game.score, 60 + 3000);
+    }
+
+    #[test]
+    fn the_score_is_always_a_multiple_of_ten() {
+        for seed in 1..6 {
+            let mut game = Game::new(seed);
+            for frame in 0..6000 {
+                let x = game.balls.first().map(|b| b.x + (frame % 23) as f32 - 11.0);
+                let input = Input {
+                    launch: true,
+                    pointer: x,
+                    ..Input::default()
+                };
+                game.step(&input, DT);
+                assert_eq!(game.score % 10, 0);
+            }
+            assert!(game.score > 0, "seed {seed} broke something");
+        }
     }
 
     #[test]
