@@ -13,6 +13,8 @@
 //! the backend over the internet).
 //! `CAPTURE_ONLY=attract` captures `/attract` on a first line, a later line, a message with a reaction and a reply.
 //! `CAPTURE_ONLY=fade` captures a change of colours fading, nothing else.
+//! `CAPTURE_ONLY=ircoid` captures the game behind About's logo: ready, moving, paused, its
+//! high score table and its credits (point `IRCORD_BACKEND` at a backend with the table).
 //! `CAPTURE_ONLY=appimage` runs `dist/IRCord-GPUI-Linux-x64.AppImage` (from
 //! `cargo xtask package linux`) instead of `dist/ircord`, unpacked as the
 //! container has no FUSE: first with GStreamer's good and libav plugins
