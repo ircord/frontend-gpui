@@ -33,6 +33,8 @@ const MAX_WIDTH: f32 = 848.;
 pub const BAR_H: f32 = 16.;
 /// How fast the grid runs toward the viewer, in cross lines a second.
 const GRID_SPEED: f32 = 0.8;
+/// How long the level's new topic shows, in seconds of game time.
+pub const LEVEL_NOTICE_SECS: f32 = 1.5;
 
 /// Counts presses on About's logo. It is given the time of each press, so
 /// it needs no timer.
@@ -151,6 +153,10 @@ pub struct Ircoid {
     reduced: bool,
     /// For the sparks' directions.
     rng: rules::Rng,
+    /// Seconds of game time the new level's topic still shows.
+    level_notice: f32,
+    /// The live region's text.
+    announcement: String,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -179,6 +185,8 @@ impl Ircoid {
             fx: stage::Fx::default(),
             reduced: false,
             rng: rules::Rng::new(seed()),
+            level_notice: 0.,
+            announcement: String::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -227,12 +235,74 @@ impl Ircoid {
             }
             self.fx.follow(&self.game);
         }
+        self.level_notice = (self.level_notice - dt).max(0.);
+        self.announce(&events);
         if events.game_over {
             self.set_phase(Phase::Over);
         }
     }
 
+    /// Says in the live region what a screen reader cannot see.
+    fn announce(&mut self, events: &rules::Events) {
+        let game = &self.game;
+        let mut said: Vec<String> = Vec::new();
+        for kind in &events.caught {
+            said.push(t!("ircoid-announce-caught", capsule = capsule_name(*kind)));
+        }
+        if events.level_cleared {
+            self.level_notice = LEVEL_NOTICE_SECS;
+            said.push(t!(
+                "ircoid-announce-level",
+                level = game.level,
+                channel = game.channel()
+            ));
+        }
+        if events.life_gained {
+            said.push(t!("ircoid-announce-life-gained", lives = game.lives));
+        }
+        if events.game_over {
+            said.push(t!("ircoid-announce-over", score = game.score));
+        } else if events.life_lost {
+            said.push(t!("ircoid-announce-life-lost", lives = game.lives));
+        }
+        if !said.is_empty() {
+            self.announcement = said.join(" ");
+        }
+    }
+
+    /// The live region's text, for tests.
+    pub fn announcement(&self) -> &str {
+        &self.announcement
+    }
+
+    /// The status bar as one line, as a screen reader reads it.
+    pub fn status(&self) -> String {
+        let game = &self.game;
+        let mut line = t!(
+            "ircoid-status",
+            score = game.score,
+            lives = game.lives,
+            level = game.level,
+            channel = game.channel()
+        );
+        for (label, seconds) in running(game) {
+            line.push_str(", ");
+            match seconds {
+                Some(seconds) => line.push_str(&t!(
+                    "ircoid-status-effect",
+                    effect = label,
+                    seconds = seconds
+                )),
+                None => line.push_str(label),
+            }
+        }
+        line
+    }
+
     fn set_phase(&mut self, phase: Phase) {
+        if phase == Phase::Paused && self.phase == Phase::Playing {
+            self.announcement = t!("ircoid-notice-paused").to_string();
+        }
         self.phase = phase;
         self.last_frame = None;
         self.launch = false;
@@ -261,6 +331,8 @@ impl Ircoid {
     /// A new game, being played, with the ball on the paddle.
     pub fn restart(&mut self, cx: &mut Context<Self>) {
         self.game = Game::new(seed());
+        self.fx = stage::Fx::default();
+        self.level_notice = 0.;
         self.set_phase(Phase::Playing);
         cx.notify();
     }
@@ -452,6 +524,173 @@ fn stage_labels(game: &Game, width: f32) -> Vec<Div> {
         .collect()
 }
 
+/// What a capsule is called when it is announced.
+pub fn capsule_name(kind: rules::CapsuleKind) -> &'static str {
+    use rules::CapsuleKind::*;
+    match kind {
+        Op => t!("ircoid-capsule-name-op"),
+        Join => t!("ircoid-capsule-name-join"),
+        Moderated => t!("ircoid-capsule-name-moderated"),
+        Kick => t!("ircoid-capsule-name-kick"),
+        Bouncer => t!("ircoid-capsule-name-bouncer"),
+        Lag => t!("ircoid-capsule-name-lag"),
+    }
+}
+
+/// The capsules at work, as the status bar shows them: each label with the
+/// whole seconds it has left (none for the Bouncer).
+fn running(game: &Game) -> Vec<(&'static str, Option<u32>)> {
+    let e = &game.effects;
+    let secs = |t: f32| Some(t.ceil() as u32);
+    let mut out = Vec::new();
+    if e.op > 0. {
+        out.push((capsule_label(rules::CapsuleKind::Op), secs(e.op)));
+    }
+    match e.pace {
+        Some((rules::Pace::Moderated, t)) => {
+            out.push((capsule_label(rules::CapsuleKind::Moderated), secs(t)))
+        }
+        Some((rules::Pace::Lag, t)) => out.push((capsule_label(rules::CapsuleKind::Lag), secs(t))),
+        None => {}
+    }
+    if e.kick > 0. {
+        out.push((capsule_label(rules::CapsuleKind::Kick), secs(e.kick)));
+    }
+    if e.bouncer {
+        out.push((capsule_label(rules::CapsuleKind::Bouncer), None));
+    }
+    out
+}
+
+/// A piece of the status bar's text in a colour.
+fn span(text: impl Into<SharedString>, hex: u32) -> Div {
+    div().text_color(stage::color(hex, 1.)).child(text.into())
+}
+
+/// The irssi-style status bar: `[score 001240] [lives ♥♥♥] [1:#the-hash]
+/// [/kick 07s]`, as text over the bar's ground.
+fn status_bar(game: &Game, width: f32, line: String) -> impl IntoElement {
+    use stage::palette::*;
+    let k = stage::scale(width);
+    let item = |parts: Vec<Div>| {
+        div()
+            .flex()
+            .child(span("[", VIOLET))
+            .children(parts)
+            .child(span("]", VIOLET))
+    };
+    let mut items = vec![
+        item(vec![
+            span(t!("ircoid-status-score"), CYAN),
+            span(format!(" {:06}", game.score), WHITE_HOT),
+        ]),
+        item(vec![
+            span(t!("ircoid-status-lives"), CYAN),
+            span(" ", WHITE_HOT),
+            span("♥".repeat(game.lives as usize), PINK),
+        ]),
+        item(vec![
+            span(format!("{}:", game.level), WHITE_HOT),
+            span(game.channel(), CYAN),
+        ]),
+    ];
+    for (label, seconds) in running(game) {
+        let mut parts = vec![span(label, CYAN)];
+        if let Some(seconds) = seconds {
+            parts.push(span(format!(" {seconds:02}s"), SUN));
+        }
+        items.push(item(parts));
+    }
+    div()
+        .id("ircoid-status")
+        .test_support()
+        .aria_label(SharedString::from(line))
+        .absolute()
+        .left_0()
+        .top(px(FIELD_H * k))
+        .w_full()
+        .h(px(BAR_H * k))
+        .px(px(6. * k))
+        .flex()
+        .items_center()
+        .gap(px(5. * k))
+        .overflow_hidden()
+        .font_family(stage::FONT)
+        .font_weight(FontWeight::BOLD)
+        .text_size(px(8.5 * k))
+        .children(items)
+}
+
+/// The IRC line over the stage for the phase, if any: its ID, its lines and
+/// its colour.
+fn notice(this: &Ircoid) -> Option<(&'static str, Vec<String>, u32)> {
+    use stage::palette::*;
+    let game = &this.game;
+    match this.phase {
+        Phase::Ready => Some((
+            "ircoid-notice-ready",
+            vec![t!("ircoid-notice-ready", channel = game.channel())],
+            MINT,
+        )),
+        Phase::Paused => Some((
+            "ircoid-notice-paused",
+            vec![t!("ircoid-notice-paused").to_string()],
+            CYAN,
+        )),
+        Phase::Over => Some((
+            "ircoid-notice-over",
+            vec![
+                t!("ircoid-notice-over").to_string(),
+                t!("ircoid-notice-score", score = game.score),
+            ],
+            RED,
+        )),
+        Phase::Playing if this.level_notice > 0. => Some((
+            "ircoid-notice-level",
+            vec![t!(
+                "ircoid-notice-level",
+                level = game.level,
+                channel = game.channel()
+            )],
+            SUN,
+        )),
+        Phase::Playing => None,
+    }
+}
+
+/// The notice, in the middle of the floor.
+fn notice_box(id: &'static str, lines: Vec<String>, hex: u32, width: f32) -> impl IntoElement {
+    let k = stage::scale(width);
+    let label = lines.join(" ");
+    div()
+        .absolute()
+        .left_0()
+        .w_full()
+        .top(px(196. * k))
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .id(id)
+                .test_support()
+                .aria_label(SharedString::from(label))
+                .px(px(8. * k))
+                .py(px(3. * k))
+                .rounded(px(3. * k))
+                .bg(stage::color(stage::palette::BAR, 0.82))
+                .border_1()
+                .border_color(stage::color(hex, 0.5))
+                .flex()
+                .flex_col()
+                .items_center()
+                .font_family(stage::FONT)
+                .font_weight(FontWeight::BOLD)
+                .text_size(px(9. * k))
+                .text_color(stage::color(hex, 1.))
+                .children(lines),
+        )
+}
+
 /// A capsule's label: its IRC command or mode.
 pub fn capsule_label(kind: rules::CapsuleKind) -> &'static str {
     use rules::CapsuleKind::*;
@@ -480,6 +719,21 @@ impl Render for Ircoid {
             .map(|b| f32::from(b.size.width))
             .unwrap_or(MAX_WIDTH - 48.);
         let labels = stage_labels(&self.game, width);
+        let status = status_bar(&self.game, width, self.status());
+        let notice = notice(self).map(|(id, lines, hex)| notice_box(id, lines, hex, width));
+        let hints = crate::ui::page::hint_bar(
+            "ircoid-hints".into(),
+            &[
+                crate::ui::page::Hint::new(
+                    &[t!("ircoid-key-left"), t!("ircoid-key-right")],
+                    t!("ircoid-hint-move"),
+                ),
+                crate::ui::page::Hint::new(&[t!("ircoid-key-space")], t!("ircoid-hint-launch")),
+                crate::ui::page::Hint::new(&[t!("ircoid-key-p")], t!("ircoid-hint-pause")),
+                crate::ui::page::Hint::new(&[t!("ircoid-key-escape")], t!("ircoid-back")),
+            ],
+            &theme,
+        );
         div()
             .id("ircoid")
             .test_support()
@@ -550,6 +804,8 @@ impl Render for Ircoid {
                         .size_full()
                     })
                     .children(labels)
+                    .child(status)
+                    .children(notice)
                     .child(
                         canvas(
                             |_, _, _| (),
@@ -563,7 +819,29 @@ impl Render for Ircoid {
                         .size_full(),
                     ),
             )
-            .child(div().flex().justify_end().child(self.buttons(cx)))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(div().flex_1().min_w_0().child(hints))
+                    .child(self.buttons(cx)),
+            )
+            .child(
+                // The one live region: level, lives, capsules, game over.
+                div()
+                    .id("ircoid-announcement")
+                    .test_support()
+                    .role(Role::Status)
+                    .aria_label(SharedString::from(self.announcement.clone()))
+                    .a11y_synthetic_children(|tree| {
+                        tree.parent_node().set_live(accesskit::Live::Polite);
+                    })
+                    .absolute()
+                    .size_0()
+                    .overflow_hidden(),
+            )
     }
 }
 

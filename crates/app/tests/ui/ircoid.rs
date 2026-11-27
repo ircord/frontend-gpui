@@ -4,7 +4,7 @@ use gpui_kit::test::{TestEventExt, TestWindowExt};
 use gpui_kit::{AppContext, Entity, TestAppContext, VisualTestContext};
 use ircord_app::features::ircoid::{self, Ircoid, Phase};
 use ircord_app::route::Route;
-use ircord_client::ircoid::{Brick, BrickKind, Game};
+use ircord_client::ircoid::{Ball, Brick, BrickKind, CapsuleKind, Game};
 
 use crate::fixture::{Fixture, bootstrap, open, wait};
 
@@ -330,4 +330,128 @@ fn a_key_takes_the_paddle_back_from_the_pointer(cx: &mut TestAppContext) {
     let view = game_view(cx);
     let x = cx.update(|cx| view.read(cx).game().paddle.x);
     assert!(x > 140., "the keys moved it from under the pointer: {x}");
+}
+
+fn label_of(f: &Fixture, cx: &mut TestAppContext, id: &'static str) -> Option<String> {
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(id)
+            .and_then(|e| e.label().map(str::to_string))
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn the_status_bar_reads_the_game(cx: &mut TestAppContext) {
+    let f = game(cx);
+    click(&f, cx, "ircoid-play");
+    let view = game_view(cx);
+    let mut game = Game::new(1);
+    game.score = 1240;
+    game.apply(CapsuleKind::Kick);
+    view.update(cx, |v, cx| v.set_game(game, cx));
+    // Half a second of game time, the ball still on the paddle. Frames
+    // drawn meanwhile step the game a little too.
+    advance(cx, 30);
+    let status = label_of(&f, cx, "ircoid-status").unwrap();
+    let left = status
+        .strip_prefix("Score 1240, 3 lives, level 1 #the-hash, /kick ")
+        .unwrap_or_else(|| panic!("{status}"));
+    assert!(["7", "8"].contains(&left), "{status}");
+}
+
+#[gpui_kit::test]
+fn each_screen_shows_its_notice(cx: &mut TestAppContext) {
+    let f = game(cx);
+    assert_eq!(
+        label_of(&f, cx, "ircoid-notice-ready").as_deref(),
+        Some("*** Now talking in #the-hash")
+    );
+    click(&f, cx, "ircoid-play");
+    assert!(!shown(&f, cx, "ircoid-notice-ready"));
+    press(&f, cx, "p");
+    assert!(shown(&f, cx, "ircoid-notice-paused"));
+    press(&f, cx, "p");
+    assert!(!shown(&f, cx, "ircoid-notice-paused"));
+
+    // The last brick of level 1 breaks: the new topic shows for a while.
+    let view = game_view(cx);
+    let mut game = Game::new(1);
+    game.bricks = vec![Brick::new(0, 0, BrickKind::Message)];
+    game.held = false;
+    let (x, y) = game.bricks[0].origin();
+    game.balls = vec![Ball {
+        x: x + 14.,
+        y: y + 13.,
+        vx: 0.,
+        vy: -170.,
+    }];
+    view.update(cx, |v, cx| v.set_game(game, cx));
+    advance(cx, 1);
+    assert_eq!(
+        label_of(&f, cx, "ircoid-notice-level").as_deref(),
+        Some("*** Topic is now: level 2, #motd")
+    );
+    assert_eq!(
+        cx.update(|cx| view.read(cx).announcement().to_string()),
+        "Level 2, #motd."
+    );
+    advance(cx, 100);
+    assert!(!shown(&f, cx, "ircoid-notice-level"), "gone after 1.5 s");
+}
+
+/// Plays until a ball is lost, the paddle kept away from it.
+fn lose_a_ball(f: &Fixture, cx: &mut TestAppContext) {
+    let view = game_view(cx);
+    press(f, cx, "space");
+    for _ in 0..600 {
+        if phase(cx) == Phase::Over || cx.update(|cx| view.read(cx).game().held) {
+            return;
+        }
+        view.update(cx, |v, cx| {
+            let ball = v.game().balls[0].x;
+            let mut g = v.game().clone();
+            g.paddle.x = if ball > 200. { 30. } else { 370. };
+            v.set_game(g, cx);
+            v.advance(1. / 30., cx);
+        });
+    }
+    panic!("the ball was never lost");
+}
+
+#[gpui_kit::test]
+fn the_live_region_says_a_life_was_lost_and_the_game_is_over(cx: &mut TestAppContext) {
+    let f = game(cx);
+    click(&f, cx, "ircoid-play");
+    let view = game_view(cx);
+    let mut game = Game::new(1);
+    game.bricks = vec![Brick::new(12, 0, BrickKind::Message)];
+    game.score = 470;
+    view.update(cx, |v, cx| v.set_game(game, cx));
+    lose_a_ball(&f, cx);
+    assert_eq!(
+        label_of(&f, cx, "ircoid-announcement").as_deref(),
+        Some("Ball lost: 2 lives left.")
+    );
+    lose_a_ball(&f, cx);
+    lose_a_ball(&f, cx);
+    assert_eq!(phase(cx), Phase::Over);
+    assert_eq!(
+        label_of(&f, cx, "ircoid-announcement").as_deref(),
+        Some("Game over. Final score 470.")
+    );
+    assert_eq!(
+        label_of(&f, cx, "ircoid-notice-over").as_deref(),
+        Some("ERROR :Closing Link (Ping timeout) Final score: 470")
+    );
+}
+
+#[gpui_kit::test]
+fn the_key_hints_name_the_game_keys(cx: &mut TestAppContext) {
+    let f = game(cx);
+    assert_eq!(
+        label_of(&f, cx, "ircoid-hints").as_deref(),
+        Some("← → Move, Space Launch, P Pause, Esc Back to About")
+    );
 }

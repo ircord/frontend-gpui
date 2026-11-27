@@ -318,6 +318,10 @@ fn tab_reaches_every_control_in_the_dialogs(cx: &mut TestAppContext) {
                 ircord_app::features::create_channel::open(&session, "n1", window, cx)
             })
         }),
+        ("ircoid", {
+            let session = session.clone();
+            Box::new(move |window, cx| ircord_app::features::ircoid::open(&session, window, cx))
+        }),
     ];
     let mut problems = Vec::new();
     for (view, opener) in dialogs {
