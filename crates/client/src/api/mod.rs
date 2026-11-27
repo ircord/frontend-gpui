@@ -27,6 +27,7 @@ mod conversations;
 mod devices;
 pub mod emotes;
 mod inbox;
+mod ircoid;
 pub mod links;
 mod messages;
 pub mod networks;

@@ -12,6 +12,7 @@
 use std::f32::consts::PI;
 
 pub mod levels;
+pub mod scores;
 
 /// The field's width.
 pub const FIELD_W: f32 = 400.0;

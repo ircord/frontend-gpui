@@ -2319,6 +2319,44 @@ pub struct InvitationRemovedEvent {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct IrcoidEntry {
+    pub name: String,
+    /// Place in the table, starting at 1
+    pub rank: i64,
+    pub score: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IrcoidResult {
+    /// The table after the submission, best first
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<IrcoidEntry>>,
+    /// Whether the score made the table
+    pub placed: bool,
+    /// The new entry's place, or 0 when it did not place
+    pub rank: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IrcoidScoreInputBody {
+    /// Name shown in the table; trimmed, at most 24 characters
+    pub name: String,
+    /// Final score of one game
+    pub score: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IrcoidTable {
+    /// The top entries, best first
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<IrcoidEntry>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ItemsAccessEntry {
     pub items: Vec<AccessEntry>,
 }
@@ -3714,13 +3752,13 @@ pub struct PasswordResetResult {
     /// Signed-in IRCord sessions that this reset signed out.
     #[serde(rename = "sessionsRevoked")]
     pub sessions_revoked: i64,
-    /// completed: IRCord, the associated IRC server and the saved IRC login all use the new password. pending: the reset is saved and the backend keeps retrying the remaining steps; sign-in stays blocked until they finish.
+    /// A completed reset updates the password in IRCord, the associated IRC server, and the saved IRC login. A pending reset gets up to three automatic attempts. Sign-in stays blocked until the reset finishes.
     pub status: PasswordResetResultStatus,
     /// The account's username, as stored.
     pub username: String,
 }
 
-/// completed: IRCord, the associated IRC server and the saved IRC login all use the new password. pending: the reset is saved and the backend keeps retrying the remaining steps; sign-in stays blocked until they finish.
+/// A completed reset updates the password in IRCord, the associated IRC server, and the saved IRC login. A pending reset gets up to three automatic attempts. Sign-in stays blocked until the reset finishes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum PasswordResetResultStatus {
     #[serde(rename = "completed")]
