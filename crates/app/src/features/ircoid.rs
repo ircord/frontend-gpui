@@ -12,8 +12,10 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::TestSupportExt;
+use gpui_kit::component::Sizable;
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::dialog::Cancel;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -22,6 +24,7 @@ use ircord_client::ircoid::{self as rules, FIELD_H, FIELD_W, Game, Input, MAX_DT
 use crate::session::Session;
 use crate::theme;
 
+pub mod credits;
 mod scores;
 pub mod stage;
 
@@ -133,6 +136,21 @@ fn seed() -> u64 {
         .unwrap_or(1)
 }
 
+/// The credits screen while it is open.
+struct CreditsState {
+    opened: Instant,
+    page: usize,
+    page_at: Instant,
+    names: Vec<&'static str>,
+    field: Vec<credits::Star>,
+}
+
+impl CreditsState {
+    fn pages(&self) -> usize {
+        rules::credits::pages(self.names.len())
+    }
+}
+
 /// The keys held down.
 #[derive(Debug, Default, Clone, Copy)]
 struct Held {
@@ -175,6 +193,10 @@ pub struct Ircoid {
     over_at: Option<Instant>,
     /// Focus goes back to the game on the next frame (the name field went).
     refocus: bool,
+    /// The credits, while they are open.
+    credits: Option<CreditsState>,
+    /// The `/credits` line's own focus, so Escape can put focus back on it.
+    credits_focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -185,6 +207,10 @@ impl Ircoid {
             cx.observe_window_activation(window, |this, window, cx| {
                 if !window.is_window_active() {
                     this.pause(cx);
+                }
+                // The credits move again when the window comes back.
+                if this.credits.is_some() {
+                    cx.notify();
                 }
             }),
             cx.on_focus_out(&focus, window, |this, _, _, cx| this.pause(cx)),
@@ -209,6 +235,8 @@ impl Ircoid {
             just_over: false,
             over_at: None,
             refocus: false,
+            credits: None,
+            credits_focus: cx.focus_handle().tab_stop(true),
             _subscriptions: subscriptions,
         }
     }
@@ -246,6 +274,47 @@ impl Ircoid {
     /// Whether the table is drawn over the stage.
     pub fn scores_shown(&self) -> bool {
         self.scores.shown
+    }
+
+    /// Whether the credits are open.
+    pub fn credits_open(&self) -> bool {
+        self.credits.is_some()
+    }
+
+    /// The `/credits` line: the credits replace the table on the stage.
+    pub fn open_credits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let names = rules::credits::contributors();
+        self.announcement = t!("ircoid-credits-stage", names = names.join(", "));
+        let now = Instant::now();
+        self.credits = Some(CreditsState {
+            opened: now,
+            page: 0,
+            page_at: now,
+            names,
+            field: credits::star_field(),
+        });
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Escape or Back to high scores: the table as it was, focus on the line.
+    pub fn close_credits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.credits.take().is_some() {
+            window.focus(&self.credits_focus, cx);
+            cx.notify();
+        }
+    }
+
+    /// Left and Right: another page of names.
+    fn turn_page(&mut self, by: isize, cx: &mut Context<Self>) {
+        if let Some(c) = &mut self.credits {
+            let pages = c.pages() as isize;
+            if pages > 1 {
+                c.page = (c.page as isize + by).rem_euclid(pages) as usize;
+                c.page_at = Instant::now();
+                cx.notify();
+            }
+        }
     }
 
     /// The High scores button: pause, and show the table.
@@ -560,6 +629,10 @@ impl Ircoid {
     /// Space, Up or Enter: start from the ready screen and launch, resume
     /// from the paused one, or launch while playing.
     fn primary(&mut self, cx: &mut Context<Self>) {
+        // Over the table or the credits the game's keys do nothing.
+        if self.scores.shown {
+            return;
+        }
         match self.phase {
             Phase::Ready => {
                 self.set_phase(Phase::Playing);
@@ -574,6 +647,14 @@ impl Ircoid {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        if self.credits.is_some() {
+            match event.keystroke.key.as_str() {
+                "left" => self.turn_page(-1, cx),
+                "right" => self.turn_page(1, cx),
+                _ => return false,
+            }
+            return true;
+        }
         // The name field and the table take their own keys.
         if self.scores.shown {
             return false;
@@ -663,6 +744,17 @@ impl Ircoid {
         if std::mem::take(&mut self.refocus) {
             window.focus(&self.focus, cx);
         }
+        let reduced = self.reduced;
+        if let Some(c) = &mut self.credits {
+            if !reduced && window.is_window_active() {
+                if c.pages() > 1 && c.page_at.elapsed().as_secs_f64() >= credits::PAGE_SECS {
+                    c.page = (c.page + 1) % c.pages();
+                    c.page_at = Instant::now();
+                }
+                window.request_animation_frame();
+            }
+            return;
+        }
         if self.phase != Phase::Playing {
             return;
         }
@@ -678,6 +770,14 @@ impl Ircoid {
     }
 
     fn buttons(&self, cx: &mut Context<Self>) -> Div {
+        if self.credits.is_some() {
+            return div().flex().child(
+                Button::new("ircoid-credits-back")
+                    .small()
+                    .label(t!("ircoid-credits-back"))
+                    .on_click(cx.listener(|this, _, window, cx| this.close_credits(window, cx))),
+            );
+        }
         let primary = match self.phase {
             Phase::Ready => Some((t!("ircoid-start"), false)),
             Phase::Playing => Some((t!("ircoid-pause"), true)),
@@ -686,6 +786,7 @@ impl Ircoid {
         };
         let again = (self.phase == Phase::Over).then(|| {
             Button::new("ircoid-again")
+                .small()
                 .primary()
                 .label(t!("ircoid-play-again"))
                 .on_click(cx.listener(|this, _, window, cx| {
@@ -698,6 +799,7 @@ impl Ircoid {
             .gap_2()
             .children(primary.map(|(label, pause)| {
                 Button::new("ircoid-play")
+                    .small()
                     .primary()
                     .label(label)
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -712,6 +814,7 @@ impl Ircoid {
             .children(again)
             .child(
                 Button::new("ircoid-scores")
+                    .small()
                     .label(t!("ircoid-scores"))
                     .on_click(cx.listener(|this, _, _, cx| this.show_scores(cx))),
             )
@@ -719,6 +822,7 @@ impl Ircoid {
             .when(self.phase != Phase::Over, |d| {
                 d.child(
                     Button::new("ircoid-restart")
+                        .small()
                         .label(t!("ircoid-restart"))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.restart(cx);
@@ -728,6 +832,7 @@ impl Ircoid {
             })
             .child(
                 Button::new("ircoid-back")
+                    .small()
                     .label(t!("ircoid-back"))
                     .on_click(|_, window, cx| window.close_dialog(cx)),
             )
@@ -938,6 +1043,219 @@ fn notice_box(id: &'static str, lines: Vec<String>, hex: u32, width: f32) -> imp
         )
 }
 
+/// A line of text centred on `cy` (units) across the stage, `size` units
+/// high, without wrapping.
+fn centred_line(cy: f32, size: f32, k: f32) -> Div {
+    div()
+        .absolute()
+        .left_0()
+        .w_full()
+        .top(px((cy - size * credits::LINE_SHARE / 2.) * k))
+        .h(px(size * credits::LINE_SHARE * k))
+        .flex()
+        .justify_center()
+        .items_center()
+        .whitespace_nowrap()
+        .font_family(stage::FONT)
+        .font_weight(FontWeight::BOLD)
+        .text_size(px(size * k))
+        .line_height(px(size * credits::LINE_SHARE * k))
+}
+
+/// The credits' text over their picture: the presents line, the tagline,
+/// the box's title, the names and the scroller (a paragraph with reduced
+/// motion).
+fn credits_layers(c: &CreditsState, width: f32, t: f64, reduced: bool) -> Vec<AnyElement> {
+    use stage::palette::*;
+    let k = stage::scale(width);
+    let rgba = |c: Rgba| -> Hsla { c.into() };
+    let mut out: Vec<AnyElement> = Vec::new();
+    let presents = credits::mix(rgb(CYAN), rgb(0xffffff), 0.35);
+    out.push(
+        centred_line(9., 6.5, k)
+            .text_color(rgba(presents))
+            .child(credits::spaced(t!("ircoid-credits-presents")))
+            .into_any_element(),
+    );
+    out.push(
+        centred_line(84., 6.5, k)
+            .text_color(stage::color(WHITE_HOT, 0.92))
+            .child(t!("ircoid-credits-tagline").to_uppercase())
+            .into_any_element(),
+    );
+    // The box's title, on a patch of the box's colour that cuts its border.
+    let size = credits::TITLE_SIZE;
+    out.push(
+        div()
+            .absolute()
+            .left(px(credits::TITLE_X * k))
+            .top(px((credits::BOX.y - size * credits::LINE_SHARE / 2.) * k))
+            .h(px(size * credits::LINE_SHARE * k))
+            .px(px(3. * k))
+            .bg(stage::color(BAR, 1.))
+            .flex()
+            .items_center()
+            .whitespace_nowrap()
+            .font_family(stage::FONT)
+            .font_weight(FontWeight::BOLD)
+            .text_size(px(size * k))
+            .child(span("[ ", VIOLET))
+            .child(span(t!("ircoid-credits-channel"), CYAN))
+            .child(span(" ]", VIOLET))
+            .into_any_element(),
+    );
+    // The names, typed out unless motion is reduced. The rest of each name
+    // is there but clear, so a row does not shift while it is typed.
+    let page = rules::credits::page(&c.names, c.page);
+    let typed = (!reduced).then(|| credits::typed(c.page_at.elapsed().as_secs_f64()));
+    for row in credits::names(page, typed) {
+        let size = row.size;
+        let shown = row.shown.saturating_sub(1);
+        let name: String = row.name.chars().take(shown).collect();
+        let rest: String = row.name.chars().skip(shown).collect();
+        out.push(
+            div()
+                .absolute()
+                .left(px((row.cx - 100.) * k))
+                .w(px(200. * k))
+                .top(px((row.cy - size * credits::LINE_SHARE / 2.) * k))
+                .h(px(size * credits::LINE_SHARE * k))
+                .flex()
+                .justify_center()
+                .items_center()
+                .whitespace_nowrap()
+                .font_family(stage::FONT)
+                .font_weight(FontWeight::BOLD)
+                .text_size(px(size * k))
+                .child(
+                    div()
+                        .text_color(stage::color(SUN, if row.shown > 0 { 1. } else { 0. }))
+                        .child(t!("ircoid-glyph-op")),
+                )
+                .child(span(name, WHITE_HOT))
+                .child(div().text_color(stage::color(WHITE_HOT, 0.)).child(rest))
+                .into_any_element(),
+        );
+    }
+    let parts = credits_parts(&c.names);
+    if reduced {
+        let size = 7.;
+        out.push(
+            div()
+                .absolute()
+                .left(px(16. * k))
+                .w(px(368. * k))
+                .top(px(credits::BAND_TOP * k))
+                .h(px((credits::BAND_BOTTOM - credits::BAND_TOP) * k))
+                .overflow_hidden()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_center()
+                .font_family(stage::FONT)
+                .font_weight(FontWeight::BOLD)
+                .text_size(px(size * k))
+                .line_height(px(10.5 * k))
+                .text_color(stage::color(WHITE_HOT, 0.92))
+                .child(credits::paragraph(&parts))
+                .into_any_element(),
+        );
+    } else {
+        let text = credits::scroll_text(&parts);
+        let size = credits::SCROLL_SIZE;
+        let (w, h) = (size * credits::CELL_SHARE, size * credits::LINE_SHARE);
+        for glyph in credits::scroller(&text, t) {
+            out.push(
+                div()
+                    .absolute()
+                    .left(px((glyph.cx - w / 2.) * k))
+                    .top(px((glyph.cy - h / 2.) * k))
+                    .w(px(w * k))
+                    .h(px(h * k))
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    .font_family(stage::FONT)
+                    .font_weight(FontWeight::BOLD)
+                    .text_size(px(size * k))
+                    .line_height(px(h * k))
+                    .text_color(rgba(glyph.color))
+                    .child(glyph.ch.to_string())
+                    .into_any_element(),
+            );
+        }
+    }
+    out
+}
+
+/// The scroller's eight parts, in sentence case.
+fn credits_parts(names: &[&str]) -> Vec<String> {
+    let names = names.join(", ");
+    vec![
+        t!("ircoid-credits-scroll-1").to_string(),
+        t!("ircoid-credits-scroll-2", names = names),
+        t!("ircoid-credits-scroll-3").to_string(),
+        t!("ircoid-credits-scroll-4").to_string(),
+        t!("ircoid-credits-scroll-5").to_string(),
+        t!("ircoid-credits-scroll-6").to_string(),
+        t!("ircoid-credits-scroll-7").to_string(),
+        t!("ircoid-credits-scroll-8").to_string(),
+    ]
+}
+
+/// The status bar on the credits: `[#credits] [ops 2]`, and the page when
+/// there is more than one.
+fn credits_status(c: &CreditsState, width: f32) -> impl IntoElement {
+    use stage::palette::*;
+    let k = stage::scale(width);
+    let item = |parts: Vec<Div>| {
+        div()
+            .flex()
+            .child(span("[", VIOLET))
+            .children(parts)
+            .child(span("]", VIOLET))
+    };
+    let mut items = vec![
+        item(vec![span(t!("ircoid-credits-channel"), CYAN)]),
+        item(vec![
+            span(t!("ircoid-credits-ops"), CYAN),
+            span(format!(" {}", c.names.len()), WHITE_HOT),
+        ]),
+    ];
+    let mut line = format!(
+        "{} {} {}",
+        t!("ircoid-credits-channel"),
+        t!("ircoid-credits-ops"),
+        c.names.len()
+    );
+    if c.pages() > 1 {
+        let page = format!("{}/{}", c.page + 1, c.pages());
+        line.push_str(&format!(" {} {page}", t!("ircoid-credits-page")));
+        items.push(item(vec![
+            span(t!("ircoid-credits-page"), CYAN),
+            span(format!(" {page}"), WHITE_HOT),
+        ]));
+    }
+    div()
+        .id("ircoid-status")
+        .test_support()
+        .aria_label(SharedString::from(line))
+        .absolute()
+        .left_0()
+        .top(px(FIELD_H * k))
+        .w_full()
+        .h(px(BAR_H * k))
+        .px(px(6. * k))
+        .flex()
+        .items_center()
+        .gap(px(5. * k))
+        .overflow_hidden()
+        .font_family(stage::FONT)
+        .font_weight(FontWeight::BOLD)
+        .text_size(px(8.5 * k))
+        .children(items)
+}
+
 /// A capsule's label: its IRC command or mode.
 pub fn capsule_label(kind: rules::CapsuleKind) -> &'static str {
     use rules::CapsuleKind::*;
@@ -953,9 +1271,9 @@ pub fn capsule_label(kind: rules::CapsuleKind) -> &'static str {
 
 impl Render for Ircoid {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.frame(window, cx);
         let theme = theme::get(cx).clone();
         self.reduced = theme.reduced_motion;
+        self.frame(window, cx);
         let scroll = if self.reduced { 0. } else { self.travel };
         let (game, fx, reduced) = (self.game.clone(), self.fx.clone(), self.reduced);
         // Labels sit on the stage as text; they are placed by the width the
@@ -965,13 +1283,67 @@ impl Render for Ircoid {
             .get()
             .map(|b| f32::from(b.size.width))
             .unwrap_or(MAX_WIDTH - 48.);
-        let labels = stage_labels(&self.game, width);
-        let status = status_bar(&self.game, width, self.status());
+        // The credits replace the game's picture, its text and the table.
+        let credits_t = self.credits.as_ref().map(|c| {
+            if self.reduced {
+                0.
+            } else {
+                c.opened.elapsed().as_secs_f64()
+            }
+        });
+        let field = self.credits.as_ref().map(|c| c.field.clone());
+        let mut layers: Vec<AnyElement> = Vec::new();
+        if let (Some(c), Some(t)) = (&self.credits, credits_t) {
+            layers.extend(credits_layers(c, width, t, self.reduced));
+            layers.push(credits_status(c, width).into_any_element());
+        } else {
+            layers.extend(
+                stage_labels(&self.game, width)
+                    .into_iter()
+                    .map(IntoElement::into_any_element),
+            );
+            layers.push(status_bar(&self.game, width, self.status()).into_any_element());
+        }
+        let stage_name = match &self.credits {
+            Some(c) => SharedString::from(t!("ircoid-credits-stage", names = c.names.join(", "))),
+            None => SharedString::from(t!("ircoid-stage")),
+        };
         let over_lines = notice(self).filter(|(id, _, _)| *id == "ircoid-notice-over");
         let notice = notice(self)
-            .filter(|_| !self.scores.shown)
+            .filter(|_| !self.scores.shown && self.credits.is_none())
             .map(|(id, lines, hex)| notice_box(id, lines, hex, width));
-        let overlay = self.scores.shown.then(|| {
+        let line = (!self.scores.asking()).then(|| {
+            let ring = theme.accent;
+            div()
+                .id("ircoid-credits-open")
+                .test_support()
+                .role(Role::Button)
+                .aria_label(t!("ircoid-credits-open"))
+                .track_focus(&self.credits_focus)
+                .focus_visible(move |s| {
+                    s.shadow(vec![BoxShadow {
+                        color: ring,
+                        offset: point(px(0.), px(0.)),
+                        blur_radius: px(0.),
+                        spread_radius: px(2.),
+                        inset: true,
+                    }])
+                    .text_color(stage::color(stage::palette::PINK, 1.))
+                })
+                .mx_auto()
+                .px_2()
+                .rounded_sm()
+                .cursor_pointer()
+                .font_family(stage::FONT)
+                .font_weight(FontWeight::BOLD)
+                .text_xs()
+                .text_color(theme.faint)
+                .hover(|s| s.text_color(stage::color(stage::palette::PINK, 1.)))
+                .on_click(cx.listener(|this, _, window, cx| this.open_credits(window, cx)))
+                .child(t!("ircoid-credits-open"))
+                .into_any_element()
+        });
+        let overlay = (self.scores.shown && self.credits.is_none()).then(|| {
             let (back, save, skip) = (
                 cx.listener(|this: &mut Self, _: &ClickEvent, window, cx| {
                     this.hide_scores(window, cx)
@@ -985,16 +1357,32 @@ impl Render for Ircoid {
             scores::overlay(
                 &self.scores,
                 &theme,
-                self.phase != Phase::Over,
-                over,
+                scores::Extras {
+                    back: self.phase != Phase::Over,
+                    over,
+                    credits_line: line,
+                },
                 back,
                 save,
                 skip,
             )
         });
+        let credit_hints = self.credits.as_ref().map(|c| {
+            let mut hints = vec![crate::ui::page::Hint::new(
+                &[t!("ircoid-key-escape")],
+                t!("ircoid-credits-back"),
+            )];
+            if c.pages() > 1 {
+                hints.push(crate::ui::page::Hint::new(
+                    &[t!("ircoid-key-left"), t!("ircoid-key-right")],
+                    t!("ircoid-credits-hint-page"),
+                ));
+            }
+            hints
+        });
         let hints = crate::ui::page::hint_bar(
             "ircoid-hints".into(),
-            &[
+            credit_hints.as_deref().unwrap_or(&[
                 crate::ui::page::Hint::new(
                     &[t!("ircoid-key-left"), t!("ircoid-key-right")],
                     t!("ircoid-hint-move"),
@@ -1002,7 +1390,7 @@ impl Render for Ircoid {
                 crate::ui::page::Hint::new(&[t!("ircoid-key-space")], t!("ircoid-hint-launch")),
                 crate::ui::page::Hint::new(&[t!("ircoid-key-p")], t!("ircoid-hint-pause")),
                 crate::ui::page::Hint::new(&[t!("ircoid-key-escape")], t!("ircoid-back")),
-            ],
+            ]),
             &theme,
         );
         div()
@@ -1022,6 +1410,13 @@ impl Render for Ircoid {
                     cx.stop_propagation();
                 }
             }))
+            // Escape on the credits goes back to the table, before the
+            // dialog's own Cancel would close the game.
+            .when(self.credits.is_some(), |d| {
+                d.on_action(
+                    cx.listener(|this, _: &Cancel, window, cx| this.close_credits(window, cx)),
+                )
+            })
             .child(
                 div()
                     .relative()
@@ -1031,7 +1426,7 @@ impl Render for Ircoid {
                             .id("ircoid-stage")
                             .test_support()
                             .role(Role::Image)
-                            .aria_label(t!("ircoid-stage"))
+                            .aria_label(stage_name)
                             .relative()
                             .w_full()
                             .aspect_ratio(FIELD_W / (FIELD_H + BAR_H))
@@ -1077,6 +1472,16 @@ impl Render for Ircoid {
                                             f32::from(bounds.size.width),
                                             f32::from(bounds.size.height),
                                         );
+                                        if let (Some(field), Some(t)) = (&field, credits_t) {
+                                            let k = stage::scale(w);
+                                            let shapes: Vec<stage::Shape> =
+                                                credits::picture(field, t)
+                                                    .iter()
+                                                    .map(|s| credits::scaled(s, k))
+                                                    .collect();
+                                            stage::paint(&shapes, bounds.origin, window);
+                                            return;
+                                        }
                                         stage::paint(
                                             &stage::backdrop(w, h, scroll),
                                             bounds.origin,
@@ -1093,8 +1498,7 @@ impl Render for Ircoid {
                                 .absolute()
                                 .size_full()
                             })
-                            .children(labels)
-                            .child(status)
+                            .children(layers)
                             .children(notice)
                             .child(
                                 canvas(

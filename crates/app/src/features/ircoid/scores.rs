@@ -168,17 +168,30 @@ fn line(id: &'static str, text: String, color: Hsla) -> impl IntoElement {
         .child(text)
 }
 
-/// The table over the stage. `back` is shown when it was opened with the
-/// High scores button.
+/// What the panel shows around the table.
+pub struct Extras {
+    /// The Back button, when the table was opened with High scores.
+    pub back: bool,
+    /// The game over lines, at the top.
+    pub over: Option<Vec<String>>,
+    /// The `/credits` line, at the bottom.
+    pub credits_line: Option<AnyElement>,
+}
+
+/// The table over the stage.
 pub fn overlay(
     scores: &Scores,
     theme: &Theme,
-    back: bool,
-    over: Option<Vec<String>>,
+    extras: Extras,
     on_back: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_save: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     on_skip: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let Extras {
+        back,
+        over,
+        credits_line,
+    } = extras;
     let body: AnyElement = match &scores.table {
         Table::Loading => line(
             "ircoid-scores-loading",
@@ -272,7 +285,7 @@ pub fn overlay(
         .flex()
         .justify_center()
         .items_center()
-        .bg(theme.main.opacity(0.55))
+        .bg(super::stage::color(super::stage::palette::VOID, 0.6))
         .child(
             div()
                 .w(px(380.))
@@ -312,6 +325,7 @@ pub fn overlay(
                 .child(body)
                 .children(entry)
                 .children(outcome)
+                .children(credits_line)
                 .when(back, |d| {
                     d.child(
                         div().flex().justify_end().child(

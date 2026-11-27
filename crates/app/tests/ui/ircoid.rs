@@ -620,3 +620,101 @@ fn escape_in_the_name_field_skips_the_entry(cx: &mut TestAppContext) {
     assert!(shown(&f, cx, "ircoid-score-2"), "the table stays");
     assert!(f.server.requests_to("POST", SCORES).is_empty());
 }
+
+fn focused_on(f: &Fixture, cx: &mut TestAppContext, id: &'static str) -> bool {
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.find(id).focused() == Some(true)
+    })
+    .unwrap()
+}
+
+/// The game with the table open from the High scores button.
+fn table(cx: &mut TestAppContext, setup: impl FnOnce(&CannedServer)) -> Fixture {
+    let f = game_with(cx, setup);
+    click(&f, cx, "ircoid-scores");
+    shows(&f, cx, "ircoid-credits-open");
+    f
+}
+
+#[gpui_kit::test]
+fn the_credits_line_is_under_the_table_even_without_scores(cx: &mut TestAppContext) {
+    let f = table(cx, two_rows);
+    shows(&f, cx, "ircoid-score-2");
+    assert!(shown(&f, cx, "ircoid-credits-open"));
+    let f = table(cx, |_| {});
+    shows(&f, cx, "ircoid-scores-unavailable");
+    assert!(shown(&f, cx, "ircoid-credits-open"));
+}
+
+#[gpui_kit::test]
+fn the_credits_name_everyone_and_escape_goes_back_to_the_table(cx: &mut TestAppContext) {
+    let f = table(cx, two_rows);
+    shows(&f, cx, "ircoid-score-2");
+    click(&f, cx, "ircoid-credits-open");
+    assert!(
+        !shown(&f, cx, "ircoid-scores-panel"),
+        "the credits replace the table"
+    );
+    let stage = label_of(&f, cx, "ircoid-stage").unwrap();
+    for name in ircord_client::ircoid::credits::contributors() {
+        assert!(stage.contains(name), "{stage}");
+    }
+    assert_eq!(
+        label_of(&f, cx, "ircoid-announcement").as_deref(),
+        Some(stage.as_str())
+    );
+    press(&f, cx, "escape");
+    assert!(shown(&f, cx, "ircoid"), "the game stays open");
+    assert!(shown(&f, cx, "ircoid-score-2"), "the table is back");
+    assert!(
+        focused_on(&f, cx, "ircoid-credits-open"),
+        "focus is on the line"
+    );
+    assert_eq!(
+        f.server.requests_to("GET", SCORES).len(),
+        1,
+        "no new request"
+    );
+
+    click(&f, cx, "ircoid-credits-open");
+    click(&f, cx, "ircoid-credits-back");
+    assert!(shown(&f, cx, "ircoid-score-2"));
+    assert!(focused_on(&f, cx, "ircoid-credits-open"));
+}
+
+#[gpui_kit::test]
+fn the_credits_move_only_while_open_and_motion_is_allowed(cx: &mut TestAppContext) {
+    let f = table(cx, two_rows);
+    cx.update_window(f.window, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+    let still = next_frame_asks(&f, cx);
+    click(&f, cx, "ircoid-credits-open");
+    assert_eq!(next_frame_asks(&f, cx), still + 1, "the credits move");
+    press(&f, cx, "escape");
+    assert_eq!(next_frame_asks(&f, cx), still, "and stop when closed");
+
+    cx.update(|cx| {
+        let mut theme = ircord_app::theme::get(cx).clone();
+        theme.reduced_motion = true;
+        ircord_app::theme::set(theme, cx);
+    });
+    click(&f, cx, "ircoid-credits-open");
+    assert_eq!(next_frame_asks(&f, cx), still, "a still picture");
+}
+
+#[gpui_kit::test]
+fn the_game_keys_do_nothing_on_the_credits(cx: &mut TestAppContext) {
+    let f = table(cx, two_rows);
+    click(&f, cx, "ircoid-credits-open");
+    let view = game_view(cx);
+    let before = cx.update(|cx| view.read(cx).game().clone());
+    let phase_before = phase(cx);
+    for key in ["space", "enter", "up", "p", "a", "d"] {
+        press(&f, cx, key);
+    }
+    assert_eq!(phase(cx), phase_before);
+    assert_eq!(cx.update(|cx| view.read(cx).game().clone()), before);
+    assert!(cx.update(|cx| view.read(cx).credits_open()));
+}

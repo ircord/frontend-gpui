@@ -198,9 +198,19 @@ if [ "${CAPTURE_ONLY:-}" = ircoid ]; then
   shot ircoid-3-paused-later
   cmp -s "$OUT/ircoid-3-paused.png" "$OUT/ircoid-3-paused-later.png" \
     || echo "note: the paused game changed between two shots"
+  # The table, from the High scores button; then the credits under it.
+  xdotool mousemove --window "$WIN" ${SCORES_X:-771} ${SCORES_Y:-746} click 1
+  sleep 2
+  shot ircoid-4-table
+  xdotool mousemove --window "$WIN" ${CREDITS_X:-601} ${CREDITS_Y:-426} click 1
+  sleep 1
+  for n in 1 2 3; do shot ircoid-5-credits-$n; sleep 0.4; done
   xdotool key Escape
   sleep 1
-  shot ircoid-4-about-again
+  shot ircoid-6-table-again
+  xdotool key Escape
+  sleep 1
+  shot ircoid-7-about-again
   stop_app ircoid
   exit 0
 fi
