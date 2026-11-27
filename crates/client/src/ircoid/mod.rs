@@ -11,6 +11,7 @@
 
 use std::f32::consts::PI;
 
+pub mod credits;
 pub mod levels;
 pub mod scores;
 

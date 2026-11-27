@@ -9,6 +9,7 @@
 mod capture;
 mod container;
 mod contract;
+mod credits;
 mod dev;
 mod installer_paths;
 mod integration;
@@ -24,6 +25,7 @@ const USAGE: &str = "\
 usage: cargo xtask <command>
 
   contract [--check]   refresh (or check) crates/contract from the backend checkout
+  credits [--check]    write (or check) Ircoid's contributor list from git history (release step)
   build windows        cross-build dist/ircord.exe in the build container
   build linux          build dist/ircord and dist/ircord-linux-x86_64.tar.gz in the build container
   build macos          build dist/IRCord GPUI.app (run on a Mac; needs Xcode, no Docker)
@@ -48,6 +50,8 @@ fn main() -> Result<()> {
     match args.as_slice() {
         ["contract"] => contract::run(&root, false),
         ["contract", "--check"] => contract::run(&root, true),
+        ["credits"] => credits::run(&root, false),
+        ["credits", "--check"] => credits::run(&root, true),
         ["build", "windows"] => container::build_windows(&root),
         ["build", "linux"] => container::build_linux(&root),
         ["build", "macos"] => macos::build(&root).map(drop),

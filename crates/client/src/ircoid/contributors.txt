@@ -1,0 +1,5 @@
+# People who have contributed to IRCord's GPUI client, in the order of their first commit.
+# Written by `cargo xtask credits` while preparing a release (README, "Publishing a release").
+# Do not edit by hand: a second spelling of someone belongs in .mailmap.
+Peter Petermann
+Michael Karbowiak
