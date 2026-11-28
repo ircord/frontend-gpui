@@ -187,6 +187,26 @@ fn core_err(e: CoreError) -> String {
     e.to_string()
 }
 
+/// This account's devices other than `me` in its own claim, less any its
+/// signed device list no longer names.
+fn other_devices<'a>(
+    device: &mut Device<SealedState>,
+    claim: &'a c::E2EEClaim,
+    me: &str,
+) -> impl Iterator<Item = &'a c::E2EEClaimedPackage> + use<'a> {
+    let listed = claim.device_list.as_ref().and_then(|l| {
+        let blob = bytes(&l.list).ok()?;
+        device.check_device_list(&blob).ok()
+    });
+    let me = me.to_string();
+    claim.items.iter().filter(move |i| {
+        i.device_id != me
+            && listed
+                .as_ref()
+                .is_none_or(|l| l.devices.iter().any(|d| d.to_hex() == i.device_id))
+    })
+}
+
 /// A group id as text: 32 lowercase hex digits (`docs/wire.md` 7.6).
 fn group_hex(g: &GroupIdBytes) -> String {
     g.to_hex()
@@ -1910,10 +1930,14 @@ impl Engine {
             packages.push(bytes(&item.key_package).map_err(api_err)?);
             targets.push((peer.to_string(), item.device_id.clone()));
         }
+        let mine: Vec<&c::E2EEClaimedPackage> = other_devices(device, &ours, &me).collect();
         if theirs.source == c::E2EEClaimSource::Network {
             // Their keys are on another IRCord server: the chat is carried
-            // over IRC. Welcomes over IRC reach other accounts only, so this
-            // account's other devices are not in it.
+            // over IRC. The backend hands the Welcome to this account's
+            // other devices itself.
+            for item in &mine {
+                packages.push(bytes(&item.key_package).map_err(api_err)?);
+            }
             let dms = device.groups();
             let older: Option<String> = dms
                 .into_iter()
@@ -1936,11 +1960,11 @@ impl Engine {
             self.publish_conversation(inner, &record);
             return Ok(group);
         }
-        let device = inner.device.as_mut().ok_or("not-ready")?;
-        for item in ours.items.iter().filter(|i| i.device_id != me) {
+        for item in &mine {
             packages.push(bytes(&item.key_package).map_err(api_err)?);
             targets.push((inner.account.clone(), item.device_id.clone()));
         }
+        let device = inner.device.as_mut().ok_or("not-ready")?;
         let started = device.start_dm(peer, &packages).map_err(core_err)?;
         let group = group_hex(&started.group_id);
         let epoch = device.epoch(&started.group_id).unwrap_or(1) as i64;

@@ -16,6 +16,7 @@
 - Approving a new device works with the web client in both directions: a device waiting for approval shows the 20-digit code and QR code the web client asks for, and appears as waiting there; Settings → Encryption takes a new device's code to approve it.
 - Experimental: turning encryption off in a direct message now turns it off for both of you, also when the other person was offline, and turning it on again works instead of failing with "no current group to replace". Where an earlier version left it on for only one of you, turning it on again repairs it.
 - Encrypted direct messages and files work between the desktop and the web client: group IDs are written in hex and files are encrypted with AES-256-GCM, as the encryption specification now says. Encrypted conversations and files from earlier versions keep working on the desktop.
+- Experimental: an encrypted chat with someone on another IRCord server, or an encrypted group, now reaches your other devices on the same server too, so you can read and write there from any of them. It needs a server updated for it.
 
 ## v0.9.0 — 2026-11-28
 

@@ -214,9 +214,15 @@ IRC network, and groups of up to 32 accounts. The engine's side of it is
   the account's approved devices (`PUT /api/v1/e2ee/device-list`) whenever
   it changes; a device claimed for a chat but missing from its account's
   newest list is left out.
-- **Not yet.** A Welcome sent over IRC reaches other accounts only, so this
-  account's other devices are not added to chats carried over IRC (the
-  backend sends no Welcome to the sender's own account). Rejoining after
+- **This account's other devices.** Starting a direct chat or a group
+  carried over IRC claims a key package for each of this account's other
+  devices too (those its newest signed list names); the backend hands them the new chat's Welcome itself (its
+  copy of a direct chat's Welcome is filed under the other person, with this
+  account as sender, which a device accepts only for the person this
+  account's chat lists). The device that started the
+  chat gets one as well and drops it, since it is in the group already.
+- **Not yet.** A device approved later is added to the account's direct
+  chats on this server, not yet to chats carried over IRC. Rejoining after
   losing step, letting someone who started fresh back into a group, and the
   group's history lines in the timeline (they are in the group's panel) are
   not done yet.
@@ -230,6 +236,8 @@ IRC network, and groups of up to 32 accounts. The engine's side of it is
   backend with encryption on and Ergo as its associated server, and two
   IRCord servers on that Ergo with two people each and a plain IRC user:
   direct chats across the servers from either side, a group with members on
-  both, a member removed, and no plaintext on either server.
+  both, a member removed, and no plaintext on either server; and one
+  account on two devices, whose second device reads and sends in a direct
+  chat across the servers and a group that the first one started.
 - `CAPTURE_ONLY=e2ee cargo xtask capture`: screenshots of set-up, starting,
   the lock and panel, and approving a second device.

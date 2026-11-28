@@ -1016,3 +1016,164 @@ fn a_direct_chat_with_someone_on_another_server_goes_over_irc() {
     });
     assert!(backend.plaintext().is_empty(), "{:?}", backend.plaintext());
 }
+
+/// Approve `laptop`, a new device of `phone`'s account, by its code.
+fn approve(phone: &Device, laptop: &Device) {
+    wait_until(&laptop.client, WAIT, "the laptop to wait", |w| {
+        matches!(&w.e2ee.device, DeviceState::Waiting { .. })
+    });
+    let code = match &laptop.client.read().e2ee.device {
+        DeviceState::Waiting { code, .. } => code.clone(),
+        _ => unreachable!(),
+    };
+    for _ in 0..200 {
+        phone.engine.poke();
+        if phone.client.read().e2ee.waiting_approvals == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    phone.engine.approve(&code);
+    wait_until(&phone.client, WAIT, "the approval", |w| {
+        w.e2ee.approving == Approving::Done
+    });
+    for _ in 0..200 {
+        laptop.engine.poke();
+        phone.engine.poke();
+        if laptop.client.read().e2ee.device.ready() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    ready(laptop);
+}
+
+#[test]
+fn chats_started_over_irc_reach_the_accounts_other_devices() {
+    let rt = runtime().unwrap();
+    let backend = E2eeBackend::new();
+    let dirs: Vec<_> = (0..4).map(|_| tempfile::tempdir().unwrap()).collect();
+    let keys: Vec<_> = (0..4).map(|_| VaultKey::random()).collect();
+    let phone = person(
+        &rt,
+        &backend,
+        "alice",
+        "dm-dave",
+        "m-dave",
+        "dave",
+        dirs[0].path(),
+        &keys[0],
+    );
+    let bob = person(
+        &rt,
+        &backend,
+        "bob",
+        "dm-alice",
+        "m-alice",
+        "alice",
+        dirs[1].path(),
+        &keys[1],
+    );
+    // Dave's keys are on another IRCord server of the same network.
+    backend.elsewhere("dave");
+    let dave = person(
+        &rt,
+        &backend,
+        "dave",
+        "dm-alice",
+        "m-alice",
+        "alice",
+        dirs[2].path(),
+        &keys[2],
+    );
+    for d in [&phone, &bob, &dave] {
+        ready(d);
+    }
+    // Alice's laptop, on the same server as her phone.
+    let server = CannedServer::start(&rt);
+    backend.serve_more(&server, "alice");
+    let snapshot = e2ee_snapshot("alice", "dm-dave", "m-dave", "dave");
+    let laptop = device(&rt, server, &snapshot, dirs[3].path(), &keys[3], "dm-dave");
+    let before = backend.device_list("alice").map(|(_, n)| n);
+    approve(&phone, &laptop);
+    // Only devices the account's signed list names are added to a chat.
+    for _ in 0..200 {
+        phone.engine.poke();
+        if backend.device_list("alice").map(|(_, n)| n) > before {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(backend.device_list("alice").map(|(_, n)| n) > before);
+
+    // A direct chat across the servers, started on the phone.
+    phone.engine.start_chat("dm-dave");
+    wait_until(&dave.client, WAIT, "dave's side on", |w| {
+        w.e2ee.is_on("dm-alice")
+    });
+    wait_until(&laptop.client, WAIT, "the laptop in the chat", |_| {
+        backend.welcomes_waiting("alice") == 0
+    });
+    phone.engine.send("dm-dave", "from the phone", None);
+    wait_until(&dave.client, WAIT, "dave reads the phone", |w| {
+        has_text(w, "dm-alice", "from the phone")
+    });
+    wait_until(&laptop.client, WAIT, "the laptop reads the phone", |w| {
+        has_text(w, "dm-dave", "from the phone")
+    });
+    dave.engine.send("dm-alice", "to both of alice's", None);
+    for d in [&phone, &laptop] {
+        wait_until(&d.client, WAIT, "alice reads dave", |w| {
+            has_text(w, "dm-dave", "to both of alice's")
+        });
+    }
+    wait_until(&laptop.client, WAIT, "the laptop's side on", |w| {
+        w.e2ee.is_on("dm-dave")
+    });
+    laptop.engine.send("dm-dave", "from the laptop", None);
+    for (d, conv) in [(&dave, "dm-alice"), (&phone, "dm-dave")] {
+        wait_until(&d.client, WAIT, "the laptop's message", |w| {
+            has_text(w, conv, "from the laptop")
+        });
+    }
+
+    // A group started on the phone, with bob on this server and dave on
+    // the other.
+    phone
+        .engine
+        .create_group("Both devices", vec!["bob".into(), "dave".into()]);
+    let g_phone = group_conversation(&phone);
+    let chat = phone.client.read().e2ee.groups[&g_phone].chat.clone();
+    for d in [&bob, &dave] {
+        wait_until(&d.client, WAIT, "the invitation", |w| {
+            w.e2ee.invitations.iter().any(|i| i.title == "Both devices")
+        });
+        d.engine.accept_invitation(&chat);
+    }
+    let g_laptop = group_conversation(&laptop);
+    assert_eq!(g_laptop, g_phone);
+    {
+        let w = laptop.client.read();
+        assert!(w.e2ee.invitations.is_empty(), "no invitation to itself");
+        let g = &w.e2ee.groups[&g_laptop];
+        assert_eq!(g.title, "Both devices");
+        assert!(g.creator && g.admin);
+        let alice = g.members.iter().find(|m| m.you).unwrap();
+        assert_eq!(alice.devices.len(), 2, "both of alice's devices");
+    }
+    let g_bob = group_conversation(&bob);
+    let g_dave = group_conversation(&dave);
+    phone.engine.send(&g_phone, "group from the phone", None);
+    for (d, conv) in [(&laptop, &g_laptop), (&bob, &g_bob), (&dave, &g_dave)] {
+        wait_until(&d.client, WAIT, "the phone's group message", |w| {
+            has_text(w, conv, "group from the phone")
+        });
+    }
+    laptop.engine.send(&g_laptop, "group from the laptop", None);
+    for (d, conv) in [(&phone, &g_phone), (&bob, &g_bob), (&dave, &g_dave)] {
+        wait_until(&d.client, WAIT, "the laptop's group message", |w| {
+            has_text(w, conv, "group from the laptop")
+        });
+    }
+    assert!(backend.plaintext().is_empty(), "{:?}", backend.plaintext());
+}

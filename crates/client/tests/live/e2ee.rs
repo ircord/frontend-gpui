@@ -16,7 +16,7 @@ use ircord_client::contract as c;
 use ircord_client::e2ee::vault::VaultKey;
 use ircord_client::e2ee::{Engine, Texts};
 use ircord_client::store::Workspace;
-use ircord_client::store::e2ee::PLACEHOLDER;
+use ircord_client::store::e2ee::{Approving, DeviceState, PLACEHOLDER};
 use ircord_client::{Client, ServerAddress};
 
 use crate::support::{environment, unique, wait_for_backend};
@@ -85,10 +85,28 @@ pub(crate) fn person(
     address: &ServerAddress,
     name: &str,
 ) -> Person {
-    let password = ircord_client::client::random_id();
-    let cookie = rt.block_on(signup(address, name, &password));
+    person_with(rt, address, name, &ircord_client::client::random_id())
+}
+
+/// A new account `name` with `password`, its first device set up.
+fn person_with(
+    rt: &std::sync::Arc<tokio::runtime::Runtime>,
+    address: &ServerAddress,
+    name: &str,
+    password: &str,
+) -> Person {
+    let cookie = rt.block_on(signup(address, name, password));
     let api = Api::new(address.clone());
     api.set_cookie(Some(cookie));
+    let person = start(rt, api, name);
+    wait_until(&person.client, WAIT, "the device set up", |w| {
+        w.e2ee.device.ready()
+    });
+    person
+}
+
+/// A signed-in session with its own device store.
+fn start(rt: &std::sync::Arc<tokio::runtime::Runtime>, api: Api, name: &str) -> Person {
     let (client, updates) = Client::start(rt.clone(), api);
     wait_live(&client);
     wait_until(&client, WAIT, "the home network to carry encryption", |w| {
@@ -103,9 +121,6 @@ pub(crate) fn person(
         format!("live test {name}"),
         texts(),
     );
-    wait_until(&client, WAIT, "the device set up", |w| {
-        w.e2ee.device.ready()
-    });
     Person {
         client,
         engine,
@@ -485,20 +500,43 @@ fn two_servers_one_network_direct_chats_and_a_group() {
         }
         (lines, write)
     });
+    // Invite until the invitation arrives: the backend may not hold the
+    // channel's operator rights yet when the first one goes out, and the
+    // cases run side by side.
     let network = home(&alice.client.read());
-    rt.block_on(execute(
-        &alice.client,
-        Plan::Raw {
-            network,
-            line: format!("INVITE {plain_nick} {channel}"),
-            then: None,
-        },
-    ))
-    .unwrap()
-    .unwrap();
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the plain user was never invited"
+        );
+        rt.block_on(execute(
+            &alice.client,
+            Plan::Raw {
+                network: network.clone(),
+                line: format!("INVITE {plain_nick} {channel}"),
+                then: None,
+            },
+        ))
+        .unwrap()
+        .unwrap();
+        let invited = rt.block_on(async {
+            let until = tokio::time::Instant::now() + Duration::from_secs(3);
+            while let Ok(Ok(Some(line))) = tokio::time::timeout_at(until, plain.0.next_line()).await
+            {
+                // `@tags :inviter INVITE nick #channel`
+                if line.contains(" INVITE ") {
+                    return true;
+                }
+            }
+            false
+        });
+        if invited {
+            break;
+        }
+    }
     rt.block_on(async {
         use tokio::io::AsyncWriteExt;
-        tokio::time::sleep(Duration::from_secs(1)).await;
         plain
             .1
             .write_all(format!("JOIN {channel}\r\n").as_bytes())
@@ -582,6 +620,205 @@ fn two_servers_one_network_direct_chats_and_a_group() {
                 "hello both servers",
                 "dave on B",
                 "without dave",
+            ] {
+                assert!(!dump.contains(secret), "{secret} stored in the clear");
+            }
+        }
+    }
+}
+
+/// A second device of `phone`'s account (`name`, `password`): it signs in,
+/// waits, and `phone` approves it by its code.
+fn second_device(
+    rt: &std::sync::Arc<tokio::runtime::Runtime>,
+    address: &ServerAddress,
+    phone: &Person,
+    name: &str,
+    password: &str,
+) -> Person {
+    let api = Api::new(address.clone());
+    rt.block_on(api.login(name, password)).expect("sign in");
+    let laptop = start(rt, api, name);
+    wait_until(&laptop.client, WAIT, "the new device to wait", |w| {
+        matches!(w.e2ee.device, DeviceState::Waiting { .. })
+    });
+    let code = match &laptop.client.read().e2ee.device {
+        DeviceState::Waiting { code, .. } => code.clone(),
+        _ => unreachable!(),
+    };
+    let counter = || {
+        rt.block_on(phone.client.api().e2ee_directory())
+            .ok()
+            .and_then(|d| d.device_list)
+            .map(|l| l.counter)
+    };
+    let before = counter();
+    let deadline = std::time::Instant::now() + WAIT;
+    while phone.client.read().e2ee.waiting_approvals == 0 {
+        assert!(std::time::Instant::now() < deadline, "no approval request");
+        phone.engine.poke();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    phone.engine.approve(&code);
+    wait_until(&phone.client, WAIT, "the approval", |w| {
+        w.e2ee.approving == Approving::Done
+    });
+    let deadline = std::time::Instant::now() + WAIT;
+    while !laptop.client.read().e2ee.device.ready() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the new device approved"
+        );
+        laptop.engine.poke();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // Only devices the account's signed list names are added to a chat.
+    let deadline = std::time::Instant::now() + WAIT;
+    while counter() <= before {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the device list names the new device"
+        );
+        phone.engine.poke();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    laptop
+}
+
+/// One account on two devices on server A, a second account on A and a
+/// peer on server B: a direct chat across the servers and a group, both
+/// started on the first device, reach the second one, which reads and sends
+/// in both (the backend hands a chat's Welcome to the starter's own devices).
+#[test]
+fn chats_started_over_irc_reach_the_accounts_other_devices() {
+    let Some((server, _)) = environment() else {
+        return;
+    };
+    let (Ok(server_b), Some(_)) = (
+        std::env::var("IRCORD_IT_SERVER_B"),
+        std::env::var_os("IRCORD_IT_E2EE"),
+    ) else {
+        eprintln!("skipped: needs two backends with encryption (IRCORD_IT_E2EE=1)");
+        return;
+    };
+    let rt = ircord_client::client::runtime().unwrap();
+    let a = ServerAddress::parse(&server).unwrap();
+    let b = ServerAddress::parse(&server_b).unwrap();
+    wait_for_backend(&rt, &a);
+    wait_for_backend(&rt, &b);
+    let names: Vec<String> = ["oa", "ob", "oc"].iter().map(|p| unique(p)).collect();
+    let (na, nb, nc) = (&names[0], &names[1], &names[2]);
+    let password = ircord_client::client::random_id();
+    let phone = person_with(&rt, &a, na, &password);
+    let laptop = second_device(&rt, &a, &phone, na, &password);
+    let bob = person(&rt, &a, nb);
+    let carol = person(&rt, &b, nc);
+
+    // A direct chat across the servers, started on the phone.
+    let at_phone = direct(&rt, &phone, nc);
+    let at_carol = direct_from(&carol, na);
+    start_encrypted(&phone, &at_phone);
+    wait_until(&carol.client, WAIT, "carol's side on", |w| {
+        w.e2ee.is_on(&at_carol)
+    });
+    let at_laptop = direct_from(&laptop, nc);
+    assert_eq!(at_laptop, at_phone);
+    phone.engine.send(&at_phone, "from the phone", None);
+    wait_until(&carol.client, WAIT, "carol reads the phone", |w| {
+        has_text(w, &at_carol, "from the phone")
+    });
+    let deadline = std::time::Instant::now() + WAIT;
+    while !has_text(&laptop.client.read(), &at_laptop, "from the phone") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the laptop never read the phone's message"
+        );
+        laptop.engine.poke();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    carol.engine.send(&at_carol, "to both devices", None);
+    for p in [&phone, &laptop] {
+        wait_until(&p.client, WAIT, "alice reads carol", |w| {
+            has_text(w, &at_phone, "to both devices")
+        });
+    }
+    wait_until(&laptop.client, WAIT, "the laptop's side on", |w| {
+        w.e2ee.is_on(&at_laptop)
+    });
+    laptop.engine.send(&at_laptop, "from the laptop", None);
+    wait_until(&carol.client, WAIT, "carol reads the laptop", |w| {
+        has_text(w, &at_carol, "from the laptop")
+    });
+    wait_until(&phone.client, WAIT, "the phone reads the laptop", |w| {
+        has_text(w, &at_phone, "from the laptop")
+    });
+
+    // A group started on the phone, with bob on A and carol on B.
+    phone
+        .engine
+        .create_group("Two devices", vec![nb.clone(), nc.clone()]);
+    let g_phone = group_at(&phone);
+    let chat = phone.client.read().e2ee.groups[&g_phone].chat.clone();
+    for p in [&bob, &carol] {
+        wait_until(&p.client, WAIT, "the invitation", |w| {
+            w.e2ee
+                .invitations
+                .iter()
+                .any(|i| i.title == "Two devices" && i.people == 3)
+        });
+        p.engine.accept_invitation(&chat);
+    }
+    let deadline = std::time::Instant::now() + WAIT;
+    while laptop.client.read().e2ee.groups.is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the group never reached the laptop"
+        );
+        laptop.engine.poke();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let g_laptop = group_at(&laptop);
+    assert_eq!(g_laptop, g_phone);
+    {
+        let w = laptop.client.read();
+        assert!(w.e2ee.invitations.is_empty(), "no invitation to itself");
+        let g = &w.e2ee.groups[&g_laptop];
+        assert_eq!(g.title, "Two devices");
+        let alice = g.members.iter().find(|m| m.you).unwrap();
+        assert_eq!(alice.devices.len(), 2, "both of alice's devices");
+    }
+    let g_bob = group_at(&bob);
+    let g_carol = group_at(&carol);
+    phone.engine.send(&g_phone, "group from the phone", None);
+    for (p, g) in [(&laptop, &g_laptop), (&bob, &g_bob), (&carol, &g_carol)] {
+        wait_until(&p.client, WAIT, "the phone's group message", |w| {
+            has_text(w, g, "group from the phone")
+        });
+    }
+    laptop.engine.send(&g_laptop, "group from the laptop", None);
+    for (p, g) in [(&phone, &g_phone), (&bob, &g_bob), (&carol, &g_carol)] {
+        wait_until(&p.client, WAIT, "the laptop's group message", |w| {
+            has_text(w, g, "group from the laptop")
+        });
+    }
+
+    // Neither server keeps any of it in the clear.
+    for (p, convs) in [
+        (&phone, vec![&at_phone, &g_phone]),
+        (&bob, vec![&g_bob]),
+        (&carol, vec![&at_carol, &g_carol]),
+    ] {
+        for conv in convs {
+            let page = rt
+                .block_on(p.client.api().messages(conv, None, 100))
+                .unwrap();
+            let dump = format!("{:?}", page.items);
+            for secret in [
+                "from the phone",
+                "to both devices",
+                "from the laptop",
+                "group from the phone",
+                "group from the laptop",
             ] {
                 assert!(!dump.contains(secret), "{secret} stored in the clear");
             }

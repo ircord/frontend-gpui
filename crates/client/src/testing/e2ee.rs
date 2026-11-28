@@ -7,7 +7,8 @@
 //! It also plays the chats carried over IRC (`/api/v1/e2ee/chats`): an
 //! account marked [`E2eeBackend::elsewhere`] is "on another IRCord server",
 //! so its directory answers with source `network`; Welcomes reach every
-//! device of the accounts they name; commits are candidates in the order
+//! device of the accounts they name, and a new chat's every device of the
+//! account that started it (as the backend hands them over itself); commits are candidates in the order
 //! they arrived, the first per epoch winning; and a group's channel is a
 //! conversation every joined member gets, whose messages reach them all.
 //!
@@ -63,6 +64,9 @@ struct Side {
     peer_member: String,
     peer: String,
     history: Vec<Message>,
+    /// Further devices of this account that read and send, each with its
+    /// own socket and sequence ([`E2eeBackend::serve_more`]).
+    more: Vec<(Push, i64)>,
 }
 
 /// One account's chat carried over IRC.
@@ -85,6 +89,9 @@ struct ChatWelcome {
     device: String,
     group: String,
     kind: &'static str,
+    /// Where it is filed: the group's channel, or the direct chat's other
+    /// person.
+    target: String,
     sender: String,
     welcome: String,
     epoch: i64,
@@ -359,9 +366,28 @@ impl E2eeBackend {
                     peer_member: peer_member.to_string(),
                     peer: peer.to_string(),
                     history: Vec::new(),
+                    more: Vec::new(),
                 },
             );
         }
+    }
+
+    /// A further device of an account that [`Self::serve`] already serves,
+    /// which reads and sends: what reaches the account from now on reaches
+    /// it too.
+    pub fn serve_more(&self, server: &CannedServer, account: &str) {
+        self.serve_device(server, account);
+        let me = account.to_string();
+        let route = |method: &str, path: &str, f: fn(&mut State, &str, &Recorded) -> Reply| {
+            let state = self.state.clone();
+            let me = me.clone();
+            server.route_fn(method, path, move |r| f(&mut state.lock().unwrap(), &me, r));
+        };
+        route("POST", "/api/v1/conversations/*/messages", send);
+        route("GET", "/api/v1/conversations/*/messages", page);
+        let mut s = self.state.lock().unwrap();
+        let side = s.sides.get_mut(account).expect("an account served before");
+        side.more.push((server.pusher(), 0));
     }
 
     /// Answer only the encryption endpoints on `server`, as `account`: a
@@ -937,9 +963,18 @@ fn send(s: &mut State, me: &str, r: &Recorded) -> Reply {
 
 fn deliver(s: &mut State, account: &str, m: Message) {
     if let Some(side) = s.sides.get_mut(account) {
-        side.seq += 1;
         side.history.push(m.clone());
-        (side.push)(frame(side.seq, "message.created", &m));
+        push_all(side, "message.created", &m);
+    }
+}
+
+/// An event to every device of an account that reads.
+fn push_all<T: serde::Serialize>(side: &mut Side, kind: &str, body: &T) {
+    side.seq += 1;
+    (side.push)(frame(side.seq, kind, body));
+    for (push, seq) in &mut side.more {
+        *seq += 1;
+        push(frame(*seq, kind, body));
     }
 }
 
@@ -976,9 +1011,8 @@ fn put_device_list(s: &mut State, me: &str, r: &Recorded) -> Reply {
 /// Tell `account`'s clients that their encryption state changed.
 fn changed(s: &mut State, account: &str, group: &str, reason: &str) {
     if let Some(side) = s.sides.get_mut(account) {
-        side.seq += 1;
         let change = json!({"groupId": group, "reason": reason});
-        (side.push)(frame(side.seq, "e2ee.changed", &change));
+        push_all(side, "e2ee.changed", &change);
     }
 }
 
@@ -1006,9 +1040,8 @@ fn enter_channel(s: &mut State, account: &str, name: &str) -> String {
         .1
         .insert(account.to_string());
     if let Some(side) = s.sides.get_mut(account) {
-        side.seq += 1;
         let conv = channel_conversation(&id, name);
-        (side.push)(frame(side.seq, "conversation.updated", &conv));
+        push_all(side, "conversation.updated", &conv);
     }
     id
 }
@@ -1029,7 +1062,9 @@ fn list_chats(s: &mut State, me: &str, _: &Recorded) -> Reply {
     ok(json!({"items": items}))
 }
 
-/// A Welcome over IRC for every device of these accounts, and an invitation.
+/// A Welcome for every device of these accounts, and an invitation for
+/// those other than `me`. `me`'s own devices (the sender's among them, as on
+/// the backend) get theirs filed under the direct chat's other person.
 fn send_welcome(
     s: &mut State,
     me: &str,
@@ -1039,12 +1074,24 @@ fn send_welcome(
     welcome: &str,
     to: &[String],
 ) {
-    for account in to.iter().filter(|a| *a != me) {
+    let to: BTreeSet<&String> = to.iter().collect();
+    for account in to {
         let devices: Vec<String> = s
             .devices
             .get(account)
             .map(|d| d.keys().cloned().collect())
             .unwrap_or_default();
+        let target = if kind == "group" {
+            format!("#{}", channel_conversation("", name).name)
+        } else if account == me {
+            s.chats
+                .get(me)
+                .and_then(|c| c.get(name))
+                .map(|r| r.target.clone())
+                .unwrap_or_default()
+        } else {
+            me.to_string()
+        };
         for device in devices {
             s.next += 1;
             let id = s.next;
@@ -1054,16 +1101,16 @@ fn send_welcome(
                 device,
                 group: name.to_string(),
                 kind,
+                target: target.clone(),
                 sender: me.to_string(),
                 welcome: welcome.to_string(),
                 epoch,
             });
         }
-        let target = if kind == "group" {
-            format!("#{}", channel_conversation("", name).name)
-        } else {
-            me.to_string()
-        };
+        if account == me {
+            changed(s, account, name, "welcome");
+            continue;
+        }
         s.chats
             .entry(account.clone())
             .or_default()
@@ -1103,7 +1150,7 @@ fn create_chat(s: &mut State, me: &str, r: &Recorded) -> Reply {
                     inviter: me.to_string(),
                     declined: Vec::new(),
                 },
-                vec![peer],
+                vec![peer, me.to_string()],
             )
         }
         Some("group") => {
@@ -1116,6 +1163,7 @@ fn create_chat(s: &mut State, me: &str, r: &Recorded) -> Reply {
                 .unwrap_or_default()
                 .iter()
                 .filter_map(|m| m.as_str().map(str::to_string))
+                .chain([me.to_string()])
                 .collect();
             let conversation = enter_channel(s, me, &name);
             (
@@ -1297,7 +1345,7 @@ fn list_chat_welcomes(s: &mut State, me: &str, r: &Recorded) -> Reply {
         .filter(|w| w.account == me && w.device == device)
         .map(|w| {
             json!({"id": w.id, "groupId": w.group, "epoch": w.epoch, "kind": w.kind,
-                "target": w.sender, "sender": w.sender, "welcome": w.welcome,
+                "target": w.target, "sender": w.sender, "welcome": w.welcome,
                 "position": {"at": "2026-11-28T10:00:00Z", "msgid": format!("{:08}", w.id)},
                 "createdAt": "2026-11-28T10:00:00Z"})
         })
