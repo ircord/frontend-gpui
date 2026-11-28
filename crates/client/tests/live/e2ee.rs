@@ -1,7 +1,8 @@
 //! End-to-end encryption (experimental) between two fresh accounts on the
 //! server's home network: both devices set up, one starts an encrypted chat,
 //! messages go both ways and are read on the other side, the backend refuses
-//! plaintext into the conversation, and turning it off reaches both.
+//! plaintext into the conversation, turning it off reaches both, and it
+//! turns on and off again from either side.
 //!
 //! It needs a backend with `IRCORD_E2EE=experimental` and an associated
 //! Ergo, so every account gets the home network that encryption works on:
@@ -227,4 +228,55 @@ fn two_accounts_chat_encrypted_through_the_backend() {
         .block_on(alice.client.api().e2ee_conversation(&at_alice))
         .unwrap();
     assert!(!state.encrypted);
+
+    // On again, from either side, and off from the other: each time a new
+    // group that both sides and the server agree on.
+    bob.engine.check_peer(&at_bob);
+    wait_until(&bob.client, WAIT, "alice's account known to bob", |w| {
+        ircord_client::e2ee::engine::peer_of(w, &at_bob).is_ok()
+            && ircord_client::e2ee::engine::blocked(w, &at_bob).is_none()
+    });
+    let sides = [(&alice, &at_alice), (&bob, &at_bob)];
+    let encrypted = |p: &Person, c: &str| {
+        rt.block_on(p.client.api().e2ee_conversation(c))
+            .unwrap()
+            .encrypted
+    };
+    for (round, (starter, ender)) in [(0, 1), (1, 0), (1, 1), (0, 0)].into_iter().enumerate() {
+        let (who, at) = sides[starter];
+        who.engine.start_chat(at);
+        wait_until(&who.client, WAIT, "the starter's side on", |w| {
+            w.e2ee.is_on(at) || w.e2ee.errors.contains_key(at)
+        });
+        assert_eq!(who.client.read().e2ee.errors.get(at), None, "round {round}");
+        for (p, c) in sides {
+            wait_until(&p.client, WAIT, "both sides on", |w| w.e2ee.is_on(c));
+        }
+        let text = format!("round {round}");
+        sides[1 - starter]
+            .0
+            .engine
+            .send(sides[1 - starter].1, &text, None);
+        wait_until(&who.client, WAIT, "the starter reads it", |w| {
+            has_text(w, at, &text)
+        });
+        // Polled outside the workspace's lock: the call may need it.
+        let deadline = std::time::Instant::now() + WAIT;
+        while !sides.iter().all(|(p, c)| encrypted(p, c)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "round {round}: the server to refuse plaintext from both"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let (who, at) = sides[ender];
+        who.engine.turn_off(at);
+        for (p, c) in sides {
+            wait_until(&p.client, WAIT, "both sides off", |w| !w.e2ee.is_on(c));
+        }
+        assert_eq!(who.client.read().e2ee.errors.get(at), None, "round {round}");
+        for (p, c) in sides {
+            assert!(!encrypted(p, c), "round {round}: still bound");
+        }
+    }
 }

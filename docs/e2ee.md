@@ -34,6 +34,43 @@ message is never shown as the server sent it: a message is shown only as this
 device decrypted it, and only if its MLS group is the conversation's and its
 MLS sender is the one the timeline names.
 
+## Turning encryption on and off
+
+A device reads a conversation's control events again from its vault on every
+start, and a device that was offline reads them late, after it joined the
+group from its Welcome. The rules in `crates/client/src/e2ee/state.rs` (the
+web client's `shared/e2ee/state.ts` keeps the same ones) give the same state
+in any reading order:
+
+- Each "turn on" makes a new group, so a group is turned on once and off at
+  most once. An "off" from the conversation's current group is final, however
+  late it is read; a group that was turned off never comes back.
+- Between different groups, the newer "on" wins by time.
+
+The backend keeps one current group per pair of accounts, changed only by
+naming the current one in `replaces`:
+
+- Only starting encryption replaces a group. It names the group the server
+  reports; when the server refuses with 409 (a client that missed an "off"
+  made an older group current again), it tries the other groups this device
+  shares with the person.
+- A device that joined a group (a Welcome) or read its "on" binds its own
+  side with `replaces` set to that same group, which the backend accepts
+  only while that group is current: it never brings back a group that was
+  turned off. While this device has the conversation turned off, a Welcome
+  binds nothing: the group's "on" decides once it is read.
+- A device that reads the other person's "off" ends that group's binding
+  too, in case a late device of this account bound it again.
+- Turning off accepts 404 (the other side already ended it). On 409, here
+  and when reading the other person's "off", it ends the group the server
+  names when it is one with this person. Turning off still shows this side
+  as off, since the notice has gone out, and shows the error when the
+  server's group cannot be ended.
+
+Group IDs on the server are base64url here, as the backend's API describes
+them; the web client sends lowercase hex, so neither client can bind or end
+by ID a group that the other one made.
+
 ## The device's store
 
 Each signed-in account has a folder under the app's settings folder,

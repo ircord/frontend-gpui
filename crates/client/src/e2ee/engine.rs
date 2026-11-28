@@ -34,7 +34,7 @@ use super::core::{
 use super::vault::{
     Conversation, Outcome, Plain, Record, SealedState, Unreadable, Vault, VaultKey,
 };
-use super::{b64url, files, from_b64url};
+use super::{b64url, files, from_b64url, state};
 use crate::api::e2ee::{bytes, encode};
 use crate::api::{Api, ApiError};
 use crate::client::{Handle, random_id};
@@ -148,6 +148,8 @@ struct Inner {
     /// Devices this one approved that still have to be added to its groups.
     to_add: BTreeSet<String>,
     started: bool,
+    /// (conversation, group) this device bound in this session.
+    bound: BTreeSet<(String, String)>,
 }
 
 /// A new device's approval request.
@@ -508,8 +510,8 @@ impl Engine {
                     log::warn!("e2ee: store a message: {e}");
                 }
             }
-            if let Outcome::Control { on, by, at } = &outcome {
-                self.controlled(&mut inner, &conversation, *on, by, *at)
+            if let Outcome::Control { on, by, at, group } = &outcome {
+                self.controlled(&mut inner, &conversation, *on, by, *at, group.as_deref())
                     .await;
             }
             self.apply(&inner, &conversation, &m, &outcome);
@@ -637,6 +639,7 @@ impl Engine {
                         on: op == ControlOp::EncryptionOn,
                         by: sender.account,
                         at,
+                        group: Some(group_b64(&group_id)),
                     },
                     _ => Outcome::Hidden,
                 }
@@ -766,58 +769,132 @@ impl Engine {
         });
     }
 
-    /// A control event changed a conversation's encryption.
-    async fn controlled(&self, inner: &mut Inner, conversation: &str, on: bool, by: &str, at: i64) {
-        let Some(vault) = inner.vault.as_mut() else {
+    /// A control event from `group` (absent in what older versions
+    /// stored) was read: the rules are in [`super::state`].
+    async fn controlled(
+        &self,
+        inner: &mut Inner,
+        conversation: &str,
+        on: bool,
+        by: &str,
+        at: i64,
+        group: Option<&str>,
+    ) {
+        let Some(vault) = inner.vault.as_ref() else {
             return;
         };
         let known = vault.conversation(conversation).cloned();
-        if known.as_ref().is_some_and(|k| k.since >= at) {
-            return;
-        }
         let peer = known
             .as_ref()
             .map(|k| k.peer.clone())
             .or_else(|| peer_of(&self.shared.handle.read(), conversation).ok())
             .unwrap_or_else(|| by.to_string());
-        // The group the event came from: the newest this device holds with
-        // the peer.
-        let group = inner.device.as_ref().and_then(|d| {
-            d.groups()
-                .into_iter()
-                .filter(|(_, p)| *p == peer)
-                .max_by_key(|(g, _)| d.epoch(g).unwrap_or(0))
-                .map(|(g, _)| group_b64(&g))
-        });
+        let (group, change) = match group {
+            Some(g) => (
+                Some(g.to_string()),
+                state::control_change(known.as_ref(), g, on, at),
+            ),
+            // Stored by an older version without its group: the newest this
+            // device holds with the peer, and only a newer event counts.
+            None => {
+                let newest = inner.device.as_ref().and_then(|d| {
+                    d.groups()
+                        .into_iter()
+                        .filter(|(_, p)| *p == peer)
+                        .max_by_key(|(g, _)| d.epoch(g).unwrap_or(0))
+                        .map(|(g, _)| group_b64(&g))
+                });
+                let newer = known.as_ref().is_none_or(|k| k.since < at);
+                (
+                    newest.or(known.as_ref().and_then(|k| k.group.clone())),
+                    newer.then_some(on),
+                )
+            }
+        };
+        let mine = by == inner.account;
+        let Some(on) = change else {
+            // The "on" of the group this conversation is in already: the
+            // Welcome may have come before its starter bound the group.
+            if on
+                && !mine
+                && let (Some(k), Some(g)) = (&known, &group)
+                && k.on
+                && k.group.as_deref() == Some(g.as_str())
+            {
+                self.bind_existing(inner, conversation, g, &k.peer).await;
+            }
+            return;
+        };
         let record = Conversation {
             conversation: conversation.to_string(),
             peer,
-            group: group.or(known.as_ref().and_then(|k| k.group.clone())),
+            group,
             on,
             since: at,
             by: by.to_string(),
         };
-        if let Err(e) = vault.put(Record::Conversation(record.clone())) {
+        if let Some(vault) = inner.vault.as_mut()
+            && let Err(e) = vault.put(Record::Conversation(record.clone()))
+        {
             log::warn!("e2ee: store a conversation: {e}");
         }
-        if on
-            && by != inner.account
-            && let Some(group) = &record.group
-        {
-            // Bind this side too, so the backend refuses plaintext from here.
-            let replaces = known
-                .as_ref()
-                .and_then(|k| k.group.clone())
-                .filter(|g| g != group);
-            if let Err(e) = self
-                .api()
-                .e2ee_bind(conversation, group, &record.peer, replaces.as_deref())
-                .await
-            {
-                log::warn!("e2ee: bind {conversation}: {e}");
+        if let Some(group) = &record.group {
+            if on && !mine {
+                // Bind this side too, so the backend refuses plaintext from here.
+                self.bind_existing(inner, conversation, group, &record.peer)
+                    .await;
+            } else if !on {
+                // A device of this account may have bound the group again
+                // after it was turned off. Nothing changes when it is gone.
+                self.unbind(inner, conversation, group, &record.peer).await;
             }
         }
         self.publish_conversation(inner, &record);
+    }
+
+    /// Bind this account's side of a conversation to `group`, only if the
+    /// server already names it as the conversation's current group: a device
+    /// that joined or read a group never changes which group is current, or a
+    /// late Welcome or event would bring back a group turned off since. Only
+    /// starting encryption replaces a group.
+    async fn bind_existing(&self, inner: &mut Inner, conversation: &str, group: &str, peer: &str) {
+        let key = (conversation.to_string(), group.to_string());
+        if inner.bound.contains(&key) {
+            return;
+        }
+        match self
+            .api()
+            .e2ee_bind(conversation, group, peer, Some(group))
+            .await
+        {
+            Ok(_) => {
+                inner.bound.insert(key);
+            }
+            Err(e) => log::debug!("e2ee: bind {conversation}: {e}"),
+        }
+    }
+
+    /// End the server's binding of a conversation to `group`, if that group
+    /// is still its current one.
+    /// When the server names another group with the same person, made
+    /// current again by a client that missed an earlier "off", that ends too.
+    async fn unbind(&self, inner: &mut Inner, conversation: &str, group: &str, peer: &str) {
+        inner
+            .bound
+            .remove(&(conversation.to_string(), group.to_string()));
+        match self.api().e2ee_turn_off(conversation, group).await {
+            Ok(()) => {}
+            Err(ApiError::Http { status: 409, .. }) => {
+                if self
+                    .turn_off_stale(inner, conversation, peer)
+                    .await
+                    .is_err()
+                {
+                    log::debug!("e2ee: unbind {conversation}: another group is current");
+                }
+            }
+            Err(e) => log::debug!("e2ee: unbind {conversation}: {e}"),
+        }
     }
 
     /// Show a conversation's state in the workspace.
@@ -1135,18 +1212,9 @@ impl Engine {
                                     .vault
                                     .as_ref()
                                     .and_then(|v| v.conversation(&conversation).cloned());
-                                let replaces = known.as_ref().and_then(|k| k.group.clone());
-                                if let Err(e) = self
-                                    .api()
-                                    .e2ee_bind(
-                                        &conversation,
-                                        &group,
-                                        &joined.peer,
-                                        replaces.as_deref(),
-                                    )
-                                    .await
-                                {
-                                    log::debug!("e2ee: bind after a Welcome: {e}");
+                                if state::welcome_binds(known.as_ref()) {
+                                    self.bind_existing(inner, &conversation, &group, &joined.peer)
+                                        .await;
                                 }
                                 // A group that replaces an encrypted one (the
                                 // peer started fresh) is the one to write to now.
@@ -1670,16 +1738,13 @@ impl Engine {
             let _ = device.forget_group(&started.group_id);
             return Err(api_err(e));
         }
-        let known = inner
-            .vault
-            .as_ref()
-            .and_then(|v| v.conversation(conversation).cloned());
-        let replaces = known.as_ref().and_then(|k| k.group.clone());
-        let bound = self
-            .api()
-            .e2ee_bind(conversation, &group, peer, replaces.as_deref())
-            .await;
-        if let Err(e) = bound {
+        let older: Vec<String> = device
+            .groups()
+            .into_iter()
+            .filter(|(g, p)| p == peer && *g != started.group_id)
+            .map(|(g, _)| group_b64(&g))
+            .collect();
+        if let Err(e) = self.bind_started(conversation, &group, peer, &older).await {
             let _ = inner
                 .device
                 .as_mut()
@@ -1721,6 +1786,7 @@ impl Engine {
             .as_ref()
             .and_then(|v| v.conversation(conversation).cloned())
             .ok_or("not-encrypted")?;
+        let mut refused = None;
         if let Some(group) = record.group.clone() {
             self.send_payload(
                 inner,
@@ -1731,8 +1797,25 @@ impl Engine {
                 .map_err(core_err)?,
             )
             .await?;
-            if let Err(e) = self.api().e2ee_turn_off(conversation, &group).await {
-                log::warn!("e2ee: turn off on the server: {e}");
+            inner
+                .bound
+                .remove(&(conversation.to_string(), group.clone()));
+            match self.api().e2ee_turn_off(conversation, &group).await {
+                // 404: this account has no binding left; the other person's
+                // client ended it on reading the notice.
+                Ok(()) | Err(ApiError::Http { status: 404, .. }) => {}
+                Err(e @ ApiError::Http { status: 409, .. }) => {
+                    // The notice is out, so this side is off whatever the
+                    // server says; a group it cannot end is shown as an error.
+                    if self
+                        .turn_off_stale(inner, conversation, &record.peer)
+                        .await
+                        .is_err()
+                    {
+                        refused = Some(api_err(e));
+                    }
+                }
+                Err(e) => log::warn!("e2ee: turn off on the server: {e}"),
             }
         }
         let record = Conversation {
@@ -1745,7 +1828,81 @@ impl Engine {
             vault.put(Record::Conversation(record.clone()))?;
         }
         self.publish_conversation(inner, &record);
-        Ok(())
+        refused.map_or(Ok(()), Err)
+    }
+
+    /// Make `group`, just started, the conversation's current group. It
+    /// replaces the group the server names; after encryption was turned off
+    /// it names none to this side, yet a client that missed the "off" may
+    /// have made an older group current again, and the server refuses with
+    /// 409: that is one of the `older` groups this device shares with the
+    /// person, so each is tried as the one to replace.
+    async fn bind_started(
+        &self,
+        conversation: &str,
+        group: &str,
+        peer: &str,
+        older: &[String],
+    ) -> Result<(), ApiError> {
+        let current = self
+            .api()
+            .e2ee_conversation(conversation)
+            .await
+            .ok()
+            .and_then(|s| s.group_id)
+            .filter(|g| g != group);
+        let first = self
+            .api()
+            .e2ee_bind(conversation, group, peer, current.as_deref())
+            .await;
+        let Err(error @ ApiError::Http { status: 409, .. }) = first else {
+            return first.map(drop);
+        };
+        for old in older.iter().filter(|g| Some(*g) != current.as_ref()) {
+            match self
+                .api()
+                .e2ee_bind(conversation, group, peer, Some(old))
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(ApiError::Http { status: 409, .. }) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Err(error)
+    }
+
+    /// Turning off was refused because the server names another group, made
+    /// current again by a client that missed an earlier "off". When it is a
+    /// group with this person, it ends too; otherwise the server would keep
+    /// refusing plaintext while this side shows encryption as off.
+    async fn turn_off_stale(
+        &self,
+        inner: &mut Inner,
+        conversation: &str,
+        peer: &str,
+    ) -> Result<(), ()> {
+        let server = self
+            .api()
+            .e2ee_conversation(conversation)
+            .await
+            .map_err(drop)?;
+        let stale = server.group_id.ok_or(())?;
+        let theirs = inner.device.as_ref().is_some_and(|d| {
+            d.groups()
+                .into_iter()
+                .any(|(g, p)| p == peer && group_b64(&g) == stale)
+        });
+        if !theirs {
+            return Err(());
+        }
+        inner
+            .bound
+            .remove(&(conversation.to_string(), stale.clone()));
+        self.api()
+            .e2ee_turn_off(conversation, &stale)
+            .await
+            .map_err(drop)
     }
 
     /// Send text into an encrypted conversation. `/me ` sends an action.
@@ -1958,6 +2115,7 @@ impl Engine {
                         on: *op == ControlOp::EncryptionOn,
                         by: inner.account.clone(),
                         at: now,
+                        group: Some(group_b64(&group)),
                     },
                 },
                 _ => Record::SentAs {

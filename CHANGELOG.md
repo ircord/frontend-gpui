@@ -10,6 +10,7 @@
 ### Fixed
 
 - Approving a new device works with the web client in both directions: a device waiting for approval shows the 20-digit code and QR code the web client asks for, and appears as waiting there; Settings → Encryption takes a new device's code to approve it.
+- Experimental: turning encryption off in a direct message now turns it off for both of you, also when the other person was offline, and turning it on again works instead of failing with "no current group to replace". Where an earlier version left it on for only one of you, turning it on again repairs it.
 
 ## v0.9.0 — 2026-11-28
 

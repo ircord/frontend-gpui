@@ -11,6 +11,8 @@
 //! - [`approval`]: the device approval handshake (an approval code, typed or
 //!   scanned), the web client's.
 //! - [`files`]: files encrypted before upload, and QR codes.
+//! - [`state`]: how turning encryption on and off follows the control
+//!   events a device reads, in any order.
 //! - [`engine`]: what the app drives: set-up, starting and turning off,
 //!   sending, decrypting live and loaded history, approval, verification.
 //! - The workspace's view of it is `crate::store::e2ee`; the HTTP calls are
@@ -22,6 +24,7 @@
 pub mod approval;
 pub mod engine;
 pub mod files;
+pub mod state;
 pub mod vault;
 
 #[cfg(test)]

@@ -490,3 +490,214 @@ fn a_peer_who_starts_fresh_is_shown_and_acknowledged() {
     });
     assert!(backend.plaintext().is_empty());
 }
+
+/// Alice and Bob, each with one device, set up.
+struct Pair {
+    rt: Arc<Runtime>,
+    backend: E2eeBackend,
+    alice: Device,
+    /// None while his app is not running.
+    bob: Option<Device>,
+    bob_dir: tempfile::TempDir,
+    bob_key: VaultKey,
+    _alice_dir: tempfile::TempDir,
+}
+
+fn pair() -> Pair {
+    let rt = runtime().unwrap();
+    let backend = E2eeBackend::new();
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (ka, kb) = (VaultKey::random(), VaultKey::random());
+    let alice = person(
+        &rt,
+        &backend,
+        "alice",
+        "dm-bob",
+        "m-bob",
+        "bob",
+        da.path(),
+        &ka,
+    );
+    let bob = person(
+        &rt,
+        &backend,
+        "bob",
+        "dm-alice",
+        "m-alice",
+        "alice",
+        db.path(),
+        &kb,
+    );
+    ready(&alice);
+    ready(&bob);
+    Pair {
+        rt,
+        backend,
+        alice,
+        bob: Some(bob),
+        bob_dir: db,
+        bob_key: kb,
+        _alice_dir: da,
+    }
+}
+
+impl Pair {
+    fn bob(&self) -> &Device {
+        self.bob.as_ref().expect("bob's app runs")
+    }
+
+    /// Bob's app quits; `away` runs; then it starts again from his vault.
+    fn bob_away(&mut self, away: impl FnOnce(&Pair)) {
+        let Device { server, .. } = self.bob.take().unwrap();
+        away(self);
+        let mut snapshot = e2ee_snapshot("bob", "dm-alice", "m-alice", "alice");
+        snapshot.cursor = self.backend.cursor("bob");
+        let bob = device(
+            &self.rt,
+            server,
+            &snapshot,
+            self.bob_dir.path(),
+            &self.bob_key,
+            "dm-alice",
+        );
+        ready(&bob);
+        self.bob = Some(bob);
+    }
+
+    fn turn_on(&self, starter: &Device, conversation: &str) {
+        starter.engine.start_chat(conversation);
+        wait_until(&starter.client, WAIT, "the starter's side on", |w| {
+            w.e2ee.is_on(conversation) || w.e2ee.errors.contains_key(conversation)
+        });
+        assert_eq!(starter.client.read().e2ee.errors.get(conversation), None);
+        self.both(true);
+    }
+
+    fn turn_off(&self, who: &Device, conversation: &str) {
+        who.engine.turn_off(conversation);
+        self.both(false);
+        assert_eq!(who.client.read().e2ee.errors.get(conversation), None);
+    }
+
+    /// Both sides show encryption `on`, and the server agrees: one group,
+    /// bound for both, or none.
+    fn both(&self, on: bool) {
+        wait_until(&self.alice.client, WAIT, "alice's side", |w| {
+            w.e2ee.is_on("dm-bob") == on
+        });
+        wait_until(&self.bob().client, WAIT, "bob's side", |w| {
+            w.e2ee.is_on("dm-alice") == on
+        });
+        let bindings = || {
+            (
+                self.backend.binding("alice", "dm-bob"),
+                self.backend.binding("bob", "dm-alice"),
+            )
+        };
+        // The other side binds its own conversation when it reads the notice.
+        let deadline = std::time::Instant::now() + WAIT;
+        while bindings().1.is_some() != on && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let (a, b) = bindings();
+        assert_eq!(a.is_some(), on, "alice's binding: {a:?}");
+        assert_eq!(a, b, "both bound to one group");
+    }
+
+    /// A message each way is read on the other side.
+    fn talk(&self, words: &str) {
+        let (to_bob, to_alice) = (format!("{words} to bob"), format!("{words} to alice"));
+        self.alice.engine.send("dm-bob", &to_bob, None);
+        wait_until(&self.bob().client, WAIT, "bob reads it", |w| {
+            has_text(w, "dm-alice", &to_bob)
+        });
+        self.bob().engine.send("dm-alice", &to_alice, None);
+        wait_until(&self.alice.client, WAIT, "alice reads it", |w| {
+            has_text(w, "dm-bob", &to_alice)
+        });
+        assert!(
+            self.backend.plaintext().is_empty(),
+            "{:?}",
+            self.backend.plaintext()
+        );
+    }
+}
+
+#[test]
+fn encryption_turns_off_and_on_again_from_either_side() {
+    let p = pair();
+    p.turn_on(&p.alice, "dm-bob");
+    let first = p.backend.binding("alice", "dm-bob");
+    p.talk("first");
+    p.turn_off(&p.alice, "dm-bob");
+    // The server answered the first "turn on again" with 409 here.
+    p.turn_on(&p.alice, "dm-bob");
+    assert_ne!(p.backend.binding("alice", "dm-bob"), first);
+    p.talk("second");
+    p.turn_off(p.bob(), "dm-alice");
+    p.turn_on(p.bob(), "dm-alice");
+    p.talk("third");
+    p.turn_off(&p.alice, "dm-bob");
+    p.turn_on(p.bob(), "dm-alice");
+    p.talk("fourth");
+}
+
+#[test]
+fn an_off_sent_while_the_other_was_away_holds_for_both() {
+    let mut p = pair();
+    p.bob_away(|p| {
+        p.alice.engine.start_chat("dm-bob");
+        wait_until(&p.alice.client, WAIT, "alice's side on", |w| {
+            w.e2ee.is_on("dm-bob")
+        });
+        p.alice.engine.send("dm-bob", "while you were away", None);
+        wait_until(&p.alice.client, WAIT, "alice's message sent", |w| {
+            w.outbox.is_empty() && has_text(w, "dm-bob", "while you were away")
+        });
+        p.alice.engine.turn_off("dm-bob");
+        wait_until(&p.alice.client, WAIT, "alice's side off", |w| {
+            !w.e2ee.is_on("dm-bob")
+        });
+        assert_eq!(p.backend.binding("alice", "dm-bob"), None);
+    });
+    // Bob joins the group from its Welcome first, then reads the history.
+    wait_until(&p.bob().client, WAIT, "bob reads the history", |w| {
+        has_text(w, "dm-alice", "while you were away")
+            && has_text(w, "dm-alice", "alice turned off (mine: false)")
+    });
+    assert!(p.backend.welcomes_taken("bob") >= 1);
+    // Until here his Welcome bound the turned-off group again.
+    p.both(false);
+    // Reading it all again from the vault changes nothing.
+    p.bob_away(|_| {});
+    wait_until(&p.bob().client, WAIT, "bob's history again", |w| {
+        has_text(w, "dm-alice", "alice turned off (mine: false)")
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    p.both(false);
+    p.turn_on(&p.alice, "dm-bob");
+    p.talk("back");
+    p.turn_off(p.bob(), "dm-alice");
+    p.turn_on(p.bob(), "dm-alice");
+    p.talk("again");
+}
+
+#[test]
+fn a_group_an_older_client_bound_again_is_replaced_and_ended() {
+    let p = pair();
+    p.turn_on(&p.alice, "dm-bob");
+    let first = p.backend.binding("alice", "dm-bob").unwrap();
+    p.turn_off(&p.alice, "dm-bob");
+    // An older client of Bob's missed the "off" and bound the group again:
+    // the server names it to Bob and nothing to Alice.
+    p.backend.force_bind("bob", "dm-alice", "alice", &first);
+    p.turn_on(&p.alice, "dm-bob");
+    let second = p.backend.binding("alice", "dm-bob").unwrap();
+    assert_ne!(second, first);
+    p.talk("replaced");
+    // Again, while the second group is on: turning off ends the old one too.
+    p.backend.force_bind("bob", "dm-alice", "alice", &first);
+    p.turn_off(&p.alice, "dm-bob");
+    p.turn_on(p.bob(), "dm-alice");
+    p.talk("after");
+}
