@@ -8,7 +8,8 @@
 //! - [`core`]: the shared core, pinned by commit in `Cargo.toml`.
 //! - [`vault`]: this device's sealed store: the core's state, every
 //!   encrypted message it read or sent, and a word index for search.
-//! - [`approval`]: the device approval handshake (QR code or short code).
+//! - [`approval`]: the device approval handshake (an approval code, typed or
+//!   scanned), the web client's.
 //! - [`files`]: files encrypted before upload, and QR codes.
 //! - [`engine`]: what the app drives: set-up, starting and turning off,
 //!   sending, decrypting live and loaded history, approval, verification.

@@ -87,20 +87,25 @@ sleep 10
 settings_encryption "$WIN2"
 win_shot "$WIN2" e2ee-6-new-device-waiting
 
-# The first device sees the request; once both have answered, both show the
-# same code.
+# A third device of the account, headless, waits too and writes the code it
+# shows (`crates/client/examples/e2ee-device.rs`); the first device counts
+# both and approves that one with its code typed in.
+cargo build -q -p ircord-client --example e2ee-device
+target/debug/examples/e2ee-device "$SERVER" "$USER_NAME" "$PASSWORD" /tmp/third wait >"$OUT/third.log" 2>&1 &
+THIRD_PID=$!
+await /tmp/third/code
 settings_encryption "$WIN1"
-sleep 8
-win_shot "$WIN1" e2ee-7-request-with-code
-win_shot "$WIN2" e2ee-8-new-device-code
-# The new device's person confirms the codes match there too.
-click "$WIN2" "${E2EE_MATCH_X:-703}" "${E2EE_MATCH_Y:-464}" 2
-win_shot "$WIN2" e2ee-8b-new-device-confirmed
-click "$WIN1" "${E2EE_APPROVE_X:-500}" "${E2EE_APPROVE_Y:-344}" 6
-win_shot "$WIN2" e2ee-9-new-device-approved
-win_shot "$WIN1" e2ee-10-devices
+sleep 4
+win_shot "$WIN1" e2ee-7-approve-form
+click "$WIN1" "${E2EE_CODE_X:-660}" "${E2EE_CODE_Y:-363}" 0.5
+xdotool type --delay 30 "$(cat /tmp/third/code)"
+xdotool key Return
+await /tmp/third/approved
+sleep 3
+win_shot "$WIN1" e2ee-8-approved
+win_shot "$WIN2" e2ee-9-new-device-still-waiting
 
-kill "$APP2" "$PEER_PID" 2>/dev/null || true
+kill "$APP2" "$PEER_PID" "$THIRD_PID" 2>/dev/null || true
 wait "$APP2" 2>/dev/null || true
 cp /tmp/config2/com.ircord.gpui/ircord.log "$OUT/ircord-second.log" 2>/dev/null || true
 stop_app e2ee

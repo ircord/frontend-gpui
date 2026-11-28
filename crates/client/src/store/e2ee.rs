@@ -40,14 +40,9 @@ pub enum DeviceState {
     /// approve others (it holds the account's identity key).
     Ready { approver: bool },
     /// A new device, waiting for another of the account's devices to
-    /// approve it. `code` once the other device answered; `confirmed` once
-    /// the person said the two devices show the same code. An approval is
-    /// installed only then.
-    Waiting {
-        qr: String,
-        code: Option<String>,
-        confirmed: bool,
-    },
+    /// approve it: the person scans `qr` there or types `code` (20 digits in
+    /// groups of five).
+    Waiting { qr: String, code: String },
     /// The account started fresh on another device: this one lost its
     /// approval (it keeps what it stored).
     ResetElsewhere,
@@ -72,13 +67,26 @@ pub struct OwnDevice {
     pub key_packages: i64,
 }
 
-/// A device of the account asking this one for approval.
+/// Approving another device from this one, with the code it shows.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum Approving {
+    #[default]
+    Idle,
+    /// Certifying it and adding it to this device's encrypted chats.
+    Busy,
+    /// The device is approved.
+    Done,
+    Failed(ApprovalFailure),
+}
+
+/// Why another device could not be approved.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Request {
-    pub device: String,
-    pub label: String,
-    /// Once the new device answered: the code both devices show.
-    pub code: Option<String>,
+pub enum ApprovalFailure {
+    /// Not 20 digits.
+    BadCode,
+    /// No waiting device made its request with that code.
+    NotFound,
+    Other(String),
 }
 
 /// Why a conversation needs the person's attention.
@@ -142,7 +150,10 @@ pub struct State {
     /// This account's identity fingerprint, in groups of four digits.
     pub fingerprint: Option<String>,
     pub devices: Vec<OwnDevice>,
-    pub requests: Vec<Request>,
+    /// New devices of the account waiting for approval (requests in the
+    /// relay's mailbox), as an approving device last counted them.
+    pub waiting_approvals: usize,
+    pub approving: Approving,
     pub conversations: HashMap<String, Conversation>,
     /// Message ID → how it is shown.
     pub shown: HashMap<String, Shown>,

@@ -9,13 +9,14 @@ use std::time::Duration;
 use ircord_contract::{MessageKind, Snapshot};
 use tokio::runtime::Runtime;
 
+use super::approval;
 use super::vault::VaultKey;
 use super::{Engine, Texts};
 use crate::Client;
 use crate::client::runtime;
 use crate::events::Update;
 use crate::store::Workspace;
-use crate::store::e2ee::{Attention, DeviceState, PLACEHOLDER};
+use crate::store::e2ee::{ApprovalFailure, Approving, Attention, DeviceState, PLACEHOLDER};
 use crate::testing::{CannedServer, E2eeBackend, e2ee_snapshot, frame, wait_live, wait_until};
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -299,75 +300,56 @@ fn a_second_device_is_approved_by_code_and_reads_what_comes_after() {
         &VaultKey::random(),
         "dm-bob",
     );
-    wait_until(
-        &laptop.client,
-        WAIT,
-        "the laptop to wait",
-        |w| matches!(&w.e2ee.device, DeviceState::Waiting { qr, .. } if qr.starts_with(super::approval::QR_PREFIX)),
-    );
-    let code = |w: &Workspace| match &w.e2ee.device {
-        DeviceState::Waiting { code, .. } => code.clone(),
-        _ => None,
+    wait_until(&laptop.client, WAIT, "the laptop to wait", |w| {
+        matches!(&w.e2ee.device, DeviceState::Waiting { .. })
+    });
+    let (qr, code) = match &laptop.client.read().e2ee.device {
+        DeviceState::Waiting { qr, code } => (qr.clone(), code.clone()),
+        _ => unreachable!(),
     };
-    let mut asked = None;
+    // The code the web client's approval form takes: 20 digits in groups
+    // of five, and the QR code it scans carries the same digits.
+    let digits = approval::normalize(&code).expect("a 20-digit code");
+    assert_eq!(code, approval::format_code(&digits));
+    assert_eq!(qr, approval::qr_text(&digits));
+    // The request sits in the account's mailbox, where every approving
+    // device (the web client's too) looks, made under that code.
+    let posted = backend.approvals_to("alice", approval::MAILBOX);
+    assert_eq!(posted.len(), 1, "one request in the mailbox");
+    let request = crate::api::e2ee::bytes(&posted[0].1).unwrap();
+    assert!(approval::open_request(&digits, &request).is_some());
     for _ in 0..200 {
         alice.engine.poke();
-        laptop.engine.poke();
-        std::thread::sleep(Duration::from_millis(50));
-        let w = alice.client.read();
-        if let Some(r) = w.e2ee.requests.first()
-            && r.code.is_some()
-            && code(&laptop.client.read()).is_some()
-        {
-            asked = Some(r.clone());
+        if alice.client.read().e2ee.waiting_approvals == 1 {
             break;
         }
+        std::thread::sleep(Duration::from_millis(50));
     }
-    let asked = asked.expect("the request and both codes");
-    assert_eq!(asked.label, "IRCord GPUI test");
     assert_eq!(
-        asked.code,
-        code(&laptop.client.read()),
-        "both show one code"
+        alice.client.read().e2ee.waiting_approvals,
+        1,
+        "the phone counts it"
     );
 
-    // A code other than the one compared is refused.
-    alice.engine.answer(&asked.device, Some("0000 0000"), true);
+    // A code no waiting device made is refused, and so is a short one.
+    alice.engine.approve("11111 11111 11111 11111");
     wait_until(&alice.client, WAIT, "the refusal", |w| {
-        w.e2ee.errors.contains_key("")
+        w.e2ee.approving == Approving::Failed(ApprovalFailure::NotFound)
     });
-    assert!(alice.client.read().e2ee.requests.is_empty());
+    alice.engine.approve("1234");
+    wait_until(&alice.client, WAIT, "the short code", |w| {
+        w.e2ee.approving == Approving::Failed(ApprovalFailure::BadCode)
+    });
     assert!(!laptop.client.read().e2ee.device.ready());
-    // Ask again; then the laptop installs nothing until its own person has
-    // confirmed the code too.
-    laptop.engine.confirm_code(false);
-    let mut asked = None;
-    for _ in 0..200 {
-        alice.engine.poke();
-        laptop.engine.poke();
-        std::thread::sleep(Duration::from_millis(50));
-        let w = alice.client.read();
-        if let Some(r) = w.e2ee.requests.first()
-            && r.code.is_some()
-            && code(&laptop.client.read()).is_some()
-        {
-            asked = Some(r.clone());
-            break;
-        }
-    }
-    let asked = asked.expect("the second request");
-    alice
-        .engine
-        .answer(&asked.device, asked.code.as_deref(), true);
-    for _ in 0..40 {
-        laptop.engine.poke();
-        std::thread::sleep(Duration::from_millis(50));
-    }
+
+    alice.engine.approve(&code);
+    wait_until(&alice.client, WAIT, "the approval", |w| {
+        w.e2ee.approving == Approving::Done
+    });
     assert!(
-        !laptop.client.read().e2ee.device.ready(),
-        "not before its person confirmed"
+        backend.approvals_to("alice", approval::MAILBOX).is_empty(),
+        "the answered request is gone"
     );
-    laptop.engine.confirm_code(true);
     for _ in 0..200 {
         laptop.engine.poke();
         alice.engine.poke();

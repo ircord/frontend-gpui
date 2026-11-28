@@ -162,8 +162,10 @@ echo "the sign-in is in GNOME Keyring (target/capture/keyring.txt)"
 # device set up; the lock opens the panel, which starts the encrypted chat;
 # the panel shows the trust caveat, the security code and its QR code; a
 # message goes each way. Then a second copy of the app signs in as the same
-# account (as `localhost`, so its sign-in is kept apart): it shows its QR
-# code, both show one code, and the first approves it.
+# account (as `localhost`, so its sign-in is kept apart): it shows its
+# approval code and QR code. A headless third device
+# (`crates/client/examples/e2ee-device.rs`) waits too; the first counts both
+# and approves that one with the code it shows, typed in.
 if [ "${CAPTURE_ONLY:-}" = e2ee ]; then
   . /work/xtask/src/capture-e2ee.sh
   exit 0

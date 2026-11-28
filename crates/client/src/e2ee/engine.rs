@@ -4,8 +4,8 @@
 //! encryption (`crate::store::e2ee`) up to date.
 //!
 //! - **Set-up.** The first device of an account creates the identity key
-//!   and publishes it; a later one shows a QR code and a short code and
-//!   waits for approval ([`super::approval`]). Every set-up device keeps a
+//!   and publishes it; a later one shows an approval code (and its QR code)
+//!   and waits for approval ([`super::approval`]). Every set-up device keeps a
 //!   stock of key packages in the directory.
 //! - **Reading.** It watches the timelines: every encrypted message still
 //!   showing the placeholder is decrypted (or looked up in the vault, where
@@ -19,7 +19,7 @@
 //!   fetched when a message names a group or epoch this device does not
 //!   have, and every half minute.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -27,7 +27,7 @@ use std::time::Duration;
 use ircord_contract as c;
 use tokio::sync::Mutex as AsyncMutex;
 
-use super::approval::{self, Approver, NewDevice, Transfer};
+use super::approval::{self, ConversationRecord, Handover};
 use super::core::{
     Body, ControlOp, Device, Envelope, Error as CoreError, GroupIdBytes, Kind, Payload, Received,
 };
@@ -38,7 +38,9 @@ use super::{b64url, files, from_b64url};
 use crate::api::e2ee::{bytes, encode};
 use crate::api::{Api, ApiError};
 use crate::client::{Handle, random_id};
-use crate::store::e2ee::{self as view, Attention, Blocked, DeviceState, OwnDevice, Request, View};
+use crate::store::e2ee::{
+    self as view, ApprovalFailure, Approving, Attention, Blocked, DeviceState, OwnDevice, View,
+};
 use crate::store::{Changes, PendingSend, SendState, Workspace, parse_time};
 
 /// How often the engine syncs with the group log and the approval relay.
@@ -47,8 +49,9 @@ const SYNC_EVERY: Duration = Duration::from_secs(30);
 const POKE_EVERY: Duration = Duration::from_secs(2);
 /// How often a device waiting for approval looks for an answer.
 const WAITING_EVERY: Duration = Duration::from_secs(3);
-/// The relay forgets a message after 10 minutes; a waiting device asks again before.
-const REQUEST_AGAIN: Duration = Duration::from_secs(9 * 60);
+/// The relay forgets a message after 10 minutes; a waiting device posts its
+/// request again before (as the web client does, every 8 minutes).
+const REQUEST_AGAIN: Duration = Duration::from_secs(8 * 60);
 /// Key packages a device keeps in the directory, and when it tops them up.
 const STOCK: i64 = 20;
 const LOW_STOCK: i64 = 10;
@@ -140,17 +143,21 @@ struct Inner {
     /// This account on the home network, as IRC reports it.
     account: String,
     generation: i64,
-    /// Waiting for approval: the handshake, and when the request went out.
-    waiting: Option<(NewDevice, std::time::Instant)>,
-    /// The person said this device shows the same code as the other one.
-    confirmed: bool,
-    /// An approval that arrived before the person confirmed the code.
-    sealed: Option<String>,
-    /// Requests this device is answering, by the requesting device.
-    approving: BTreeMap<String, Approver>,
+    /// Waiting for approval: the code shown and the request posted.
+    waiting: Option<Waiting>,
     /// Devices this one approved that still have to be added to its groups.
     to_add: BTreeSet<String>,
     started: bool,
+}
+
+/// A new device's approval request.
+struct Waiting {
+    /// The 20 digits the person carries to the approving device.
+    code: String,
+    /// What goes to the mailbox: the certificate request and its HMAC.
+    message: Vec<u8>,
+    /// When it was last posted; `None` until a post went through.
+    posted: Option<std::time::Instant>,
 }
 
 type Result<T, E = String> = std::result::Result<T, E>;
@@ -1232,200 +1239,74 @@ impl Engine {
         true
     }
 
-    /// A new device: ask the account's devices for approval.
+    /// A new device: post a request under a new approval code to the
+    /// account's mailbox, and show the code.
     async fn wait_for_approval(&self, inner: &mut Inner) -> Result<()> {
         let device = inner.device.as_ref().ok_or("no device")?;
         let request = device.certificate_request().map_err(core_err)?.to_bytes();
-        let me = device.device_id().to_hex();
-        let new = NewDevice::start(request);
-        let qr = new.qr_text(&me);
-        let message = new.request(&self.shared.label).to_bytes();
-        let directory = self.api().e2ee_directory().await.map_err(api_err)?;
-        for d in directory.devices.iter().filter(|d| d.device_id != me) {
-            if let Err(e) = self.api().e2ee_relay(&me, &d.device_id, &message).await {
-                log::debug!("e2ee: ask {} for approval: {e}", d.device_id);
-            }
-        }
-        inner.waiting = Some((new, std::time::Instant::now()));
-        inner.confirmed = false;
-        inner.sealed = None;
+        let code = approval::new_code();
+        let message = approval::seal_request(&code, &request);
+        inner.waiting = Some(Waiting {
+            code: code.clone(),
+            message,
+            posted: None,
+        });
+        self.post_request(inner).await;
         self.set_device(DeviceState::Waiting {
-            qr,
-            code: None,
-            confirmed: false,
+            qr: approval::qr_text(&code),
+            code: approval::format_code(&code),
         });
         Ok(())
     }
 
-    /// Read the approval relay.
+    /// Post (or post again) this device's request to the mailbox. A failure
+    /// is tried again on the next tick.
+    async fn post_request(&self, inner: &mut Inner) {
+        let (Some(device), Some(waiting)) = (inner.device.as_ref(), inner.waiting.as_mut()) else {
+            return;
+        };
+        let me = device.device_id().to_hex();
+        match self
+            .api()
+            .e2ee_relay(&me, approval::MAILBOX, &waiting.message)
+            .await
+        {
+            Ok(_) => waiting.posted = Some(std::time::Instant::now()),
+            Err(e) => log::info!("e2ee: post the approval request: {e}"),
+        }
+    }
+
+    /// A new device: read the relay for an approval sealed under its code.
     async fn relay(&self, inner: &mut Inner) {
-        let Some(device) = inner.device.as_ref() else {
+        let (Some(device), Some(waiting)) = (inner.device.as_ref(), inner.waiting.as_ref()) else {
             return;
         };
         let me = device.device_id().to_hex();
         let Ok(messages) = self.api().e2ee_approvals(&me).await else {
             return;
         };
+        let code = waiting.code.clone();
         for m in messages {
             let _ = self.api().e2ee_delete_approval(m.id).await;
-            let Ok(message) = bytes(&m.payload)
+            // Only an answer sealed under this device's code counts: the
+            // server cannot make one.
+            let Ok(handover) = bytes(&m.payload)
                 .map_err(api_err)
-                .and_then(|b| approval::Message::from_bytes(&b))
+                .and_then(|b| approval::open_handover(&code, &b))
             else {
                 continue;
             };
-            let from = m.from_device.clone();
-            match message {
-                approval::Message::Request { commit, label, .. } => {
-                    if !inner.device.as_ref().is_some_and(|d| d.holds_identity()) {
-                        continue;
-                    }
-                    // A request that already showed its code is not replaced
-                    // behind the person's back.
-                    if inner
-                        .approving
-                        .get(&from)
-                        .is_some_and(|a| a.code().is_some())
-                    {
-                        continue;
-                    }
-                    let (approver, accept) = Approver::start(&commit);
-                    if self
-                        .api()
-                        .e2ee_relay(&me, &from, &accept.to_bytes())
-                        .await
-                        .is_err()
-                    {
-                        continue;
-                    }
-                    inner.approving.insert(from.clone(), approver);
-                    self.change(|w| {
-                        w.e2ee.requests.retain(|r| r.device != from);
-                        w.e2ee.requests.push(Request {
-                            device: from.clone(),
-                            label,
-                            code: None,
-                        });
-                        Changes::topic(view::TOPIC)
-                    });
-                }
-                approval::Message::Reveal { eph, req, .. } => {
-                    let Some(approver) = inner.approving.get_mut(&from) else {
-                        continue;
-                    };
-                    match approver.reveal(&eph, &req) {
-                        Ok(_) => {
-                            let code = approver.code().map(str::to_string);
-                            self.change(|w| {
-                                if let Some(r) =
-                                    w.e2ee.requests.iter_mut().find(|r| r.device == from)
-                                {
-                                    r.code = code;
-                                }
-                                Changes::topic(view::TOPIC)
-                            });
-                        }
-                        Err(e) => {
-                            log::warn!("e2ee: approval from {from}: {e}");
-                            inner.approving.remove(&from);
-                            self.change(|w| {
-                                w.e2ee.requests.retain(|r| r.device != from);
-                                Changes::topic(view::TOPIC)
-                            });
-                        }
-                    }
-                }
-                approval::Message::Accept { eph, .. } => {
-                    let Some((new, _)) = inner.waiting.as_mut() else {
-                        continue;
-                    };
-                    let Ok(reveal) = new.accept(&eph) else {
-                        continue;
-                    };
-                    let code = new.code().map(str::to_string);
-                    let qr = new.qr_text(&me);
-                    if self
-                        .api()
-                        .e2ee_relay(&me, &from, &reveal.to_bytes())
-                        .await
-                        .is_ok()
-                    {
-                        self.set_device(DeviceState::Waiting {
-                            qr,
-                            code,
-                            confirmed: false,
-                        });
-                    }
-                }
-                approval::Message::Approve { sealed, .. } => {
-                    if inner.waiting.is_none() {
-                        continue;
-                    }
-                    // Installed only once the person confirmed the code here
-                    // too: the approver alone cannot tell a relay that
-                    // answered this device itself.
-                    inner.sealed = Some(sealed);
-                    if inner.confirmed {
-                        self.install_approval(inner).await;
-                    }
-                }
-                approval::Message::Decline { .. } => {
-                    if inner.waiting.is_some() {
-                        inner.waiting = None;
-                        let _ = self.wait_for_approval(inner).await;
-                    }
-                }
+            if let Err(e) = self.approved(inner, handover).await {
+                log::warn!("e2ee: approval: {e}");
+                self.set_device(DeviceState::Failed(e));
             }
-        }
-    }
-
-    /// The person compared the codes on this new device: `matches` installs
-    /// the approval (now or when it arrives); otherwise the request starts
-    /// over with new keys.
-    pub fn confirm_code(&self, matches: bool) {
-        self.spawn(move |engine| async move {
-            let mut inner = engine.shared.inner.lock().await;
-            if inner.waiting.is_none() {
-                return;
-            }
-            if !matches {
-                inner.waiting = None;
-                if let Err(e) = engine.wait_for_approval(&mut inner).await {
-                    engine.set_device(DeviceState::Failed(e));
-                }
-                return;
-            }
-            inner.confirmed = true;
-            engine.change(|w| {
-                if let DeviceState::Waiting { confirmed, .. } = &mut w.e2ee.device {
-                    *confirmed = true;
-                }
-                Changes::topic(view::TOPIC)
-            });
-            if inner.sealed.is_some() {
-                engine.install_approval(&mut inner).await;
-            }
-        });
-    }
-
-    /// Open and install the approval the other device sent.
-    async fn install_approval(&self, inner: &mut Inner) {
-        let (Some((new, _)), Some(sealed)) = (inner.waiting.as_ref(), inner.sealed.take()) else {
             return;
-        };
-        match new.open(&sealed) {
-            Ok(transfer) => {
-                if let Err(e) = self.approved(inner, transfer).await {
-                    self.set_device(DeviceState::Failed(e));
-                }
-            }
-            Err(e) => log::warn!("e2ee: approval: {e}"),
         }
     }
 
     /// The new device got its approval.
-    async fn approved(&self, inner: &mut Inner, transfer: Transfer) -> Result<()> {
-        let cert = from_b64url(&transfer.certificate)?;
+    async fn approved(&self, inner: &mut Inner, handover: Handover) -> Result<()> {
+        let cert = bytes(&handover.certificate).map_err(api_err)?;
         // The certificate must be signed by the identity the account
         // publishes, not one a relay made up.
         let parsed = super::core::DeviceCertificate::from_bytes(&cert).map_err(core_err)?;
@@ -1443,21 +1324,23 @@ impl Engine {
         }
         let device = inner.device.as_mut().ok_or("no device")?;
         device.install_certificate(&cert).map_err(core_err)?;
-        for (account, key, verified) in &transfer.pins {
-            if *account == inner.account {
+        for v in &handover.verified {
+            if v.account == inner.account {
                 continue;
             }
-            let Ok(key) = from_b64url(key)
-                .and_then(|k| <[u8; 32]>::try_from(k).map_err(|_| "key length".to_string()))
-            else {
+            let Ok(key) = key32(&v.identity_key) else {
                 continue;
             };
-            if device.pin_identity(account, key).is_ok() && *verified {
-                let _ = device.set_verified(account, true);
+            // A pin that does not match stays as this device found it.
+            if device.pin_identity(&v.account, key).is_ok() {
+                let _ = device.set_verified(&v.account, true);
             }
         }
         if let Some(vault) = inner.vault.as_mut() {
-            for c in transfer.conversations {
+            for r in handover.conversations {
+                let Some(c) = conversation_from_web(r) else {
+                    continue;
+                };
                 if vault.conversation(&c.conversation).is_none() {
                     let _ = vault.put(Record::Conversation(c));
                 }
@@ -1477,80 +1360,102 @@ impl Engine {
         Ok(())
     }
 
-    /// Approve (or decline) a device that asked, after the person compared codes.
-    /// `code` is the code the person compared: the answer is refused if
-    /// the request now shows another.
-    pub fn answer(&self, requester: &str, code: Option<&str>, approve: bool) {
-        let requester = requester.to_string();
-        let code = code.map(str::to_string);
+    /// Approve the new device that shows `input`: its approval code, typed
+    /// (spaces and dashes allowed) or as its QR code's text.
+    pub fn approve(&self, input: &str) {
+        let input = input.to_string();
+        self.change(|w| {
+            w.e2ee.approving = Approving::Busy;
+            Changes::topic(view::TOPIC)
+        });
         self.spawn(move |engine| async move {
             let mut inner = engine.shared.inner.lock().await;
-            let result = engine
-                .answer_now(&mut inner, &requester, code.as_deref(), approve)
-                .await;
+            let result = engine.approve_now(&mut inner, &input).await;
             engine.change(|w| {
-                w.e2ee.requests.retain(|r| r.device != requester);
-                if let Err(e) = &result {
-                    w.e2ee.errors.insert(String::new(), e.clone());
-                }
+                w.e2ee.approving = match result {
+                    Ok(()) => Approving::Done,
+                    Err(e) => Approving::Failed(e),
+                };
                 Changes::topic(view::TOPIC)
             });
+            engine.count_waiting(&inner).await;
+            engine.add_approved(&mut inner).await;
         });
     }
 
-    async fn answer_now(
-        &self,
-        inner: &mut Inner,
-        requester: &str,
-        code: Option<&str>,
-        approve: bool,
-    ) -> Result<()> {
-        let approver = inner
-            .approving
-            .remove(requester)
-            .ok_or("that request has expired")?;
-        if approve && (code.is_none() || approver.code() != code) {
-            return Err("the request changed after you compared codes; compare again".into());
+    async fn approve_now(&self, inner: &mut Inner, input: &str) -> Result<(), ApprovalFailure> {
+        let code = approval::normalize(input).ok_or(ApprovalFailure::BadCode)?;
+        let other = ApprovalFailure::Other;
+        let device = inner
+            .device
+            .as_ref()
+            .ok_or_else(|| other("no device".into()))?;
+        if !device.holds_identity() {
+            return Err(other(
+                "only the device that set up encryption first can approve others".into(),
+            ));
         }
-        let device = inner.device.as_ref().ok_or("no device")?;
-        let me = device.device_id().to_hex();
-        if !approve {
-            let decline = approval::Message::Decline {
-                v: approval::VERSION,
-            };
-            self.api()
-                .e2ee_relay(&me, requester, &decline.to_bytes())
-                .await
-                .map_err(api_err)?;
-            return Ok(());
-        }
-        // The request the new device revealed; `certify_device` checks its
-        // signature.
-        let request = approver_request(&approver)?;
-        let cert = device.certify_device(&request).map_err(core_err)?;
-        let pins: Vec<(String, String, bool)> = device
+        let messages = self
+            .api()
+            .e2ee_approvals(approval::MAILBOX)
+            .await
+            .map_err(|e| other(api_err(e)))?;
+        let (id, request) = messages
+            .iter()
+            .find_map(|m| {
+                let b = bytes(&m.payload).ok()?;
+                approval::open_request(&code, &b).map(|r| (m.id, r))
+            })
+            .ok_or(ApprovalFailure::NotFound)?;
+        // `certify_device` checks the request's signature.
+        let cert = device
+            .certify_device(&request)
+            .map_err(|e| other(core_err(e)))?;
+        let verified = device
             .trust()
             .accounts()
-            .filter(|(a, _)| *a != inner.account)
-            .map(|(a, p)| (a.to_string(), b64url(&p.identity_key), p.verified))
+            .filter(|(a, p)| *a != inner.account && p.verified)
+            .map(|(a, p)| approval::Verified {
+                account: a.to_string(),
+                identity_key: encode(&p.identity_key),
+            })
             .collect();
         let conversations = inner
             .vault
             .as_ref()
-            .map(|v| v.conversations().cloned().collect())
+            .map(|v| v.conversations().map(conversation_for_web).collect())
             .unwrap_or_default();
-        let transfer = Transfer {
-            certificate: b64url(&cert.to_bytes()),
-            pins,
+        let handover = Handover {
+            certificate: encode(&cert.to_bytes()),
+            verified,
             conversations,
         };
-        let message = approver.approve(&transfer)?;
+        let me = device.device_id().to_hex();
+        let new = cert.device_id.to_hex();
         self.api()
-            .e2ee_relay(&me, requester, &message.to_bytes())
+            .e2ee_relay(&me, &new, &approval::seal_handover(&code, &handover))
             .await
-            .map_err(api_err)?;
-        inner.to_add.insert(cert.device_id.to_hex());
+            .map_err(|e| other(api_err(e)))?;
+        let _ = self.api().e2ee_delete_approval(id).await;
+        inner.to_add.insert(new);
         Ok(())
+    }
+
+    /// An approving device: count the requests waiting in the mailbox.
+    async fn count_waiting(&self, inner: &Inner) {
+        if !inner.device.as_ref().is_some_and(|d| d.holds_identity()) {
+            return;
+        }
+        let Ok(messages) = self.api().e2ee_approvals(approval::MAILBOX).await else {
+            return;
+        };
+        let n = messages.len();
+        if self.shared.handle.read().e2ee.waiting_approvals != n {
+            self.change(|w| {
+                w.e2ee.waiting_approvals = n;
+                Changes::topic(view::TOPIC)
+            });
+        }
     }
 
     /// Add devices this one approved to its groups, once they published keys.
@@ -2390,10 +2295,10 @@ impl Engine {
             return WAITING_EVERY;
         }
         self.relay(&mut inner).await;
-        if let Some((_, at)) = &inner.waiting {
-            if at.elapsed() > REQUEST_AGAIN {
-                inner.waiting = None;
-                let _ = self.wait_for_approval(&mut inner).await;
+        if let Some(waiting) = &inner.waiting {
+            // The same request, so the code shown stays good.
+            if waiting.posted.is_none_or(|at| at.elapsed() > REQUEST_AGAIN) {
+                self.post_request(&mut inner).await;
             }
             return WAITING_EVERY;
         }
@@ -2405,8 +2310,9 @@ impl Engine {
             self.sync_groups(&mut inner).await;
             self.add_approved(&mut inner).await;
             self.refresh_directory(&mut inner).await;
+            self.count_waiting(&inner).await;
         }
-        if inner.approving.is_empty() {
+        if inner.to_add.is_empty() {
             SYNC_EVERY
         } else {
             WAITING_EVERY
@@ -2469,12 +2375,51 @@ pub fn check_conversation(handle: &Handle, conversation: &str) {
     );
 }
 
-/// The request a revealed approver holds.
-fn approver_request(approver: &Approver) -> Result<Vec<u8>> {
-    approver
-        .request()
-        .map(<[u8]>::to_vec)
-        .ok_or_else(|| "the new device has not answered yet".to_string())
+/// A conversation record as the web client keeps it (its group in hex).
+fn conversation_for_web(c: &Conversation) -> ConversationRecord {
+    ConversationRecord {
+        conversation_id: c.conversation.clone(),
+        group_id: c
+            .group
+            .as_deref()
+            .and_then(|g| from_b64url(g).ok())
+            .map(|g| super::hex(&g))
+            .unwrap_or_default(),
+        peer: c.peer.clone(),
+        on: c.on,
+        by: (!c.by.is_empty()).then(|| c.by.clone()),
+        at: Some(c.since),
+    }
+}
+
+/// A web client's conversation record, or `None` when it is not one.
+fn conversation_from_web(r: ConversationRecord) -> Option<Conversation> {
+    if r.conversation_id.is_empty() || r.peer.is_empty() {
+        return None;
+    }
+    let group = if r.group_id.is_empty() {
+        None
+    } else {
+        Some(b64url(&from_hex(&r.group_id)?))
+    };
+    Some(Conversation {
+        conversation: r.conversation_id,
+        peer: r.peer,
+        group,
+        on: r.on,
+        since: r.at.unwrap_or_default(),
+        by: r.by.unwrap_or_default(),
+    })
+}
+
+fn from_hex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
+        .collect()
 }
 
 /// Sends queued text one at a time, in order, until the engine is dropped.

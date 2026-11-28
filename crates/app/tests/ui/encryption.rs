@@ -340,55 +340,14 @@ fn a_new_device_shows_its_codes_and_another_approves_it(cx: &mut TestAppContext)
     assert!(shown(&f, cx, "encryption-settings-qr"));
     assert!(shown(&f, cx, "encryption-settings-experimental"));
 
-    let mut request = None;
-    for _ in 0..400 {
-        phone.engine.poke();
-        std::thread::sleep(Duration::from_millis(25));
-        cx.run_until_parked();
-        let r = phone.client.read().e2ee.requests.first().cloned();
-        if let Some(r) = r
-            && r.code.is_some()
-            && app(&f, cx, |w| {
-                matches!(&w.e2ee.device, DeviceState::Waiting { code: Some(_), .. })
-            })
-        {
-            request = Some(r);
-            break;
-        }
-    }
-    let request = request.expect("the request with its code on both devices");
-    draw(&f, cx);
+    // The code the web client asks for: 20 digits in groups of five, and
+    // the request is already in the mailbox every approving device reads.
     let code = label(&f, cx, "encryption-settings-code");
-    assert_eq!(Some(code), request.code, "both devices show one code");
-    assert_eq!(
-        request.label,
-        "IRCord GPUI on Linux".replace(
-            "Linux",
-            match std::env::consts::OS {
-                "windows" => "Windows",
-                "macos" => "macOS",
-                "linux" => "Linux",
-                other => other,
-            }
-        )
-    );
+    assert_eq!(code.len(), 23, "20 digits in groups of five: {code}");
+    assert_eq!(backend.approvals_to("me", "pending").len(), 1);
     audit(&f, cx, "settings while waiting for approval");
 
-    click(&f, cx, "encryption-settings-codes-match");
-    wait(cx, "confirmed here", |cx| {
-        f.session.read(cx).client().is_some_and(|c| {
-            matches!(
-                c.read().e2ee.device,
-                DeviceState::Waiting {
-                    confirmed: true,
-                    ..
-                }
-            )
-        })
-    });
-    phone
-        .engine
-        .answer(&request.device, request.code.as_deref(), true);
+    phone.engine.approve(&code);
     wait(cx, "approved", |cx| {
         f.session
             .read(cx)
@@ -552,4 +511,113 @@ fn the_person_menu_starts_an_encrypted_chat(cx: &mut TestAppContext) {
         !rows.iter().any(|r| r == "Start encrypted chat"),
         "already encrypted: {rows:?}"
     );
+}
+
+/// The other way round: this device set up encryption first, and a new
+/// device of the account (as the web client's would) waits with its code.
+/// The approval form counts it, refuses a wrong code, and approves the right
+/// one typed in.
+#[gpui_kit::test]
+fn this_device_approves_a_new_one_by_its_code(cx: &mut TestAppContext) {
+    let backend = E2eeBackend::new();
+    let shared = backend.clone();
+    let f = open_with(cx, true, move |server| {
+        shared.serve(server, "me", "d-bob", "m-bob", "bob");
+        server.snapshot(&e2ee_snapshot("me", "d-bob", "m-bob", "bob"));
+    });
+    wait(cx, "this device set up", |cx| {
+        f.session
+            .read(cx)
+            .client()
+            .is_some_and(|c| c.read().e2ee.device.ready())
+    });
+    let session = f.session.clone();
+    cx.update(|cx| ircord_app::settings::open(&session, Some("encryption-device"), cx));
+    draw(&f, cx);
+    assert!(shown(&f, cx, "encryption-approve"));
+    assert_eq!(
+        label(&f, cx, "encryption-approve-waiting"),
+        "No device is waiting. Open Settings → Encryption on the new device first."
+    );
+
+    let rt = ircord_client::client::runtime().unwrap();
+    let server = CannedServer::start(&rt);
+    backend.serve_device(&server, "me");
+    let laptop = start_peer(
+        &rt,
+        server,
+        &e2ee_snapshot("me", "d-bob", "m-bob", "bob"),
+        "d-bob",
+    );
+    wait_until(&laptop.client, WAIT, "the laptop to wait", |w| {
+        matches!(w.e2ee.device, DeviceState::Waiting { .. })
+    });
+    let DeviceState::Waiting { code, .. } = laptop.client.read().e2ee.device.clone() else {
+        unreachable!()
+    };
+    for _ in 0..200 {
+        cx.update(|cx| ircord_app::settings::open(&session, Some("encryption-device"), cx));
+        draw(&f, cx);
+        if app(&f, cx, |w| w.e2ee.waiting_approvals == 1) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    draw(&f, cx);
+    assert_eq!(
+        label(&f, cx, "encryption-approve-waiting"),
+        "1 device is waiting for approval."
+    );
+    audit(&f, cx, "settings with a device waiting for approval");
+
+    type_enter(&f, cx, "encryption-approve-code", "11111 11111 11111 11111");
+    wait(cx, "the refusal", |cx| {
+        f.session.read(cx).client().is_some_and(|c| {
+            matches!(
+                c.read().e2ee.approving,
+                ircord_client::store::e2ee::Approving::Failed(_)
+            )
+        })
+    });
+    draw(&f, cx);
+    assert_eq!(
+        label(&f, cx, "encryption-approve-outcome"),
+        "No waiting device has this code. Check the code, or open it on the new device again."
+    );
+
+    type_enter(&f, cx, "encryption-approve-code", &code);
+    wait(cx, "approved here", |cx| {
+        f.session
+            .read(cx)
+            .client()
+            .is_some_and(|c| c.read().e2ee.approving == ircord_client::store::e2ee::Approving::Done)
+    });
+    for _ in 0..200 {
+        laptop.engine.poke();
+        std::thread::sleep(Duration::from_millis(25));
+        if laptop.client.read().e2ee.device.ready() {
+            break;
+        }
+    }
+    assert!(
+        laptop.client.read().e2ee.device.ready(),
+        "the laptop is approved"
+    );
+    draw(&f, cx);
+    assert_eq!(
+        label(&f, cx, "encryption-approve-outcome"),
+        "The device is approved."
+    );
+}
+
+fn type_enter(f: &Fixture, cx: &mut TestAppContext, id: &'static str, text: &str) {
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(id, cx);
+        window.press("ctrl-a", cx);
+        window.input(text, cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
 }
