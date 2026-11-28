@@ -389,7 +389,8 @@ struct Resolved {
     owner: bool,
 }
 
-fn network_of(ctx: &MemberCtx, cx: &App) -> Option<String> {
+/// The network a person was picked on.
+pub(crate) fn network_of(ctx: &MemberCtx, cx: &App) -> Option<String> {
     let session = ctx.session.read(cx);
     let client = session.client()?;
     let w = client.read();
@@ -429,6 +430,18 @@ pub fn message(
     window: &mut Window,
     cx: &mut App,
 ) {
+    message_then(network, member, nick, window, cx, |_, _, _| {});
+}
+
+/// [`message`], then `then` with the conversation's ID once it shows.
+pub fn message_then(
+    network: &str,
+    member: Option<String>,
+    nick: &str,
+    window: &mut Window,
+    cx: &mut App,
+    then: impl FnOnce(&str, &mut Window, &mut App) + 'static,
+) {
     let Some(session) = session(cx) else { return };
     let Some(client) = session.read(cx).client().cloned() else {
         return;
@@ -453,6 +466,7 @@ pub fn message(
                     if let Some(id) = done.open {
                         ui::dialog::close(window, cx);
                         session.update(cx, |s, cx| s.select_conversation(&id, cx));
+                        then(&id, window, cx);
                     }
                 }
                 Err(e) => ui::toast::error(window, cx, e),

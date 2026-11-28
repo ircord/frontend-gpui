@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Server owners can turn encrypted direct messages on or off in Administration → Encryption, effective at once. Turning it off deletes nothing. When the server configuration sets the mode, the section shows it and why.
+- Start encrypted chat in a person's menu opens your direct conversation with them and starts encrypting it; when it can't start yet, the entry says why.
+
 ## v0.9.0 — 2026-11-28
 
 ### New, experimental

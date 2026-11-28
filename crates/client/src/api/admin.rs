@@ -8,11 +8,14 @@
 //! window, after `AdminStatus.vue`, `AdminDatabase.vue` and
 //! `AdminWelcome.vue`: which audit entries were only attempts, the recent
 //! connection waits between two database samples, sizes and counts as
-//! text, and the channel guide being edited ([`GuideDraft`]).
+//! text, the channel guide being edited ([`GuideDraft`]), and the
+//! encryption capability a switch of the encryption mode changes
+//! ([`take_encryption`]).
 
 use ircord_contract as c;
 
 use super::{Api, ApiError, Method, segment};
+use crate::store::{Changes, Workspace, e2ee};
 
 /// Accounts per page of the user list.
 pub const USERS_PAGE: usize = 50;
@@ -113,6 +116,22 @@ impl Api {
             .await
     }
 
+    /// The server's end-to-end encryption mode, and whether its
+    /// configuration fixes it.
+    pub async fn administration_encryption(&self) -> Result<c::EncryptionSetting, ApiError> {
+        self.get("/api/v1/administration/encryption").await
+    }
+
+    /// Turn end-to-end encryption off or on (experimental), at once. Refused
+    /// with 409 ([`conflict`]) when the server's configuration fixes the mode.
+    pub async fn save_encryption_setting(
+        &self,
+        update: &c::EncryptionSettingUpdate,
+    ) -> Result<c::EncryptionSetting, ApiError> {
+        self.call(Method::PUT, "/api/v1/administration/encryption", update)
+            .await
+    }
+
     /// The channel guide as saved, with its warnings and listing requests.
     pub async fn administration_channel_guide(&self) -> Result<c::AdminChannelGuide, ApiError> {
         self.get("/api/v1/administration/channel-guide").await
@@ -160,6 +179,21 @@ pub fn refused(error: &ApiError) -> bool {
 /// Another owner saved the guide since it was loaded.
 pub fn conflict(error: &ApiError) -> bool {
     matches!(error, ApiError::Http { status: 409, .. })
+}
+
+// ---- Encryption ----
+
+/// Take the encryption capability from a fresh snapshot, after an owner
+/// switched the mode. The server reports it only in the snapshot, so without
+/// this the client would learn of the switch at its next reconnect.
+pub fn take_encryption(w: &mut Workspace, snapshot: &c::Snapshot) -> Changes {
+    if w.capabilities.encryption == snapshot.capabilities.encryption {
+        return Changes::default();
+    }
+    w.capabilities.encryption = snapshot.capabilities.encryption.clone();
+    let mut changes = Changes::topic(e2ee::TOPIC);
+    changes.sidebar = true;
+    changes
 }
 
 // ---- Status ----
@@ -779,5 +813,75 @@ mod tests {
 
         let error = runtime.block_on(api.administration_status()).unwrap_err();
         assert!(refused(&error));
+    }
+
+    #[test]
+    fn the_encryption_mode_is_read_and_set() {
+        let runtime = crate::client::runtime().unwrap();
+        let server = CannedServer::start(&runtime);
+        server.route(
+            "GET",
+            "/api/v1/administration/encryption",
+            200,
+            json!({"mode": "off", "locked": false}),
+        );
+        server.route(
+            "PUT",
+            "/api/v1/administration/encryption",
+            200,
+            json!({"mode": "experimental", "locked": false,
+                   "updatedAt": "2026-11-28T09:00:00Z", "updatedBy": "me"}),
+        );
+        let api = server.api();
+        let wait = Duration::from_secs(5);
+
+        let setting = runtime.block_on(api.administration_encryption()).unwrap();
+        assert_eq!(setting.mode, c::EncryptionSettingMode::Off);
+        assert!(!setting.locked);
+
+        let saved = runtime
+            .block_on(api.save_encryption_setting(&c::EncryptionSettingUpdate {
+                mode: c::EncryptionSettingUpdateMode::Experimental,
+                reason: None,
+            }))
+            .unwrap();
+        assert_eq!(saved.mode, c::EncryptionSettingMode::Experimental);
+        assert_eq!(saved.updated_by.as_deref(), Some("me"));
+        let request = server.wait_for("PUT", "/api/v1/administration/encryption", wait);
+        assert_eq!(request.json(), json!({"mode": "experimental"}));
+
+        // Locked by the server's configuration: refused as a conflict.
+        server.route_reply(
+            "PUT",
+            "/api/v1/administration/encryption",
+            Reply::problem(409, "IRCORD_E2EE fixes this mode"),
+        );
+        let error = runtime
+            .block_on(api.save_encryption_setting(&c::EncryptionSettingUpdate {
+                mode: c::EncryptionSettingUpdateMode::Off,
+                reason: None,
+            }))
+            .unwrap_err();
+        assert!(conflict(&error));
+    }
+
+    #[test]
+    fn a_fresh_snapshot_brings_the_encryption_capability() {
+        let mut w = Workspace::default();
+        let mut snapshot = c::Snapshot::default();
+        assert!(
+            take_encryption(&mut w, &snapshot).is_empty(),
+            "nothing changed"
+        );
+
+        snapshot.capabilities.encryption = Some(c::EncryptionCapability::default());
+        let changes = take_encryption(&mut w, &snapshot);
+        assert!(changes.sidebar);
+        assert!(changes.topics.contains_key(e2ee::TOPIC));
+        assert!(w.capabilities.encryption.is_some());
+
+        snapshot.capabilities.encryption = None;
+        assert!(!take_encryption(&mut w, &snapshot).is_empty());
+        assert!(w.capabilities.encryption.is_none(), "turned off");
     }
 }

@@ -83,6 +83,8 @@ pub mod message {
 pub mod member {
     pub const PROFILE: i32 = 0;
     pub const MESSAGE: i32 = 10;
+    /// Only this client: a direct conversation, encrypted from the start.
+    pub const ENCRYPTED_MESSAGE: i32 = 11;
     pub const MENTION: i32 = 20;
     pub const COPY_NICK: i32 = 30;
     /// Only this client: beside copying the nick.

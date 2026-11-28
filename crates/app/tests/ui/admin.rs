@@ -8,6 +8,7 @@ use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
 use gpui_kit::{AppContext, ScrollDelta, TestAppContext, point, px};
 use ircord_app::features::admin;
 use ircord_app::route::Route;
+use ircord_client::contract as c;
 use ircord_client::testing::{CannedServer, Reply};
 use serde_json::{Value, json};
 
@@ -66,7 +67,9 @@ fn serve(server: &CannedServer) {
             {"action": "owner-grant", "actor": "me", "target": "bob", "outcome": "granted",
              "at": "2026-11-21T09:00:00Z", "reason": "helps out"},
             {"action": "bot-mark", "actor": "me", "target": "eve", "outcome": "refused",
-             "at": "2026-11-21T09:30:00Z"}
+             "at": "2026-11-21T09:30:00Z"},
+            {"action": "encryption-mode", "actor": "me", "target": "experimental",
+             "outcome": "saved", "at": "2026-11-21T09:45:00Z"}
         ]}),
     );
     server.route(
@@ -242,6 +245,12 @@ fn the_overview_shows_the_backend_ircord_and_the_irc_server(cx: &mut TestAppCont
         cx,
         "admin-audit-1",
         "me tried: eve marked as a bot (refused)",
+    );
+    reads(
+        &f,
+        cx,
+        "admin-audit-2",
+        "me: encrypted direct messages set to Experimental",
     );
 
     // Refresh reads both again.
@@ -660,4 +669,137 @@ fn a_refused_request_closes_administration(cx: &mut TestAppContext) {
     click(&f, cx, "admin-status-refresh");
     shows(&f, cx, "admin-not-owner");
     assert!(gone(&f, cx, "sidebar-administration"));
+}
+
+#[gpui_kit::test]
+fn encryption_is_switched_between_off_and_experimental(cx: &mut TestAppContext) {
+    let f = open(cx, |server| {
+        server.route(
+            "GET",
+            "/api/v1/administration/encryption",
+            200,
+            json!({"mode": "off", "locked": false}),
+        );
+        server.route_fn("PUT", "/api/v1/administration/encryption", |r| {
+            Reply::json(
+                200,
+                json!({"mode": r.json()["mode"], "locked": false,
+                       "updatedAt": "2026-11-28T09:00:00Z", "updatedBy": "me"}),
+            )
+        });
+    });
+    page(&f, cx);
+    click(&f, cx, "admin-tab-encryption");
+    shows(&f, cx, "admin-encryption-off");
+    assert!(gone(&f, cx, "admin-encryption-locked"));
+    reads(&f, cx, "admin-encryption-about", "What this changes");
+
+    // The server offers encryption once it is on: the client reads a fresh
+    // snapshot rather than waiting for a reconnect.
+    let mut snapshot = crate::fixture::snapshot();
+    snapshot.capabilities.encryption = Some(c::EncryptionCapability {
+        experimental: true,
+        max_payload: 3800,
+    });
+    f.server.snapshot(&snapshot);
+    let bootstraps = f.server.requests_to("GET", "/api/v1/bootstrap").len();
+    click(&f, cx, "admin-encryption-experimental");
+    let put = f
+        .server
+        .wait_for("PUT", "/api/v1/administration/encryption", WAIT);
+    assert_eq!(put.json(), json!({"mode": "experimental"}));
+    reads(
+        &f,
+        cx,
+        "admin-encryption-notice",
+        "Encrypted direct messages are on (experimental).",
+    );
+    wait(cx, "the encryption capability", |cx| {
+        f.server.requests_to("GET", "/api/v1/bootstrap").len() > bootstraps
+            && f.session
+                .read(cx)
+                .client()
+                .is_some_and(|c| c.read().capabilities.encryption.is_some())
+    });
+
+    click(&f, cx, "admin-encryption-off");
+    let put = f
+        .server
+        .wait_for_nth("PUT", "/api/v1/administration/encryption", 2, WAIT);
+    assert_eq!(put.json(), json!({"mode": "off"}));
+    reads(
+        &f,
+        cx,
+        "admin-encryption-notice",
+        "Encrypted direct messages are off.",
+    );
+}
+
+#[gpui_kit::test]
+fn encryption_fixed_by_the_server_is_read_only_with_its_reason(cx: &mut TestAppContext) {
+    let reason = "The server's IRCORD_E2EE setting fixes this mode.";
+    let f = open(cx, |server| {
+        server.route(
+            "GET",
+            "/api/v1/administration/encryption",
+            200,
+            json!({"mode": "experimental", "locked": true, "lockReason": reason}),
+        );
+    });
+    page(&f, cx);
+    click(&f, cx, "admin-tab-encryption");
+    reads(
+        &f,
+        cx,
+        "admin-encryption-locked",
+        &format!("Set by the server configuration: {reason}"),
+    );
+    click(&f, cx, "admin-encryption-off");
+    frame(&f, cx, |_, _| {});
+    assert!(
+        f.server
+            .requests_to("PUT", "/api/v1/administration/encryption")
+            .is_empty(),
+        "a locked mode is not sent"
+    );
+}
+
+#[gpui_kit::test]
+fn encryption_locked_after_the_page_loaded_explains_the_refusal(cx: &mut TestAppContext) {
+    let f = open(cx, |server| {
+        server.route(
+            "GET",
+            "/api/v1/administration/encryption",
+            200,
+            json!({"mode": "off", "locked": false}),
+        );
+        server.route_reply(
+            "PUT",
+            "/api/v1/administration/encryption",
+            Reply::problem(409, "locked"),
+        );
+    });
+    page(&f, cx);
+    click(&f, cx, "admin-tab-encryption");
+    shows(&f, cx, "admin-encryption-off");
+    f.server.route(
+        "GET",
+        "/api/v1/administration/encryption",
+        200,
+        json!({"mode": "off", "locked": true}),
+    );
+    click(&f, cx, "admin-encryption-experimental");
+    reads(
+        &f,
+        cx,
+        "admin-encryption-notice",
+        "The server configuration now sets this mode. Change it there.",
+    );
+    reads(
+        &f,
+        cx,
+        "admin-encryption-locked",
+        "Set by the server configuration: The server configuration sets this mode. Change it there.",
+    );
+    assert!(gone(&f, cx, "admin-encryption-error"));
 }

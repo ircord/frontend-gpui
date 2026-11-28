@@ -16,6 +16,10 @@
 //! `CAPTURE_ONLY=e2ee` captures end-to-end encryption against a backend with
 //! it on (`capture-e2ee.sh`): set-up, starting a chat, the lock, the panel
 //! with the trust caveat and the security code, and approving a second device.
+//! `CAPTURE_ONLY=admin` makes the account a server owner and captures
+//! Administration → Encryption, Off then Experimental, and the person menu's
+//! Start encrypted chat on someone in the channel; `CAPTURE_ONLY=admin-locked`
+//! runs the backend with `IRCORD_E2EE` set and captures the section read-only.
 //! `CAPTURE_ONLY=ircoid` captures the game behind About's logo: ready, moving, paused, its
 //! high score table and its credits (point `IRCORD_BACKEND` at a backend with the table).
 //! `CAPTURE_ONLY=appimage` runs `dist/IRCord-GPUI-Linux-x64.AppImage` (from
@@ -60,7 +64,9 @@ COOKIE=$(curl -fsS -D - -o /dev/null -H "Origin: $SERVER" -H 'Content-Type: appl
   | sed -n 's/^[Ss]et-[Cc]ookie: \(ircord_session=[^;]*\).*/\1/p')
 [ -n "$COOKIE" ] || { echo "signup set no session"; exit 1; }
 # With encryption on, the account has the home network already.
-[ "${CAPTURE_ONLY:-}" = e2ee ] || curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+NETWORK=yes
+case "${CAPTURE_ONLY:-}" in e2ee|admin-locked) NETWORK= ;; esac
+[ -z "$NETWORK" ] || curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
   -d "{\"name\":\"Test\",\"host\":\"$IRC_HOST\",\"port\":6667,\"tls\":false,\"nick\":\"$USER_NAME\",\"autoJoin\":[\"#capture\"]}" \
   "$SERVER/api/v1/networks"
 
@@ -84,6 +90,13 @@ gnome-keyring-daemon --start --components=secrets >/dev/null
 printf probe | secret-tool store --label=probe capture probe
 secret-tool lookup capture probe >/dev/null || { echo "the keyring does not work"; exit 1; }
 secret-tool clear capture probe
+
+# Administration scenes: the account is a server owner, through the
+# backend's operator token.
+case "${CAPTURE_ONLY:-}" in admin|admin-locked)
+  curl -fsS -o /dev/null -X PUT -H "Origin: $SERVER" -H "Authorization: Bearer $CAPTURE_ADMIN_TOKEN" \
+    "$SERVER/api/v1/admin/owners/$USER_NAME" ;;
+esac
 
 Xvfb :99 -screen 0 1280x800x24 -extension COMPOSITE >/tmp/xvfb.log 2>&1 &
 export DISPLAY=:99
@@ -188,6 +201,59 @@ if [ "${CAPTURE_ONLY:-}" = fade ]; then
   stop_app fade
   exit 0
 fi
+# `CAPTURE_ONLY=admin` / `admin-locked`: Administration → Encryption. The
+# profile set-up is skipped, Administration opened from the shield beside Settings, and
+# its last section chosen. Unlocked, Experimental is chosen; then someone
+# (a plain IRC client, not an IRCord account) joins the channel and the
+# person menu shows Start encrypted chat with why it can't start.
+case "${CAPTURE_ONLY:-}" in admin|admin-locked)
+  xdotool windowfocus --sync "$WIN"
+  xdotool mousemove --window "$WIN" 670 620 click 1
+  sleep 1
+  # The shield beside Settings.
+  xdotool mousemove --window "$WIN" 870 19 click 1
+  sleep 2
+  shot admin-1-page
+  xdotool mousemove --window "$WIN" 261 307 click 1
+  sleep 2
+  if [ "$CAPTURE_ONLY" = admin-locked ]; then
+    shot admin-encryption-locked
+    stop_app admin-locked
+    exit 0
+  fi
+  shot admin-encryption-off
+  xdotool mousemove --window "$WIN" 1114 245 click 1
+  sleep 2
+  shot admin-encryption-experimental
+  # Someone else in #capture: a bare IRC client that stays a minute.
+  python3 -c '
+import socket, sys, time
+s = socket.create_connection((sys.argv[1], 6667))
+s.sendall(b"NICK bob\r\nUSER bob 0 * :bob\r\n")
+end = time.time() + 90
+joined = False
+while time.time() < end:
+    data = s.recv(4096)
+    if not data:
+        break
+    for line in data.split(b"\r\n"):
+        if line.startswith(b"PING"):
+            s.sendall(b"PONG" + line[4:] + b"\r\n")
+        if b" 001 " in line and not joined:
+            s.sendall(b"JOIN #capture\r\n")
+            joined = True
+' "$IRC_HOST" &
+  sleep 4
+  xdotool key Escape
+  xdotool mousemove --window "$WIN" 65 341 click 1
+  sleep 2
+  shot admin-2-channel
+  xdotool mousemove --window "$WIN" 1056 231 click 3
+  sleep 1
+  shot admin-person-menu
+  stop_app admin
+  exit 0
+esac
 # `CAPTURE_ONLY=ircoid`: the game behind About's logo. Settings → About,
 # five presses on the logo, the ready screen, a game moving (four frames
 # while Right is held), paused, and About again after Escape.
@@ -619,7 +685,7 @@ pub fn run(root: &Path) -> Result<()> {
         &passwd,
         format!("root:x:0:0::/root:/bin/sh\nircord:x:{uid}:{gid}::/tmp:/bin/sh\n"),
     )?;
-    let e2ee = std::env::var("CAPTURE_ONLY").is_ok_and(|o| o == "e2ee");
+    let e2ee = std::env::var("CAPTURE_ONLY").is_ok_and(|o| o == "e2ee" || o == "admin-locked");
     let backend = Backend::start_with(root, e2ee)?;
     let mut extra = backend.network_args();
     extra.extend([
@@ -627,6 +693,8 @@ pub fn run(root: &Path) -> Result<()> {
         format!("{}:/etc/passwd:ro", passwd.display()),
         "-e".into(),
         format!("IRC_HOST={}", backend.ergo),
+        "-e".into(),
+        format!("CAPTURE_ADMIN_TOKEN={}", backend.admin_token),
         "--shm-size".into(),
         "256m".into(),
     ]);
