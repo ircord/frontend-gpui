@@ -1817,7 +1817,7 @@ pub struct E2EEChatCommit {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct E2EEChatCommitInputBody {
-    /// Accounts the commit adds. In a group they get the right to enter once it has won.
+    /// Accounts the commit adds. In a group they get the right to enter once it has won. Name your own account when the commit adds a device of yours: your devices on this server get the Welcome, and your rights in the group's channel stay.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub added: Option<Vec<String>>,
     /// Accounts the commit makes admins. They get operator rights in the group's channel.
@@ -2011,7 +2011,7 @@ pub struct E2EECreateChatInputBody {
     /// direct: the earlier group this one replaces after someone started fresh.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replaces: Option<String>,
-    /// The MLS Welcome for everyone added. The server delivers it to each account's IRCord server and retries until that server confirms it, for 30 days.
+    /// The MLS Welcome for everyone added, which can include your account's other devices. Your account's devices on this server get it at once; a device that is not in it, such as yours, discards it. The server delivers it to each other account's IRCord server and retries until that server confirms it, for 30 days.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub welcome: Option<String>,
 }

@@ -36,6 +36,8 @@ pub(super) struct Chat {
     pub kind: c::E2EEChatKind,
     pub state: c::E2EEChatState,
     pub conversation: Option<String>,
+    /// A direct chat's other person.
+    pub peer: Option<String>,
     pub declined: Vec<String>,
 }
 
@@ -129,6 +131,7 @@ impl Engine {
                                 kind: chat.kind,
                                 state: chat.state,
                                 conversation: chat.conversation_id,
+                                peer: chat.peer,
                                 declined: chat.declined,
                             },
                         ))
@@ -196,12 +199,31 @@ impl Engine {
                 continue;
             };
             let device = inner.device.as_mut().unwrap();
+            // The backend hands a new chat's Welcome to every device of the
+            // account that started it, this one too when it started it.
+            if group_of(&welcome.group_id).is_ok_and(|g| device.epoch(&g).is_ok()) {
+                let _ = self.api().e2ee_delete_chat_welcome(welcome.id).await;
+                continue;
+            }
+            let from_self = welcome.sender.eq_ignore_ascii_case(&inner.account);
             match welcome.kind {
                 c::E2EEChatWelcomeKind::Direct => match device.join_dm(&blob) {
                     Ok(joined) => {
                         // The Welcome must be for the chat it is filed under,
-                        // from the person whose chat it is.
-                        if joined.peer != welcome.sender
+                        // from the person whose chat it is, or from another
+                        // device of this account that started this account's
+                        // chat with that same person.
+                        let sender_ok = if from_self {
+                            inner
+                                .chats
+                                .list
+                                .get(&joined.group_id.0)
+                                .and_then(|c| c.peer.as_deref())
+                                == Some(joined.peer.as_str())
+                        } else {
+                            joined.peer == welcome.sender
+                        };
+                        if !sender_ok
                             || group_of(&welcome.group_id).ok() != Some(joined.group_id.clone())
                         {
                             // Someone else's group passed off as this sender's.
@@ -725,7 +747,8 @@ impl Engine {
         if people.is_empty() {
             return Err("group-needs-people".into());
         }
-        let packages = self.packages_for(inner, &people).await?;
+        let mut packages = self.packages_for(inner, &people).await?;
+        packages.extend(self.own_packages(inner).await?);
         let device = inner.device.as_mut().ok_or("not-ready")?;
         let created = device.create_group(title, &packages).map_err(group_err)?;
         let g = created.group_id.clone();
@@ -755,6 +778,7 @@ impl Engine {
                 kind: c::E2EEChatKind::Group,
                 state: c::E2EEChatState::Joined,
                 conversation: made.chat.conversation_id.clone(),
+                peer: None,
                 declined: Vec::new(),
             },
         );
@@ -810,6 +834,29 @@ impl Engine {
             }
         }
         Ok(packages)
+    }
+
+    /// One key package for each other device of this account: the backend
+    /// hands them a new chat's Welcome itself.
+    async fn own_packages(&self, inner: &mut Inner) -> Result<Vec<Vec<u8>>> {
+        let me = inner
+            .device
+            .as_ref()
+            .ok_or("not-ready")?
+            .device_id()
+            .to_hex();
+        // Best effort: the group starts without them rather than not at all.
+        let claim = match self.api().e2ee_claim(&inner.account).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::info!("e2ee: claim this account's other devices: {e}");
+                return Ok(Vec::new());
+            }
+        };
+        let device = inner.device.as_mut().ok_or("not-ready")?;
+        Ok(super::other_devices(device, &claim, &me)
+            .filter_map(|i| bytes(&i.key_package).ok())
+            .collect())
     }
 
     /// Add people to the group whose channel is `conversation`.
@@ -1075,6 +1122,7 @@ impl Engine {
                         kind: c::E2EEChatKind::Direct,
                         state: c::E2EEChatState::Joined,
                         conversation: made.chat.conversation_id,
+                        peer: Some(peer.to_string()),
                         declined: Vec::new(),
                     },
                 );
