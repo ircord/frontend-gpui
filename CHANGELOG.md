@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.10.0 — 2026-11-28
+
 ### New
 
 - Server owners can turn encrypted direct messages on or off in Administration → Encryption, effective at once. Turning it off deletes nothing. When the server configuration sets the mode, the section shows it and why.
@@ -9,7 +11,7 @@
 
 ### New, experimental
 
-- Encrypted groups and encrypted chats with people on other IRCord servers of the same network: start a group from the network menu, answer an invitation with Join or Decline, see each person's devices and verify them in the group's panel, and, as its creator or an admin, add and remove people. Every message in an encrypted group notifies unless the group is muted. An account whose encryption is set up on another IRCord server is told so instead of getting a second identity.
+- Encrypted groups and encrypted chats with people on other IRCord servers of the same network, where the server owner turned encryption on in Administration → Encryption: start a group from the network menu, answer an invitation with Join or Decline, see each person's devices and verify them in the group's panel, and, as its creator or an admin, add and remove people. Every message in an encrypted group notifies unless the group is muted. An account whose encryption is set up on another IRCord server is told so instead of getting a second identity.
 
 ### Fixed
 
