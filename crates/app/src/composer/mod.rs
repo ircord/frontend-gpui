@@ -519,7 +519,12 @@ impl Render for ComposerView {
                 } else {
                     "@"
                 };
-                (format!("{prefix}{}", c.name), c.joined)
+                // The backend never marks a direct conversation joined:
+                // only channels are joined.
+                (
+                    format!("{prefix}{}", c.name),
+                    c.joined || c.kind == ConversationKind::Direct,
+                )
             }),
             _ => None,
         };

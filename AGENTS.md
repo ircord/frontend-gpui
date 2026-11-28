@@ -18,7 +18,7 @@ client; it never speaks IRC itself. Layout and commands are in
   build against a disposable backend and leaves screenshots in
   `target/capture/`. Your own Xvfb must run with `-extension COMPOSITE`, or
   every capture is black (see `xtask/src/capture.rs`, whose header lists the
-  `CAPTURE_ONLY` scenes: `fade`, `news`, `attract`, `theme`, `appimage`, `ircoid`).
+  `CAPTURE_ONLY` scenes: `fade`, `news`, `attract`, `theme`, `appimage`, `ircoid`, `e2ee`).
 - A theme's background picture is `theme::backdrop` (read with the session, decoded once, floors from `store::appearance::theme_backdrop`); a surface it shows through takes its colour from `backdrop::shell`/`get`, never `theme.sidebar` directly. `CAPTURE_ONLY=theme` and `CAPTURE_THEME=<dir with theme.json and picture.*>` narrow `cargo xtask capture` to that scene. `CAPTURE_ONLY=fade` captures a theme change fading (a few frames, light to dark).
 - A theme change fades in over 200 ms (`theme::fade`): `theme::get` holds in-between colours meanwhile, so a UI test that reads colours after an edit, or after the account's look arrives, waits for `!theme::fade::active(cx)`; `theme::set` snaps. Anything costly per colour set (diagrams, the ambient light) reads `theme::settled`, the final colours.
 - `crates/client` must not depend on GPUI: everything except drawing is
@@ -82,6 +82,15 @@ client; it never speaks IRC itself. Layout and commands are in
   leaves on Escape captures `shortcuts::MarkRead`, as `features/inbox.rs` does.
 - A live case that needs a server owner calls `support::make_owner`; `cargo
   xtask integration` gives the backend an operator token for it.
+- End-to-end encryption (experimental) is `crates/client/src/e2ee/` on the
+  shared core, pinned by commit in `crates/client/Cargo.toml`; what the core's
+  spec leaves to clients (device approval, files) is in `docs/e2ee.md`, which a
+  change to either updates. Nothing may reach the server in the clear in an
+  encrypted conversation: sends go through the engine (the composer filter in
+  `features/encryption.rs`), and tests check `E2eeBackend::plaintext`. Two-
+  account cases use `testing::E2eeBackend`; the real backend runs with
+  encryption only under `IRCORD_IT_E2EE=1 cargo xtask integration` and
+  `CAPTURE_ONLY=e2ee cargo xtask capture`.
 - Your own messages carry your member ID as `senderId`, not `you`; use
   `Workspace::is_self`.
 - `vendor/gpui-pre-windows` is GPUI's Windows backend with

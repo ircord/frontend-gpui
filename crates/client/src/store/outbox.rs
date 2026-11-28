@@ -33,13 +33,19 @@ pub struct PendingSend {
     pub gif: Option<GIF>,
     /// The uploads it carries, by ID.
     pub attachments: Vec<String>,
+    /// End-to-end encrypted: what is sent instead of `text`, which stays on
+    /// this device. A retry sends the same ciphertext.
+    pub encrypted: Option<Encrypted>,
 }
 
 impl PendingSend {
     /// Whether its text can go back into the message box: not a reply, a GIF
     /// or uploads, which the box cannot carry (the web client's `movable`).
     pub fn movable(&self) -> bool {
-        self.reply_to_id.is_none() && self.gif.is_none() && self.attachments.is_empty()
+        self.reply_to_id.is_none()
+            && self.gif.is_none()
+            && self.attachments.is_empty()
+            && self.encrypted.is_none()
     }
 }
 
@@ -176,6 +182,7 @@ impl Workspace {
                 reply_to_id: e.payload.reply_to_id.filter(|r| !r.is_empty()),
                 gif: e.payload.gif,
                 attachments: e.payload.attachments.unwrap_or_default(),
+                encrypted: e.payload.encrypted,
             });
         }
         if !changes.is_empty() {

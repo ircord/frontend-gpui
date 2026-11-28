@@ -227,6 +227,14 @@ impl CannedServer {
         let _ = self.frames.send(frame.into());
     }
 
+    /// [`Self::push`] as a function a route handler can keep.
+    pub fn pusher(&self) -> std::sync::Arc<dyn Fn(String) + Send + Sync> {
+        let frames = self.frames.clone();
+        std::sync::Arc::new(move |frame| {
+            let _ = frames.send(frame);
+        })
+    }
+
     /// Event sockets currently past `session.resume`.
     pub fn sockets_open(&self) -> usize {
         self.state.lock().unwrap().sockets_open

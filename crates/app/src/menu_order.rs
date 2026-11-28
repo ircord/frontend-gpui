@@ -29,6 +29,9 @@ pub mod conversation {
     pub const COPY_CHANNEL: i32 = 204;
     pub const PARTY_DETAILS: i32 = 210;
     pub const PROFILE: i32 = 220;
+    /// Only this client so far: start or turn off end-to-end encryption in
+    /// a direct conversation (experimental).
+    pub const ENCRYPTION: i32 = 230;
 
     // Its history.
     pub const JUMP_TO_DATE: i32 = 300;

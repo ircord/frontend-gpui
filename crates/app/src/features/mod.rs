@@ -13,6 +13,7 @@ pub mod connection;
 pub mod create_channel;
 pub mod desktop;
 pub mod drafts;
+pub mod encryption;
 pub mod gallery;
 pub mod inbox;
 pub mod invitations;
@@ -76,4 +77,5 @@ pub fn init(cx: &mut App) {
     audio_card::init(cx);
     video::init(cx);
     updates::init(cx);
+    encryption::init(cx);
 }

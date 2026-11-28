@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### New, experimental
+
+- End-to-end encrypted direct messages, on servers whose operator turned them on: start an encrypted chat from the lock in a direct message's header, compare security codes to verify the other person, and approve a new device from one already set up by comparing a code (or scanning its QR code). Keys and decrypted messages stay on your devices, sealed with a key in the system's credential store, and are searchable there; files are encrypted before upload. There is no recovery key: losing every device means starting fresh. Not yet reviewed by outside experts.
+
+### Fixed
+
+- A direct message can be answered again: the message box no longer says you are not in the conversation, which the server never marks as joined.
+
 ## v0.8.0 — 2026-11-27
 
 ### New

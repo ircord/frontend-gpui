@@ -602,6 +602,9 @@ pub enum CTCPReplyCommand {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Capabilities {
+    /// Present when the server operator turned on end-to-end encryption, an experimental feature.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<EncryptionCapability>,
     /// Present when the signed-in account is a server owner who can delete other people's channel messages and mark bots on one network.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub moderation: Option<ModerationCapability>,
@@ -1686,6 +1689,281 @@ pub enum DoctorStatus {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct E2EEApproval {
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "fromDevice")]
+    pub from_device: String,
+    pub id: i64,
+    pub payload: String,
+    #[serde(rename = "toDevice")]
+    pub to_device: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEApprovalID {
+    pub id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEApprovalInputBody {
+    #[serde(rename = "fromDevice")]
+    pub from_device: String,
+    /// A handshake message encrypted to the receiving device.
+    pub payload: String,
+    #[serde(rename = "toDevice")]
+    pub to_device: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEBindInputBody {
+    #[serde(rename = "groupId")]
+    pub group_id: String,
+    /// The other person's account name. The group must have exactly you and them as members.
+    pub peer: String,
+    /// The current group this one replaces, after one of you started fresh. Omit when starting encryption or joining the current group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEClaim {
+    pub account: String,
+    pub generation: i64,
+    #[serde(rename = "identityKey")]
+    pub identity_key: String,
+    /// One key package for each device that has one. Single-use packages are removed from the directory.
+    pub items: Vec<E2EEClaimedPackage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEClaimedPackage {
+    pub certificate: String,
+    #[serde(rename = "deviceId")]
+    pub device_id: String,
+    #[serde(rename = "keyPackage")]
+    pub key_package: String,
+    /// The device had no single-use package left; this is its reusable last-resort package.
+    #[serde(rename = "lastResort")]
+    pub last_resort: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EECommit {
+    pub commit: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    /// The epoch the commit was made in.
+    pub epoch: i64,
+    /// Account that posted it. Clients trust the MLS sender, not this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EECommitInputBody {
+    pub commit: String,
+    /// The epoch the commit was made in. It must be the group's current epoch.
+    pub epoch: i64,
+    /// The group info after the commit; omit to keep the stored one.
+    #[serde(rename = "groupInfo", skip_serializing_if = "Option::is_none")]
+    pub group_info: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub welcomes: Option<Vec<E2EEWelcomeInput>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEConversation {
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    /// The backend refuses plaintext into this conversation.
+    pub encrypted: bool,
+    /// The conversation's current group, shared by both people.
+    #[serde(rename = "groupId", skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    /// The other person's account name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EECreateGroupInputBody {
+    /// The epoch the creator reached, usually 1 after the commit that added the other devices.
+    pub epoch: i64,
+    /// The MLS group ID in base64url, chosen by the creating client: 1 to 128 characters.
+    #[serde(rename = "groupId")]
+    pub group_id: String,
+    #[serde(rename = "groupInfo", skip_serializing_if = "Option::is_none")]
+    pub group_info: Option<String>,
+    /// Account names allowed to read and extend the group log, including your own. A direct conversation's group has exactly the two people.
+    pub members: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub welcomes: Option<Vec<E2EEWelcomeInput>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEDevice {
+    /// The device certificate, signed by the identity key. Clients check the signature; the server does not.
+    pub certificate: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "deviceId")]
+    pub device_id: String,
+    /// Single-use key packages in stock.
+    #[serde(rename = "keyPackages")]
+    pub key_packages: i64,
+    /// A name for the device that only the account's own devices see, such as Firefox on Linux.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// A reusable last-resort key package is stored.
+    #[serde(rename = "lastResort")]
+    pub last_resort: bool,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEDeviceInputBody {
+    pub certificate: String,
+    /// The identity generation the certificate was made under. A certificate for an older generation is refused.
+    pub generation: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// A reusable key package handed out when the device has no single-use package left. Omit to keep the stored one.
+    #[serde(rename = "lastResort", skip_serializing_if = "Option::is_none")]
+    pub last_resort: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEEpoch {
+    /// The group's epoch after the commit.
+    pub epoch: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEGroup {
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "createdBy", skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    /// The current epoch. The next commit must name it.
+    pub epoch: i64,
+    #[serde(rename = "groupId")]
+    pub group_id: String,
+    /// The newest group info, which an approved new device uses to join by external commit.
+    #[serde(rename = "groupInfo", skip_serializing_if = "Option::is_none")]
+    pub group_info: Option<String>,
+    pub members: Vec<String>,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEIdentity {
+    /// Increases with every reset. Device certificates name the generation they were made under.
+    pub generation: i64,
+    /// The account's identity public key, as its client encoded it.
+    #[serde(rename = "identityKey")]
+    pub identity_key: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEIdentityInputBody {
+    /// The identity public key.
+    #[serde(rename = "identityKey")]
+    pub identity_key: String,
+    /// Start fresh: replace a different existing identity key. This removes every device, key package, waiting Welcome and approval message of the old identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEKeyPackagesInputBody {
+    #[serde(rename = "keyPackages")]
+    pub key_packages: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEOwnDirectory {
+    pub devices: Vec<E2EEDevice>,
+    /// Absent until the account's first device publishes an identity key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity: Option<E2EEIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEPeerDevice {
+    pub certificate: String,
+    #[serde(rename = "deviceId")]
+    pub device_id: String,
+    #[serde(rename = "keyPackages")]
+    pub key_packages: i64,
+    #[serde(rename = "lastResort")]
+    pub last_resort: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEPeerDirectory {
+    pub account: String,
+    pub devices: Vec<E2EEPeerDevice>,
+    pub generation: i64,
+    #[serde(rename = "identityKey")]
+    pub identity_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEStock {
+    /// Single-use key packages now in stock for the device.
+    #[serde(rename = "keyPackages")]
+    pub key_packages: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEWelcome {
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    pub epoch: i64,
+    #[serde(rename = "groupId")]
+    pub group_id: String,
+    pub id: i64,
+    pub welcome: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEWelcomeInput {
+    /// Member account the device belongs to.
+    pub account: String,
+    #[serde(rename = "deviceId")]
+    pub device_id: String,
+    pub welcome: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EditInputBody {
     pub text: String,
 }
@@ -1864,6 +2142,40 @@ pub struct EmotesUpdatedEvent {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct Encrypted {
+    /// message for a chat message; auxiliary for a reaction, edit, delete or control event, which never counts as unread or notifies.
+    pub class: EncryptedClass,
+    /// The client's MLS message, base64url without padding. The server stores and relays it unchanged.
+    pub payload: String,
+    /// Format version of the +ircord/e2ee tag.
+    pub version: i64,
+}
+
+/// message for a chat message; auxiliary for a reaction, edit, delete or control event, which never counts as unread or notifies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum EncryptedClass {
+    #[serde(rename = "message")]
+    Message,
+    #[serde(rename = "auxiliary")]
+    Auxiliary,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EncryptionCapability {
+    /// The feature has not had its outside review yet; clients label it experimental.
+    pub experimental: bool,
+    /// Largest base64url payload one encrypted message may carry.
+    #[serde(rename = "maxPayload")]
+    pub max_payload: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ErgoAccount {
     pub channels: Vec<String>,
     pub name: String,
@@ -2006,6 +2318,8 @@ pub struct Features {
     pub attract: bool,
     pub away: bool,
     pub edit: bool,
+    /// End-to-end encrypted messages can be sent here: the server offers encryption, this is the server's home network, and a self-test showed that the network carries the +ircord/e2ee tag.
+    pub encryption: bool,
     /// Current connection can request upstream IRC history. IRCord retained history remains readable without this feature.
     pub history: bool,
     #[serde(rename = "messageLineBytes")]
@@ -2195,6 +2509,9 @@ pub struct InboxItem {
     #[serde(rename = "createdAt")]
     pub created_at: String,
     pub dismissed: bool,
+    /// The message is end-to-end encrypted. It has no excerpt; the client shows its own decrypted copy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted: Option<bool>,
     /// The message as plain text, at most 280 characters
     #[serde(skip_serializing_if = "Option::is_none")]
     pub excerpt: Option<String>,
@@ -2377,6 +2694,24 @@ pub struct ItemsChannelListEntry {
 #[serde(default)]
 pub struct ItemsChannelListing {
     pub items: Vec<ChannelListing>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsE2EEApproval {
+    pub items: Vec<E2EEApproval>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsE2EECommit {
+    pub items: Vec<E2EECommit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsE2EEWelcome {
+    pub items: Vec<E2EEWelcome>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -3008,6 +3343,9 @@ pub struct Message {
     /// Cached validated single-image dimensions bound to exact URLs in the current message. Sizing advice only; media still requires authorization.
     #[serde(rename = "embedGeometry", skip_serializing_if = "Option::is_none")]
     pub embed_geometry: Option<Vec<EmbedGeometry>>,
+    /// Set on an end-to-end encrypted message. text then holds a fixed placeholder; clients decrypt the payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted: Option<Encrypted>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event: Option<MembershipEvent>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3063,6 +3401,9 @@ pub struct MessageInputBody {
     pub attachments: Option<Vec<String>>,
     #[serde(rename = "clientId")]
     pub client_id: String,
+    /// An end-to-end encrypted message for a direct conversation on a network whose features report encryption. Leave text empty or set it to the placeholder, and leave out kind, replyToId, gif and attachments: they travel inside the payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted: Option<Encrypted>,
     /// The original network endpoint for a retained browser send.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<SendEndpoint>,
@@ -4571,6 +4912,8 @@ pub struct SendInput {
     pub client_id: String,
     #[serde(rename = "conversationId")]
     pub conversation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted: Option<Encrypted>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<SendEndpoint>,
     #[serde(skip_serializing_if = "Option::is_none")]

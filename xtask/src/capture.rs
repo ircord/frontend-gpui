@@ -13,6 +13,9 @@
 //! the backend over the internet).
 //! `CAPTURE_ONLY=attract` captures `/attract` on a first line, a later line, a message with a reaction and a reply.
 //! `CAPTURE_ONLY=fade` captures a change of colours fading, nothing else.
+//! `CAPTURE_ONLY=e2ee` captures end-to-end encryption against a backend with
+//! it on (`capture-e2ee.sh`): set-up, starting a chat, the lock, the panel
+//! with the trust caveat and the security code, and approving a second device.
 //! `CAPTURE_ONLY=ircoid` captures the game behind About's logo: ready, moving, paused, its
 //! high score table and its credits (point `IRCORD_BACKEND` at a backend with the table).
 //! `CAPTURE_ONLY=appimage` runs `dist/IRCord-GPUI-Linux-x64.AppImage` (from
@@ -56,7 +59,8 @@ COOKIE=$(curl -fsS -D - -o /dev/null -H "Origin: $SERVER" -H 'Content-Type: appl
   -d "{\"username\":\"$USER_NAME\",\"password\":\"$PASSWORD\"}" "$SERVER/api/v1/auth/signup" \
   | sed -n 's/^[Ss]et-[Cc]ookie: \(ircord_session=[^;]*\).*/\1/p')
 [ -n "$COOKIE" ] || { echo "signup set no session"; exit 1; }
-curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
+# With encryption on, the account has the home network already.
+[ "${CAPTURE_ONLY:-}" = e2ee ] || curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
   -d "{\"name\":\"Test\",\"host\":\"$IRC_HOST\",\"port\":6667,\"tls\":false,\"nick\":\"$USER_NAME\",\"autoJoin\":[\"#capture\"]}" \
   "$SERVER/api/v1/networks"
 
@@ -138,6 +142,19 @@ secret-tool search --all service com.ircord.gpui 2>&1 | grep -v '^secret' >"$OUT
 grep -q 'attribute.service = com.ircord.gpui' "$OUT/keyring.txt" \
   || { echo "the sign-in was not saved in the keyring"; exit 1; }
 echo "the sign-in is in GNOME Keyring (target/capture/keyring.txt)"
+
+# `CAPTURE_ONLY=e2ee`: end-to-end encryption (experimental) against a
+# backend with it on. A headless peer (`crates/client/examples/e2ee-peer.rs`)
+# signs up and writes first; the app's own Settings → Encryption shows the
+# device set up; the lock opens the panel, which starts the encrypted chat;
+# the panel shows the trust caveat, the security code and its QR code; a
+# message goes each way. Then a second copy of the app signs in as the same
+# account (as `localhost`, so its sign-in is kept apart): it shows its QR
+# code, both show one code, and the first approves it.
+if [ "${CAPTURE_ONLY:-}" = e2ee ]; then
+  . /work/xtask/src/capture-e2ee.sh
+  exit 0
+fi
 
 # `CAPTURE_ONLY=appimage`: the AppImage's banners, then the same start with
 # GStreamer's plugins back, where only the menu entry offer is left.
@@ -602,7 +619,8 @@ pub fn run(root: &Path) -> Result<()> {
         &passwd,
         format!("root:x:0:0::/root:/bin/sh\nircord:x:{uid}:{gid}::/tmp:/bin/sh\n"),
     )?;
-    let backend = Backend::start(root)?;
+    let e2ee = std::env::var("CAPTURE_ONLY").is_ok_and(|o| o == "e2ee");
+    let backend = Backend::start_with(root, e2ee)?;
     let mut extra = backend.network_args();
     extra.extend([
         "-v".into(),

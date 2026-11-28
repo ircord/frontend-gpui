@@ -29,6 +29,7 @@ gpui-kit = "=0.10.0"
 gpui-pre = { version = "=0.3.12", default-features = false, optional = true }
 # Frame types only, to hold an animated picture on its first frame.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+dirs = "6"
 log = "0.4"
 # Diagrams (message/diagram.rs): the SVG to a picture, with text measured
 # in the drawn font. The versions GPUI already links.
