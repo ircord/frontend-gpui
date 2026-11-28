@@ -96,6 +96,11 @@ fn has_text(w: &Workspace, conversation: &str, text: &str) -> bool {
     texts_in(w, conversation).iter().any(|t| t == text)
 }
 
+/// A group id as text: 32 lowercase hex digits (`docs/wire.md` 7.6).
+fn is_hex_group(text: &str) -> bool {
+    text.len() == 32 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 fn ready(d: &Device) {
     wait_until(&d.client, WAIT, "the device to be set up", |w| {
         w.e2ee.device.ready()
@@ -148,8 +153,9 @@ fn an_encrypted_chat_from_start_to_turning_it_off() {
         has_text(w, "dm-alice", "alice turned on (mine: false)")
     });
     let group = backend.binding("alice", "dm-bob");
-    assert!(group.is_some());
+    assert!(group.as_deref().is_some_and(is_hex_group), "{group:?}");
     assert_eq!(group, backend.binding("bob", "dm-alice"));
+    assert_eq!(backend.groups(), vec![group.clone().unwrap()]);
 
     alice.engine.send("dm-bob", "hello bob", None);
     wait_until(&bob.client, WAIT, "bob to read it", |w| {
@@ -381,6 +387,9 @@ fn a_second_device_is_approved_by_code_and_reads_what_comes_after() {
         }
     }
     assert!(backend.welcomes_taken("alice") >= 1, "the laptop joined");
+    // The group log is named in hex (`docs/wire.md` 7.6).
+    let group = backend.binding("alice", "dm-bob").unwrap();
+    assert!(backend.commits(&group) >= 1, "the commit went to {group}");
 
     // Bob's next message reaches both of Alice's devices; the laptop never
     // gets the earlier one's keys.
@@ -700,4 +709,97 @@ fn a_group_an_older_client_bound_again_is_replaced_and_ended() {
     p.turn_off(&p.alice, "dm-bob");
     p.turn_on(p.bob(), "dm-alice");
     p.talk("after");
+}
+
+#[test]
+fn a_conversation_from_before_hex_group_ids_keeps_its_group() {
+    let rt = runtime().unwrap();
+    let backend = E2eeBackend::new();
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (ka, kb) = (VaultKey::random(), VaultKey::random());
+    let alice = person(
+        &rt,
+        &backend,
+        "alice",
+        "dm-bob",
+        "m-bob",
+        "bob",
+        da.path(),
+        &ka,
+    );
+    let bob = person(
+        &rt,
+        &backend,
+        "bob",
+        "dm-alice",
+        "m-alice",
+        "alice",
+        db.path(),
+        &kb,
+    );
+    ready(&alice);
+    ready(&bob);
+    alice.engine.start_chat("dm-bob");
+    wait_until(&bob.client, WAIT, "bob's side on", |w| {
+        w.e2ee.is_on("dm-alice")
+    });
+    alice.engine.send("dm-bob", "before", None);
+    wait_until(&bob.client, WAIT, "bob reads it", |w| {
+        has_text(w, "dm-alice", "before")
+    });
+
+    // Both stop, and everything is put as 0.9.0 left it: the group named in
+    // base64url on the backend and in both vaults.
+    let hex = backend.binding("alice", "dm-bob").unwrap();
+    let legacy = super::b64url(&super::core::GroupIdBytes::from_hex(&hex).unwrap().0);
+    assert_eq!(legacy.len(), 22);
+    let (sa, sb) = (alice.server, bob.server);
+    drop((alice.engine, alice.client, bob.engine, bob.client));
+    std::thread::sleep(Duration::from_millis(300));
+    for (dir, key, conversation) in [(da.path(), &ka, "dm-bob"), (db.path(), &kb, "dm-alice")] {
+        let mut vault = super::vault::Vault::open(dir, key.clone()).unwrap();
+        let mut record = vault.conversation(conversation).cloned().unwrap();
+        assert_eq!(record.group.as_deref(), Some(hex.as_str()));
+        record.group = Some(legacy.clone());
+        vault
+            .put(super::vault::Record::Conversation(record))
+            .unwrap();
+    }
+    backend.rename_group(&hex, &legacy);
+    let earlier = sa.requests().len();
+
+    let mut snapshot = e2ee_snapshot("alice", "dm-bob", "m-bob", "bob");
+    snapshot.cursor = backend.cursor("alice");
+    let alice = device(&rt, sa, &snapshot, da.path(), &ka, "dm-bob");
+    let mut snapshot = e2ee_snapshot("bob", "dm-alice", "m-alice", "alice");
+    snapshot.cursor = backend.cursor("bob");
+    let bob = device(&rt, sb, &snapshot, db.path(), &kb, "dm-alice");
+    ready(&alice);
+    ready(&bob);
+    wait_until(&alice.client, WAIT, "history from the vault", |w| {
+        has_text(w, "dm-bob", "before") && w.e2ee.is_on("dm-bob")
+    });
+
+    alice.engine.send("dm-bob", "after", None);
+    wait_until(&bob.client, WAIT, "bob reads it", |w| {
+        has_text(w, "dm-alice", "after")
+    });
+    bob.engine.send("dm-alice", "and back", None);
+    wait_until(&alice.client, WAIT, "alice reads it", |w| {
+        has_text(w, "dm-bob", "and back")
+    });
+
+    // The same group, under its old name: no new group, and the log is read
+    // where it is.
+    assert_eq!(backend.groups(), vec![legacy.clone()]);
+    assert_eq!(backend.binding("alice", "dm-bob"), Some(legacy.clone()));
+    let commits = "/api/v1/e2ee/groups/*/commits";
+    let reads: Vec<String> = alice.server.requests()[earlier..]
+        .iter()
+        .filter(|r| r.method == "GET" && r.path.ends_with("/commits"))
+        .map(|r| r.path.clone())
+        .collect();
+    assert!(!reads.is_empty(), "no reads of {commits}");
+    assert!(reads.iter().all(|p| p.contains(&legacy)), "{reads:?}");
+    assert!(backend.plaintext().is_empty());
 }

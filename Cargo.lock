@@ -142,6 +142,7 @@ dependencies = [
  "ctr",
  "ghash",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -5340,8 +5341,9 @@ dependencies = [
 [[package]]
 name = "ircord-e2ee"
 version = "0.1.0"
-source = "git+https://github.com/ircord/e2ee?rev=6bff88cf86ebb27e1cd7cbfc3bd272becd40c377#6bff88cf86ebb27e1cd7cbfc3bd272becd40c377"
+source = "git+https://github.com/ircord/e2ee?rev=1c01f989770d4da6e8e42e28d65d14042200c624#1c01f989770d4da6e8e42e28d65d14042200c624"
 dependencies = [
+ "aes-gcm",
  "base64 0.22.1",
  "ed25519-dalek",
  "getrandom 0.2.17",
@@ -5360,7 +5362,7 @@ dependencies = [
 [[package]]
 name = "ircord-e2ee-native"
 version = "0.1.0"
-source = "git+https://github.com/ircord/e2ee?rev=6bff88cf86ebb27e1cd7cbfc3bd272becd40c377#6bff88cf86ebb27e1cd7cbfc3bd272becd40c377"
+source = "git+https://github.com/ircord/e2ee?rev=1c01f989770d4da6e8e42e28d65d14042200c624#1c01f989770d4da6e8e42e28d65d14042200c624"
 dependencies = [
  "ircord-e2ee",
  "serde_json",

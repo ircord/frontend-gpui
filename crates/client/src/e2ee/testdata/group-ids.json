@@ -1,0 +1,49 @@
+{
+  "invalid": [
+    {
+      "id": "000102030405060708090A0B0C0D0E0F",
+      "why": "uppercase"
+    },
+    {
+      "id": "AAECAwQFBgcICQoLDA0ODw",
+      "why": "base64url"
+    },
+    {
+      "id": "000102030405060708090a0b0c0d0e",
+      "why": "15 bytes"
+    },
+    {
+      "id": "0000000000000000000000000000000000",
+      "why": "17 bytes"
+    },
+    {
+      "id": "000102030405060708090a0b0c0d0e0",
+      "why": "odd length"
+    },
+    {
+      "id": "0x000102030405060708090a0b0c0d0e0f",
+      "why": "prefix"
+    },
+    {
+      "id": " 000102030405060708090a0b0c0d0e0f",
+      "why": "leading space"
+    },
+    {
+      "id": "000102030405060708090a0b0c0d0e0f\n",
+      "why": "trailing newline"
+    },
+    {
+      "id": "00010203-0405-0607-0809-0a0b0c0d0e0f",
+      "why": "UUID form"
+    },
+    {
+      "id": "",
+      "why": "empty"
+    }
+  ],
+  "valid": [
+    "000102030405060708090a0b0c0d0e0f",
+    "ffffffffffffffffffffffffffffffff",
+    "8c2f0a9e41d37b56e0f1a2b3c4d5e6f7"
+  ]
+}

@@ -172,12 +172,35 @@ fn core_err(e: CoreError) -> String {
     e.to_string()
 }
 
-fn group_b64(g: &GroupIdBytes) -> String {
-    b64url(&g.0)
+/// A group id as text: 32 lowercase hex digits (`docs/wire.md` 7.6).
+fn group_hex(g: &GroupIdBytes) -> String {
+    g.to_hex()
 }
 
+/// Reads a group id written as text: 32 lowercase hex digits, or the
+/// 22-character base64url that 0.9.0 and earlier wrote (the lengths cannot
+/// be confused). Anything else is refused.
 fn group_of(text: &str) -> Result<GroupIdBytes> {
-    from_b64url(text).map(GroupIdBytes)
+    if text.len() == 32 {
+        return GroupIdBytes::from_hex(text).map_err(core_err);
+    }
+    match from_b64url(text) {
+        Ok(b) if text.len() == 22 && b.len() == super::core::GROUP_ID_LEN => Ok(GroupIdBytes(b)),
+        _ => Err(format!("not a group id: {text:?}")),
+    }
+}
+
+/// The name the backend knows a group by: the text a conversation record
+/// already holds for it (a group made by 0.9.0 or earlier lives on the
+/// backend under its base64url name, and the backend keys by the string),
+/// otherwise its hex form.
+fn server_name(vault: Option<&Vault>, g: &GroupIdBytes) -> String {
+    vault
+        .into_iter()
+        .flat_map(|v| v.conversations())
+        .filter_map(|c| c.group.as_deref())
+        .find(|text| group_of(text).is_ok_and(|b| b == *g))
+        .map_or_else(|| group_hex(g), str::to_string)
 }
 
 fn key32(text: &str) -> Result<[u8; 32]> {
@@ -639,7 +662,7 @@ impl Engine {
                         on: op == ControlOp::EncryptionOn,
                         by: sender.account,
                         at,
-                        group: Some(group_b64(&group_id)),
+                        group: Some(group_hex(&group_id)),
                     },
                     _ => Outcome::Hidden,
                 }
@@ -789,7 +812,12 @@ impl Engine {
             .map(|k| k.peer.clone())
             .or_else(|| peer_of(&self.shared.handle.read(), conversation).ok())
             .unwrap_or_else(|| by.to_string());
-        let (group, change) = match group {
+        // The group by the name the backend and the record know it by.
+        let group = group.map(|g| match group_of(g) {
+            Ok(bytes) => server_name(Some(vault), &bytes),
+            Err(_) => g.to_string(),
+        });
+        let (group, change) = match group.as_deref() {
             Some(g) => (
                 Some(g.to_string()),
                 state::control_change(known.as_ref(), g, on, at),
@@ -802,7 +830,7 @@ impl Engine {
                         .into_iter()
                         .filter(|(_, p)| *p == peer)
                         .max_by_key(|(g, _)| d.epoch(g).unwrap_or(0))
-                        .map(|(g, _)| group_b64(&g))
+                        .map(|(g, _)| server_name(Some(vault), &g))
                 });
                 let newer = known.as_ref().is_none_or(|k| k.since < at);
                 (
@@ -1197,7 +1225,11 @@ impl Engine {
                     };
                     match joined {
                         Ok(joined) => {
-                            let group = group_b64(&joined.group_id);
+                            // The creator's name for the group, as it posted it.
+                            let group = match group_of(&welcome.group_id) {
+                                Ok(g) if g == joined.group_id => welcome.group_id.clone(),
+                                _ => group_hex(&joined.group_id),
+                            };
                             let conversation = {
                                 let w = self.shared.handle.read();
                                 w.conversations
@@ -1280,7 +1312,7 @@ impl Engine {
         };
         let Ok(commits) = self
             .api()
-            .e2ee_commits(&group_b64(group), epoch as i64)
+            .e2ee_commits(&server_name(inner.vault.as_ref(), group), epoch as i64)
             .await
         else {
             return false;
@@ -1568,7 +1600,8 @@ impl Engine {
                         }]
                     }),
                 };
-                match self.api().e2ee_commit(&group_b64(&group), &body).await {
+                let name = server_name(inner.vault.as_ref(), &group);
+                match self.api().e2ee_commit(&name, &body).await {
                     Ok(_) => {
                         let _ = device.confirm_commit(&group);
                     }
@@ -1715,7 +1748,7 @@ impl Engine {
             targets.push((inner.account.clone(), item.device_id.clone()));
         }
         let started = device.start_dm(peer, &packages).map_err(core_err)?;
-        let group = group_b64(&started.group_id);
+        let group = group_hex(&started.group_id);
         let epoch = device.epoch(&started.group_id).unwrap_or(1) as i64;
         let welcome = encode(&started.welcome);
         let body = c::E2EECreateGroupInputBody {
@@ -1742,7 +1775,7 @@ impl Engine {
             .groups()
             .into_iter()
             .filter(|(g, p)| p == peer && *g != started.group_id)
-            .map(|(g, _)| group_b64(&g))
+            .map(|(g, _)| server_name(inner.vault.as_ref(), &g))
             .collect();
         if let Err(e) = self.bind_started(conversation, &group, peer, &older).await {
             let _ = inner
@@ -1891,7 +1924,7 @@ impl Engine {
         let theirs = inner.device.as_ref().is_some_and(|d| {
             d.groups()
                 .into_iter()
-                .any(|(g, p)| p == peer && group_b64(&g) == stale)
+                .any(|(g, p)| p == peer && group_of(&stale).is_ok_and(|s| s == g))
         });
         if !theirs {
             return Err(());
@@ -1966,7 +1999,13 @@ impl Engine {
             let mut attachments = Vec::new();
             let mut failed = None;
             for file in &list {
-                let sealed = files::seal(&file.bytes);
+                let sealed = match files::seal(&file.bytes) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        failed = Some(e);
+                        break;
+                    }
+                };
                 let upload = crate::api::uploads::FileData::new(
                     "encrypted",
                     files::UPLOAD_TYPE,
@@ -2115,7 +2154,7 @@ impl Engine {
                         on: *op == ControlOp::EncryptionOn,
                         by: inner.account.clone(),
                         at: now,
-                        group: Some(group_b64(&group)),
+                        group: Some(group_hex(&group)),
                     },
                 },
                 _ => Record::SentAs {
@@ -2332,6 +2371,7 @@ impl Engine {
                 log::warn!("e2ee: remove a device: {e}");
             }
             let account = inner.account.clone();
+            let inner = &mut *inner;
             if let (Some(device), Ok(device_id)) =
                 (inner.device.as_mut(), super::core::DeviceId::from_hex(&id))
             {
@@ -2348,7 +2388,8 @@ impl Engine {
                             group_info: commit.group_info.as_deref().map(encode),
                             welcomes: None,
                         };
-                        match engine.api().e2ee_commit(&group_b64(&group), &body).await {
+                        let name = server_name(inner.vault.as_ref(), &group);
+                        match engine.api().e2ee_commit(&name, &body).await {
                             Ok(_) => {
                                 let _ = device.confirm_commit(&group);
                             }
@@ -2359,7 +2400,7 @@ impl Engine {
                     }
                 }
             }
-            engine.refresh_directory(&mut inner).await;
+            engine.refresh_directory(inner).await;
         });
     }
 
@@ -2540,8 +2581,8 @@ fn conversation_for_web(c: &Conversation) -> ConversationRecord {
         group_id: c
             .group
             .as_deref()
-            .and_then(|g| from_b64url(g).ok())
-            .map(|g| super::hex(&g))
+            .and_then(|g| group_of(g).ok())
+            .map(|g| group_hex(&g))
             .unwrap_or_default(),
         peer: c.peer.clone(),
         on: c.on,
@@ -2558,7 +2599,7 @@ fn conversation_from_web(r: ConversationRecord) -> Option<Conversation> {
     let group = if r.group_id.is_empty() {
         None
     } else {
-        Some(b64url(&from_hex(&r.group_id)?))
+        Some(group_hex(&GroupIdBytes::from_hex(&r.group_id).ok()?))
     };
     Some(Conversation {
         conversation: r.conversation_id,
@@ -2568,16 +2609,6 @@ fn conversation_from_web(r: ConversationRecord) -> Option<Conversation> {
         since: r.at.unwrap_or_default(),
         by: r.by.unwrap_or_default(),
     })
-}
-
-fn from_hex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
-        .collect()
 }
 
 /// Sends queued text one at a time, in order, until the engine is dropped.
@@ -2608,6 +2639,32 @@ async fn run(weak: Weak<Shared>) {
 
 #[cfg(test)]
 mod tests {
+    /// `test-vectors/group-ids.json` of ircord/e2ee at 1c01f98 (the pinned core).
+    const GROUP_IDS: &str = include_str!("testdata/group-ids.json");
+
+    #[test]
+    fn group_ids_are_read_as_the_specification_says_and_in_the_old_form() {
+        use super::{group_hex, group_of};
+        let v: serde_json::Value = serde_json::from_str(GROUP_IDS).unwrap();
+        for id in v["valid"].as_array().unwrap() {
+            let id = id.as_str().unwrap();
+            assert_eq!(group_hex(&group_of(id).unwrap()), id);
+        }
+        for case in v["invalid"].as_array().unwrap() {
+            let id = case["id"].as_str().unwrap();
+            // The old base64url form is the one deliberate exception.
+            if case["why"] == "base64url" {
+                let g = group_of(id).unwrap();
+                assert_eq!(group_hex(&g), "000102030405060708090a0b0c0d0e0f");
+            } else {
+                assert!(group_of(id).is_err(), "accepted: {}", case["why"]);
+            }
+        }
+        // base64url of another length, or padded, is not a group id either.
+        assert!(group_of("AAECAwQFBgcICQoLDA0ODw==").is_err());
+        assert!(group_of("AAECAwQFBgcICQoLDA0O").is_err());
+    }
+
     use super::*;
     use crate::testing::SnapshotBuilder;
 

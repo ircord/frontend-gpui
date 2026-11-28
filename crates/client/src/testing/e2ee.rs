@@ -171,6 +171,36 @@ impl E2eeBackend {
         );
     }
 
+    /// The names of the groups the backend holds.
+    pub fn groups(&self) -> Vec<String> {
+        self.state.lock().unwrap().groups.keys().cloned().collect()
+    }
+
+    /// Commits posted to a group so far.
+    pub fn commits(&self, group: &str) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .groups
+            .get(group)
+            .map_or(0, |g| g.commits.len())
+    }
+
+    /// Give a group another name, with its bindings and Welcomes: the
+    /// backend as it is when an older client named the group.
+    pub fn rename_group(&self, from: &str, to: &str) {
+        let mut s = self.state.lock().unwrap();
+        if let Some(g) = s.groups.remove(from) {
+            s.groups.insert(to.to_string(), g);
+        }
+        for g in s.pairs.values_mut().filter(|g| *g == from) {
+            *g = to.to_string();
+        }
+        for w in s.welcomes.iter_mut().filter(|w| w.3 == from) {
+            w.3 = to.to_string();
+        }
+    }
+
     /// Devices published for `account`, by ID, with their labels.
     pub fn devices(&self, account: &str) -> Vec<(String, String)> {
         self.state
