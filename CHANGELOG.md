@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.9.1 — 2026-11-28
+
 ### New
 
 - Server owners can turn encrypted direct messages on or off in Administration → Encryption, effective at once. Turning it off deletes nothing. When the server configuration sets the mode, the section shows it and why.
