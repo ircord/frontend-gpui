@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.10.1 — 2026-11-28
+
 ### Changed
 
 - Experimental: New encrypted group moved from the network menu to a lock beside the sidebar's Direct messages heading, where the web client has it. Until this device's encryption is set up, the lock says so and opens Settings → Encryption.
