@@ -19,7 +19,7 @@ aes-gcm = "0.10"
 chacha20poly1305 = "0.10"
 hkdf = "0.12"
 hmac = "0.12"
-ircord-e2ee-native = { git = "https://github.com/ircord/e2ee", rev = "6bff88cf86ebb27e1cd7cbfc3bd272becd40c377" }
+ircord-e2ee-native = { git = "https://github.com/ircord/e2ee", rev = "1c01f989770d4da6e8e42e28d65d14042200c624" }
 qrcode = { version = "0.14", default-features = false }
 sha2 = "0.10"
 serde.workspace = true

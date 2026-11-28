@@ -67,9 +67,9 @@ naming the current one in `replaces`:
   as off, since the notice has gone out, and shows the error when the
   server's group cannot be ended.
 
-Group IDs on the server are base64url here, as the backend's API describes
-them; the web client sends lowercase hex, so neither client can bind or end
-by ID a group that the other one made.
+Group IDs on the server are 32 lowercase hex digits, as the web client
+writes them (see "Group IDs" below), so either client can bind or end a group
+the other one made.
 
 ## The device's store
 
@@ -142,12 +142,27 @@ up. Handing the identity key to approved devices needs a core change.
 
 ## Files
 
-A file in an encrypted conversation is encrypted before upload with a fresh
-random 32-byte key: ChaCha20-Poly1305, zero nonce, associated data
-`"ircord-e2ee/1 file"`. It goes up as `application/octet-stream` named
+A file in an encrypted conversation is encrypted before upload as the core's
+wire specification (section 6.4) says, the same way the web client does: a
+fresh random 32-byte key, AES-256-GCM with a random 12-byte nonce and no
+associated data, uploaded as nonce, ciphertext and tag (the core's
+`seal_file` and `open_file`). It goes up as `application/octet-stream` named
 `encrypted`; the core's `Attachment` in the message carries the URL, the key
-(base64url), the hex SHA-256 of the uploaded bytes, the real name, type and
-size. A receiver checks the hash before decrypting. Pictures are drawn from
+(base64url, no padding), the lowercase hex SHA-256 of the uploaded bytes, the
+real name, type and size. A receiver checks the hash before decrypting.
+Files sent by 0.9.0 and earlier used ChaCha20-Poly1305 with a zero nonce and
+the associated data `"ircord-e2ee/1 file"`; they still open here, and the web
+client cannot read them.
+
+## Group IDs
+
+A group's ID is written as 32 lowercase hex digits wherever it is text (the
+specification's section 7.6): the backend's group and commit paths, the
+conversation binding, and the approval handover. Groups made by 0.9.0 and
+earlier are named in base64url on the backend, which keys by the string; the
+conversation record keeps that name and the engine goes on using it for the
+group's log (`server_name` in `engine.rs`). Only groups made since then work
+with the web client. Pictures are drawn from
 the decrypted bytes; other files are written to the downloads folder when
 opened.
 

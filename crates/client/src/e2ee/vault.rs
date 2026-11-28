@@ -155,7 +155,8 @@ pub struct Conversation {
     pub conversation: String,
     /// The other account.
     pub peer: String,
-    /// The MLS group, base64url; absent once the account or the peer started
+    /// The MLS group as the backend names it: 32 hex digits (records
+    /// written by 0.9.0 and earlier: base64url); absent once the account or the peer started
     /// fresh, until a new group replaces it.
     pub group: Option<String>,
     /// Encryption is on: nothing is sent in the clear.

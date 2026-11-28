@@ -1,0 +1,111 @@
+{
+  "invalid": [
+    {
+      "file": "a1a1a2a3a4a5a6a7a8a9aaab8e7d10412ae722c80d17ebb777a8ea7d7a8c5bea17100e19fdcb085d",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "sha256": "681b2424740e33b20c8f034e73a646094e01e2d44030db3e114d93b2b448a3dc",
+      "why": "nonce changed"
+    },
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaab8f7d10412ae722c80d17ebb777a8ea7d7a8c5bea17100e19fdcb085d",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "sha256": "15302702609ce93f0186b65352b6ed4e6ffb208c038c70652293c19cdeb7a1ca",
+      "why": "ciphertext changed"
+    },
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaab8e7d10412ae722c80d17ebb777a8ea7d7a8c5bea17100e19fdcb085c",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "sha256": "2977798807f6a374e583fb839b9e51e00e2ca5950114a3c08df0ab9938186511",
+      "why": "tag changed"
+    },
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaab8e7d10412ae722c80d17ebb777a8ea7d7a8c5bea17100e19fdcb08",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "sha256": "84ed0e03d5510bb1eba90e6456e2c9024d22aa868283655b9344d78c1297754f",
+      "why": "last byte of the tag cut off"
+    },
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaab5c699625af4b93a0f8220a2a6119c5d1",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "sha256": "99472d0d3efc35fb886de1a177aa8c1760c170c98b43de1b983b5e9c0db549a5",
+      "why": "empty file, tag changed"
+    },
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaab8e7d10412ae722c80d17ebb777a8ea",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "sha256": "8e52fafaf191636bac990b0d4fc0d2c891dbb5ebf556d71852a4354fe9e84834",
+      "why": "shorter than nonce and tag"
+    },
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaab8e7d10412ae722c80d17ebb777a8ea7d7a8c5bea17100e19fdcb085d",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "sha256": "19cb919424c096a3123046c006da75045b0edcb4958852daf325fadffb6594d3",
+      "why": "sha256 of another file"
+    },
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaab8e7d10412ae722c80d17ebb777a8ea7d7a8c5bea17100e19fdcb085d",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "sha256": "36721CA04B2D1318AC117E3F657B4144C57B119AB82EAB44570CC9CE641C3E3D",
+      "why": "sha256 in uppercase"
+    },
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaab8e7d10412ae722c80d17ebb777a8ea7d7a8c5bea17100e19fdcb085d",
+      "key": "-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_s",
+      "sha256": "36721ca04b2d1318ac117e3f657b4144c57b119ab82eab44570cc9ce641c3e3d",
+      "why": "key of another file"
+    },
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaab8e7d10412ae722c80d17ebb777a8ea7d7a8c5bea17100e19fdcb085d",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHg",
+      "sha256": "36721ca04b2d1318ac117e3f657b4144c57b119ab82eab44570cc9ce641c3e3d",
+      "why": "key of 31 bytes"
+    },
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaab8e7d10412ae722c80d17ebb777a8ea7d7a8c5bea17100e19fdcb085d",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh9",
+      "sha256": "36721ca04b2d1318ac117e3f657b4144c57b119ab82eab44570cc9ce641c3e3d",
+      "why": "key with non-zero trailing bits"
+    },
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaab8e7d10412ae722c80d17ebb777a8ea7d7a8c5bea17100e19fdcb085d",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "sha256": "36721ca04b2d1318ac117e3f657b4144c57b119ab82eab44570cc9ce641c3e3",
+      "why": "sha256 of 63 digits"
+    },
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaab8e7d10412ae722c80d17ebb777a8ea7d7a8c5bea17100e19fdcb085d",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "sha256": "36721ca04b2d1318ac117e3f657b4144c57b119ab82eab44570cc9ce641c3e3d",
+      "why": "key with padding"
+    },
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaaba5f3ceeba745bea1efbef445c2b2309bee924d076e932c6ace001a0a",
+      "key": "+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/s",
+      "sha256": "19cb919424c096a3123046c006da75045b0edcb4958852daf325fadffb6594d3",
+      "why": "key in standard base64"
+    }
+  ],
+  "valid": [
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaab5c699625af4b93a0f8220a2a6119c5d0",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "nonce": "a0a1a2a3a4a5a6a7a8a9aaab",
+      "plaintext": "",
+      "sha256": "8c97014e5f2e8d57442ba7aa76440a09259410af1d5cb920ca4293caf012d864"
+    },
+    {
+      "file": "a0a1a2a3a4a5a6a7a8a9aaab8e7d10412ae722c80d17ebb777a8ea7d7a8c5bea17100e19fdcb085d",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "nonce": "a0a1a2a3a4a5a6a7a8a9aaab",
+      "plaintext": "68656c6c6f2c20776f726c64",
+      "sha256": "36721ca04b2d1318ac117e3f657b4144c57b119ab82eab44570cc9ce641c3e3d"
+    },
+    {
+      "file": "0000000000000000000000000506154d7ea051f49d6ec1c9c88656e707b14ed32685b0e54cd85ab7fac27a7513b1a589f6a1826ee6adbc37a4e5c8b490611dcac61975b017cc293ab156c553232a7448646aeaeb646b04c84ac1a4a13b6031ff41e2f511ea0d2db177839e30c3f65420601c64c8b1ce6d217b90284964bd6b70ac0cc5e4ce0bf71bf31b459c3919c5ce12a3ffdef4dff14c7467a4a85623f9a20321bf1c6bd2e86b920a4ae2d36ecd5d74c1577cae73df04253840a8473eee7f666f42ddbaf6eeb3927a45de84a5565e4e109ad91e995477a2b7212de4fa314c7cc6b62460678c09ecf7d515b84131cb0bb05b8185aaee532c44c815960800f6c066a0e4a68608f33f0ec2cb12cf685287eabe29a995542eb3c2cef68555dec6b3bacbbb23e64368b7cc603e4dcd2c29c9eaaba3d7bd5dbee238fdfd20bf550ed3f326a1b084480d70699cb8e23c4e974acb824bcc9f516ada7748b9737d512fdde6158e6f6ff3db480170432aa93a3357a5e9863069882417042354a465aa8e52c29fe7071d172388ae20d8b66e2845fc790a49e77af86b70db3ea9df64c2dafb979ab6900b5832f2a801b1ca9f57b0d3e3811799fb5d3846586107e400a7621fabc009859e408b5617a924fb5da6e9a6674fb35402c2053f0cd31fb08bbf38fbe5b24e2cc9603012f589dd6ec9864737a033d22f18469375f3ab102cbc3617ff9b3ec5480c47779f5be9f22ea1823fc2ca371d4b9be4b5df193f92ec55244b8e7acd1ac502b990f31765cc84c885d8c5708c525e7a93f1b62b00c26747713ed1dae160fac4d0d42fe2d4cecf79f7e06497de013ceb2d5a83e34a414fde5ade5af3bb132eefcc030eb851c4e4b210c092f56185cb9a3aaa18b9ed81dd262684e430d967e8be647f5876fa98d01f1b263e89ac75c8b4eab5c134f471c8b0191578ea651746d86e381d1485852cca995711e71b2fd74dd2301d2f98647ecb891ffc7cedf7a511b0336216eb219cde5127bdbefdce9ccf016f2fa457eab960277fcb02c65ca67f9ed9358cf7b6c95b5f34cca1c0bc09264e99d4c463f889310e2b10da6a1855a91d57b94086a3287edee746a153288cc3312efe33913c065005d4eeacac87f972bf296899fa11d0a24a4573730edec2694c2fa4470456b107adbf99c95f2c0582418ecee3c59a084a3c7bc70eb59e8fc62b9fa3940cdd75f28af301ab717589ad74c0b0399c38e380ac0871bf18a9cf028fd82de495858b025f2b25c07dc3495c3971647812990e214fc788c23e72f149018ccf98d712d3696aed7df01aab960653ba3cc8be2782447423bd9216aea8ffd7505afd52776966a5b511be87bf1926a03eefb29aa4a96e485325e3ccc3aa71ff9ff06830ca1a337bc41af086a91b1d76a7dc29f489b937d900a9f084a75de2f240179d34651284fef1ed862125",
+      "key": "-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_v7-_s",
+      "nonce": "000000000000000000000000",
+      "plaintext": "00070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef501080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f9050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf400070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef501080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f9050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf400070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef501080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f9050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf400070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef501080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f9050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8",
+      "sha256": "3b54d6f88265a2577e71d9dcb6a9bfd8b70589ce26df8d7bc0ec87789665b1e0"
+    }
+  ]
+}
