@@ -5288,6 +5288,7 @@ dependencies = [
 name = "ircord-client"
 version = "0.9.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "base64 0.22.1",
  "chacha20poly1305",
@@ -5297,6 +5298,7 @@ dependencies = [
  "dirs 6.0.0",
  "futures",
  "hkdf 0.12.4",
+ "hmac 0.12.1",
  "http",
  "iana-time-zone",
  "ircord-contract",
@@ -5318,7 +5320,6 @@ dependencies = [
  "tokio-tungstenite",
  "url",
  "webpki-roots",
- "x25519-dalek 2.0.1",
 ]
 
 [[package]]

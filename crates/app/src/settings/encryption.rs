@@ -1,16 +1,20 @@
 //! Settings → Encryption (experimental): this device's end-to-end
 //! encryption. A device set up shows the account's fingerprint, its devices
-//! and requests from new ones to approve, each with the code both devices
-//! show; a new device shows its QR code and, once another device answered,
-//! the code to compare. Starting fresh is here too, behind a confirmation
-//! that says what follows. There is no recovery key: the page says so.
+//! and, when it can approve others, a field for the approval code a new
+//! device shows and how many wait; a new device shows that code, as text and
+//! as a QR code, as the web client does. Starting fresh is here too, behind
+//! a confirmation that says what follows. There is no recovery key: the page
+//! says so.
 
 use gpui_kit::TestSupportExt;
+use std::collections::HashMap;
+
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Disableable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use ircord_client::store::e2ee::DeviceState;
+use ircord_client::store::e2ee::{ApprovalFailure, Approving, DeviceState};
 
 use super::{block, row};
 use crate::features::encryption::{engine, qr_code};
@@ -44,7 +48,7 @@ pub fn init(cx: &mut App) {
     });
 }
 
-fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
+fn render(ctx: &SettingsCtx, window: &mut Window, cx: &mut App) -> AnyElement {
     let theme = theme::get(cx).clone();
     let Some(client) = ctx.session.read(cx).client().cloned() else {
         return div().into_any_element();
@@ -57,7 +61,8 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
     let state = w.e2ee.device.clone();
     let fingerprint = w.e2ee.fingerprint.clone();
     let devices = w.e2ee.devices.clone();
-    let requests = w.e2ee.requests.clone();
+    let waiting_approvals = w.e2ee.waiting_approvals;
+    let approving = w.e2ee.approving.clone();
     let error = w.e2ee.errors.get("").cloned();
     drop(w);
     let mut page = div()
@@ -96,19 +101,8 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
         device_control(&ctx.session, &state, &theme),
         &theme,
     ));
-    if let DeviceState::Waiting {
-        qr,
-        code,
-        confirmed,
-    } = &state
-    {
-        page = page.child(waiting(
-            &ctx.session,
-            qr,
-            code.as_deref(),
-            *confirmed,
-            &theme,
-        ));
+    if let DeviceState::Waiting { qr, code } = &state {
+        page = page.child(waiting(qr, code, &theme));
     }
     if let Some(e) = error {
         page = page.child(
@@ -121,8 +115,14 @@ fn render(ctx: &SettingsCtx, _window: &mut Window, cx: &mut App) -> AnyElement {
                 .child(t!("encryption-error", error = e)),
         );
     }
-    for request in &requests {
-        page = page.child(request_card(&ctx.session, request, &theme));
+    if matches!(state, DeviceState::Ready { approver: true }) {
+        page = page.child(approve_block(
+            ctx,
+            waiting_approvals,
+            &approving,
+            window,
+            cx,
+        ));
     }
     if let Some(f) = fingerprint {
         page = page.child(
@@ -226,51 +226,9 @@ fn device_control(session: &Entity<Session>, state: &DeviceState, theme: &Theme)
     }
 }
 
-/// What a new device shows while it waits: the QR code, then the code.
-fn waiting(
-    session: &Entity<Session>,
-    qr: &str,
-    code: Option<&str>,
-    confirmed: bool,
-    theme: &Theme,
-) -> impl IntoElement {
-    let (s1, s2) = (session.clone(), session.clone());
-    // Once the other device answered: the person confirms here too that the
-    // codes match, or starts over.
-    let answer = code.is_some().then(|| {
-        if confirmed {
-            div()
-                .text_color(theme.muted)
-                .child(t!("encryption-settings-waiting-approve"))
-                .into_any_element()
-        } else {
-            div()
-                .flex()
-                .gap_2()
-                .child(
-                    Button::new("encryption-settings-codes-match")
-                        .small()
-                        .primary()
-                        .label(t!("encryption-settings-codes-match"))
-                        .on_click(move |_, _, cx| {
-                            if let Some(engine) = engine(&s1, cx) {
-                                engine.confirm_code(true);
-                            }
-                        }),
-                )
-                .child(
-                    Button::new("encryption-settings-codes-differ")
-                        .small()
-                        .label(t!("encryption-settings-codes-differ"))
-                        .on_click(move |_, _, cx| {
-                            if let Some(engine) = engine(&s2, cx) {
-                                engine.confirm_code(false);
-                            }
-                        }),
-                )
-                .into_any_element()
-        }
-    });
+/// What a new device shows while it waits: the QR code to scan and the
+/// code to type on the approving device.
+fn waiting(qr: &str, code: &str, theme: &Theme) -> impl IntoElement {
     div()
         .id("encryption-settings-waiting")
         .test_support()
@@ -302,122 +260,198 @@ fn waiting(
                         .text_color(theme.muted)
                         .child(t!("encryption-settings-waiting-qr")),
                 )
-                .child(match code {
-                    Some(code) => div()
+                .child(
+                    div()
                         .id("encryption-settings-code")
                         .test_support()
                         .role(Role::Status)
                         .aria_label(SharedString::from(code.to_string()))
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(t!("encryption-settings-waiting-code"))
-                        .child(
-                            div()
-                                .font_family(theme.mono_font.clone())
-                                .text_xl()
-                                .text_color(theme.text)
-                                .child(code.to_string()),
-                        ),
-                    None => div()
-                        .id("encryption-settings-code")
-                        .test_support()
-                        .role(Role::Status)
+                        .font_family(theme.mono_font.clone())
+                        .text_xl()
+                        .text_color(theme.text)
+                        .child(code.to_string()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.warning)
+                        .child(t!("encryption-settings-waiting-secret")),
+                )
+                .child(
+                    div()
                         .text_color(theme.muted)
                         .child(t!("encryption-settings-waiting-answer")),
-                })
-                .children(answer),
+                ),
         )
 }
 
-fn request_card(
-    session: &Entity<Session>,
-    request: &ircord_client::store::e2ee::Request,
-    theme: &Theme,
+/// On a device that can approve others: the code field, how many devices
+/// wait, and how the last approval went.
+fn approve_block(
+    ctx: &SettingsCtx,
+    waiting: usize,
+    approving: &Approving,
+    window: &mut Window,
+    cx: &mut App,
 ) -> impl IntoElement {
-    let (s1, s2) = (session.clone(), session.clone());
-    let (d1, d2) = (request.device.clone(), request.device.clone());
-    // Approves only the code the person saw.
-    let shown = request.code.clone();
-    let label = if request.label.is_empty() {
-        t!("encryption-settings-unnamed").to_string()
-    } else {
-        request.label.clone()
+    let theme = theme::get(cx).clone();
+    let form = form(&ctx.session, window, cx);
+    let count = match waiting {
+        0 => t!("encryption-settings-approve-none").to_string(),
+        1 => t!("encryption-settings-approve-waiting-one").to_string(),
+        n => t!("encryption-settings-approve-waiting", count = n).to_string(),
+    };
+    let outcome = match approving {
+        Approving::Idle => None,
+        Approving::Busy => Some((
+            t!("encryption-settings-approve-busy").to_string(),
+            theme.muted,
+            Role::Status,
+        )),
+        Approving::Done => Some((
+            t!("encryption-settings-approve-done").to_string(),
+            theme.online,
+            Role::Status,
+        )),
+        Approving::Failed(f) => Some((
+            match f {
+                ApprovalFailure::BadCode => t!("encryption-settings-approve-bad-code").to_string(),
+                ApprovalFailure::NotFound => {
+                    t!("encryption-settings-approve-not-found").to_string()
+                }
+                ApprovalFailure::Other(e) => {
+                    t!("encryption-settings-approve-failed", error = e).to_string()
+                }
+            },
+            theme.danger,
+            Role::Alert,
+        )),
     };
     div()
-        .id(SharedString::from(format!(
-            "encryption-request-{}",
-            request.device
-        )))
+        .id("encryption-approve")
         .test_support()
         .role(Role::Group)
-        .aria_label(SharedString::from(t!(
-            "encryption-settings-request",
-            label = label.clone()
-        )))
+        .aria_label(t!("encryption-settings-approve-title"))
         .flex()
         .flex_col()
         .gap_2()
         .p_3()
         .rounded(theme.radius)
         .border_1()
-        .border_color(theme.accent)
-        .bg(theme.accent.opacity(0.08))
+        .border_color(theme.border)
         .child(
             div()
                 .text_color(theme.text)
-                .child(t!("encryption-settings-request", label = label)),
+                .child(t!("encryption-settings-approve-title")),
         )
-        .child(match &request.code {
-            Some(code) => div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .text_sm()
-                .text_color(theme.text)
-                .child(t!("encryption-settings-request-code"))
-                .child(
-                    div()
-                        .id("encryption-request-code")
-                        .test_support()
-                        .role(Role::Status)
-                        .aria_label(SharedString::from(code.clone()))
-                        .font_family(theme.mono_font.clone())
-                        .text_xl()
-                        .child(code.clone()),
-                ),
-            None => div()
+        .child(
+            div()
                 .text_sm()
                 .text_color(theme.muted)
-                .child(t!("encryption-settings-request-waiting")),
-        })
+                .child(t!("encryption-settings-approve-help")),
+        )
         .child(
             div()
-                .flex()
-                .gap_2()
-                .child(
-                    Button::new("encryption-request-approve")
-                        .small()
-                        .primary()
-                        .label(t!("encryption-settings-approve"))
-                        .disabled(request.code.is_none())
-                        .on_click(move |_, _, cx| {
-                            if let Some(engine) = engine(&s1, cx) {
-                                engine.answer(&d1, shown.as_deref(), true);
-                            }
-                        }),
-                )
-                .child(
-                    Button::new("encryption-request-decline")
-                        .small()
-                        .label(t!("encryption-settings-decline"))
-                        .on_click(move |_, _, cx| {
-                            if let Some(engine) = engine(&s2, cx) {
-                                engine.answer(&d2, None, false);
-                            }
-                        }),
-                ),
+                .id("encryption-approve-waiting")
+                .test_support()
+                .role(Role::Status)
+                .aria_label(SharedString::from(count.clone()))
+                .text_sm()
+                .text_color(if waiting > 0 { theme.text } else { theme.muted })
+                .child(count),
         )
+        .child(form)
+        .children(outcome.map(|(text, color, role)| {
+            div()
+                .id("encryption-approve-outcome")
+                .test_support()
+                .role(role)
+                .aria_label(SharedString::from(text.clone()))
+                .text_sm()
+                .text_color(color)
+                .child(text)
+        }))
+}
+
+/// The approval code field, one per session.
+struct ApproveForm {
+    session: Entity<Session>,
+    code: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl ApproveForm {
+    fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let code = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("encryption-settings-approve-placeholder"))
+        });
+        let subscriptions = vec![cx.subscribe_in(
+            &code,
+            window,
+            |this: &mut Self, _, event, window, cx| match event {
+                InputEvent::PressEnter { .. } => this.approve(window, cx),
+                InputEvent::Change => cx.notify(),
+                _ => {}
+            },
+        )];
+        Self {
+            session,
+            code,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    fn approve(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let typed = self.code.read(cx).value().to_string();
+        if typed.trim().is_empty() {
+            return;
+        }
+        if let Some(engine) = engine(&self.session, cx) {
+            engine.approve(&typed);
+        }
+        self.code
+            .update(cx, |field, cx| field.set_value("", window, cx));
+    }
+}
+
+impl Render for ApproveForm {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let empty = self.code.read(cx).value().trim().is_empty();
+        div()
+            .flex()
+            .gap_2()
+            .items_center()
+            .child(
+                div().flex_1().min_w_0().child(
+                    Input::new(&self.code)
+                        .id("encryption-approve-code")
+                        .aria_label(t!("encryption-settings-approve-placeholder"))
+                        .small(),
+                ),
+            )
+            .child(
+                Button::new("encryption-approve-button")
+                    .small()
+                    .primary()
+                    .label(t!("encryption-settings-approve"))
+                    .disabled(empty)
+                    .on_click(cx.listener(|this, _, window, cx| this.approve(window, cx))),
+            )
+    }
+}
+
+#[derive(Default)]
+struct Forms(HashMap<EntityId, Entity<ApproveForm>>);
+impl Global for Forms {}
+
+fn form(session: &Entity<Session>, window: &mut Window, cx: &mut App) -> Entity<ApproveForm> {
+    let key = session.entity_id();
+    if let Some(form) = cx.default_global::<Forms>().0.get(&key) {
+        return form.clone();
+    }
+    let form = cx.new(|cx| ApproveForm::new(session.clone(), window, cx));
+    cx.default_global::<Forms>().0.insert(key, form.clone());
+    form
 }
 
 fn device_list(

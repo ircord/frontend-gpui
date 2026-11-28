@@ -55,66 +55,49 @@ encrypted message again: history pages, restarts and search all read it.
 
 ## Approving a new device
 
-A device that is not yet approved makes its device key (`create_device`)
-and asks every device of its account in the directory for approval. Four
-messages pass through the backend's approval relay (`POST /api/v1/e2ee/approvals`),
-each a JSON object, UTF-8, as the relay's opaque payload:
+The GPUI client speaks the web client's handshake
+(`shared/e2ee/codec.ts` in ircord/frontend), so either can approve the
+other. Everything passes through the backend's approval relay
+(`POST /api/v1/e2ee/approvals`), so the server sees all of it except the
+approval code: 20 uniformly random decimal digits that the new device shows,
+in groups of five and as the QR code `ircord-e2ee-approve:2:<digits>`, and the
+person carries to the approving device by scanning or typing.
 
-| # | From | `t` | Fields |
-|---|---|---|---|
-| 1 | new | `request` | `v`: 1; `commit`: hex SHA-256 of `"ircord-e2ee/1 approval commit" ‖ 0x00 ‖ eN ‖ R`; `label`: the device's name, at most 100 characters |
-| 2 | approver | `accept` | `v`; `eph`: `eA`, base64url |
-| 3 | new | `reveal` | `v`; `eph`: `eN`, base64url; `req`: `R`, base64url |
-| 4 | approver | `approve` | `v`; `sealed`: base64url ciphertext (below) |
-| – | approver | `decline` | `v` |
+1. The new device makes the core's certificate request `R` (wire 3.2) and
+   posts `R ‖ HMAC-SHA256(k_req, R)` to the relay mailbox `pending`, from its
+   own device ID. It posts it again every 8 minutes (the relay forgets after
+   10) and keeps showing the same code.
+2. The approving device lists `pending`, takes the code from the person and
+   certifies only the request whose HMAC checks out under it
+   (`certify_device(R)`). A server cannot make such a request without the
+   code. It relays to the new device's ID (read from the certificate) a
+   12-byte random IV followed by the AES-256-GCM ciphertext, under `k_hand`
+   and without associated data, of the JSON
 
-`eN` and `eA` are fresh X25519 public keys, one per handshake; `R` is the
-core's certificate request (`CertificateRequest`, wire 3.2). The approver
-checks message 3 against the commitment of message 1 and refuses a
-mismatch.
+   ```json
+   {"certificate": "<DeviceCertificate, base64>",
+    "verified": [{"account": "bob", "identityKey": "<identity key, base64>"}],
+    "conversations": [{"conversationId": "…", "groupId": "<group ID, 32 hex digits>",
+                       "peer": "bob", "on": true, "by": "alice", "at": 1795841882000}]}
+   ```
 
-Both sides then compute
+   and removes the request from `pending`.
+3. The new device opens only an answer sealed under its own code, installs
+   the certificate only if it is signed by the identity key the directory
+   publishes for the account, pins the verified identities, keeps the
+   encrypted conversations (so the server cannot make one look unencrypted on
+   it), and publishes itself in the directory. The approver then adds it to
+   each of its groups with an ordinary commit and Welcome through the group
+   log (version 1 of the core refuses external commits).
 
-```
-shared = X25519(own secret, other public)            (refused if not contributory)
-prk    = HKDF-SHA256(salt = "ircord-e2ee/1 approval", ikm = shared)
-code   = HKDF-Expand(prk, "code" ‖ eN ‖ eA ‖ R, 8)   → big-endian u64 mod 10^8,
-                                                        8 digits, shown "1234 5678"
-key    = HKDF-Expand(prk, "key"  ‖ eN ‖ eA ‖ R, 32)
-```
-
-and show the code. The person confirms on both devices that they show the
-same code: on the approving device by approving (the approval is refused if
-the request's code changed after it was shown), and on the new device, which
-installs an approval only after that confirmation and only if the
-certificate is signed by the identity key the directory publishes for the
-account. The new device committed to `eN` before it saw `eA`, so
-a relay in the middle cannot pick keys that make the two codes agree, except
-by a one-in-10^8 guess.
-
-Message 4 is ChaCha20-Poly1305 under `key`, a zero nonce (the key seals one
-message) and associated data `"ircord-e2ee/1 approval transfer"`, over the
-JSON
-
-```json
-{"certificate": "<DeviceCertificate, base64url>",
- "pins": [["bob", "<identity key, base64url>", true]],
- "conversations": [{"conversation": "…", "peer": "bob", "group": "<group ID, base64url>",
-                    "on": true, "since": 1795841882000, "by": "alice"}]}
-```
-
-The certificate is the core's `certify_device(R)`. The pins carry over what
-this account trusts and has verified; the conversations which of its direct
-conversations are encrypted, so the server cannot make one look unencrypted
-on the new device. The new device installs the certificate, publishes itself
-in the directory, and the approver then adds it to each of its groups with
-an ordinary commit and Welcome through the group log (version 1 of the core
-refuses external commits).
-
-The new device also shows the text `ircord-e2ee-approve:1:<device ID>:<commit>`
-as a QR code, for a device with a camera: one that scanned it can check
-message 3 against the commitment it read, without comparing codes. The GPUI
-client cannot scan, so it always compares codes.
+Both keys come from the code's ASCII digits:
+`k = HKDF-SHA256(salt = 32 zero bytes, ikm = code, info)`, 32 bytes, with info
+`"ircord-e2ee/1 approval request"` for `k_req` and
+`"ircord-e2ee/1 approval handover"` for `k_hand`. Base64 here is the standard
+alphabet with padding, as the backend's JSON carries bytes. The GPUI client
+cannot scan, so it takes the code typed; a known-answer test
+(`approval::tests::the_web_clients_messages_open`) pins it to bytes the web
+client's own code produced.
 
 In version 1 of the core only the device that holds the account's identity
 key can certify another, which is the device where encryption was first set

@@ -278,6 +278,19 @@ impl E2eeBackend {
             .filter(|w| w.1 == account)
             .count()
     }
+
+    /// The relay's messages for one device (or mailbox) of an account: the
+    /// sending device and the payload, base64.
+    pub fn approvals_to(&self, account: &str, device: &str) -> Vec<(String, String)> {
+        self.state
+            .lock()
+            .unwrap()
+            .approvals
+            .iter()
+            .filter(|a| a.1 == account && a.3 == device)
+            .map(|a| (a.2.clone(), a.4.clone()))
+            .collect()
+    }
 }
 
 fn own_directory(s: &mut State, me: &str, _: &Recorded) -> Reply {
