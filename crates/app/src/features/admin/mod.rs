@@ -1,6 +1,6 @@
 //! Administration (package AD1), after `AdministrationDialog.vue` in the web
 //! client: a page for IRCord server owners, not a settings section. It has
-//! five sections, each in its own file beside this one:
+//! six sections, each in its own file beside this one:
 //!
 //! - Overview (`status.rs`): the backend's health, IRCord's totals, the IRC
 //!   server's, and recent Administration actions.
@@ -9,6 +9,8 @@
 //! - Welcome (`welcome.rs`): the channel guide new members pick from, and
 //!   channel operators' requests to be listed in it.
 //! - Emoji (`emoji.rs`): who may manage the emoji catalog.
+//! - Encryption (`encryption.rs`): end-to-end encrypted direct messages off
+//!   or experimental, read-only when the server's configuration fixes it.
 //!
 //! Only owners see the entry (a shield in the network bar, your own
 //! menu, a key). Whether you are one is asked of the server
@@ -19,6 +21,7 @@
 
 mod database;
 mod emoji;
+mod encryption;
 mod picker;
 mod status;
 mod users;
@@ -47,6 +50,7 @@ use crate::ui::icon::IconName;
 
 pub use database::DatabasePanel;
 pub use emoji::EmojiPanel;
+pub use encryption::EncryptionPanel;
 pub use status::StatusPanel;
 pub use users::UsersPanel;
 pub use welcome::WelcomePanel;
@@ -273,15 +277,17 @@ pub enum Section {
     Users,
     Welcome,
     Emoji,
+    Encryption,
 }
 
 impl Section {
-    const ALL: [Section; 5] = [
+    const ALL: [Section; 6] = [
         Section::Status,
         Section::Database,
         Section::Users,
         Section::Welcome,
         Section::Emoji,
+        Section::Encryption,
     ];
 
     fn key(self) -> &'static str {
@@ -291,6 +297,7 @@ impl Section {
             Section::Users => "users",
             Section::Welcome => "welcome",
             Section::Emoji => "emoji",
+            Section::Encryption => "encryption",
         }
     }
 
@@ -301,6 +308,7 @@ impl Section {
             Section::Users => t!("admin-section-users"),
             Section::Welcome => t!("admin-section-welcome"),
             Section::Emoji => t!("admin-section-emoji"),
+            Section::Encryption => t!("admin-section-encryption"),
         }
     }
 }
@@ -328,6 +336,7 @@ pub struct AdminView {
     users: Option<Entity<UsersPanel>>,
     welcome: Option<Entity<WelcomePanel>>,
     emoji: Option<Entity<EmojiPanel>>,
+    encryption: Option<Entity<EncryptionPanel>>,
     showing: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -358,6 +367,7 @@ impl AdminView {
             users: None,
             welcome: None,
             emoji: None,
+            encryption: None,
             showing: true,
             _subscriptions: subscriptions,
         }
@@ -398,6 +408,11 @@ impl AdminView {
                     p.update(cx, |p, cx| p.load(cx));
                 }
             }
+            Section::Encryption => {
+                if let Some(p) = &self.encryption {
+                    p.update(cx, |p, cx| p.load(cx));
+                }
+            }
         }
         cx.notify();
     }
@@ -418,6 +433,7 @@ impl AdminView {
             Section::Users => panel!(users, UsersPanel),
             Section::Welcome => panel!(welcome, WelcomePanel),
             Section::Emoji => panel!(emoji, EmojiPanel),
+            Section::Encryption => panel!(encryption, EncryptionPanel),
         }
     }
 }

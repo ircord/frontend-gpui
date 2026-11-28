@@ -12,6 +12,7 @@ admin-section-database = Database
 admin-section-users = Users
 admin-section-welcome = Welcome
 admin-section-emoji = Emoji
+admin-section-encryption = Encryption
 admin-refresh = Refresh
 admin-loading = Loading…
 
@@ -63,6 +64,7 @@ admin-audit-unmarked-bot = bot mark removed
 admin-audit-saved-guide = channel guide saved
 admin-audit-declined-listing = listing request declined
 admin-audit-emoji-management = emoji management changed
+admin-audit-encryption-mode = encrypted direct messages set to { $mode }
 
 # Database
 admin-db-intro = Database space, configuration, and connection pressure for this backend.
@@ -202,3 +204,23 @@ admin-emoji-remove-manager = Remove { $username } as an emoji manager
 admin-emoji-none = No managers yet. Server owners can still manage every emoji.
 admin-emoji-already = { $username } already manages emoji.
 admin-emoji-owner-note = Server owner: can always manage emoji
+
+# Encryption
+admin-encryption-intro = Choose whether people on this server can start end-to-end encrypted direct messages. A change takes effect at once.
+admin-encryption-loading = Loading the encryption setting…
+admin-encryption-mode = Encrypted direct messages
+admin-encryption-mode-help = Off: nobody can start an encrypted chat. Experimental: people can start one in a direct message.
+admin-encryption-off = Off
+admin-encryption-experimental = Experimental
+admin-encryption-locked = Set by the server configuration
+admin-encryption-locked-fallback = The server configuration sets this mode. Change it there.
+admin-encryption-about = What this changes
+admin-encryption-about-experimental = Experimental lets people start an encrypted chat in a direct message on this server's network. Only their own devices and the other person's can read it.
+admin-encryption-about-review = The encryption has not had an outside security review yet. The app labels it experimental.
+admin-encryption-about-off = Turning it off deletes nothing. Devices with keys can still read earlier encrypted messages, but nobody can start or continue an encrypted chat until it is on again.
+admin-encryption-saved-on = Encrypted direct messages are on (experimental).
+admin-encryption-saved-off = Encrypted direct messages are off.
+admin-encryption-last-changed = Changed by { $account } on { $time }
+admin-encryption-last-changed-at = Changed on { $time }
+admin-encryption-now-locked = The server configuration now sets this mode. Change it there.
+admin-encryption-reload = Reload

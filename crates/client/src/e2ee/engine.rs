@@ -219,6 +219,67 @@ pub fn peer_of(w: &Workspace, conversation: &str) -> Result<String, Blocked> {
     }
 }
 
+/// A person's IRCord account, if they have one encryption can reach: not a
+/// bot, and signed in to an account on the network.
+fn account_of(m: &c::Member) -> Option<String> {
+    (m.role != c::MemberRole::Bot && !m.account.is_empty() && m.account != "*")
+        .then(|| m.account.clone())
+}
+
+/// The direct conversation with `member` on `network`, if there is one.
+pub fn direct_with(w: &Workspace, network: &str, member: &str) -> Option<String> {
+    w.conversations
+        .iter()
+        .filter(|conv| conv.network_id == network && conv.kind == c::ConversationKind::Direct)
+        .find(|conv| {
+            crate::store::people::direct_partner(w, &conv.id).is_some_and(|m| m.id == member)
+        })
+        .map(|conv| conv.id.clone())
+}
+
+/// Why an encrypted chat with `member` on `network` cannot be started now,
+/// for the person menu, where there may be no direct conversation yet: the
+/// same reasons the conversation's lock gives.
+pub fn blocked_with(w: &Workspace, network: &str, member: &str) -> Option<Blocked> {
+    if w.capabilities.encryption.is_none() {
+        return Some(Blocked::Off);
+    }
+    if let Some(dm) = direct_with(w, network, member)
+        && peer_of(w, &dm).is_ok()
+    {
+        return blocked(w, &dm);
+    }
+    if !w.network(network).is_some_and(|n| n.features.encryption) {
+        return Some(Blocked::Network);
+    }
+    let Some(account) = w.members.get(member).and_then(account_of) else {
+        return Some(Blocked::NoAccount);
+    };
+    if !w.e2ee.device.ready() {
+        return Some(Blocked::NotReady);
+    }
+    if w.e2ee.peers.get(&account) == Some(&false) {
+        return Some(Blocked::PeerNotSetUp);
+    }
+    None
+}
+
+/// Remember that `conversation` is with `member`'s account, when the person
+/// menu opened it: the backend lists only you in a direct conversation, so
+/// without this the account would wait for a whois.
+pub fn note_peer(w: &mut Workspace, conversation: &str, member: &str) -> Changes {
+    let Some(account) = w.members.get(member).and_then(account_of) else {
+        return Changes::default();
+    };
+    if w.e2ee.accounts.get(conversation) == Some(&Some(account.clone())) {
+        return Changes::default();
+    }
+    w.e2ee
+        .accounts
+        .insert(conversation.to_string(), Some(account));
+    Changes::topic_id(view::TOPIC, conversation)
+}
+
 /// Why encryption cannot be started in `conversation` now, if it cannot.
 pub fn blocked(w: &Workspace, conversation: &str) -> Option<Blocked> {
     let peer = match peer_of(w, conversation) {
@@ -2439,5 +2500,61 @@ async fn run(weak: Weak<Shared>) {
             Engine { shared }.tick().await
         };
         tokio::time::sleep(wait).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::SnapshotBuilder;
+
+    fn workspace() -> Workspace {
+        SnapshotBuilder::new()
+            .with_network(|n| n.features.encryption = true)
+            .member("m-bob", "bob")
+            .member("m-carol", "carol")
+            .direct("dm", "m-bob")
+            .capabilities(|caps| caps.encryption = Some(c::EncryptionCapability::default()))
+            .workspace()
+    }
+
+    #[test]
+    fn the_person_menu_gives_the_locks_reasons() {
+        let mut w = workspace();
+        assert_eq!(direct_with(&w, "n1", "m-bob").as_deref(), Some("dm"));
+        assert_eq!(direct_with(&w, "n1", "m-carol"), None);
+
+        assert_eq!(blocked_with(&w, "n1", "m-carol"), Some(Blocked::NotReady));
+        w.e2ee.device = DeviceState::Ready { approver: true };
+        assert_eq!(
+            blocked_with(&w, "n1", "m-carol"),
+            None,
+            "no conversation yet"
+        );
+        assert_eq!(blocked_with(&w, "n1", "m-bob"), None);
+        w.e2ee.peers.insert("carol".into(), false);
+        assert_eq!(
+            blocked_with(&w, "n1", "m-carol"),
+            Some(Blocked::PeerNotSetUp)
+        );
+
+        w.members.get_mut("m-carol").unwrap().account = "*".into();
+        assert_eq!(blocked_with(&w, "n1", "m-carol"), Some(Blocked::NoAccount));
+        w.members.get_mut("m-bob").unwrap().role = c::MemberRole::Bot;
+        assert_eq!(blocked_with(&w, "n1", "m-bob"), Some(Blocked::NoAccount));
+
+        w.networks[0].features.encryption = false;
+        assert_eq!(blocked_with(&w, "n1", "m-carol"), Some(Blocked::Network));
+        w.capabilities.encryption = None;
+        assert_eq!(blocked_with(&w, "n1", "m-carol"), Some(Blocked::Off));
+    }
+
+    #[test]
+    fn a_conversation_opened_from_the_menu_knows_its_account() {
+        let mut w = workspace();
+        let changes = note_peer(&mut w, "dm-new", "m-carol");
+        assert!(changes.touches_id(view::TOPIC, "dm-new"));
+        assert_eq!(w.e2ee.accounts.get("dm-new"), Some(&Some("carol".into())));
+        assert!(note_peer(&mut w, "dm-new", "m-carol").is_empty(), "known");
     }
 }

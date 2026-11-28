@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui_kit::test::{TestQueryExt, TestWindowExt};
+use gpui_kit::test::{TestEventExt, TestQueryExt, TestWindowExt};
 use gpui_kit::{AppContext, TestAppContext};
 use ircord_client::Client;
 use ircord_client::e2ee::vault::VaultKey;
@@ -416,5 +416,140 @@ fn a_new_device_shows_its_codes_and_another_approves_it(cx: &mut TestAppContext)
             .len())
             .unwrap()
             >= 2
+    );
+}
+
+/// Your channel with bob and eve, on a server with encryption on; no direct
+/// conversation with bob yet. Eve has no account, so encryption can't reach her.
+fn channel_snapshot() -> ircord_client::contract::Snapshot {
+    let mut s = crate::fixture::snapshot();
+    let home = &mut s.networks[0];
+    home.account = Some("me".into());
+    home.features.encryption = true;
+    s.capabilities.encryption = Some(ircord_client::contract::EncryptionCapability {
+        experimental: true,
+        max_payload: 3800,
+    });
+    let eve = s.members.iter_mut().find(|m| m.id == "m-eve").unwrap();
+    eve.account = "*".into();
+    s
+}
+
+/// Right-click `id` and wait for its menu.
+fn person_menu(f: &Fixture, cx: &mut TestAppContext, id: &'static str) {
+    wait(cx, id, |cx| {
+        f.window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find(id).is_some_and(|e| e.visible())
+            })
+            .unwrap_or(false)
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        window.hover(id, cx);
+        window.right_click(id, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn the_person_menu_starts_an_encrypted_chat(cx: &mut TestAppContext) {
+    let backend = E2eeBackend::new();
+    let shared = backend.clone();
+    let dm = e2ee_snapshot("me", "d-bob", "m-bob", "bob")
+        .conversations
+        .into_iter()
+        .find(|c| c.id == "d-bob")
+        .unwrap();
+    let f = open_with(cx, true, move |server| {
+        shared.serve(server, "me", "d-bob", "m-bob", "bob");
+        server.snapshot(&channel_snapshot());
+        server.route(
+            "POST",
+            "/api/v1/conversations",
+            200,
+            serde_json::to_value(&dm).unwrap(),
+        );
+    });
+    let rt = ircord_client::client::runtime().unwrap();
+    let server = CannedServer::start(&rt);
+    backend.serve(&server, "bob", "d-me", "m-me", "me");
+    let bob = start_peer(
+        &rt,
+        server,
+        &e2ee_snapshot("bob", "d-me", "m-me", "me"),
+        "d-me",
+    );
+    wait_until(&bob.client, WAIT, "bob set up", |w| w.e2ee.device.ready());
+    wait(cx, "this device set up", |cx| {
+        f.session
+            .read(cx)
+            .client()
+            .is_some_and(|c| c.read().e2ee.device.ready())
+    });
+    f.session
+        .update(cx, |s, cx| s.select_conversation("c-general", cx));
+    draw(&f, cx);
+
+    // Eve has no account: the entry says why it can't start.
+    person_menu(&f, cx, "member-m-eve");
+    assert!(shown(&f, cx, "menu-unavailable-encryption-start-person"));
+    assert_eq!(
+        label(&f, cx, "menu-unavailable-reason-encryption-start-person"),
+        "Encryption works between people on this IRCord server for now."
+    );
+    cx.update_window(f.window, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    // Bob: it opens the direct conversation and starts encrypting it.
+    person_menu(&f, cx, "member-m-bob");
+    assert!(!present(&f, cx, "menu-unavailable-encryption-start-person"));
+    cx.update_window(f.window, |_, window, cx| {
+        let at = window
+            .find_all_by_role(gpui_kit::Role::MenuItem)
+            .into_iter()
+            .find(|i| i.visible() && i.label() == Some("Start encrypted chat"))
+            .expect("the entry")
+            .bounds()
+            .center();
+        window.pointer_down(at, gpui_kit::MouseButton::Left, cx);
+        window.pointer_up(at, gpui_kit::MouseButton::Left, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    wait(cx, "the direct conversation and the panel", |cx| {
+        let s = f.session.read(cx);
+        s.conversation.as_deref() == Some("d-bob")
+            && s.panel.as_deref() == Some(ircord_app::features::encryption::PANEL)
+    });
+    wait(cx, "encryption on", |cx| {
+        f.session
+            .read(cx)
+            .client()
+            .is_some_and(|c| c.read().e2ee.is_on("d-bob"))
+    });
+    wait_until(&bob.client, WAIT, "bob's side on", |w| w.e2ee.is_on("d-me"));
+    assert!(backend.plaintext().is_empty(), "{:?}", backend.plaintext());
+
+    // Once on, the person menu no longer offers it.
+    f.session.update(cx, |s, cx| {
+        s.select_conversation("c-general", cx);
+        s.set_panel(None, cx);
+    });
+    draw(&f, cx);
+    person_menu(&f, cx, "member-m-bob");
+    assert!(!present(&f, cx, "menu-unavailable-encryption-start-person"));
+    let mut rows = Vec::new();
+    cx.update_window(f.window, |_, window, cx| {
+        window.render_frame(cx);
+        rows = crate::fixture::menu_rows(window, false);
+    })
+    .unwrap();
+    assert!(rows.iter().any(|r| r == "Message"), "{rows:?}");
+    assert!(
+        !rows.iter().any(|r| r == "Start encrypted chat"),
+        "already encrypted: {rows:?}"
     );
 }

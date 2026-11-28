@@ -34,14 +34,16 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use ircord_client::Client;
 use ircord_client::e2ee::Engine;
+use ircord_client::e2ee::engine as e2ee_rules;
 use ircord_client::e2ee::vault::{Unreadable, VaultKey};
 use ircord_client::store::e2ee::{self as view, Attention, Blocked, Shown};
+use ircord_client::store::people;
 use ircord_client::store::{Changes, Workspace};
 
 use crate::menu_order;
 use crate::registry::{
     self, BannerCtx, ComposerCtx, ConversationCtx, HeaderCtx, Inline, InlineRenderer, InlineSpan,
-    MenuItem, Panel, PanelCtx, RowFilter, SendFilter, SendOutcome, Slot, SubmitHook,
+    MemberCtx, MenuItem, Panel, PanelCtx, RowFilter, SendFilter, SendOutcome, Slot, SubmitHook,
 };
 use crate::route::Route;
 use crate::session::{Session, SessionEvent};
@@ -126,6 +128,17 @@ pub fn init(cx: &mut App) {
             .icon(ui::icon::IconName::Eye)
             .when(|ctx, cx| is_on(&ctx.session, &ctx.conversation, cx))
             .order(menu_order::conversation::ENCRYPTION),
+        );
+        r.member_menu.add(
+            MenuItem::new(
+                "encryption-start-person",
+                t!("encryption-start"),
+                start_with_person,
+            )
+            .icon(ui::icon::IconName::EyeOff)
+            .when(person_offered)
+            .unavailable_when(person_blocked_reason)
+            .order(menu_order::member::ENCRYPTED_MESSAGE),
         );
         r.banners.add(Slot::new("encryption", banner).order(5));
         r.composer
@@ -350,6 +363,90 @@ pub fn blocked_text(blocked: &Blocked, name: &str) -> String {
         Blocked::NoAccount => t!("encryption-blocked-no-account").into(),
         Blocked::PeerNotSetUp => t!("encryption-blocked-peer", name = name),
     }
+}
+
+// ---- The person menu's entry ----
+
+/// Someone else, on a server with encryption on, whose direct conversation
+/// (if there is one) is not encrypted yet.
+fn person_offered(ctx: &MemberCtx, cx: &App) -> bool {
+    let Some(network) = super::profile::network_of(ctx, cx) else {
+        return false;
+    };
+    with(&ctx.session, cx, |w| {
+        w.capabilities.encryption.is_some()
+            && !w.is_self(&ctx.member, &network)
+            && w.members.contains_key(&ctx.member)
+            && !e2ee_rules::direct_with(w, &network, &ctx.member)
+                .is_some_and(|dm| w.e2ee.is_on(&dm))
+    })
+    .unwrap_or(false)
+}
+
+/// Why an encrypted chat with this person cannot start now, in the words
+/// the conversation's lock uses.
+fn person_blocked_reason(ctx: &MemberCtx, cx: &App) -> Option<SharedString> {
+    let network = super::profile::network_of(ctx, cx)?;
+    let (blocked, name, dm) = with(&ctx.session, cx, |w| {
+        let blocked = e2ee_rules::blocked_with(w, &network, &ctx.member)?;
+        let name = w
+            .members
+            .get(&ctx.member)
+            .map(|m| people::name(m).to_string())
+            .unwrap_or_default();
+        Some((
+            blocked,
+            name,
+            e2ee_rules::direct_with(w, &network, &ctx.member),
+        ))
+    })
+    .flatten()?;
+    // Learn whether they have set up encryption, as the lock does.
+    if let (Some(dm), Some(engine)) = (dm, engine(&ctx.session, cx)) {
+        engine.check_peer(&dm);
+    }
+    Some(blocked_text(&blocked, &name).into())
+}
+
+/// Open (or start) the direct conversation with this person, then start
+/// encrypting it and show the panel, as the conversation menu's entry does.
+fn start_with_person(ctx: &MemberCtx, window: &mut Window, cx: &mut App) {
+    let Some(network) = super::profile::network_of(ctx, cx) else {
+        return;
+    };
+    let Some(nick) = with(&ctx.session, cx, |w| {
+        w.members.get(&ctx.member).map(|m| m.nick.clone())
+    })
+    .flatten() else {
+        return;
+    };
+    let (session, member) = (ctx.session.clone(), ctx.member.clone());
+    super::profile::message_then(
+        &network,
+        Some(member.clone()),
+        &nick,
+        window,
+        cx,
+        move |conversation, _, cx| {
+            let Some(client) = session.read(cx).client().cloned() else {
+                return;
+            };
+            let conversation = conversation.to_string();
+            client.change(|w| e2ee_rules::note_peer(w, &conversation, &member));
+            if let Some(engine) = engine(&session, cx) {
+                let ready = with(&session, cx, |w| {
+                    e2ee_rules::blocked(w, &conversation).is_none()
+                })
+                .unwrap_or(false);
+                if ready {
+                    engine.start_chat(&conversation);
+                } else {
+                    engine.check_peer(&conversation);
+                }
+            }
+            open_panel(&session, cx);
+        },
+    );
 }
 
 /// Whether the composer must leave `conversation`'s files to this feature:

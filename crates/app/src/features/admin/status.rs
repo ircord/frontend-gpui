@@ -95,6 +95,14 @@ fn action(event: &c::OwnerEvent) -> String {
         "channel-guide-save" => t!("admin-audit-saved-guide"),
         "channel-guide-decline" => t!("admin-audit-declined-listing"),
         "emoji-management" => t!("admin-audit-emoji-management"),
+        "encryption-mode" => {
+            let mode = match event.target.as_str() {
+                "experimental" => t!("admin-encryption-experimental"),
+                "off" => t!("admin-encryption-off"),
+                other => other,
+            };
+            return t!("admin-audit-encryption-mode", mode = mode);
+        }
         other => return other.to_string(),
     }
     .to_string()
@@ -103,11 +111,13 @@ fn action(event: &c::OwnerEvent) -> String {
 /// "alice bob made an owner", or "alice tried: bob made an owner (refused)".
 pub(super) fn audit_line(event: &c::OwnerEvent) -> String {
     let what = action(event);
-    let (actor, target, outcome) = (
-        event.actor.as_str(),
-        event.target.as_str(),
-        event.outcome.as_str(),
-    );
+    // The mode an encryption change set is part of its action.
+    let target = if event.action == "encryption-mode" {
+        ""
+    } else {
+        event.target.as_str()
+    };
+    let (actor, outcome) = (event.actor.as_str(), event.outcome.as_str());
     let mut line = match (a::audit_failed(event), target.is_empty()) {
         (true, false) => t!(
             "admin-audit-failed",

@@ -602,7 +602,7 @@ pub enum CTCPReplyCommand {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Capabilities {
-    /// Present when the server operator turned on end-to-end encryption, an experimental feature.
+    /// Present while end-to-end encryption, an experimental feature, is on for this server. Read again after a reconnect: server owners can turn it on or off at any time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encryption: Option<EncryptionCapability>,
     /// Present when the signed-in account is a server owner who can delete other people's channel messages and mark bots on one network.
@@ -2172,6 +2172,57 @@ pub struct EncryptionCapability {
     /// Largest base64url payload one encrypted message may carry.
     #[serde(rename = "maxPayload")]
     pub max_payload: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EncryptionSetting {
+    /// Why the mode can't be changed, present when locked.
+    #[serde(rename = "lockReason", skip_serializing_if = "Option::is_none")]
+    pub lock_reason: Option<String>,
+    /// True when the server's configuration fixes the mode, so owners can't change it here.
+    pub locked: bool,
+    /// The mode in effect now. Experimental lets people on this server's network start encrypted direct messages.
+    pub mode: EncryptionSettingMode,
+    /// When an owner last changed the mode. Absent when locked or never changed.
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    /// The owner who last changed the mode.
+    #[serde(rename = "updatedBy", skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<String>,
+}
+
+/// The mode in effect now. Experimental lets people on this server's network start encrypted direct messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum EncryptionSettingMode {
+    #[serde(rename = "off")]
+    Off,
+    #[serde(rename = "experimental")]
+    Experimental,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EncryptionSettingUpdate {
+    pub mode: EncryptionSettingUpdateMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum EncryptionSettingUpdateMode {
+    #[serde(rename = "off")]
+    Off,
+    #[serde(rename = "experimental")]
+    Experimental,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
