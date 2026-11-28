@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- Experimental: New encrypted group moved from the network menu to a lock beside the sidebar's Direct messages heading, where the web client has it. Until this device's encryption is set up, the lock says so and opens Settings → Encryption.
+- Experimental: New encrypted group finds people as you type, people you share a conversation with first, then the server's people lookup, and shows the people chosen as removable chips. An account name that matches nobody can still be added; bots and people without an account are marked with the reason.
+- Experimental: someone without encryption set up can still be invited to an encrypted group. They get one ordinary message saying they were invited and how to set up encryption, which names neither the group nor its people; they wait as pending in the group's panel, where the creator can cancel the invitation, and are added once they set it up.
+
 ## v0.10.0 — 2026-11-28
 
 ### New

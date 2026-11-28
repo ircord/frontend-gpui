@@ -877,6 +877,9 @@ pub struct Registry {
     /// [`Slot::at_bottom`] goes under the list instead (the connection
     /// indicator).
     pub sidebar_footer: List<Slot<SidebarCtx>>,
+    /// Buttons at the right of the sidebar's Direct messages heading, after
+    /// Message someone (New encrypted group).
+    pub directs_heading: List<Slot<SidebarCtx>>,
     pub settings_sections: List<SettingsSection>,
     pub inline_renderers: List<InlineRenderer>,
     pub row_filters: List<RowFilter>,

@@ -54,6 +54,11 @@ pub(crate) fn audit(view: &str, window: &mut Window, cx: &mut gpui_kit::App) -> 
     audit_where(view, window, cx, |_| true)
 }
 
+/// [`audit`] for the open dialog only.
+pub(crate) fn audit_dialog(view: &str, window: &mut Window, cx: &mut gpui_kit::App) -> Vec<String> {
+    audit_where(view, window, cx, in_dialog)
+}
+
 /// Whether an element is drawn inside an open dialog.
 fn in_dialog(path: &[ElementId]) -> bool {
     path.iter()

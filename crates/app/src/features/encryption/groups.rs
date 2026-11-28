@@ -1,5 +1,6 @@
 //! Encrypted groups (experimental, phase 2 of ircord/issues#19): starting
-//! one from the network menu, the invitation card with Join and Decline,
+//! one from the lock beside the sidebar's Direct messages heading, as the
+//! web client does, the invitation card with Join and Decline,
 //! and the group's details in the encryption panel: the trust caveat, every
 //! person with their devices and whether they are verified, the security
 //! code for verifying one, and for admins adding, removing and making
@@ -10,7 +11,6 @@
 
 use gpui_kit::TestSupportExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Disableable, Sizable};
 use gpui_kit::prelude::*;
@@ -20,30 +20,56 @@ use ircord_client::store::Workspace;
 use ircord_client::store::e2ee::{Group, GroupEvent, GroupMember};
 
 use super::{engine, qr_code, tag, with};
-use crate::menu_order;
-use crate::registry::{BannerCtx, MenuItem, NetworkCtx, Registry, Slot};
+use crate::registry::{BannerCtx, Registry, SidebarCtx, Slot};
 use crate::session::{Session, SessionEvent};
 use crate::theme::{self, Theme};
 use crate::ui;
 use crate::ui::icon::{IconName, LucideIcon};
+use crate::ui::people_picker::{PeoplePicker, Picked};
+use ircord_client::api::people::Purpose;
+use ircord_client::e2ee::Invitee;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub fn register(r: &mut Registry) {
-    r.network_menu.add(
-        MenuItem::new(
-            "encryption-group-new",
-            t!("encryption-group-new"),
-            |n: &NetworkCtx, window, cx| open_new(&n.session, None, window, cx),
-        )
-        .icon(IconName::EyeOff)
-        .when(|n, cx| offered(&n.session, &n.network, cx))
-        .unavailable_when(|n, cx| {
-            let ready = with(&n.session, cx, |w| w.e2ee.device.ready()).unwrap_or(false);
-            (!ready).then(|| t!("encryption-blocked-not-ready").into())
-        })
-        .order(menu_order::network::NEW_ENCRYPTED_GROUP),
-    );
+    r.directs_heading
+        .add(Slot::new("encryption-group-new", new_group_button));
     r.banners
         .add(Slot::new("encryption-invitations", invitations).order(4));
+}
+
+/// The lock beside the Direct messages heading that starts a group, where
+/// groups are offered. Until this device is set up it says so and opens
+/// Settings → Encryption instead.
+fn new_group_button(ctx: &SidebarCtx, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let network = ctx.network.as_deref()?;
+    if !offered(&ctx.session, network, cx) {
+        return None;
+    }
+    let ready = with(&ctx.session, cx, |w| w.e2ee.device.ready()).unwrap_or(false);
+    let session = ctx.session.clone();
+    let theme = theme::get(cx);
+    let label: SharedString = if ready {
+        t!("encryption-group-new-title").into()
+    } else {
+        t!("encryption-group-new-not-ready").into()
+    };
+    Some(
+        ui::icon::button(
+            "encryption-group-new",
+            LucideIcon::Lock,
+            label,
+            theme,
+            move |_, window, cx| {
+                if ready {
+                    open_new(&session, None, window, cx);
+                } else {
+                    crate::settings::open(&session, Some("encryption-device"), cx);
+                }
+            },
+        )
+        .into_any_element(),
+    )
 }
 
 /// Whether encrypted groups are offered on `network`: the server has them
@@ -56,32 +82,31 @@ fn offered(session: &Entity<Session>, network: &str, cx: &App) -> bool {
     .unwrap_or(false)
 }
 
-/// The people this account can pick: everyone with an account on the
-/// network encryption works on, but bots and you, once each.
-fn candidates(w: &Workspace) -> Vec<(String, String)> {
-    let Some(home) = w.networks.iter().find(|n| n.features.encryption) else {
-        return Vec::new();
-    };
-    let own = home.account.clone().unwrap_or_default();
-    let mut out: Vec<(String, String)> = w
-        .conversations
-        .iter()
-        .filter(|conv| conv.network_id == home.id)
-        .flat_map(|conv| conv.member_ids.iter())
-        .filter(|id| !w.is_self(id, &home.id))
-        .filter_map(|id| w.members.get(id))
-        .filter(|m| m.role != c::MemberRole::Bot && !m.account.is_empty() && m.account != "*")
-        .filter(|m| m.account != own)
-        .map(|m| {
-            (
-                m.account.clone(),
-                ircord_client::store::people::name(m).to_string(),
-            )
-        })
-        .collect();
-    out.sort();
-    out.dedup_by(|a, b| a.0 == b.0);
-    out
+/// When each group was last looked at for pending invitees.
+type Looked = std::collections::HashMap<String, std::time::Instant>;
+thread_local! {
+    static LOOKED: RefCell<Looked> = RefCell::default();
+}
+
+/// Ask whether the people invited to `group` before they had encryption
+/// keys have them now, and add those who do: when the group is opened, and
+/// at most every 15 seconds while it stays open.
+pub fn look_for_pending(session: &Entity<Session>, conversation: &str, group: &Group, cx: &App) {
+    if group.pending.is_empty() || !group.admin {
+        return;
+    }
+    let due = LOOKED.with_borrow_mut(|looked| {
+        let due = looked
+            .get(conversation)
+            .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(15));
+        if due {
+            looked.insert(conversation.to_string(), std::time::Instant::now());
+        }
+        due
+    });
+    if due && let Some(engine) = engine(session, cx) {
+        engine.check_pending(conversation);
+    }
 }
 
 /// The group in `conversation`, if it is one.
@@ -97,6 +122,7 @@ pub fn error_text(error: &str) -> String {
         "peer-no-answer" => t!("encryption-blocked-no-answer", name = account),
         "needs-update" => t!("encryption-group-needs-update", name = account),
         "group-needs-people" => t!("encryption-group-needs-people").into(),
+        "group-nobody-ready" => t!("encryption-group-nobody-ready").into(),
         "group-raced" => t!("encryption-group-raced").into(),
         "not-admin" => t!("encryption-group-not-admin").into(),
         "not-in-group" => t!("encryption-group-not-in").into(),
@@ -123,8 +149,7 @@ pub fn open_new(
     let first = std::cell::Cell::new(true);
     ui::dialog::open(window, cx, title, move |dialog, window, cx| {
         if first.replace(false) {
-            let input = view.read(cx).title.clone();
-            input.focus_handle(cx).focus(window, cx);
+            view.read(cx).first_field(cx).focus(window, cx);
         }
         dialog
             .w(px(520.))
@@ -134,12 +159,27 @@ pub fn open_new(
     });
 }
 
+/// One person chosen for the group: their account and the name shown.
+#[derive(Clone, PartialEq, Eq)]
+struct Chosen {
+    account: String,
+    name: String,
+    /// Where the notice goes if they have no encryption keys yet.
+    nick: String,
+}
+
 pub struct Picker {
     session: Entity<Session>,
     add_to: Option<String>,
     title: Entity<InputState>,
-    others: Entity<InputState>,
-    picked: std::collections::BTreeSet<String>,
+    /// Finds people: those you share a conversation with first, then the
+    /// server's people lookup; an account name that matches nobody can be
+    /// added as typed.
+    people: Option<Entity<PeoplePicker>>,
+    /// The picker's search box, kept here: picking runs while the picker
+    /// is being updated, so it cannot be read through the picker then.
+    search: Option<Entity<InputState>>,
+    chosen: Rc<RefCell<Vec<Chosen>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -153,75 +193,156 @@ impl Picker {
         let title = cx.new(|cx| {
             InputState::new(window, cx).placeholder(t!("encryption-group-title-placeholder"))
         });
-        let others = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t!("encryption-group-others-placeholder"))
+        let chosen: Rc<RefCell<Vec<Chosen>>> = Rc::default();
+        let present: Vec<String> = add_to
+            .as_ref()
+            .and_then(|conv| group_of(&session, conv, cx))
+            .map(|g| g.members.iter().map(|m| m.account.clone()).collect())
+            .unwrap_or_default();
+        let home = with(&session, cx, |w| {
+            w.networks
+                .iter()
+                .find(|n| n.features.encryption)
+                .map(|n| (n.id.clone(), n.account.clone().unwrap_or_default()))
+        })
+        .flatten();
+        let me = cx.entity().downgrade();
+        let people = home.map(|(network, own)| {
+            let finder = ui::people_picker::Picker {
+                title: t!("encryption-group-people").into(),
+                session: session.clone(),
+                network,
+                purpose: Purpose::Party,
+                conversation: None,
+                except: Vec::new(),
+            };
+            let on_pick = Rc::new(move |picked: &Picked, window: &mut Window, cx: &mut App| {
+                let Some(account) = picked.account.clone() else {
+                    return;
+                };
+                let person = Chosen {
+                    account,
+                    name: picked.name.clone(),
+                    nick: picked.nick.clone(),
+                };
+                me.update(cx, |this, cx| this.choose(person, window, cx))
+                    .ok();
+            });
+            let (hide_chosen, session2) = (chosen.clone(), session.clone());
+            cx.new(|cx| {
+                let mut p = PeoplePicker::new(&finder, on_pick, window, cx);
+                p.typed_accounts = true;
+                p.hide = Some(Rc::new(move |o: &Picked, _| {
+                    o.account.as_deref().is_some_and(|a| {
+                        a.eq_ignore_ascii_case(&own)
+                            || present.iter().any(|p| p.eq_ignore_ascii_case(a))
+                            || hide_chosen
+                                .borrow()
+                                .iter()
+                                .any(|c| c.account.eq_ignore_ascii_case(a))
+                    })
+                }));
+                let session3 = session2.clone();
+                p.blocked = Some(Rc::new(move |o: &Picked, cx: &App| {
+                    cannot_join(&session2, o, cx)
+                }));
+                p.note = Some(Rc::new(move |o: &Picked, cx: &App| {
+                    key_note(&session3, o, cx)
+                }));
+                p
+            })
         });
-        let subscriptions = vec![
-            cx.subscribe_in(
-                &title,
-                window,
-                |this: &mut Self, _, e: &InputEvent, w, cx| {
-                    if let InputEvent::PressEnter { .. } = e {
-                        this.submit(w, cx);
-                    }
-                },
-            ),
-            cx.subscribe_in(
-                &others,
-                window,
-                |this: &mut Self, _, e: &InputEvent, w, cx| {
-                    if let InputEvent::PressEnter { .. } = e {
-                        this.submit(w, cx);
-                    }
-                },
-            ),
-        ];
+        let subscriptions = vec![cx.subscribe_in(
+            &title,
+            window,
+            |this: &mut Self, _, e: &InputEvent, w, cx| {
+                if let InputEvent::PressEnter { .. } = e {
+                    this.submit(w, cx);
+                }
+            },
+        )];
         Self {
             session,
             add_to,
             title,
-            others,
-            picked: Default::default(),
+            search: people.as_ref().map(|p| p.read(cx).input.clone()),
+            people,
+            chosen,
             _subscriptions: subscriptions,
         }
     }
 
-    /// The accounts picked and typed.
-    fn accounts(&self, cx: &App) -> Vec<String> {
-        let typed = self.others.read(cx).value().to_string();
-        let mut out: Vec<String> = self.picked.iter().cloned().collect();
-        out.extend(
-            typed
-                .split([',', ' '])
-                .map(str::trim)
-                .filter(|a| !a.is_empty())
-                .map(str::to_string),
-        );
-        out.sort();
-        out.dedup();
-        out
+    /// Where the dialog puts the caret first.
+    fn first_field(&self, cx: &App) -> FocusHandle {
+        match (&self.add_to, &self.search) {
+            (Some(_), Some(search)) => search.focus_handle(cx),
+            _ => self.title.focus_handle(cx),
+        }
+    }
+
+    fn choose(&mut self, person: Chosen, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(engine) = engine(&self.session, cx) {
+            engine.check_account(&person.account);
+        }
+        {
+            let mut chosen = self.chosen.borrow_mut();
+            if !chosen
+                .iter()
+                .any(|c| c.account.eq_ignore_ascii_case(&person.account))
+            {
+                chosen.push(person);
+            }
+        }
+        if let Some(search) = self.search.clone() {
+            search.update(cx, |s, cx| s.set_value(String::new(), window, cx));
+        }
+        cx.notify();
+    }
+
+    fn unchoose(&mut self, index: usize, cx: &mut Context<Self>) {
+        let mut chosen = self.chosen.borrow_mut();
+        if index < chosen.len() {
+            chosen.remove(index);
+        }
+        drop(chosen);
+        if let Some(people) = &self.people {
+            people.update(cx, |_, cx| cx.notify());
+        }
+        cx.notify();
+    }
+
+    /// The people chosen.
+    fn invitees(&self) -> Vec<Invitee> {
+        self.chosen
+            .borrow()
+            .iter()
+            .map(|c| Invitee {
+                account: c.account.clone(),
+                nick: c.nick.clone(),
+            })
+            .collect()
     }
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let accounts = self.accounts(cx);
-        if accounts.is_empty() {
+        let people = self.invitees();
+        if people.is_empty() {
             return;
         }
         let Some(engine) = engine(&self.session, cx) else {
             return;
         };
         match &self.add_to {
-            Some(conversation) => engine.add_people(conversation, accounts),
+            Some(conversation) => engine.add_people_inviting(conversation, people),
             None => {
                 let title = self.title.read(cx).value().to_string();
-                engine.create_group(&title, accounts);
+                engine.create_group_inviting(&title, people);
             }
         }
         ui::dialog::close(window, cx);
     }
 
     fn actions(&self, cx: &mut Context<Self>) -> Div {
-        let can = !self.accounts(cx).is_empty();
+        let can = !self.chosen.borrow().is_empty();
         div()
             .w_full()
             .flex()
@@ -247,20 +368,59 @@ impl Picker {
     }
 }
 
+/// Why `person` cannot be in an encrypted group, as the direct message lock
+/// says it: a bot, or nobody signed in to an account. Someone without
+/// encryption keys can be chosen: they are invited and wait (see [`waits`]).
+fn cannot_join(session: &Entity<Session>, person: &Picked, cx: &App) -> Option<SharedString> {
+    let bot = with(session, cx, |w| {
+        person
+            .member
+            .as_ref()
+            .and_then(|id| w.members.get(id))
+            .is_some_and(|m| m.role == c::MemberRole::Bot)
+    })
+    .unwrap_or(false);
+    if bot {
+        return Some(t!("encryption-group-bot").into());
+    }
+    if person
+        .account
+        .as_deref()
+        .is_none_or(|a| a.is_empty() || a == "*")
+    {
+        return Some(t!("encryption-blocked-no-account").into());
+    }
+    None
+}
+
+/// What a suggestion says about someone who has no encryption keys yet,
+/// asking the server about keys it does not know yet. Not for an account
+/// being typed: each would be asked about over IRC on every keystroke; it
+/// is asked about once chosen.
+fn key_note(session: &Entity<Session>, person: &Picked, cx: &App) -> Option<SharedString> {
+    if person.typed {
+        return None;
+    }
+    let account = person.account.as_deref()?;
+    if waits(session, account, cx) {
+        return Some(t!("encryption-group-no-keys").into());
+    }
+    if let Some(engine) = engine(session, cx) {
+        engine.check_account(account);
+    }
+    None
+}
+
+/// Whether `account` is known to have no encryption keys yet: chosen, they
+/// get an ordinary message saying how to set it up, and are added once
+/// they have.
+fn waits(session: &Entity<Session>, account: &str, cx: &App) -> bool {
+    with(session, cx, |w| w.e2ee.peers.get(account) == Some(&false)).unwrap_or(false)
+}
+
 impl Render for Picker {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
-        let present: Vec<String> = self
-            .add_to
-            .as_ref()
-            .and_then(|conv| group_of(&self.session, conv, cx))
-            .map(|g| g.members.iter().map(|m| m.account.clone()).collect())
-            .unwrap_or_default();
-        let people: Vec<(String, String)> = with(&self.session, cx, candidates)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|(a, _)| !present.contains(a))
-            .collect();
         let mut body = div()
             .id("encryption-group-picker")
             .test_support()
@@ -285,53 +445,105 @@ impl Render for Picker {
                 .text_color(theme.text)
                 .child(t!("encryption-group-people")),
         );
-        if people.is_empty() {
-            body = body.child(
-                div()
-                    .text_sm()
-                    .text_color(theme.muted)
-                    .child(t!("encryption-group-nobody")),
-            );
-        }
         body = body.child(
-            div()
-                .id("encryption-group-people")
-                .max_h(px(240.))
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .children(people.into_iter().enumerate().map(|(i, (account, name))| {
-                    let checked = self.picked.contains(&account);
-                    let label: SharedString = if name == account {
-                        account.clone().into()
-                    } else {
-                        format!("{name} ({account})").into()
-                    };
-                    Checkbox::new(ElementId::Name(
-                        format!("encryption-group-person-{i}").into(),
-                    ))
-                    .checked(checked)
-                    .label(label.clone())
-                    .accessibility_label(label)
-                    .on_click(cx.listener(move |this, on: &bool, _, cx| {
-                        if *on {
-                            this.picked.insert(account.clone());
-                        } else {
-                            this.picked.remove(&account);
-                        }
-                        cx.notify();
-                    }))
-                })),
-        );
-        body.child(
             div()
                 .text_sm()
                 .text_color(theme.muted)
-                .child(t!("encryption-group-others")),
-        )
-        .child(Input::new(&self.others))
-        .child(
+                .child(t!("encryption-group-people-help")),
+        );
+        let chosen = self.chosen.borrow().clone();
+        if !chosen.is_empty() {
+            body = body.child(
+                div()
+                    .id("encryption-group-chosen")
+                    .test_support()
+                    .role(Role::List)
+                    .aria_label(t!("encryption-group-chosen"))
+                    .flex()
+                    .flex_wrap()
+                    .gap_1p5()
+                    .children(chosen.into_iter().enumerate().map(|(i, person)| {
+                        let label: SharedString = if person.name == person.account {
+                            person.account.clone().into()
+                        } else {
+                            format!("{} ({})", person.name, person.account).into()
+                        };
+                        let waiting = waits(&self.session, &person.account, cx);
+                        let label: SharedString = if waiting {
+                            t!("encryption-group-pending-chip", name = label).into()
+                        } else {
+                            label
+                        };
+                        div()
+                            .id(ElementId::Name(format!("encryption-group-chip-{i}").into()))
+                            .test_support()
+                            .role(Role::ListItem)
+                            .aria_label(label.clone())
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .pl_2()
+                            .rounded_md()
+                            .bg(theme.hover)
+                            .text_sm()
+                            .text_color(theme.text)
+                            .when(waiting, |d| {
+                                d.border_1()
+                                    .border_dashed()
+                                    .border_color(theme.muted)
+                                    .child(ui::icon::icon(IconName::Loader, theme.muted))
+                            })
+                            .child(label)
+                            .child(ui::icon::button(
+                                ElementId::Name(format!("encryption-group-unchoose-{i}").into()),
+                                IconName::Close,
+                                t!("encryption-group-unchoose", name = person.name),
+                                &theme,
+                                cx.listener(move |this, _, _, cx| this.unchoose(i, cx)),
+                            ))
+                    })),
+            );
+        }
+        let someone_waits = self
+            .chosen
+            .borrow()
+            .iter()
+            .any(|c| waits(&self.session, &c.account, cx));
+        if someone_waits {
+            body = body.child(
+                div()
+                    .id("encryption-group-pending-note")
+                    .test_support()
+                    .role(Role::Note)
+                    .aria_label(t!("encryption-group-pending-note"))
+                    .text_sm()
+                    .text_color(theme.muted)
+                    .child(t!("encryption-group-pending-note")),
+            );
+        }
+        if let Some(people) = &self.people {
+            // Backspace in an empty search takes back the last person chosen.
+            let input = self.search.clone();
+            body = body.child(
+                div()
+                    .capture_key_down(cx.listener(move |this, e: &KeyDownEvent, _, cx| {
+                        if e.keystroke.key == "backspace"
+                            && !e.keystroke.modifiers.modified()
+                            && input
+                                .as_ref()
+                                .is_some_and(|i| i.read(cx).value().is_empty())
+                        {
+                            let last = this.chosen.borrow().len();
+                            if last > 0 {
+                                this.unchoose(last - 1, cx);
+                                cx.stop_propagation();
+                            }
+                        }
+                    }))
+                    .child(people.clone()),
+            );
+        }
+        body.child(
             div()
                 .id("encryption-group-caveat-new")
                 .test_support()
@@ -913,6 +1125,74 @@ impl Render for Details {
                         names = outsiders.join(", ")
                     )),
             );
+        }
+        if !group.pending.is_empty() {
+            look_for_pending(&self.session, &self.conversation, &group, cx);
+            body = body
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text)
+                        .child(t!("encryption-group-pending")),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted)
+                        .child(t!("encryption-group-pending-help")),
+                );
+            for (i, account) in group.pending.iter().enumerate() {
+                let name = with(&self.session, cx, |w| name_of(w, account))
+                    .unwrap_or_else(|| account.clone());
+                let (s, conv, a) = (
+                    self.session.clone(),
+                    self.conversation.clone(),
+                    account.clone(),
+                );
+                body = body.child(
+                    div()
+                        .id(ElementId::Name(
+                            format!("encryption-group-pending-{i}").into(),
+                        ))
+                        .test_support()
+                        .role(Role::Group)
+                        .aria_label(SharedString::from(format!(
+                            "{name}, {}",
+                            t!("encryption-group-pending")
+                        )))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(ui::icon::icon(IconName::Loader, theme.muted))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_sm()
+                                .text_color(theme.muted)
+                                .child(name.clone()),
+                        )
+                        .when(group.admin, |d| {
+                            d.child(
+                                Button::new(ElementId::Name(
+                                    format!("encryption-group-pending-cancel-{i}").into(),
+                                ))
+                                .xsmall()
+                                .label(t!("core-cancel"))
+                                .accessibility_label(t!(
+                                    "encryption-group-pending-cancel",
+                                    name = name
+                                ))
+                                .disabled(busy)
+                                .on_click(move |_, _, cx| {
+                                    if let Some(engine) = engine(&s, cx) {
+                                        engine.cancel_pending(&conv, &a);
+                                    }
+                                }),
+                            )
+                        }),
+                );
+            }
         }
         let mut buttons = div().flex().flex_wrap().gap_2();
         if group.admin {

@@ -11,7 +11,7 @@ use tokio::runtime::Runtime;
 
 use super::approval;
 use super::vault::VaultKey;
-use super::{Engine, Texts};
+use super::{Engine, Invitee, Texts};
 use crate::Client;
 use crate::client::runtime;
 use crate::events::Update;
@@ -23,6 +23,8 @@ const WAIT: Duration = Duration::from_secs(20);
 
 fn texts() -> Texts {
     Texts {
+        invited: Box::new(|| "invited".to_string()),
+        joined: Box::new(|account| format!("{account} joined")),
         control: Box::new(|on, name, mine| {
             format!(
                 "{name} turned {} (mine: {mine})",
@@ -952,6 +954,186 @@ fn an_encrypted_group_across_two_servers_from_invitation_to_leaving() {
             assert!(m.encrypted.is_some() && m.text == PLACEHOLDER, "{m:?}");
         }
     }
+}
+
+/// Someone without encryption keys can be invited to a group: they get one
+/// ordinary message that names neither the group nor its people, wait as
+/// pending on the creator's side (kept across a restart), and are added
+/// with a line in the group once their keys appear.
+#[test]
+fn someone_without_keys_is_told_kept_pending_and_added_once_set_up() {
+    let rt = runtime().unwrap();
+    let backend = E2eeBackend::new();
+    let dirs: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+    let keys: Vec<_> = (0..3).map(|_| VaultKey::random()).collect();
+    let alice = person(
+        &rt,
+        &backend,
+        "alice",
+        "dm-bob",
+        "m-bob",
+        "bob",
+        dirs[0].path(),
+        &keys[0],
+    );
+    let bob = person(
+        &rt,
+        &backend,
+        "bob",
+        "dm-alice",
+        "m-alice",
+        "alice",
+        dirs[1].path(),
+        &keys[1],
+    );
+    ready(&alice);
+    ready(&bob);
+
+    alice.engine.create_group_inviting(
+        "Weekend plans",
+        vec![
+            Invitee {
+                account: "bob".into(),
+                nick: "bob".into(),
+            },
+            Invitee {
+                account: "carol".into(),
+                nick: "caz".into(),
+            },
+            // No raw line is built from a nick that is not one word.
+            Invitee {
+                account: "eve".into(),
+                nick: "eve\r\nQUIT".into(),
+            },
+        ],
+    );
+    let a = group_conversation(&alice);
+    wait_until(&alice.client, WAIT, "carol pending", |w| {
+        w.e2ee.groups[&a].pending == ["carol", "eve"]
+    });
+    assert_eq!(alice.client.read().e2ee.groups[&a].members.len(), 2);
+    let told: Vec<String> = alice
+        .server
+        .requests()
+        .iter()
+        .filter(|r| r.method == "POST" && r.path.ends_with("/commands"))
+        .map(|r| String::from_utf8_lossy(&r.body).to_string())
+        .collect();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains("PRIVMSG caz :invited"), "{told:?}");
+    assert!(!told[0].contains("Weekend"), "the notice names no group");
+    let pending = super::vault::Vault::open(dirs[0].path(), keys[0].clone())
+        .unwrap()
+        .pending();
+    assert_eq!(pending.values().next().unwrap()[0].account, "carol");
+
+    // Carol sets up encryption; opening the group finds her keys.
+    let carol = person(
+        &rt,
+        &backend,
+        "carol",
+        "dm-x",
+        "m-x",
+        "x",
+        dirs[2].path(),
+        &keys[2],
+    );
+    ready(&carol);
+    wait_until(&carol.client, WAIT, "carol's device list", |_| {
+        backend.device_list("carol").is_some()
+    });
+    alice.engine.check_pending(&a);
+    wait_until(&alice.client, WAIT, "carol added", |w| {
+        let g = &w.e2ee.groups[&a];
+        g.pending == ["eve"] && g.members.iter().any(|m| m.account == "carol")
+    });
+    wait_until(&alice.client, WAIT, "the joined line", |w| {
+        has_text(w, &a, "carol joined")
+    });
+    wait_until(&carol.client, WAIT, "carol's invitation", |w| {
+        w.e2ee
+            .invitations
+            .iter()
+            .any(|i| i.title == "Weekend plans")
+    });
+    let left = super::vault::Vault::open(dirs[0].path(), keys[0].clone())
+        .unwrap()
+        .pending();
+    assert_eq!(left.values().next().unwrap().len(), 1, "eve still waits");
+    // Only the notice went out in the clear, and not as a message of a
+    // conversation.
+    assert!(backend.plaintext().is_empty(), "{:?}", backend.plaintext());
+}
+
+/// The creator can stop waiting for someone; a group nobody chosen can
+/// join yet does not start, and tells nobody.
+#[test]
+fn a_pending_invitation_is_cancelled() {
+    let rt = runtime().unwrap();
+    let backend = E2eeBackend::new();
+    let dirs: Vec<_> = (0..2).map(|_| tempfile::tempdir().unwrap()).collect();
+    let keys: Vec<_> = (0..2).map(|_| VaultKey::random()).collect();
+    let alice = person(
+        &rt,
+        &backend,
+        "alice",
+        "dm-bob",
+        "m-bob",
+        "bob",
+        dirs[0].path(),
+        &keys[0],
+    );
+    let bob = person(
+        &rt,
+        &backend,
+        "bob",
+        "dm-alice",
+        "m-alice",
+        "alice",
+        dirs[1].path(),
+        &keys[1],
+    );
+    ready(&alice);
+    ready(&bob);
+    let dora = || Invitee {
+        account: "dora".into(),
+        nick: "dora".into(),
+    };
+    alice
+        .engine
+        .create_group_inviting("Nobody yet", vec![dora()]);
+    wait_until(&alice.client, WAIT, "the refusal", |w| {
+        w.e2ee.group_errors.get("new").map(String::as_str) == Some("group-nobody-ready")
+    });
+    assert!(alice.client.read().e2ee.groups.is_empty());
+    let told = |d: &Device| {
+        d.server
+            .requests()
+            .iter()
+            .filter(|r| r.path.ends_with("/commands"))
+            .count()
+    };
+    assert_eq!(told(&alice), 0);
+
+    alice.engine.create_group_inviting(
+        "With bob",
+        vec![
+            Invitee {
+                account: "bob".into(),
+                nick: "bob".into(),
+            },
+            dora(),
+        ],
+    );
+    let a = group_conversation(&alice);
+    wait_until(&alice.client, WAIT, "dora pending", |w| {
+        w.e2ee.groups[&a].pending == ["dora"]
+    });
+    assert_eq!(told(&alice), 1);
+    alice.engine.cancel_pending(&a, "dora");
+    wait_until(&alice.client, WAIT, "nobody pending", |w| {
+        w.e2ee.groups[&a].pending.is_empty()
+    });
 }
 
 #[test]

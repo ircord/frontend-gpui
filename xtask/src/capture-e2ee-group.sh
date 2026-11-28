@@ -5,7 +5,7 @@
 # server starts the group "Weekend plans" with this account and Sam, whose
 # IRCord server is the second backend on the same IRC network
 # (`$SERVER_B`). Click positions are in the 1200x800 window; `E2EE_*`
-# overrides them.
+# overrides them. Last, New encrypted group's dialog with people chosen.
 
 await() {
   i=0
@@ -70,6 +70,26 @@ xdotool type --delay 20 "Me too. Only the three of us can read this."
 xdotool key Return
 sleep 6
 win_shot "$WIN" e2ee-group-6-messages
+
+# New encrypted group, from the lock beside Direct messages: Alex is
+# suggested by name, and an account without encryption set up is marked as
+# waiting for an invitation message. Cancelled, so nothing is sent.
+click "$WIN" "${E2EE_NEW_X:-176}" "${E2EE_NEW_Y:-381}" 2
+xdotool type --delay 20 "Next trip"
+xdotool key Tab
+sleep 0.5
+xdotool type --delay 20 "$ALEX"
+sleep 2
+win_shot "$WIN" e2ee-group-7-suggested
+xdotool key Return
+sleep 1
+xdotool type --delay 20 "nobodyyet"
+sleep 1
+xdotool key Return
+sleep 3
+win_shot "$WIN" e2ee-group-8-chosen
+xdotool key Escape
+sleep 1
 
 kill "$ALEX_PID" "$SAM_PID" 2>/dev/null || true
 stop_app e2ee-group

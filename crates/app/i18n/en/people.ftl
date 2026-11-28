@@ -107,6 +107,7 @@ people-picker-results = People
 people-picker-searching = Searching…
 people-picker-nobody = Nobody found.
 people-picker-use-nick = Use the nick “{ $nick }”
+people-picker-use-account = Add the account “{ $account }”
 
 # Your status and your own menu.
 people-status-title = Set a status

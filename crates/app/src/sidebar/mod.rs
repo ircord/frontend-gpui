@@ -9,6 +9,8 @@
 //!   per network on this device. Favourites and channels can be dragged into
 //!   your own order (or moved from the menu), which follows the account;
 //!   Sort A to Z forgets it. The first nine channels show their Ctrl+number.
+//!   The Direct messages heading has Message someone, then the buttons
+//!   features register (`Registry::directs_heading`: New encrypted group).
 //! - The list folds to an icon rail and back, and is as wide as you drag it;
 //!   so is the right-hand panel ([`side_panel`]).
 //! - Right-clicking a network or a conversation opens its registered menu;
@@ -658,6 +660,7 @@ impl SidebarView {
         &self,
         network: &str,
         view: &order::SectionView,
+        directs: &mut Vec<AnyElement>,
         theme: &Theme,
     ) -> AnyElement {
         let section = view.section;
@@ -745,12 +748,14 @@ impl SidebarView {
                     theme,
                     |_, window, cx| crate::features::switcher::open(window, cx),
                 ));
+                heading = heading.children(directs.drain(..));
             }
             Section::Favorites => {}
         }
         heading.into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn list(
         &self,
         w: &Workspace,
@@ -758,6 +763,7 @@ impl SidebarView {
         selected: Option<&str>,
         layout: &order::Layout,
         server: Option<&url::Url>,
+        mut directs: Vec<AnyElement>,
         theme: &Theme,
     ) -> AnyElement {
         // With motion the highlight is the list's first child, a canvas under
@@ -774,7 +780,7 @@ impl SidebarView {
             unread_only: layout.unread_only,
         };
         for view in order::sections(w, network, &layout.collapsed, filter) {
-            items.push(self.section_heading(network, &view, theme));
+            items.push(self.section_heading(network, &view, &mut directs, theme));
             for c in &view.shown {
                 let number = numbers.iter().position(|id| *id == c.id).map(|i| i + 1);
                 let active = selected == Some(c.id.as_str());
@@ -975,6 +981,12 @@ impl SidebarView {
             session: self.session.clone(),
             network: selected_network.clone(),
         };
+        let directs: Vec<AnyElement> = registry::get(cx)
+            .directs_heading
+            .to_vec()
+            .into_iter()
+            .filter_map(|slot| (slot.render)(&slot_ctx, window, cx))
+            .collect();
         let (mut pages, mut bottom) = (Vec::new(), Vec::new());
         for slot in registry::get(cx).sidebar_footer.to_vec() {
             if let Some(element) = (slot.render)(&slot_ctx, window, cx) {
@@ -1169,6 +1181,7 @@ impl SidebarView {
                 selected.as_deref(),
                 &layout,
                 pictures_from.as_ref(),
+                directs,
                 &theme,
             ),
             None => div().id("conversation-list").flex_1().into_any_element(),

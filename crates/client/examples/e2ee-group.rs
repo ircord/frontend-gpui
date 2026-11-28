@@ -65,6 +65,8 @@ fn main() {
         VaultKey::random(),
         format!("{username}'s laptop"),
         Texts {
+            invited: Box::new(|| "invited".to_string()),
+            joined: Box::new(|account| format!("{account} joined")),
             control: Box::new(|on, name, _| {
                 format!("{name} turned encryption {}", if on { "on" } else { "off" })
             }),

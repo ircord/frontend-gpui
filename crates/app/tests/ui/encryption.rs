@@ -52,6 +52,8 @@ mod tempfile_dir {
 
 fn texts() -> Texts {
     Texts {
+        invited: Box::new(|| "invited".to_string()),
+        joined: Box::new(|account| format!("{account} joined")),
         control: Box::new(|on, name, _| format!("{name} turned {on}")),
         unreadable: Box::new(|why| format!("{why:?}")),
         left: Box::new(|name, _| format!("{name} left")),
@@ -335,8 +337,14 @@ fn a_new_device_shows_its_codes_and_another_approves_it(cx: &mut TestAppContext)
             .client()
             .is_some_and(|c| matches!(c.read().e2ee.device, DeviceState::Waiting { .. }))
     });
-    let session = f.session.clone();
-    cx.update(|cx| ircord_app::settings::open(&session, Some("encryption-device"), cx));
+    // The lock beside Direct messages says to set up this device first,
+    // and takes you there.
+    draw(&f, cx);
+    assert_eq!(
+        label(&f, cx, "encryption-group-new"),
+        "New encrypted group: set up encryption on this device first, in Settings → Encryption."
+    );
+    click(&f, cx, "encryption-group-new");
     draw(&f, cx);
     assert!(shown(&f, cx, "encryption-settings-qr"));
     assert!(shown(&f, cx, "encryption-settings-experimental"));
@@ -624,7 +632,8 @@ fn type_enter(f: &Fixture, cx: &mut TestAppContext, id: &'static str, text: &str
     cx.run_until_parked();
 }
 
-/// An encrypted group from the views: Bob invites this account, the
+/// An encrypted group from the views: the lock beside Direct messages
+/// opens the picker; Bob invites this account, the
 /// invitation card's Join enters it, the sidebar and header name it by its
 /// title, the lock counts who is verified, and the panel lists every person
 /// with their devices, the trust caveat and the security code to verify
@@ -653,6 +662,57 @@ fn an_encrypted_group_from_invitation_to_its_panel(cx: &mut TestAppContext) {
             .client()
             .is_some_and(|c| c.read().e2ee.device.ready())
     });
+
+    // A group is started from the lock beside the Direct messages heading,
+    // as in the web client, and no longer from the network menu.
+    draw(&f, cx);
+    assert!(shown(&f, cx, "encryption-group-new"));
+    assert_eq!(label(&f, cx, "encryption-group-new"), "New encrypted group");
+    audit(&f, cx, "the sidebar with New encrypted group");
+    click(&f, cx, "encryption-group-new");
+    assert!(shown(&f, cx, "encryption-group-submit"));
+    // People are found as they are typed and chosen as chips; an account
+    // that matches nobody can be added as typed, and one without
+    // encryption keys is marked as waiting for an invitation message.
+    type_enter(&f, cx, "people-picker-input", "bob");
+    assert_eq!(label(&f, cx, "encryption-group-chip-0"), "bob");
+    type_enter(&f, cx, "people-picker-input", "zed");
+    wait(cx, "zed marked as waiting", |cx| {
+        let mut text = String::new();
+        cx.update_window(f.window, |_, window, cx| {
+            window.render_frame(cx);
+            text = window
+                .try_find("encryption-group-chip-1")
+                .and_then(|e| e.label().map(str::to_string))
+                .unwrap_or_default();
+        })
+        .unwrap();
+        text == "zed, gets an invitation once they set up encryption"
+    });
+    assert!(shown(&f, cx, "encryption-group-pending-note"));
+    let problems = cx
+        .update_window(f.window, |_, window, cx| {
+            crate::audit::audit_dialog("the new group's people picker", window, cx)
+        })
+        .unwrap();
+    assert!(problems.is_empty(), "{problems:#?}");
+    // Backspace in the empty search takes back the last one.
+    cx.update_window(f.window, |_, window, cx| {
+        window.click("people-picker-input", cx);
+        window.press("backspace", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(!present(&f, cx, "encryption-group-chip-1"));
+    assert!(present(&f, cx, "encryption-group-chip-0"));
+    click(&f, cx, "encryption-group-cancel");
+    assert!(!present(&f, cx, "encryption-group-submit"));
+    assert!(cx.update(|cx| {
+        ircord_app::registry::get(cx)
+            .network_menu
+            .get("encryption-group-new")
+            .is_none()
+    }));
 
     bob.engine.create_group("Weekend plans", vec!["me".into()]);
     wait(cx, "the invitation", |cx| {

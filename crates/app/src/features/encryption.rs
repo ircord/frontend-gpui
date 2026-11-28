@@ -304,6 +304,8 @@ fn texts() -> ircord_client::e2ee::Texts {
                 t!("encryption-group-line-left", name = name)
             }
         }),
+        invited: Box::new(|| t!("encryption-group-invited-notice").into()),
+        joined: Box::new(|account| t!("encryption-group-pending-joined", name = account)),
     }
 }
 
@@ -686,6 +688,9 @@ impl Watched {
             with(&self.session, cx, |w| lock_of(w, &self.conversation)).unwrap_or(Lock::Open);
         let name = peer_name(&self.session, &self.conversation, cx);
         let group = groups::group_of(&self.session, &self.conversation, cx);
+        if let Some(g) = &group {
+            groups::look_for_pending(&self.session, &self.conversation, g, cx);
+        }
         let (icon, label, color): (LucideIcon, SharedString, Hsla) = match (lock, group) {
             (Lock::Verified, Some(_)) => (
                 LucideIcon::ShieldCheck,
