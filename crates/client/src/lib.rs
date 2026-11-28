@@ -6,6 +6,7 @@
 //! - [`config`]: the files kept between launches.
 //! - [`copy_log`]: what copying a stretch of the timeline writes.
 //! - [`credentials`]: the sign-in, in the operating system's credential store.
+//! - [`e2ee`]: end-to-end encrypted direct messages (experimental).
 //! - [`api`]: HTTP commands, one file per area of the contract.
 //! - [`events`] and [`socket`]: the event socket with resume, replay and resync.
 //! - [`store`]: the workspace and its pure `apply(event)`, with one sub-state
@@ -29,6 +30,7 @@ pub mod config;
 pub mod copy_log;
 pub mod credentials;
 pub mod documents;
+pub mod e2ee;
 pub mod emoticons;
 pub mod events;
 pub mod features;

@@ -36,6 +36,20 @@ impl HttpClient for ImageClient {
         req: http_client::Request<AsyncBody>,
     ) -> BoxFuture<'static, anyhow::Result<Response<AsyncBody>>> {
         let url = req.uri().to_string();
+        // A picture in an end-to-end encrypted message is answered from this
+        // device: downloaded, checked and decrypted, never fetched by its
+        // local URL.
+        if let Some(open) = ircord_client::e2ee::engine::local_file(&url) {
+            let task = self.runtime.spawn(open);
+            return async move {
+                let file = task.await?.map_err(anyhow::Error::msg)?;
+                Ok(Response::builder()
+                    .status(200)
+                    .header("content-type", file.mime)
+                    .body(AsyncBody::from(file.bytes))?)
+            }
+            .boxed();
+        }
         let task = self
             .runtime
             .spawn(async move { ircord_client::api::fetch(&url, MAX_IMAGE_BYTES).await });

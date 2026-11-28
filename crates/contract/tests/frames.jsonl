@@ -14,7 +14,7 @@
 {"v":1,"seq":4,"type":"conversation.counts","data":{"id":"c-a","unreadCount":4,"mentionCount":1,"unreadFrom":"msg-1"}}
 {"v":1,"seq":5,"type":"conversation.removed","data":{"id":"c-b"}}
 {"v":1,"seq":6,"type":"channel-services.updated","data":{"conversationId":"c-a"}}
-{"v":1,"seq":7,"type":"network.updated","data":{"id":"n1","name":"Home","host":"irc.example.org","port":6697,"tls":true,"nick":"me","initials":"H","color":"","status":"connected","auth":{"method":"none","passwordSet":false},"autoJoin":["#alpha"],"perform":[],"isupport":{"PREFIX":"(qaohv)~&@%+"},"capabilities":["message-tags"],"features":{"replies":true,"reactions":true,"typing":true,"attract":false,"readMarkers":true,"history":true,"messageLineBytes":512,"setname":true,"metadata":[],"away":true,"redact":true,"edit":true}}}
+{"v":1,"seq":7,"type":"network.updated","data":{"id":"n1","name":"Home","host":"irc.example.org","port":6697,"tls":true,"nick":"me","initials":"H","color":"","status":"connected","auth":{"method":"none","passwordSet":false},"autoJoin":["#alpha"],"perform":[],"isupport":{"PREFIX":"(qaohv)~&@%+"},"capabilities":["message-tags"],"features":{"replies":true,"reactions":true,"typing":true,"attract":false,"readMarkers":true,"history":true,"messageLineBytes":512,"setname":true,"metadata":[],"away":true,"redact":true,"edit":true,"encryption":false}}}
 {"v":1,"seq":8,"type":"network.removed","data":{"id":"n2"}}
 {"v":1,"seq":9,"type":"member.updated","data":{"id":"m-bob","nick":"bob","displayName":"Bob","color":"","status":"away","role":"member","bio":"","account":"bob"}}
 {"v":1,"seq":10,"type":"profile.updated","data":{"id":"m-me","nick":"me","displayName":"Me","color":"#3366ff","status":"online","role":"member","bio":"hi","account":"me"}}

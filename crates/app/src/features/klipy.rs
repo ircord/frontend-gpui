@@ -376,6 +376,10 @@ pub fn send_gif(
     let Some(client) = session.read(cx).client().cloned() else {
         return false;
     };
+    // An encrypted conversation's GIF would go in the clear.
+    if crate::features::encryption::refuses_plaintext(session, conversation, window, cx) {
+        return false;
+    }
     let reason = {
         let w = client.read();
         Allowed::of(&w, conversation, w.connection == Some(Connection::Live)).send_reason()

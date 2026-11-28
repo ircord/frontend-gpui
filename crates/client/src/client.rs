@@ -502,8 +502,14 @@ impl Client {
         });
     }
 
-    /// Send what the user typed. `/me text` sends an action.
+    /// Send what the user typed. `/me text` sends an action. Nothing is sent
+    /// into a conversation that must not get plaintext
+    /// ([`crate::store::e2ee::guarded`]): the encryption engine sends there.
     pub fn send(&self, conversation: &str, text: &str) {
+        if crate::store::e2ee::guarded(&self.read(), conversation) {
+            log::warn!("refused to send in the clear into an encrypted conversation");
+            return;
+        }
         let text = crate::features::plain_line_breaks(text);
         let text = text.trim_end_matches('\n');
         if text.trim().is_empty() {
@@ -675,6 +681,17 @@ async fn forward(handle: Handle, mut internal: UnboundedReceiver<Update>) {
 }
 
 async fn send_fresh(api: &Api, pending: &PendingSend) -> Result<c::CommandResponse, ApiError> {
+    if let Some(encrypted) = &pending.encrypted {
+        // The plaintext never leaves this device.
+        let body = c::MessageInputBody {
+            client_id: pending.client_id.clone(),
+            text: crate::store::e2ee::PLACEHOLDER.to_string(),
+            kind: Some(c::MessageInputBodyKind::Message),
+            encrypted: Some(encrypted.clone()),
+            ..Default::default()
+        };
+        return api.send_message(&pending.conversation_id, &body).await;
+    }
     let body = c::MessageInputBody {
         client_id: pending.client_id.clone(),
         text: pending.text.clone(),

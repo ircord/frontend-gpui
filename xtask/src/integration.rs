@@ -17,6 +17,13 @@
 //! The backend gets a random operator token (`IRCORD_ADMIN_TOKEN`), handed to
 //! the live cases as `IRCORD_IT_ADMIN_TOKEN`, so a case can make its own
 //! account a server owner through `/api/v1/admin/owners`.
+//!
+//! `IRCORD_IT_E2EE=1` starts the pair for end-to-end encryption instead and
+//! runs only its live case (`tests/live/e2ee.rs`): the backend gets
+//! `IRCORD_E2EE=experimental` and Ergo as its associated server, so every
+//! account gets the home network encryption works on. Ergo's API listens on
+//! loopback only, which the backend accepts in plain HTTP, so the backend and
+//! the proxy share Ergo's network namespace.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -77,6 +84,8 @@ impl Drop for Cleanup {
 /// at `http://127.0.0.1:8080` and the IRC server at `{ergo}:6667`.
 pub struct Backend {
     pub server: String,
+    /// The container whose network namespace the backend's clients join.
+    ns: String,
     pub ergo: String,
     /// The operator token the backend accepts on `/api/v1/admin/*`.
     pub admin_token: String,
@@ -85,8 +94,10 @@ pub struct Backend {
 }
 
 impl Backend {
-    /// Build the backend image from `IRCORD_BACKEND` and start both servers.
-    pub fn start(root: &Path) -> Result<Self> {
+    /// Build the backend image from `IRCORD_BACKEND` and start both servers;
+    /// with `e2ee`, the backend has encryption on and Ergo as its associated
+    /// server (see the module docs).
+    pub fn start_with(root: &Path, e2ee: bool) -> Result<Self> {
         let backend = match std::env::var_os("IRCORD_BACKEND") {
             Some(dir) => PathBuf::from(dir),
             None => root.join("../ircord-backend"),
@@ -113,31 +124,64 @@ impl Backend {
         let mut cleanup = Cleanup(Vec::new());
         let admin_token = random_token()?;
         let admin_env = format!("IRCORD_ADMIN_TOKEN={admin_token}");
+        let api_token = random_token()?;
+        let ergo_api = format!(
+            "ERGO__API={{enabled: true, listener: \"127.0.0.1:8089\", bearer-tokens: [{api_token}]}}"
+        );
+        let mut ergo_env: Vec<String> = Vec::new();
+        let mut backend_env: Vec<String> = Vec::new();
+        if e2ee {
+            ergo_env.extend(["-e".into(), ergo_api]);
+            for env in [
+                "IRCORD_E2EE=experimental".to_string(),
+                "IRCORD_ERGO_SERVER=127.0.0.1:6667".into(),
+                "IRCORD_ERGO_API_URL=http://127.0.0.1:8089".into(),
+                format!("IRCORD_ERGO_API_TOKEN={api_token}"),
+                "IRCORD_ERGO_IRC_TLS=false".into(),
+                // A second copy of the app signs in as `localhost`, so its
+                // sign-in is kept apart from the first one's.
+                "IRCORD_ALLOWED_ORIGINS=http://localhost:8080".into(),
+            ] {
+                backend_env.extend(["-e".into(), env]);
+            }
+        }
+        // Where the backend and the proxy live: their own namespace on the
+        // private network, or Ergo's.
+        let place = if e2ee {
+            format!("container:{ergo}")
+        } else {
+            net.clone()
+        };
 
         docker(&["network", "create", &net])?;
         cleanup
             .0
             .push(vec!["network".into(), "rm".into(), net.clone()]);
-        docker(&[
-            "run",
-            "-d",
-            "--name",
-            &ergo,
-            "--network",
-            &net,
-            // The whole block: Ergo cannot resolve an override of one of its keys.
-            "-e",
-            "ERGO__SERVER__IP_LIMITS={count: false, throttle: false}",
-            ERGO_IMAGE,
-        ])?;
+        docker(
+            &[
+                "run",
+                "-d",
+                "--name",
+                &ergo,
+                "--network",
+                &net,
+                // The whole block: Ergo cannot resolve an override of one of its keys.
+                "-e",
+                "ERGO__SERVER__IP_LIMITS={count: false, throttle: false}",
+            ]
+            .into_iter()
+            .chain(ergo_env.iter().map(String::as_str))
+            .chain([ERGO_IMAGE])
+            .collect::<Vec<_>>(),
+        )?;
         cleanup.0.push(vec!["rm".into(), "-f".into(), ergo.clone()]);
-        docker(&[
+        let backend_args: Vec<&str> = vec![
             "run",
             "-d",
             "--name",
             &server,
             "--network",
-            &net,
+            &place,
             "--tmpfs",
             "/data:uid=65532,gid=65532",
             "-e",
@@ -152,11 +196,19 @@ impl Backend {
             "IRCORD_TRUSTED_PROXIES=127.0.0.1/32",
             "-e",
             &admin_env,
-            BACKEND_IMAGE,
-        ])?;
+        ];
+        docker(
+            &backend_args
+                .into_iter()
+                .chain(backend_env.iter().map(String::as_str))
+                .chain([BACKEND_IMAGE])
+                .collect::<Vec<_>>(),
+        )?;
         cleanup
             .0
             .push(vec!["rm".into(), "-f".into(), server.clone()]);
+        // The namespace every other container joins.
+        let ns = if e2ee { ergo.clone() } else { server.clone() };
         let proxy = format!("ircord-gpui-it-proxy-{id}");
         docker(&[
             "run",
@@ -164,7 +216,7 @@ impl Backend {
             "--name",
             &proxy,
             "--network",
-            &format!("container:{server}"),
+            &format!("container:{ns}"),
             "-e",
             &format!("IT_PROXY_CONF={PROXY_CONF}"),
             "--entrypoint",
@@ -178,6 +230,7 @@ impl Backend {
             .push(vec!["rm".into(), "-f".into(), proxy.clone()]);
         Ok(Self {
             server,
+            ns,
             ergo,
             admin_token,
             proxy,
@@ -188,7 +241,7 @@ impl Backend {
     /// `docker run` arguments that put a container in the backend's network
     /// namespace.
     pub fn network_args(&self) -> Vec<String> {
-        vec!["--network".into(), format!("container:{}", self.server)]
+        vec!["--network".into(), format!("container:{}", self.ns)]
     }
 
     /// Print the tail of the servers' logs, for a failed run.
@@ -209,8 +262,12 @@ impl Backend {
 }
 
 pub fn run(root: &Path) -> Result<()> {
-    let backend = Backend::start(root)?;
+    let e2ee = std::env::var_os("IRCORD_IT_E2EE").is_some();
+    let backend = Backend::start_with(root, e2ee)?;
     let mut extra = backend.network_args();
+    if e2ee {
+        extra.extend(["-e".into(), "IRCORD_IT_E2EE=1".into()]);
+    }
     extra.extend([
         "-e".into(),
         "IRCORD_IT_SERVER=http://127.0.0.1:8080".into(),
@@ -231,7 +288,12 @@ pub fn run(root: &Path) -> Result<()> {
             "live",
             "--",
             "--nocapture",
-        ],
+        ]
+        .into_iter()
+        // With encryption on, every account has the home network too, which
+        // the other cases do not expect: only the encryption case runs.
+        .chain(e2ee.then_some("e2ee"))
+        .collect::<Vec<_>>(),
     );
     if result.is_err() {
         backend.print_logs();

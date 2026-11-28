@@ -18,6 +18,7 @@ mod appearance; // S1: save, use and remove a personal theme
 mod channel_settings; // CH2: topic, modes, bans
 mod channels; // CH1: create and join
 mod commands; // C1: /join, /topic, /nick
+mod e2ee; // end-to-end encrypted direct messages (experimental)
 mod emotes; // S5: upload, rename, remove an emoji
 mod inbox_saved; // FD2: save a message and find it
 mod link_previews; // L1: resolve a link in a message

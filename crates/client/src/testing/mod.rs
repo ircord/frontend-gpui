@@ -11,6 +11,7 @@
 //! server.push(frame(1, "message.created", &message("m1", "c-a", "m-bob", "hi")));
 //! ```
 
+mod e2ee;
 mod server;
 #[cfg(test)]
 mod tests;
@@ -21,6 +22,7 @@ use ircord_contract::*;
 use serde::Serialize;
 use serde_json::json;
 
+pub use e2ee::{E2eeBackend, e2ee_snapshot};
 pub use server::{CANNED_COOKIE, CannedServer, Recorded, Reply};
 
 use crate::Client;

@@ -12,6 +12,15 @@ test-support = []
 [dependencies]
 ircord-contract.workspace = true
 anyhow.workspace = true
+base64 = "0.22"
+# End-to-end encryption (experimental): the shared core, pinned by commit,
+# and the primitives for the local store and the device approval handshake.
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+ircord-e2ee-native = { git = "https://github.com/ircord/e2ee", rev = "6bff88cf86ebb27e1cd7cbfc3bd272becd40c377" }
+qrcode = { version = "0.14", default-features = false }
+sha2 = "0.10"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 serde.workspace = true
 serde_json.workspace = true
 url.workspace = true

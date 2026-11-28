@@ -24,6 +24,7 @@ mod drafts;
 mod emoji;
 mod emotes;
 mod emoticons;
+mod encryption;
 mod inbox_saved;
 mod ircoid;
 mod link_previews;

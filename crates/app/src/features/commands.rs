@@ -227,6 +227,15 @@ fn command_filter(
         }
         Ok(Plan::Text(text)) => SendOutcome::Continue(text),
         Ok(Plan::Action(action)) => {
+            // An encrypted conversation gets no plaintext action.
+            if crate::features::encryption::refuses_plaintext(
+                &ctx.session,
+                &ctx.conversation,
+                window,
+                cx,
+            ) {
+                return SendOutcome::Keep;
+            }
             // Sent as typed: `/slap _jules_` must not turn into italics.
             client.send(&ctx.conversation, &format!("/me {action}"));
             SendOutcome::Handled
@@ -279,7 +288,14 @@ fn run(
                     if let Some(id) = &done.open {
                         ctx.session
                             .update(cx, |s, cx| s.select_conversation(id, cx));
-                        if let Some(text) = &done.send {
+                        if let Some(text) = &done.send
+                            && !crate::features::encryption::refuses_plaintext(
+                                &ctx.session,
+                                id,
+                                window,
+                                cx,
+                            )
+                        {
                             client.send(id, text);
                         }
                     }

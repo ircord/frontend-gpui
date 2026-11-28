@@ -21,6 +21,7 @@ use ircord_contract::*;
 pub mod appearance;
 pub mod documents;
 pub mod drafts;
+pub mod e2ee;
 pub mod emoji;
 pub mod inbox;
 pub mod link_media;
@@ -223,6 +224,9 @@ pub struct Workspace {
     pub appearance: appearance::State,
     /// S3: notification state beyond the settings document.
     pub notify_settings: notify_settings::State,
+    /// End-to-end encryption (experimental): this device and each
+    /// encrypted conversation, as the views show them.
+    pub e2ee: e2ee::State,
 }
 
 pub fn parse_time(text: &str) -> i64 {
@@ -248,6 +252,7 @@ macro_rules! each_part {
         changes.merge(parties::$hook($w, $($arg),*));
         changes.merge(appearance::$hook($w, $($arg),*));
         changes.merge(notify_settings::$hook($w, $($arg),*));
+        changes.merge(e2ee::$hook($w, $($arg),*));
         changes
     }};
 }

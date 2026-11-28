@@ -25,6 +25,7 @@ mod backdrop;
 pub mod channels;
 mod conversations;
 mod devices;
+pub mod e2ee;
 pub mod emotes;
 mod inbox;
 mod ircoid;

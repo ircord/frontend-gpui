@@ -21,6 +21,7 @@ pub mod account;
 pub mod appearance;
 pub mod device;
 pub mod emotes;
+pub mod encryption;
 pub mod messages;
 pub mod networks;
 pub mod notifications;
@@ -56,6 +57,7 @@ pub fn init(cx: &mut App) {
     appearance::init(cx);
     device::init(cx);
     emotes::init(cx);
+    encryption::init(cx);
     messages::init(cx);
     networks::init(cx);
     notifications::init(cx);

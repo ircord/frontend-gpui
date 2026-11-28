@@ -22,6 +22,12 @@ pub trait CredentialStore: Send + Sync + 'static {
     fn save(&self, server: &ServerAddress, session: &str) -> Result<(), StoreError>;
     /// Forget the session. Forgetting one that is not there is not an error.
     fn clear(&self, server: &ServerAddress) -> Result<(), StoreError>;
+
+    /// A secret other than the session, by name: the key that seals this
+    /// device's encrypted messages (`crate::e2ee::vault`). It is not cleared
+    /// on sign-out, so signing in again opens the same store.
+    fn load_secret(&self, name: &str) -> Result<Option<String>, StoreError>;
+    fn save_secret(&self, name: &str, secret: &str) -> Result<(), StoreError>;
 }
 
 /// The operating system's credential store, one entry per server origin.
@@ -45,6 +51,22 @@ fn explain(e: keyring::Error) -> StoreError {
 }
 
 impl CredentialStore for SystemStore {
+    fn load_secret(&self, name: &str) -> Result<Option<String>, StoreError> {
+        let entry = keyring::Entry::new(APP_ID, name).map_err(explain)?;
+        match entry.get_password() {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(explain(e)),
+        }
+    }
+
+    fn save_secret(&self, name: &str, secret: &str) -> Result<(), StoreError> {
+        keyring::Entry::new(APP_ID, name)
+            .map_err(explain)?
+            .set_password(secret)
+            .map_err(explain)
+    }
+
     fn load(&self, server: &ServerAddress) -> Result<Option<String>, StoreError> {
         match Self::entry(server)?.get_password() {
             Ok(secret) => Ok(Some(secret)),
@@ -70,6 +92,23 @@ impl CredentialStore for SystemStore {
 pub struct MemoryStore(Mutex<HashMap<String, String>>);
 
 impl CredentialStore for MemoryStore {
+    fn load_secret(&self, name: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .get(&format!("secret:{name}"))
+            .cloned())
+    }
+
+    fn save_secret(&self, name: &str, secret: &str) -> Result<(), StoreError> {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(format!("secret:{name}"), secret.to_string());
+        Ok(())
+    }
+
     fn load(&self, server: &ServerAddress) -> Result<Option<String>, StoreError> {
         Ok(self.0.lock().unwrap().get(&server.origin()).cloned())
     }

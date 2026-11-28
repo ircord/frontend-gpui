@@ -638,7 +638,12 @@ impl Draw<'_> {
                     .min_w_0()
                     .cursor_pointer()
                     .hover(move |d| d.bg(hover))
-                    .on_click(move |_, _, cx| cx.open_url(&url))
+                    .on_click(move |_, _, cx| {
+                        // An end-to-end encrypted file is decrypted here first.
+                        if !crate::features::encryption::open_local(&url, cx) {
+                            cx.open_url(&url)
+                        }
+                    })
                     .child(
                         div()
                             .text_sm()

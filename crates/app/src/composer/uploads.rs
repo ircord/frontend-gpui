@@ -335,6 +335,11 @@ pub fn send_all(session: Entity<Session>, conversation: String, window: &mut Win
     let Some(client) = client(&session, cx) else {
         return;
     };
+    // An end-to-end encrypted conversation's files are encrypted before they
+    // go up, by the encryption feature's own submit hook; none goes up here.
+    if crate::features::encryption::takes_uploads(&session, &conversation, cx) {
+        return;
+    }
     let batch: Vec<u64> = {
         let state = cx.default_global::<Uploads>();
         if state.sending.contains(&conversation) {
