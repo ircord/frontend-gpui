@@ -6,7 +6,10 @@
 //!
 //! Like the backend it treats every blob as opaque. It also refuses
 //! plaintext into a conversation that is bound to a group, so a test sees a
-//! client that tried.
+//! client that tried. Bindings follow the backend's rules: one current group
+//! per pair of accounts, changed only by naming the current one in
+//! `replaces` (none while it has none), and each account's own conversation
+//! bound to its pair until encryption is turned off.
 //!
 //! ```ignore
 //! let backend = E2eeBackend::new();
@@ -64,7 +67,9 @@ struct State {
     welcomes: Vec<(i64, String, String, String, i64, String)>,
     /// (id, account, from, to, payload)
     approvals: Vec<(i64, String, String, String, String)>,
-    /// (account, conversation) → group
+    /// (account, account), sorted → the pair's current group, if any
+    pairs: HashMap<(String, String), String>,
+    /// (account, conversation) → peer: the conversations bound to their pair
     bindings: HashMap<(String, String), String>,
     sides: HashMap<String, Side>,
     next: i64,
@@ -102,6 +107,23 @@ pub fn e2ee_snapshot(account: &str, conversation: &str, peer_member: &str, peer:
         .build()
 }
 
+fn pair(a: &str, b: &str) -> (String, String) {
+    if b < a {
+        (b.to_string(), a.to_string())
+    } else {
+        (a.to_string(), b.to_string())
+    }
+}
+
+impl State {
+    fn binding(&self, me: &str, conversation: &str) -> Option<String> {
+        let peer = self
+            .bindings
+            .get(&(me.to_string(), conversation.to_string()))?;
+        self.pairs.get(&pair(me, peer)).cloned()
+    }
+}
+
 fn ok(body: Value) -> Reply {
     Reply::json(200, body)
 }
@@ -135,12 +157,18 @@ impl E2eeBackend {
 
     /// The group a conversation of `account` is bound to.
     pub fn binding(&self, account: &str, conversation: &str) -> Option<String> {
-        self.state
-            .lock()
-            .unwrap()
-            .bindings
-            .get(&(account.to_string(), conversation.to_string()))
-            .cloned()
+        self.state.lock().unwrap().binding(account, conversation)
+    }
+
+    /// Make `group` the current group of the pair and bind `account`'s
+    /// conversation to it, as an older client that misses an "off" does.
+    pub fn force_bind(&self, account: &str, conversation: &str, peer: &str, group: &str) {
+        let mut s = self.state.lock().unwrap();
+        s.pairs.insert(pair(account, peer), group.to_string());
+        s.bindings.insert(
+            (account.to_string(), conversation.to_string()),
+            peer.to_string(),
+        );
     }
 
     /// Devices published for `account`, by ID, with their labels.
@@ -548,7 +576,7 @@ fn delete_welcome(s: &mut State, me: &str, r: &Recorded) -> Reply {
 }
 
 fn conversation_json(s: &State, me: &str, id: &str) -> Value {
-    let group = s.bindings.get(&(me.to_string(), id.to_string()));
+    let group = s.binding(me, id);
     let peer = s.sides.get(me).map(|side| side.peer.clone());
     json!({"conversationId": id, "encrypted": group.is_some(), "groupId": group, "peer": peer})
 }
@@ -562,42 +590,41 @@ fn bind(s: &mut State, me: &str, r: &Recorded) -> Reply {
     let id = segment(r, 4);
     let body = r.json();
     let group = body["groupId"].as_str().unwrap_or_default().to_string();
-    let replaces = body["replaces"].as_str().map(str::to_string);
-    let current = s.bindings.get(&(me.to_string(), id.clone())).cloned();
-    match (&current, &replaces) {
-        (Some(c), _) if *c == group => {}
-        (Some(c), Some(r)) if c == r => {}
-        (Some(_), _) => {
+    let peer = body["peer"].as_str().unwrap_or_default().to_string();
+    let replaces = body["replaces"].as_str().unwrap_or_default();
+    let members = s.groups.get(&group).map(|g| g.members.clone());
+    if !members.is_some_and(|m| m.len() == 2 && m.contains(&peer) && m.iter().any(|a| a == me)) {
+        return not_found();
+    }
+    let key = pair(me, &peer);
+    let current = s.pairs.get(&key).cloned().unwrap_or_default();
+    if current != group {
+        if current != replaces {
             return Reply::problem(409, "The conversation already has another current group.");
         }
-        (None, _) => {}
+        s.pairs.insert(key, group);
     }
-    s.bindings
-        .insert((me.to_string(), id.clone()), group.clone());
-    // The current group is the conversation's for both people.
-    if let Some(peer) = s.sides.get(me).map(|side| side.peer.clone())
-        && let Some(theirs) = s.sides.get(&peer).map(|side| side.conversation.clone())
-    {
-        let key = (peer, theirs);
-        if s.bindings.get(&key).is_some_and(|g| *g != group) {
-            s.bindings.insert(key, group);
-        }
-    }
+    s.bindings.insert((me.to_string(), id.clone()), peer);
     ok(conversation_json(s, me, &id))
 }
 
 fn turn_off(s: &mut State, me: &str, r: &Recorded) -> Reply {
     let id = segment(r, 4);
     let group = r.query_param("groupId").unwrap_or_default();
-    if s.bindings.get(&(me.to_string(), id.clone())) != Some(&group) {
-        return Reply::problem(409, "not current");
+    let Some(peer) = s.bindings.get(&(me.to_string(), id.clone())).cloned() else {
+        return not_found();
+    };
+    let key = pair(me, &peer);
+    match s.pairs.get(&key) {
+        None => return ok(conversation_json(s, me, &id)),
+        Some(current) if *current != group => {
+            return Reply::problem(409, "The conversation already has another current group.");
+        }
+        Some(_) => {}
     }
-    s.bindings.remove(&(me.to_string(), id.clone()));
-    if let Some(peer) = s.sides.get(me).map(|side| side.peer.clone())
-        && let Some(theirs) = s.sides.get(&peer).map(|side| side.conversation.clone())
-    {
-        s.bindings.remove(&(peer, theirs));
-    }
+    s.pairs.remove(&key);
+    s.bindings
+        .retain(|(owner, _), p| !(owner == me && *p == peer || *owner == peer && p == me));
     ok(conversation_json(s, me, &id))
 }
 
@@ -639,9 +666,7 @@ fn send(s: &mut State, me: &str, r: &Recorded) -> Reply {
     let client_id = body["clientId"].as_str().unwrap_or_default().to_string();
     let text = body["text"].as_str().unwrap_or_default().to_string();
     let encrypted: Option<Encrypted> = serde_json::from_value(body["encrypted"].clone()).ok();
-    let bound = s
-        .bindings
-        .contains_key(&(me.to_string(), conversation.clone()));
+    let bound = s.binding(me, &conversation).is_some();
     if encrypted.is_none() {
         s.plaintext.push((me.to_string(), text.clone()));
         if bound {

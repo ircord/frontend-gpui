@@ -132,11 +132,14 @@ pub enum Unreadable {
 #[serde(tag = "as", rename_all = "kebab-case")]
 pub enum Outcome {
     Plain(Plain),
-    /// Encryption turned on or off, by `by` (an account).
+    /// Encryption turned on or off, by `by` (an account), in `group`
+    /// (base64url; absent in what older versions stored).
     Control {
         on: bool,
         by: String,
         at: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<String>,
     },
     /// Not shown: a part of a longer message, or an event this client does
     /// not show yet.
