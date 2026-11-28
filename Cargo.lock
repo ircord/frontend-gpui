@@ -5261,7 +5261,7 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
 name = "ircord-app"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -5287,7 +5287,7 @@ dependencies = [
 
 [[package]]
 name = "ircord-client"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5325,7 +5325,7 @@ dependencies = [
 
 [[package]]
 name = "ircord-contract"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5333,7 +5333,7 @@ dependencies = [
 
 [[package]]
 name = "ircord-dev"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ircord-app",
 ]
@@ -5370,7 +5370,7 @@ dependencies = [
 
 [[package]]
 name = "ircord-platform"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5397,7 +5397,7 @@ dependencies = [
 
 [[package]]
 name = "ircord-video-gst"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "gstreamer",
  "gstreamer-app",
@@ -12667,7 +12667,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
