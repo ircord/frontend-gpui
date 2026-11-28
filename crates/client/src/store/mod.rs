@@ -582,6 +582,7 @@ impl Workspace {
             | Durable::SavedRemoved(_)
             | Durable::InboxAdded(_)
             | Durable::InboxUpdated(_)
+            | Durable::E2EEChanged(_)
             | Durable::Other(_) => Changes::default(),
         }
     }

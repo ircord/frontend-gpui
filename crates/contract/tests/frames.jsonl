@@ -37,3 +37,4 @@
 {"v":1,"seq":27,"type":"saved.removed","data":{"messageId":"msg-1","conversationId":"c-a"}}
 {"v":1,"seq":28,"type":"inbox.added","data":{"messageId":"msg-1","conversationId":"c-a","networkId":"n1","senderId":"m-bob","reasons":["mention"],"createdAt":"2026-11-21T10:00:00Z"}}
 {"v":1,"seq":29,"type":"inbox.updated","data":{"messageId":"msg-1","dismissed":true}}
+{"v":1,"seq":30,"type":"e2ee.changed","data":{"groupId":"AAECAwQFBgcICQoLDA0ODw","account":"bob","reason":"commit"}}

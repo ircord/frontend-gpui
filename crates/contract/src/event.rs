@@ -79,6 +79,10 @@ pub enum Durable {
     SavedRemoved(SavedRemoval),
     InboxAdded(InboxEntry),
     InboxUpdated(InboxChange),
+    /// The account's encryption state changed on the server (a commit
+    /// settled, a Welcome or rejoin request arrived, someone's keys
+    /// changed): sync it now instead of at the next poll.
+    E2EEChanged(E2EEChange),
     /// A durable event type newer than this client. It still advances the cursor.
     Other(String),
 }
@@ -176,6 +180,7 @@ pub const SERVER_EVENT_TYPES: &[&str] = &[
     "saved.removed",
     "inbox.added",
     "inbox.updated",
+    "e2ee.changed",
 ];
 
 #[derive(Deserialize)]
@@ -262,6 +267,7 @@ impl ServerEvent {
             "saved.removed" => Durable::SavedRemoved(de(d)?),
             "inbox.added" => Durable::InboxAdded(de(d)?),
             "inbox.updated" => Durable::InboxUpdated(de(d)?),
+            "e2ee.changed" => Durable::E2EEChanged(de(d)?),
             "history.synced" => Durable::HistorySynced(de(d)?),
             "history.gap" => Durable::HistoryGap(de(d)?),
             "history.sync.failed" => Durable::HistoryFailed(de(d)?),
@@ -324,6 +330,7 @@ impl Durable {
             Durable::SavedRemoved(_) => "saved.removed",
             Durable::InboxAdded(_) => "inbox.added",
             Durable::InboxUpdated(_) => "inbox.updated",
+            Durable::E2EEChanged(_) => "e2ee.changed",
             Durable::Other(kind) => kind,
         }
     }

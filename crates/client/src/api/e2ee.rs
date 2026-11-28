@@ -199,17 +199,106 @@ impl Api {
         self.delete(&format!("/api/v1/e2ee/approvals/{id}")).await
     }
 
-    /// Download an encrypted file from this server, at most `max` bytes.
+    /// Publish this account's signed device list. A 409 means a newer list
+    /// is published already.
+    pub async fn e2ee_put_device_list(&self, list: &[u8], counter: i64) -> Result<(), ApiError> {
+        let body = c::E2EEDeviceList {
+            list: encode(list),
+            counter,
+        };
+        let _: c::E2EEDeviceList = self
+            .call(Method::PUT, "/api/v1/e2ee/device-list", &body)
+            .await?;
+        Ok(())
+    }
+
+    // ---- Encrypted chats carried over IRC (direct chats across servers, groups) ----
+
+    /// Your encrypted chats carried over IRC, with invitations not answered yet.
+    pub async fn e2ee_chats(&self) -> Result<Vec<c::E2EEChat>, ApiError> {
+        let page: c::ItemsE2EEChat = self.get("/api/v1/e2ee/chats").await?;
+        Ok(page.items)
+    }
+
+    pub async fn e2ee_create_chat(
+        &self,
+        body: &c::E2EECreateChatInputBody,
+    ) -> Result<c::E2EECreatedChat, ApiError> {
+        self.call(Method::POST, "/api/v1/e2ee/chats", body).await
+    }
+
+    /// Enter a group's channel (or bind the direct conversation) after an invitation.
+    pub async fn e2ee_join_chat(&self, group: &str) -> Result<c::E2EEChat, ApiError> {
+        let path = format!("/api/v1/e2ee/chats/{}/join", segment(group));
+        self.call(Method::POST, &path, &json!({})).await
+    }
+
+    pub async fn e2ee_decline_chat(&self, group: &str) -> Result<(), ApiError> {
+        let path = format!("/api/v1/e2ee/chats/{}/decline", segment(group));
+        self.call_empty(Method::POST, &path, &json!({})).await
+    }
+
+    /// Leave a chat; with `close`, the founder closes a group for everyone.
+    pub async fn e2ee_leave_chat(&self, group: &str, close: bool) -> Result<(), ApiError> {
+        let mut path = format!("/api/v1/e2ee/chats/{}", segment(group));
+        if close {
+            path.push_str("?close=true");
+        }
+        self.delete(&path).await
+    }
+
+    /// Send a commit; answers once it settled, whether it came first.
+    pub async fn e2ee_chat_commit(
+        &self,
+        group: &str,
+        body: &c::E2EEChatCommitInputBody,
+    ) -> Result<c::E2EEChatCommitResult, ApiError> {
+        let path = format!("/api/v1/e2ee/chats/{}/commits", segment(group));
+        self.call(Method::POST, &path, body).await
+    }
+
+    /// The commits this server saw from epoch `from` on, by epoch and, within
+    /// one, in position order.
+    pub async fn e2ee_chat_commits(
+        &self,
+        group: &str,
+        from: i64,
+    ) -> Result<Vec<c::E2EEChatCommit>, ApiError> {
+        let path = format!("/api/v1/e2ee/chats/{}/commits", segment(group));
+        let page: c::ItemsE2EEChatCommit = self
+            .get_query(
+                &path,
+                &[("from", from.to_string()), ("limit", "100".into())],
+            )
+            .await?;
+        Ok(page.items)
+    }
+
+    pub async fn e2ee_chat_welcomes(
+        &self,
+        device: &str,
+    ) -> Result<Vec<c::E2EEChatWelcome>, ApiError> {
+        let path = format!("/api/v1/e2ee/devices/{}/chat-welcomes", segment(device));
+        let page: c::ItemsE2EEChatWelcome = self.get(&path).await?;
+        Ok(page.items)
+    }
+
+    pub async fn e2ee_delete_chat_welcome(&self, id: i64) -> Result<(), ApiError> {
+        self.delete(&format!("/api/v1/e2ee/chat-welcomes/{id}"))
+            .await
+    }
+
+    /// Download an encrypted file, at most `max` bytes: from this server
+    /// with the session, or from another IRCord server's upload address over
+    /// HTTPS without any credentials (a file someone on another server sent).
     pub async fn e2ee_download(&self, url: &str, max: usize) -> Result<Vec<u8>, ApiError> {
         let target = self.file_url(url);
-        let own = url::Url::parse(&target)
-            .ok()
+        let parsed = url::Url::parse(&target).ok();
+        let own = parsed
+            .as_ref()
             .is_some_and(|u| u.origin().ascii_serialization() == self.server().origin());
         if !own {
-            return Err(ApiError::Http {
-                status: 400,
-                detail: "An encrypted file must come from this server.".into(),
-            });
+            return foreign_download(parsed, max).await;
         }
         let path = url::Url::parse(&target)
             .map(|u| match u.query() {
@@ -230,4 +319,47 @@ impl Api {
         }
         Ok(body)
     }
+}
+
+/// Fetch an encrypted file another IRCord server holds: only its public
+/// upload address (`/files/…`), over HTTPS (plain HTTP only to this
+/// machine, for a local server), with no session, no cookies and no
+/// redirects. The file is sealed; its key is in the message.
+async fn foreign_download(url: Option<url::Url>, max: usize) -> Result<Vec<u8>, ApiError> {
+    let refused = || ApiError::Http {
+        status: 400,
+        detail: "An encrypted file must come from an IRCord server's upload address.".into(),
+    };
+    let url = url.ok_or_else(refused)?;
+    let local = url.host().is_some_and(|h| match h {
+        url::Host::Domain(d) => d == "localhost",
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+    });
+    let secure = url.scheme() == "https" || (url.scheme() == "http" && local);
+    if !secure || !url.path().starts_with("/files/") || !url.username().is_empty() {
+        return Err(refused());
+    }
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(ApiError::network)?;
+    let mut response = http.get(url).send().await.map_err(ApiError::network)?;
+    if !response.status().is_success() {
+        return Err(ApiError::Http {
+            status: response.status().as_u16(),
+            detail: "The other server did not hand out the file.".into(),
+        });
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(ApiError::network)? {
+        if body.len() + chunk.len() > max {
+            return Err(ApiError::Http {
+                status: 413,
+                detail: "The file is too large to open here.".into(),
+            });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }

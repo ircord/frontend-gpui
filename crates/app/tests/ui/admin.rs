@@ -700,6 +700,7 @@ fn encryption_is_switched_between_off_and_experimental(cx: &mut TestAppContext) 
     snapshot.capabilities.encryption = Some(c::EncryptionCapability {
         experimental: true,
         max_payload: 3800,
+        ..Default::default()
     });
     f.server.snapshot(&snapshot);
     let bootstraps = f.server.requests_to("GET", "/api/v1/bootstrap").len();

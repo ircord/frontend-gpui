@@ -16,6 +16,9 @@
 //! `CAPTURE_ONLY=e2ee` captures end-to-end encryption against a backend with
 //! it on (`capture-e2ee.sh`): set-up, starting a chat, the lock, the panel
 //! with the trust caveat and the security code, and approving a second device.
+//! `CAPTURE_ONLY=e2ee-group` captures an encrypted group with a member on a
+//! second IRCord server (`capture-e2ee-group.sh`): the invitation, joining,
+//! its messages and its panel.
 //! `CAPTURE_ONLY=admin` makes the account a server owner and captures
 //! Administration → Encryption, Off then Experimental, and the person menu's
 //! Start encrypted chat on someone in the channel; `CAPTURE_ONLY=admin-locked`
@@ -65,7 +68,7 @@ COOKIE=$(curl -fsS -D - -o /dev/null -H "Origin: $SERVER" -H 'Content-Type: appl
 [ -n "$COOKIE" ] || { echo "signup set no session"; exit 1; }
 # With encryption on, the account has the home network already.
 NETWORK=yes
-case "${CAPTURE_ONLY:-}" in e2ee|admin-locked) NETWORK= ;; esac
+case "${CAPTURE_ONLY:-}" in e2ee|e2ee-group|admin-locked) NETWORK= ;; esac
 [ -z "$NETWORK" ] || curl -fsS -o /dev/null -H "Origin: $SERVER" -H "Cookie: $COOKIE" -H 'Content-Type: application/json' \
   -d "{\"name\":\"Test\",\"host\":\"$IRC_HOST\",\"port\":6667,\"tls\":false,\"nick\":\"$USER_NAME\",\"autoJoin\":[\"#capture\"]}" \
   "$SERVER/api/v1/networks"
@@ -168,6 +171,15 @@ echo "the sign-in is in GNOME Keyring (target/capture/keyring.txt)"
 # and approves that one with the code it shows, typed in.
 if [ "${CAPTURE_ONLY:-}" = e2ee ]; then
   . /work/xtask/src/capture-e2ee.sh
+  exit 0
+fi
+
+# `CAPTURE_ONLY=e2ee-group`: an encrypted group (experimental) with a
+# member on this server and one on a second IRCord server of the same IRC
+# network: the invitation, joining, the group listed by its title, its
+# messages, and its panel with the trust caveat, people and devices.
+if [ "${CAPTURE_ONLY:-}" = e2ee-group ]; then
+  . /work/xtask/src/capture-e2ee-group.sh
   exit 0
 fi
 
@@ -687,7 +699,8 @@ pub fn run(root: &Path) -> Result<()> {
         &passwd,
         format!("root:x:0:0::/root:/bin/sh\nircord:x:{uid}:{gid}::/tmp:/bin/sh\n"),
     )?;
-    let e2ee = std::env::var("CAPTURE_ONLY").is_ok_and(|o| o == "e2ee" || o == "admin-locked");
+    let e2ee = std::env::var("CAPTURE_ONLY")
+        .is_ok_and(|o| o == "e2ee" || o == "e2ee-group" || o == "admin-locked");
     let backend = Backend::start_with(root, e2ee)?;
     let mut extra = backend.network_args();
     extra.extend([

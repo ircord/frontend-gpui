@@ -15,12 +15,18 @@
 //!   vault, and posts the ciphertext through the outbox, so a retry sends
 //!   the same ciphertext. Nothing is ever sent in the clear into a
 //!   conversation that is encrypted.
-//! - **Group changes** go through the group log: Welcomes and commits are
-//!   fetched when a message names a group or epoch this device does not
-//!   have, and every half minute.
+//! - **Group changes** of a phase 1 direct chat go through the backend's
+//!   group log; those of chats carried over IRC (direct chats with someone on
+//!   another IRCord server, and encrypted groups) settle by position
+//!   ([`chats`]). Both are fetched when a message names a group or epoch this
+//!   device does not have, when the server says something changed
+//!   (`e2ee.changed`), and every half minute.
+
+mod chats;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -62,12 +68,17 @@ pub const MAX_FILE: usize = 100 << 20;
 /// name), and whether it was you.
 pub type ControlText = Box<dyn Fn(bool, &str, bool) -> String + Send + Sync>;
 
+/// Writes a "left the group" line: who (a name), and whether it was you.
+pub type LeftText = Box<dyn Fn(&str, bool) -> String + Send + Sync>;
+
 /// The interface text the engine writes into timelines. The app gives it,
 /// so the text stays in the app's catalogs.
 pub struct Texts {
     pub control: ControlText,
     /// Why a message cannot be read.
     pub unreadable: Box<dyn Fn(&Unreadable) -> String + Send + Sync>,
+    /// Someone left an encrypted group: their name, and whether it was you.
+    pub left: LeftText,
 }
 
 /// A decrypted file, ready to show or save.
@@ -124,6 +135,8 @@ struct Shared {
     inflight: Mutex<BTreeSet<String>>,
     /// When [`Engine::poke`] last synced.
     poked: Mutex<Option<std::time::Instant>>,
+    /// A sync the server asked for (`e2ee.changed`) is on its way.
+    waking: AtomicBool,
     /// Text to send, in the order it was typed.
     queue: tokio::sync::mpsc::UnboundedSender<Outgoing>,
 }
@@ -150,6 +163,8 @@ struct Inner {
     started: bool,
     /// (conversation, group) this device bound in this session.
     bound: BTreeSet<(String, String)>,
+    /// Chats carried over IRC.
+    chats: chats::Chats,
 }
 
 /// A new device's approval request.
@@ -350,6 +365,7 @@ impl Engine {
                 inner: AsyncMutex::new(Inner::default()),
                 inflight: Mutex::default(),
                 poked: Mutex::default(),
+                waking: AtomicBool::new(false),
                 queue,
             }),
         };
@@ -405,6 +421,14 @@ impl Engine {
 
     /// A set of changes arrived: look at the timelines they touched.
     fn changed(&self, changes: &Changes) {
+        // Only the server's word, never a whole-topic change: syncing
+        // publishes those itself.
+        if matches!(
+            changes.topics.get(view::TOPIC),
+            Some(crate::store::Touched::Ids(ids)) if ids.contains(view::SYNC)
+        ) {
+            self.wake();
+        }
         if changes.topics.contains_key(view::TOPIC)
             && changes.timelines.is_empty()
             && !changes.reset
@@ -537,8 +561,20 @@ impl Engine {
                 self.controlled(&mut inner, &conversation, *on, by, *at, group.as_deref())
                     .await;
             }
+            if keep
+                && let Outcome::Left { by, .. } = &outcome
+                && let Some(g) = self.group_of_conversation(&conversation)
+            {
+                self.someone_left(&mut inner, &g, by).await;
+            }
             self.apply(&inner, &conversation, &m, &outcome);
         }
+    }
+
+    /// The group whose channel `conversation` is.
+    fn group_of_conversation(&self, conversation: &str) -> Option<GroupIdBytes> {
+        let w = self.shared.handle.read();
+        group_of(&w.e2ee.group(conversation)?.chat).ok()
     }
 
     /// The other account in a conversation: the vault's record, or the
@@ -596,7 +632,16 @@ impl Engine {
             }
             return vault.message(&m.id).cloned().map(|o| (o, false));
         }
-        let expected_peer = self.conversation_peer(inner, conversation);
+        let expected_peer = self
+            .conversation_peer(inner, conversation)
+            .filter(|p| !p.is_empty());
+        // A group's channel names its one group.
+        let expected_group = {
+            let w = self.shared.handle.read();
+            w.e2ee
+                .group(conversation)
+                .and_then(|g| group_of(&g.chat).ok())
+        };
         let self_sent = {
             let w = self.shared.handle.read();
             let network = w
@@ -630,13 +675,22 @@ impl Engine {
                 // The group must be this conversation's, and the timeline's
                 // sender the one MLS verified: a server must not move a
                 // message to another conversation or another person.
-                let group_peer = device
-                    .groups()
-                    .into_iter()
-                    .find(|(g, _)| *g == group_id)
-                    .map(|(_, p)| p);
-                let ours = expected_peer.is_none_or(|p| group_peer.as_deref() == Some(p.as_str()))
-                    && (sender.account == account) == self_sent;
+                let is_group = device.is_group(&group_id).unwrap_or(false);
+                let right_place = match &expected_group {
+                    // A group's channel carries its one group.
+                    Some(g) => *g == group_id,
+                    // A direct conversation carries direct chats with its peer.
+                    None if is_group => false,
+                    None => {
+                        let group_peer = device
+                            .groups()
+                            .into_iter()
+                            .find(|(g, _)| *g == group_id)
+                            .map(|(_, p)| p);
+                        expected_peer.is_none_or(|p| group_peer.as_deref() == Some(p.as_str()))
+                    }
+                };
+                let ours = right_place && (sender.account == account) == self_sent;
                 if !ours {
                     return Some(forged());
                 }
@@ -658,6 +712,14 @@ impl Engine {
                         gif,
                         at,
                     }),
+                    Body::Control {
+                        op: ControlOp::Left,
+                    } if is_group => Outcome::Left {
+                        by: sender.account,
+                        at,
+                    },
+                    // A group is always encrypted: on and off mean nothing there.
+                    Body::Control { .. } if is_group => Outcome::Hidden,
                     Body::Control { op } => Outcome::Control {
                         on: op == ControlOp::EncryptionOn,
                         by: sender.account,
@@ -781,6 +843,14 @@ impl Engine {
                         ..Default::default()
                     })
                 }
+                Outcome::Left { by, .. } => {
+                    let name = w.display_name(&m.sender_id, &network);
+                    Some(View {
+                        text: (texts.left)(&name, mine(by)),
+                        kind: c::MessageKind::Event,
+                        ..Default::default()
+                    })
+                }
                 Outcome::Hidden => None,
                 Outcome::Unreadable { why } => Some(View {
                     text: (texts.unreadable)(why),
@@ -890,6 +960,21 @@ impl Engine {
         if inner.bound.contains(&key) {
             return;
         }
+        if let Ok(g) = group_of(group)
+            && let Some(chat) = Self::chat(inner, &g)
+        {
+            // Carried over IRC: joining binds the conversation.
+            if chat.state != c::E2EEChatState::Joined {
+                let name = chat.name.clone();
+                if let Err(e) = self.api().e2ee_join_chat(&name).await {
+                    log::debug!("e2ee: join {conversation}: {e}");
+                    return;
+                }
+                self.read_chats(inner).await;
+            }
+            inner.bound.insert(key);
+            return;
+        }
         match self
             .api()
             .e2ee_bind(conversation, group, peer, Some(group))
@@ -910,6 +995,17 @@ impl Engine {
         inner
             .bound
             .remove(&(conversation.to_string(), group.to_string()));
+        if let Ok(g) = group_of(group)
+            && let Some(chat) = Self::chat(inner, &g)
+        {
+            // Leaving a direct chat carried over IRC accepts plaintext again.
+            let name = chat.name.clone();
+            if let Err(e) = self.api().e2ee_leave_chat(&name, false).await {
+                log::debug!("e2ee: unbind {conversation}: {e}");
+            }
+            inner.chats.list.remove(&g.0);
+            return;
+        }
         match self.api().e2ee_turn_off(conversation, group).await {
             Ok(()) => {}
             Err(ApiError::Http { status: 409, .. }) => {
@@ -1027,6 +1123,13 @@ impl Engine {
             Changes::topic(view::TOPIC)
         });
         let directory = self.api().e2ee_directory().await.map_err(api_err)?;
+        if directory.identity.is_none() && directory.elsewhere {
+            // One account, one identity (`docs/wire.md` 4.2): this server
+            // has no keys for it, another has. Nothing is set up here; the
+            // next tick or `e2ee.changed` looks again.
+            self.set_device(DeviceState::OtherServer);
+            return Ok(());
+        }
         let server_identity = match &directory.identity {
             Some(id) => Some((key32(&id.identity_key)?, id.generation)),
             None => None,
@@ -1178,6 +1281,36 @@ impl Engine {
                 key_packages: d.key_packages,
             })
             .collect();
+        if device.holds_identity() {
+            // The identity's signed list of the account's current devices
+            // (`docs/wire.md` 3.3), so nobody takes a signed-out one for current.
+            let published = directory
+                .device_list
+                .as_ref()
+                .and_then(|l| bytes(&l.list).ok());
+            let seen = published
+                .as_deref()
+                .and_then(|b| device.check_device_list(b).ok());
+            let mut ids: Vec<super::core::DeviceId> = devices
+                .iter()
+                .filter(|d| d.approved)
+                .filter_map(|d| super::core::DeviceId::from_hex(&d.id).ok())
+                .collect();
+            ids.sort();
+            ids.dedup();
+            if !ids.is_empty() && seen.as_ref().map(|l| &l.devices) != Some(&ids) {
+                match device.sign_device_list(&ids) {
+                    Ok(list) => {
+                        let counter = super::core::DeviceList::from_bytes(&list)
+                            .map_or(1, |l| l.counter as i64);
+                        if let Err(e) = self.api().e2ee_put_device_list(&list, counter).await {
+                            log::info!("e2ee: publish the device list: {e}");
+                        }
+                    }
+                    Err(e) => log::warn!("e2ee: sign the device list: {e}"),
+                }
+            }
+        }
         let stock = directory
             .devices
             .iter()
@@ -1289,13 +1422,16 @@ impl Engine {
                 complete = false;
             }
         }
+        complete &= self.sync_chats(inner).await;
         let groups: Vec<GroupIdBytes> = inner
             .device
             .as_ref()
             .map(|d| d.groups().into_iter().map(|(g, _)| g).collect())
             .unwrap_or_default();
         for group in groups {
-            complete &= self.sync_group(inner, &group).await;
+            if Self::chat(inner, &group).is_none() {
+                complete &= self.sync_group(inner, &group).await;
+            }
         }
         complete
     }
@@ -1304,6 +1440,9 @@ impl Engine {
     /// device's epoch.
     /// Returns whether the log was read.
     async fn sync_group(&self, inner: &mut Inner, group: &GroupIdBytes) -> bool {
+        if Self::chat(inner, group).is_some() {
+            return self.settle(inner, group).await.is_ok();
+        }
         let Some(device) = inner.device.as_mut() else {
             return false;
         };
@@ -1578,7 +1717,13 @@ impl Engine {
                 continue;
             };
             let mut all = true;
-            for (group, _) in device.groups() {
+            let phase1: Vec<GroupIdBytes> = device
+                .groups()
+                .into_iter()
+                .map(|(g, _)| g)
+                .filter(|g| !inner.chats.list.contains_key(&g.0))
+                .collect();
+            for group in phase1 {
                 let added = device.add_devices(&group, std::slice::from_ref(&package));
                 let commit = match added {
                     Ok(commit) => commit,
@@ -1709,7 +1854,19 @@ impl Engine {
     /// Make a group with every device of both accounts and bind the
     /// conversation to it.
     async fn new_group(&self, inner: &mut Inner, conversation: &str, peer: &str) -> Result<String> {
-        let theirs = self.api().e2ee_claim(peer).await.map_err(api_err)?;
+        let theirs = match self.api().e2ee_claim(peer).await {
+            Ok(t) => t,
+            // Not set up, or their server does not take chats across servers.
+            Err(ApiError::Http { status: 404, .. }) => {
+                self.change(|w| {
+                    w.e2ee.peers.insert(peer.to_string(), false);
+                    Changes::topic(view::TOPIC)
+                });
+                return Err("peer-not-set-up".into());
+            }
+            Err(ApiError::Http { status: 504, .. }) => return Err("peer-no-answer".into()),
+            Err(e) => return Err(api_err(e)),
+        };
         if theirs.items.is_empty() {
             self.change(|w| {
                 w.e2ee.peers.insert(peer.to_string(), false);
@@ -1737,12 +1894,49 @@ impl Engine {
             Err(e) => return Err(core_err(e)),
         }
         let me = device.device_id().to_hex();
+        // Their own signed list says which of their devices are current.
+        let listed = theirs.device_list.as_ref().and_then(|l| {
+            let blob = bytes(&l.list).ok()?;
+            device.check_device_list(&blob).ok()
+        });
+        let current = |id: &str| {
+            listed
+                .as_ref()
+                .is_none_or(|l| l.devices.iter().any(|d| d.to_hex() == id))
+        };
         let mut targets: Vec<(String, String)> = Vec::new();
         let mut packages = Vec::new();
-        for item in &theirs.items {
+        for item in theirs.items.iter().filter(|i| current(&i.device_id)) {
             packages.push(bytes(&item.key_package).map_err(api_err)?);
             targets.push((peer.to_string(), item.device_id.clone()));
         }
+        if theirs.source == c::E2EEClaimSource::Network {
+            // Their keys are on another IRCord server: the chat is carried
+            // over IRC. Welcomes over IRC reach other accounts only, so this
+            // account's other devices are not in it.
+            let dms = device.groups();
+            let older: Option<String> = dms
+                .into_iter()
+                .filter(|(_, p)| p == peer)
+                .find_map(|(g, _)| Self::chat(inner, &g).map(|c| c.name.clone()));
+            let group = self
+                .new_chat(inner, conversation, peer, &packages, older)
+                .await?;
+            let record = Conversation {
+                conversation: conversation.to_string(),
+                peer: peer.to_string(),
+                group: Some(group.clone()),
+                on: true,
+                since: chrono::Utc::now().timestamp_millis(),
+                by: inner.account.clone(),
+            };
+            if let Some(vault) = inner.vault.as_mut() {
+                vault.put(Record::Conversation(record.clone()))?;
+            }
+            self.publish_conversation(inner, &record);
+            return Ok(group);
+        }
+        let device = inner.device.as_mut().ok_or("not-ready")?;
         for item in ours.items.iter().filter(|i| i.device_id != me) {
             packages.push(bytes(&item.key_package).map_err(api_err)?);
             targets.push((inner.account.clone(), item.device_id.clone()));
@@ -1833,22 +2027,32 @@ impl Engine {
             inner
                 .bound
                 .remove(&(conversation.to_string(), group.clone()));
-            match self.api().e2ee_turn_off(conversation, &group).await {
-                // 404: this account has no binding left; the other person's
-                // client ended it on reading the notice.
-                Ok(()) | Err(ApiError::Http { status: 404, .. }) => {}
-                Err(e @ ApiError::Http { status: 409, .. }) => {
-                    // The notice is out, so this side is off whatever the
-                    // server says; a group it cannot end is shown as an error.
-                    if self
-                        .turn_off_stale(inner, conversation, &record.peer)
-                        .await
-                        .is_err()
-                    {
-                        refused = Some(api_err(e));
-                    }
+            let in_band = group_of(&group)
+                .ok()
+                .and_then(|g| Self::chat(inner, &g).map(|c| (g, c.name.clone())));
+            if let Some((g, name)) = in_band {
+                if let Err(e) = self.api().e2ee_leave_chat(&name, false).await {
+                    log::warn!("e2ee: turn off on the server: {e}");
                 }
-                Err(e) => log::warn!("e2ee: turn off on the server: {e}"),
+                inner.chats.list.remove(&g.0);
+            } else {
+                match self.api().e2ee_turn_off(conversation, &group).await {
+                    // 404: this account has no binding left; the other person's
+                    // client ended it on reading the notice.
+                    Ok(()) | Err(ApiError::Http { status: 404, .. }) => {}
+                    Err(e @ ApiError::Http { status: 409, .. }) => {
+                        // The notice is out, so this side is off whatever the
+                        // server says; a group it cannot end is shown as an error.
+                        if self
+                            .turn_off_stale(inner, conversation, &record.peer)
+                            .await
+                            .is_err()
+                        {
+                            refused = Some(api_err(e));
+                        }
+                    }
+                    Err(e) => log::warn!("e2ee: turn off on the server: {e}"),
+                }
             }
         }
         let record = Conversation {
@@ -2085,7 +2289,7 @@ impl Engine {
             .group
             .as_deref()
             .and_then(|g| group_of(g).ok())
-            .filter(|g| device.groups().iter().any(|(id, _)| id == g));
+            .filter(|g| device.epoch(g).is_ok());
         let group = match current {
             Some(g) => {
                 // Devices added since this one last looked must be able to
@@ -2093,6 +2297,8 @@ impl Engine {
                 self.sync_group(inner, &g).await;
                 g
             }
+            // A group this device is not in (it left, or was removed).
+            None if record.peer.is_empty() => return Err("not-in-group".into()),
             // Someone started fresh: a new group replaces the old one.
             None => group_of(&self.new_group(inner, conversation, &record.peer).await?)?,
         };
@@ -2145,6 +2351,18 @@ impl Engine {
                         },
                         attachments: attachments.clone(),
                         gif: gif.clone(),
+                        at: now,
+                    },
+                },
+                (
+                    Body::Control {
+                        op: ControlOp::Left,
+                    },
+                    0,
+                ) => Record::SentAs {
+                    client_id: client_id.clone(),
+                    outcome: Outcome::Left {
+                        by: inner.account.clone(),
                         at: now,
                     },
                 },
@@ -2372,30 +2590,53 @@ impl Engine {
             }
             let account = inner.account.clone();
             let inner = &mut *inner;
-            if let (Some(device), Ok(device_id)) =
-                (inner.device.as_mut(), super::core::DeviceId::from_hex(&id))
-            {
+            if let Ok(device_id) = super::core::DeviceId::from_hex(&id) {
                 let target = super::core::DeviceRef { account, device_id };
-                for (group, _) in device.groups() {
+                let groups: Vec<GroupIdBytes> = inner
+                    .device
+                    .as_ref()
+                    .and_then(|d| d.conversations().ok())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|c| match c {
+                        super::core::Conversation::Dm { group_id, .. }
+                        | super::core::Conversation::Group { group_id, .. } => group_id,
+                    })
+                    .collect();
+                for group in groups {
+                    let Some(device) = inner.device.as_mut() else {
+                        break;
+                    };
                     if !device.members(&group).unwrap_or_default().contains(&target) {
                         continue;
                     }
-                    if let Ok(commit) = device.remove_devices(&group, std::slice::from_ref(&target))
-                    {
-                        let body = c::E2EECommitInputBody {
-                            epoch: commit.epoch as i64,
-                            commit: encode(&commit.commit),
-                            group_info: commit.group_info.as_deref().map(encode),
-                            welcomes: None,
-                        };
-                        let name = server_name(inner.vault.as_ref(), &group);
-                        match engine.api().e2ee_commit(&name, &body).await {
-                            Ok(_) => {
-                                let _ = device.confirm_commit(&group);
-                            }
-                            Err(_) => {
-                                let _ = device.discard_commit(&group);
-                            }
+                    let Ok(commit) = device.remove_devices(&group, std::slice::from_ref(&target))
+                    else {
+                        continue;
+                    };
+                    if Self::chat(inner, &group).is_some() {
+                        if let Err(e) = engine
+                            .send_commit(inner, &group, commit, Default::default())
+                            .await
+                        {
+                            log::info!("e2ee: remove a device from a chat: {e}");
+                        }
+                        continue;
+                    }
+                    let body = c::E2EECommitInputBody {
+                        epoch: commit.epoch as i64,
+                        commit: encode(&commit.commit),
+                        group_info: commit.group_info.as_deref().map(encode),
+                        welcomes: None,
+                    };
+                    let name = server_name(inner.vault.as_ref(), &group);
+                    let device = inner.device.as_mut().unwrap();
+                    match engine.api().e2ee_commit(&name, &body).await {
+                        Ok(_) => {
+                            let _ = device.confirm_commit(&group);
+                        }
+                        Err(_) => {
+                            let _ = device.discard_commit(&group);
                         }
                     }
                 }
@@ -2516,6 +2757,33 @@ impl Engine {
         } else {
             WAITING_EVERY
         }
+    }
+
+    /// The server says the account's encryption state changed: sync soon,
+    /// once for a burst of such events.
+    fn wake(&self) {
+        if self.shared.waking.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.spawn(|engine| async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            engine.shared.waking.store(false, Ordering::SeqCst);
+            let mut inner = engine.shared.inner.lock().await;
+            if inner.started && inner.waiting.is_none() {
+                engine.sync_groups(&mut inner).await;
+                engine.refresh_directory(&mut inner).await;
+            }
+            drop(inner);
+            let all: Vec<String> = engine
+                .shared
+                .handle
+                .read()
+                .timelines
+                .keys()
+                .cloned()
+                .collect();
+            engine.scan(all);
+        });
     }
 
     /// Sync now, as when a settings page opens; at most every two seconds,

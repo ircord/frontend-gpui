@@ -46,6 +46,10 @@ pub enum DeviceState {
     /// The account started fresh on another device: this one lost its
     /// approval (it keeps what it stored).
     ResetElsewhere,
+    /// Encryption for this account is set up on another IRCord server, and
+    /// this one has no keys for it: encrypted chats are readable only there
+    /// (`docs/wire.md` 4.2). Nothing is set up here.
+    OtherServer,
     /// Something went wrong; the reason is shown.
     Failed(String),
 }
@@ -88,6 +92,103 @@ pub enum ApprovalFailure {
     NotFound,
     Other(String),
 }
+
+/// One encrypted group (experimental): an invite-only channel whose
+/// members, title and admins live inside MLS. Shown under its title.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Group {
+    /// The backend's name for the chat (`/api/v1/e2ee/chats/{name}`).
+    pub chat: String,
+    pub title: String,
+    pub members: Vec<GroupMember>,
+    /// This account may add and remove people (the creator or an admin).
+    pub admin: bool,
+    /// This account created the group (or it was handed over to it).
+    pub creator: bool,
+    /// What changed lately, oldest first.
+    pub events: Vec<GroupEvent>,
+}
+
+impl Group {
+    /// How many of the other people this device verified, and of how many.
+    pub fn verified(&self) -> (usize, usize) {
+        let others = self.members.iter().filter(|m| !m.you);
+        let total = others.clone().count();
+        (others.filter(|m| m.verified).count(), total)
+    }
+
+    pub fn member(&self, account: &str) -> Option<&GroupMember> {
+        self.members.iter().find(|m| m.account == account)
+    }
+}
+
+/// One person in an encrypted group, with their devices.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GroupMember {
+    pub account: String,
+    pub you: bool,
+    pub admin: bool,
+    pub creator: bool,
+    /// The person compared security codes with them.
+    pub verified: bool,
+    /// Their identity key in the group is not the one this device pinned:
+    /// they started fresh (or someone pretends to be them).
+    pub started_fresh: bool,
+    /// Device IDs (hex), with this device marked.
+    pub devices: Vec<(String, bool)>,
+}
+
+/// A change to a group's people, for its history.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GroupEvent {
+    Added {
+        by: String,
+        account: String,
+    },
+    Removed {
+        by: String,
+        account: String,
+    },
+    Left {
+        account: String,
+    },
+    Admin {
+        by: String,
+        account: String,
+        admin: bool,
+    },
+    DeviceAdded {
+        account: String,
+    },
+    DeviceRemoved {
+        account: String,
+    },
+}
+
+/// An invitation to an encrypted group this account has not answered.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GroupInvitation {
+    /// The backend's name for the chat.
+    pub chat: String,
+    pub title: String,
+    /// The account whose Welcome it was.
+    pub inviter: String,
+    /// How many people are in the group.
+    pub people: usize,
+}
+
+/// Whether a channel name is an encrypted group's: `#e2ee-` and 32
+/// lowercase hex digits (a conversation's name leaves out the `#`).
+pub fn is_group_channel(name: &str) -> bool {
+    let name = name.strip_prefix('#').unwrap_or(name);
+    name.strip_prefix("e2ee-").is_some_and(|hex| {
+        hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+/// The ID [`Changes`] carries when the server said the account's encryption
+/// state changed (`e2ee.changed`): the engine syncs at once.
+pub const SYNC: &str = "sync";
 
 /// Why a conversation needs the person's attention.
 #[derive(Debug, Clone, PartialEq)]
@@ -136,6 +237,8 @@ pub enum Blocked {
     NotReady,
     /// Not a direct conversation on the server's home network.
     NotHere,
+    /// The other person's IRCord server did not answer over IRC.
+    PeerNoAnswer,
     /// The network does not carry encrypted messages (the capability gate).
     Network,
     /// The other person is not logged in to an account on this server.
@@ -183,11 +286,25 @@ pub struct State {
     pub server: HashMap<String, bool>,
     /// Conversations whose backend state is being read.
     pub asking: BTreeSet<String>,
+    /// Encrypted groups, by their channel's conversation ID.
+    pub groups: HashMap<String, Group>,
+    /// Invitations to encrypted groups, oldest first.
+    pub invitations: Vec<GroupInvitation>,
+    /// Invitations or group actions under way, by chat name.
+    pub group_busy: BTreeSet<String>,
+    /// The last error of a group action, by chat name (or "new" while
+    /// creating one).
+    pub group_errors: HashMap<String, String>,
 }
 
 impl State {
     pub fn conversation(&self, id: &str) -> Option<&Conversation> {
         self.conversations.get(id)
+    }
+
+    /// The encrypted group a conversation is the channel of.
+    pub fn group(&self, conversation: &str) -> Option<&Group> {
+        self.groups.get(conversation)
     }
 
     /// Whether nothing may be sent in the clear here.
@@ -197,10 +314,11 @@ impl State {
 }
 
 /// Whether nothing may be sent in the clear into `conversation`: on a
-/// server that offers encryption, a direct conversation that is encrypted
-/// here or on the backend, or any direct conversation while this device has
-/// not read its own list and the backend has not said otherwise. Failing
-/// closed: a server that hides the state gets nothing in the clear.
+/// server that offers encryption, an encrypted group's channel, a direct
+/// conversation that is encrypted here or on the backend, or any direct
+/// conversation while this device has not read its own list and the backend
+/// has not said otherwise. Failing closed: a server that hides the state gets
+/// nothing in the clear.
 pub fn guarded(w: &Workspace, conversation: &str) -> bool {
     if w.capabilities.encryption.is_none() {
         return false;
@@ -208,6 +326,14 @@ pub fn guarded(w: &Workspace, conversation: &str) -> bool {
     let Some(c) = w.conversation(conversation) else {
         return false;
     };
+    // An encrypted group's channel, or any conversation this device holds
+    // encrypted, whatever its kind.
+    if w.e2ee.groups.contains_key(conversation)
+        || w.e2ee.is_on(conversation)
+        || (c.kind == ConversationKind::Channel && is_group_channel(&c.name.to_ascii_lowercase()))
+    {
+        return true;
+    }
     if c.kind != ConversationKind::Direct {
         return false;
     }
@@ -219,9 +345,15 @@ pub fn guarded(w: &Workspace, conversation: &str) -> bool {
 }
 
 /// Called for every fresh event after the workspace's own handling. The
-/// engine watches the timelines instead; nothing to do here.
-pub(super) fn apply(_w: &mut Workspace, _event: &ServerEvent, _now_ms: i64) -> Changes {
-    Changes::default()
+/// engine watches the timelines; `e2ee.changed` asks it to sync now.
+pub(super) fn apply(_w: &mut Workspace, event: &ServerEvent, _now_ms: i64) -> Changes {
+    match event {
+        ServerEvent::Durable {
+            event: ircord_contract::event::Durable::E2EEChanged(_),
+            ..
+        } => Changes::topic_id(TOPIC, SYNC),
+        _ => Changes::default(),
+    }
 }
 
 /// Called when a bootstrap replaces the workspace. The state is this
@@ -286,7 +418,7 @@ pub fn show(
 pub fn shown_of(outcome: &Outcome) -> Shown {
     match outcome {
         Outcome::Plain(_) => Shown::Plain,
-        Outcome::Control { .. } => Shown::Control,
+        Outcome::Control { .. } | Outcome::Left { .. } => Shown::Control,
         Outcome::Hidden => Shown::Hidden,
         Outcome::Unreadable { why } => Shown::Unreadable(why.clone()),
     }
@@ -415,6 +547,31 @@ mod tests {
         assert!(guarded(&w, "dm"), "this device says it is");
         w.capabilities.encryption = None;
         assert!(!guarded(&w, "dm"), "a server without encryption");
+    }
+
+    #[test]
+    fn a_group_s_channel_never_gets_plaintext_whatever_it_is_called() {
+        let mut w = SnapshotBuilder::new()
+            .network("n1", "Home")
+            .channel("c", "general")
+            .channel("g", "e2ee-000102030405060708090a0b0c0d0e0f")
+            .capabilities(|c| c.encryption = Some(EncryptionCapability::default()))
+            .workspace();
+        w.e2ee.loaded = true;
+        assert!(guarded(&w, "g"), "by its name alone");
+        assert!(!guarded(&w, "c"));
+        w.e2ee.groups.insert("c".into(), Group::default());
+        assert!(guarded(&w, "c"), "held as a group here");
+    }
+
+    #[test]
+    fn group_channels_are_known_by_name_with_or_without_the_hash() {
+        let hex = "000102030405060708090a0b0c0d0e0f";
+        assert!(is_group_channel(&format!("#e2ee-{hex}")));
+        assert!(is_group_channel(&format!("e2ee-{hex}")));
+        assert!(!is_group_channel(&format!("e2ee-{}", hex.to_uppercase())));
+        assert!(!is_group_channel("e2ee-0001"));
+        assert!(!is_group_channel("general"));
     }
 
     #[test]

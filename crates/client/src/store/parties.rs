@@ -216,6 +216,11 @@ fn changed(conversation: &str) -> Changes {
 /// What a conversation is called in the sidebar and its header: a group's
 /// name, else the people in it but you; any other conversation's name.
 pub fn title(w: &Workspace, c: &Conversation) -> String {
+    // An encrypted group's channel is named after its random ID; its title
+    // lives inside the group, where only its members read it.
+    if let Some(group) = w.e2ee.group(&c.id).filter(|g| !g.title.trim().is_empty()) {
+        return group.title.clone();
+    }
     let Some(party) = &c.party else {
         return c.name.clone();
     };

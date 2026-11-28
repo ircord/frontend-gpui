@@ -4,6 +4,13 @@
 //! group logs, the conversation bindings and the approval relay, and passes
 //! each direct message to the other account's socket as the backend would.
 //!
+//! It also plays the chats carried over IRC (`/api/v1/e2ee/chats`): an
+//! account marked [`E2eeBackend::elsewhere`] is "on another IRCord server",
+//! so its directory answers with source `network`; Welcomes reach every
+//! device of the accounts they name; commits are candidates in the order
+//! they arrived, the first per epoch winning; and a group's channel is a
+//! conversation every joined member gets, whose messages reach them all.
+//!
 //! Like the backend it treats every blob as opaque. It also refuses
 //! plaintext into a conversation that is bound to a group, so a test sees a
 //! client that tried. Bindings follow the backend's rules: one current group
@@ -18,7 +25,7 @@
 //! alice.snapshot(&e2ee_snapshot("alice", "dm-bob", "m-bob", "bob"));
 //! ```
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use ircord_contract::*;
@@ -58,6 +65,31 @@ struct Side {
     history: Vec<Message>,
 }
 
+/// One account's chat carried over IRC.
+#[derive(Clone, Debug)]
+struct ChatRow {
+    kind: &'static str,
+    joined: bool,
+    conversation: Option<String>,
+    target: String,
+    peer: Option<String>,
+    inviter: String,
+    declined: Vec<String>,
+}
+
+/// A Welcome that arrived over IRC for one device.
+#[derive(Clone, Debug)]
+struct ChatWelcome {
+    id: i64,
+    account: String,
+    device: String,
+    group: String,
+    kind: &'static str,
+    sender: String,
+    welcome: String,
+    epoch: i64,
+}
+
 #[derive(Default)]
 struct State {
     identities: HashMap<String, (String, i64)>,
@@ -79,6 +111,17 @@ struct State {
     taken: HashMap<String, usize>,
     /// Every plaintext message an account tried to send, for tests to check.
     plaintext: Vec<(String, String)>,
+    /// Accounts whose keys another IRCord server holds.
+    elsewhere: BTreeSet<String>,
+    /// Each account's signed device list and its counter.
+    device_lists: HashMap<String, (String, i64)>,
+    /// account → chat name → its chat.
+    chats: HashMap<String, BTreeMap<String, ChatRow>>,
+    chat_welcomes: Vec<ChatWelcome>,
+    /// chat name → (epoch, sender, commit, position), in arrival order.
+    candidates: HashMap<String, Vec<(i64, String, String, i64)>>,
+    /// group chat name → (its channel's conversation ID, accounts in it).
+    channels: HashMap<String, (String, BTreeSet<String>)>,
 }
 
 /// See the module docs.
@@ -102,6 +145,8 @@ pub fn e2ee_snapshot(account: &str, conversation: &str, peer_member: &str, peer:
             c.encryption = Some(EncryptionCapability {
                 experimental: true,
                 max_payload: 3800,
+                groups: true,
+                across_servers: true,
             })
         })
         .build()
@@ -148,6 +193,62 @@ fn segment(r: &Recorded, i: usize) -> String {
 impl E2eeBackend {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// From now on `account`'s keys are "on another IRCord server": its
+    /// directory and claims answer with source `network`.
+    pub fn elsewhere(&self, account: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .elsewhere
+            .insert(account.to_string());
+    }
+
+    /// The chats `account` has, as (name, kind, joined).
+    pub fn chats(&self, account: &str) -> Vec<(String, String, bool)> {
+        self.state
+            .lock()
+            .unwrap()
+            .chats
+            .get(account)
+            .map(|c| {
+                c.iter()
+                    .map(|(n, r)| (n.clone(), r.kind.to_string(), r.joined))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Commits sent to a chat carried over IRC so far.
+    pub fn chat_commits(&self, name: &str) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .candidates
+            .get(name)
+            .map_or(0, Vec::len)
+    }
+
+    /// The accounts in a group's channel.
+    pub fn channel_members(&self, name: &str) -> Vec<String> {
+        self.state
+            .lock()
+            .unwrap()
+            .channels
+            .get(name)
+            .map(|(_, m)| m.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// The signed device list `account` published, with its counter.
+    pub fn device_list(&self, account: &str) -> Option<(String, i64)> {
+        self.state
+            .lock()
+            .unwrap()
+            .device_lists
+            .get(account)
+            .cloned()
     }
 
     /// Plaintext messages sent so far, as (account, text).
@@ -291,6 +392,24 @@ impl E2eeBackend {
         route("POST", "/api/v1/e2ee/approvals", relay);
         route("GET", "/api/v1/e2ee/devices/*/approvals", list_approvals);
         route("DELETE", "/api/v1/e2ee/approvals/*", delete_approval);
+        route("PUT", "/api/v1/e2ee/device-list", put_device_list);
+        route("GET", "/api/v1/e2ee/chats", list_chats);
+        route("POST", "/api/v1/e2ee/chats", create_chat);
+        route("POST", "/api/v1/e2ee/chats/*/join", join_chat);
+        route("POST", "/api/v1/e2ee/chats/*/decline", decline_chat);
+        route("DELETE", "/api/v1/e2ee/chats/*", leave_chat);
+        route("POST", "/api/v1/e2ee/chats/*/commits", post_chat_commit);
+        route("GET", "/api/v1/e2ee/chats/*/commits", list_chat_commits);
+        route(
+            "GET",
+            "/api/v1/e2ee/devices/*/chat-welcomes",
+            list_chat_welcomes,
+        );
+        route(
+            "DELETE",
+            "/api/v1/e2ee/chat-welcomes/*",
+            delete_chat_welcome,
+        );
     }
 
     /// The sequence number of the last event sent to `account`, for a
@@ -368,7 +487,11 @@ fn own_directory(s: &mut State, me: &str, _: &Recorded) -> Reply {
                 .collect()
         })
         .unwrap_or_default();
-    ok(json!({"identity": identity, "devices": devices}))
+    let list = s
+        .device_lists
+        .get(me)
+        .map(|(l, c)| json!({"list": l, "counter": c}));
+    ok(json!({"identity": identity, "devices": devices, "deviceList": list, "elsewhere": false}))
 }
 
 fn publish_identity(s: &mut State, me: &str, r: &Recorded) -> Reply {
@@ -449,8 +572,18 @@ fn peer_directory(s: &mut State, _me: &str, r: &Recorded) -> Reply {
                 .collect()
         })
         .unwrap_or_default();
+    let source = if s.elsewhere.contains(&account) {
+        "network"
+    } else {
+        "server"
+    };
+    let list = s
+        .device_lists
+        .get(&account)
+        .map(|(l, c)| json!({"list": l, "counter": c}));
     ok(
-        json!({"account": account, "identityKey": key, "generation": generation, "devices": devices}),
+        json!({"account": account, "identityKey": key, "generation": generation, "devices": devices,
+            "source": source, "deviceList": list}),
     )
 }
 
@@ -472,7 +605,19 @@ fn claim(s: &mut State, _me: &str, r: &Recorded) -> Reply {
         items.push(json!({"deviceId": id, "certificate": d.certificate,
             "keyPackage": package, "lastResort": last_resort}));
     }
-    ok(json!({"account": account, "identityKey": key, "generation": generation, "items": items}))
+    let source = if s.elsewhere.contains(&account) {
+        "network"
+    } else {
+        "server"
+    };
+    let list = s
+        .device_lists
+        .get(&account)
+        .map(|(l, c)| json!({"list": l, "counter": c}));
+    ok(
+        json!({"account": account, "identityKey": key, "generation": generation, "items": items,
+            "source": source, "deviceList": list}),
+    )
 }
 
 fn queue_welcomes(s: &mut State, group: &str, epoch: i64, welcomes: &Value) {
@@ -696,7 +841,11 @@ fn send(s: &mut State, me: &str, r: &Recorded) -> Reply {
     let client_id = body["clientId"].as_str().unwrap_or_default().to_string();
     let text = body["text"].as_str().unwrap_or_default().to_string();
     let encrypted: Option<Encrypted> = serde_json::from_value(body["encrypted"].clone()).ok();
-    let bound = s.binding(me, &conversation).is_some();
+    let bound = s.binding(me, &conversation).is_some()
+        || s.chats.get(me).is_some_and(|c| {
+            c.values()
+                .any(|r| r.joined && r.conversation.as_deref() == Some(conversation.as_str()))
+        });
     if encrypted.is_none() {
         s.plaintext.push((me.to_string(), text.clone()));
         if bound {
@@ -706,6 +855,48 @@ fn send(s: &mut State, me: &str, r: &Recorded) -> Reply {
     s.next += 1;
     let id = format!("msg-{}", s.next);
     let created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    if let Some((_, members)) = s
+        .channels
+        .values()
+        .find(|(c, _)| *c == conversation)
+        .cloned()
+    {
+        if !members.contains(me) {
+            return not_found();
+        }
+        let own = Message {
+            id: id.clone(),
+            conversation_id: conversation.clone(),
+            sender_id: super::ME.to_string(),
+            text: text.clone(),
+            kind: MessageKind::Message,
+            created_at: created_at.clone(),
+            client_id: Some(client_id.clone()),
+            account: Some(me.to_string()),
+            sender_account: Some(me.to_string()),
+            encrypted: encrypted.clone(),
+            confirmed: Some(true),
+            upstream_id: Some(format!("up-{id}")),
+            ..Default::default()
+        };
+        for account in &members {
+            if account == me {
+                deliver(s, me, own.clone());
+            } else {
+                let theirs = Message {
+                    sender_id: format!("m-{me}"),
+                    client_id: None,
+                    confirmed: None,
+                    ..own.clone()
+                };
+                deliver(s, account, theirs);
+            }
+        }
+        return ok(
+            json!({"clientId": client_id, "conversationId": conversation, "messageId": id,
+            "state": "sent", "message": own}),
+        );
+    }
     let Some(peer) = s.sides.get(me).map(|side| side.peer.clone()) else {
         return not_found();
     };
@@ -766,4 +957,361 @@ fn page(s: &mut State, me: &str, r: &Recorded) -> Reply {
         })
         .unwrap_or_default();
     ok(json!({"items": items}))
+}
+
+// ---- Chats carried over IRC ----
+
+fn put_device_list(s: &mut State, me: &str, r: &Recorded) -> Reply {
+    let body = r.json();
+    let list = body["list"].as_str().unwrap_or_default().to_string();
+    let counter = body["counter"].as_i64().unwrap_or(0);
+    if s.device_lists.get(me).is_some_and(|(_, c)| *c >= counter) {
+        return Reply::problem(409, "a newer list is published");
+    }
+    s.device_lists
+        .insert(me.to_string(), (list.clone(), counter));
+    ok(json!({"list": list, "counter": counter}))
+}
+
+/// Tell `account`'s clients that their encryption state changed.
+fn changed(s: &mut State, account: &str, group: &str, reason: &str) {
+    if let Some(side) = s.sides.get_mut(account) {
+        side.seq += 1;
+        let change = json!({"groupId": group, "reason": reason});
+        (side.push)(frame(side.seq, "e2ee.changed", &change));
+    }
+}
+
+/// The channel conversation of a group chat, as one member's workspace has it.
+fn channel_conversation(id: &str, name: &str) -> Conversation {
+    let hex = crate::e2ee::core::GroupIdBytes(crate::e2ee::from_b64url(name).unwrap_or_default())
+        .to_hex();
+    Conversation {
+        id: id.to_string(),
+        network_id: super::NETWORK.to_string(),
+        kind: ConversationKind::Channel,
+        // As the backend names a channel's conversation: without the `#`.
+        name: format!("e2ee-{hex}"),
+        joined: true,
+        member_ids: vec![super::ME.into()],
+        ..Default::default()
+    }
+}
+
+fn enter_channel(s: &mut State, account: &str, name: &str) -> String {
+    let id = format!("chan-{name}");
+    s.channels
+        .entry(name.to_string())
+        .or_insert_with(|| (id.clone(), BTreeSet::new()))
+        .1
+        .insert(account.to_string());
+    if let Some(side) = s.sides.get_mut(account) {
+        side.seq += 1;
+        let conv = channel_conversation(&id, name);
+        (side.push)(frame(side.seq, "conversation.updated", &conv));
+    }
+    id
+}
+
+fn chat_json(name: &str, r: &ChatRow) -> Value {
+    json!({"groupId": name, "kind": r.kind, "state": if r.joined { "joined" } else { "invited" },
+        "conversationId": r.conversation, "target": r.target, "peer": r.peer,
+        "inviter": r.inviter, "epoch": 0, "declined": r.declined,
+        "createdAt": "2026-11-28T10:00:00Z", "updatedAt": "2026-11-28T10:00:00Z"})
+}
+
+fn list_chats(s: &mut State, me: &str, _: &Recorded) -> Reply {
+    let items: Vec<Value> = s
+        .chats
+        .get(me)
+        .map(|c| c.iter().map(|(n, r)| chat_json(n, r)).collect())
+        .unwrap_or_default();
+    ok(json!({"items": items}))
+}
+
+/// A Welcome over IRC for every device of these accounts, and an invitation.
+fn send_welcome(
+    s: &mut State,
+    me: &str,
+    name: &str,
+    kind: &'static str,
+    epoch: i64,
+    welcome: &str,
+    to: &[String],
+) {
+    for account in to.iter().filter(|a| *a != me) {
+        let devices: Vec<String> = s
+            .devices
+            .get(account)
+            .map(|d| d.keys().cloned().collect())
+            .unwrap_or_default();
+        for device in devices {
+            s.next += 1;
+            let id = s.next;
+            s.chat_welcomes.push(ChatWelcome {
+                id,
+                account: account.clone(),
+                device,
+                group: name.to_string(),
+                kind,
+                sender: me.to_string(),
+                welcome: welcome.to_string(),
+                epoch,
+            });
+        }
+        let target = if kind == "group" {
+            format!("#{}", channel_conversation("", name).name)
+        } else {
+            me.to_string()
+        };
+        s.chats
+            .entry(account.clone())
+            .or_default()
+            .entry(name.to_string())
+            .or_insert(ChatRow {
+                kind,
+                joined: false,
+                conversation: None,
+                target,
+                peer: (kind == "direct").then(|| me.to_string()),
+                inviter: me.to_string(),
+                declined: Vec::new(),
+            });
+        changed(s, account, name, "welcome");
+    }
+}
+
+fn create_chat(s: &mut State, me: &str, r: &Recorded) -> Reply {
+    let body = r.json();
+    let name = body["groupId"].as_str().unwrap_or_default().to_string();
+    if s.chats.get(me).is_some_and(|c| c.contains_key(&name)) {
+        return Reply::problem(409, "This group ID is already in use.");
+    }
+    let epoch = body["epoch"].as_i64().unwrap_or(1);
+    let welcome = body["welcome"].as_str().unwrap_or_default().to_string();
+    let (row, to) = match body["kind"].as_str() {
+        Some("direct") => {
+            let peer = body["peer"].as_str().unwrap_or_default().to_string();
+            let conversation = body["conversationId"].as_str().map(str::to_string);
+            (
+                ChatRow {
+                    kind: "direct",
+                    joined: true,
+                    conversation,
+                    target: peer.clone(),
+                    peer: Some(peer.clone()),
+                    inviter: me.to_string(),
+                    declined: Vec::new(),
+                },
+                vec![peer],
+            )
+        }
+        Some("group") => {
+            if crate::e2ee::from_b64url(&name).map(|b| b.len()) != Ok(16) {
+                return Reply::problem(422, "A group ID must be 16 random bytes in base64url.");
+            }
+            let members: Vec<String> = body["members"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|m| m.as_str().map(str::to_string))
+                .collect();
+            let conversation = enter_channel(s, me, &name);
+            (
+                ChatRow {
+                    kind: "group",
+                    joined: true,
+                    conversation: Some(conversation),
+                    target: format!("#{}", channel_conversation("", &name).name),
+                    peer: None,
+                    inviter: me.to_string(),
+                    declined: Vec::new(),
+                },
+                members,
+            )
+        }
+        _ => return Reply::problem(422, "kind must be direct or group"),
+    };
+    let out = chat_json(&name, &row);
+    let kind = row.kind;
+    s.chats
+        .entry(me.to_string())
+        .or_default()
+        .insert(name.clone(), row);
+    send_welcome(s, me, &name, kind, epoch, &welcome, &to);
+    ok(json!({"chat": out, "warnings": []}))
+}
+
+fn chat_name(r: &Recorded) -> String {
+    segment(r, 4)
+}
+
+fn join_chat(s: &mut State, me: &str, r: &Recorded) -> Reply {
+    let name = chat_name(r);
+    let Some(row) = s.chats.get(me).and_then(|c| c.get(&name)).cloned() else {
+        return not_found();
+    };
+    let conversation = if row.joined {
+        row.conversation.clone()
+    } else if row.kind == "group" {
+        Some(enter_channel(s, me, &name))
+    } else {
+        s.sides.get(me).map(|side| side.conversation.clone())
+    };
+    let row = ChatRow {
+        joined: true,
+        conversation,
+        ..row
+    };
+    let out = chat_json(&name, &row);
+    s.chats.entry(me.to_string()).or_default().insert(name, row);
+    ok(out)
+}
+
+fn decline_chat(s: &mut State, me: &str, r: &Recorded) -> Reply {
+    let name = chat_name(r);
+    let Some(row) = s.chats.get_mut(me).and_then(|c| c.remove(&name)) else {
+        return not_found();
+    };
+    s.chat_welcomes
+        .retain(|w| !(w.account == me && w.group == name));
+    if let Some(inviter) = s.chats.get_mut(&row.inviter).and_then(|c| c.get_mut(&name)) {
+        inviter.declined.push(me.to_string());
+    }
+    changed(s, &row.inviter.clone(), &name, "declined");
+    Reply::empty()
+}
+
+fn leave_chat(s: &mut State, me: &str, r: &Recorded) -> Reply {
+    let name = chat_name(r);
+    if s.chats.get_mut(me).and_then(|c| c.remove(&name)).is_none() {
+        return not_found();
+    }
+    if let Some((_, members)) = s.channels.get_mut(&name) {
+        members.remove(me);
+    }
+    Reply::empty()
+}
+
+fn post_chat_commit(s: &mut State, me: &str, r: &Recorded) -> Reply {
+    let name = chat_name(r);
+    let Some(row) = s.chats.get(me).and_then(|c| c.get(&name)).cloned() else {
+        return not_found();
+    };
+    if !row.joined {
+        return Reply::problem(409, "Join the chat first.");
+    }
+    let body = r.json();
+    let epoch = body["epoch"].as_i64().unwrap_or(-1);
+    s.next += 1;
+    let position = s.next;
+    let list = s.candidates.entry(name.clone()).or_default();
+    let first = !list.iter().any(|(e, ..)| *e == epoch);
+    list.push((
+        epoch,
+        me.to_string(),
+        body["commit"].as_str().unwrap_or_default().to_string(),
+        position,
+    ));
+    let strings = |key: &str| -> Vec<String> {
+        body[key]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()
+    };
+    if first {
+        if let Some(welcome) = body["welcome"].as_str() {
+            send_welcome(
+                s,
+                me,
+                &name,
+                row.kind,
+                epoch + 1,
+                welcome,
+                &strings("added"),
+            );
+        }
+        for gone in strings("removed") {
+            if let Some((_, members)) = s.channels.get_mut(&name) {
+                members.remove(&gone);
+            }
+        }
+    }
+    // Everyone in the chat hears of it: the channel's members, or the peer.
+    let mut told: BTreeSet<String> = s
+        .channels
+        .get(&name)
+        .map(|(_, m)| m.clone())
+        .unwrap_or_default();
+    told.extend(row.peer.clone());
+    told.extend(strings("removed"));
+    for account in told.iter().filter(|a| *a != me) {
+        changed(s, account, &name, "commit");
+    }
+    let at = |p: i64| json!({"at": "2026-11-28T10:00:00Z", "msgid": format!("{p:08}")});
+    let winner = s
+        .candidates
+        .get(&name)
+        .and_then(|l| l.iter().find(|(e, ..)| *e == epoch))
+        .map_or(position, |c| c.3);
+    ok(json!({"accepted": first, "position": at(position), "winner": at(winner), "warnings": []}))
+}
+
+fn list_chat_commits(s: &mut State, me: &str, r: &Recorded) -> Reply {
+    let name = chat_name(r);
+    if !s.chats.get(me).is_some_and(|c| c.contains_key(&name)) {
+        return not_found();
+    }
+    let from = r
+        .query_param("from")
+        .and_then(|f| f.parse::<i64>().ok())
+        .unwrap_or(0);
+    let mut items: Vec<(i64, String, String, i64)> = s
+        .candidates
+        .get(&name)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(e, ..)| *e >= from)
+        .collect();
+    items.sort_by_key(|(e, .., p)| (*e, *p));
+    let items: Vec<Value> = items
+        .into_iter()
+        .map(|(e, sender, commit, p)| {
+            json!({"epoch": e, "sender": sender, "commit": commit,
+                "position": {"at": "2026-11-28T10:00:00Z", "msgid": format!("{p:08}")}})
+        })
+        .collect();
+    ok(json!({"items": items}))
+}
+
+fn list_chat_welcomes(s: &mut State, me: &str, r: &Recorded) -> Reply {
+    let device = segment(r, 4);
+    let items: Vec<Value> = s
+        .chat_welcomes
+        .iter()
+        .filter(|w| w.account == me && w.device == device)
+        .map(|w| {
+            json!({"id": w.id, "groupId": w.group, "epoch": w.epoch, "kind": w.kind,
+                "target": w.sender, "sender": w.sender, "welcome": w.welcome,
+                "position": {"at": "2026-11-28T10:00:00Z", "msgid": format!("{:08}", w.id)},
+                "createdAt": "2026-11-28T10:00:00Z"})
+        })
+        .collect();
+    ok(json!({"items": items}))
+}
+
+fn delete_chat_welcome(s: &mut State, me: &str, r: &Recorded) -> Reply {
+    let id: i64 = segment(r, 4).parse().unwrap_or(0);
+    let before = s.chat_welcomes.len();
+    s.chat_welcomes.retain(|w| !(w.id == id && w.account == me));
+    if s.chat_welcomes.len() < before {
+        Reply::empty()
+    } else {
+        not_found()
+    }
 }

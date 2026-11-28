@@ -112,6 +112,9 @@ pub mod network {
     pub const CREATE_CHANNEL: i32 = 121;
     /// Only this client: start a direct conversation on the network.
     pub const NEW_DIRECT: i32 = 122;
+    /// Only this client: start an encrypted group on the network encryption
+    /// works on (experimental).
+    pub const NEW_ENCRYPTED_GROUP: i32 = 123;
     pub const EDIT: i32 = 130;
     /// Only this client: change your nick or real name on it, after editing.
     pub const CHANGE_NICK: i32 = 131;

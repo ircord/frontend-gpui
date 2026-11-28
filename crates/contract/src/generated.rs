@@ -1731,13 +1731,209 @@ pub struct E2EEBindInputBody {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct E2EEChange {
+    /// The account whose action or keys caused the change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// The encrypted chat that changed.
+    #[serde(rename = "groupId", skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    /// commit: new commits are settled; welcome: an invitation or Welcome arrived; declined: someone declined an invitation; rejoin: a device asks to be added again; notice: the account's devices or identity changed, so fetch its directory again.
+    pub reason: E2EEChangeReason,
+}
+
+/// commit: new commits are settled; welcome: an invitation or Welcome arrived; declined: someone declined an invitation; rejoin: a device asks to be added again; notice: the account's devices or identity changed, so fetch its directory again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum E2EEChangeReason {
+    #[serde(rename = "commit")]
+    Commit,
+    #[serde(rename = "welcome")]
+    Welcome,
+    #[serde(rename = "declined")]
+    Declined,
+    #[serde(rename = "rejoin")]
+    Rejoin,
+    #[serde(rename = "notice")]
+    Notice,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEChangedEvent {
+    pub data: E2EEChange,
+    pub seq: i64,
+    pub r#type: String,
+    pub v: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEChat {
+    /// Your conversation the chat is bound to: the direct conversation, or the group's channel.
+    #[serde(rename = "conversationId", skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    /// Accounts that declined your invitation. Their clients remove them.
+    pub declined: Vec<String>,
+    /// The epoch you joined at, raised as your own commits win.
+    pub epoch: i64,
+    #[serde(rename = "groupId")]
+    pub group_id: String,
+    /// The account whose Welcome invited you; your own for chats you started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inviter: Option<String>,
+    pub kind: E2EEChatKind,
+    /// The other person's account in a direct chat.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
+    /// A direct chat's earlier group, which this one replaces after someone started fresh.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<String>,
+    /// invited until you join; a joined chat refuses plaintext from you.
+    pub state: E2EEChatState,
+    /// Where its commits go on IRC: the other person's nick, or the group's channel (#e2ee- and the group ID in hex).
+    pub target: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEChatCommit {
+    pub commit: String,
+    /// The epoch the commit was made in.
+    pub epoch: i64,
+    /// Candidates of one epoch are listed in position order; apply the first one your core accepts.
+    pub position: E2EEPosition,
+    /// The IRC account that sent it, as the network attached it. Clients check the MLS sender's certificate against it.
+    pub sender: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEChatCommitInputBody {
+    /// Accounts the commit adds. In a group they get the right to enter once it has won.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added: Option<Vec<String>>,
+    /// Accounts the commit makes admins. They get operator rights in the group's channel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admins: Option<Vec<String>>,
+    pub commit: String,
+    /// The epoch the commit was made in.
+    pub epoch: i64,
+    /// Admins the commit makes ordinary members again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub members: Option<Vec<String>>,
+    /// Accounts the commit removes. In a group they lose the right to enter and are kicked once it has won.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed: Option<Vec<String>>,
+    /// The Welcome for the accounts the commit adds. Sent only if the commit wins its epoch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub welcome: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEChatCommitResult {
+    /// Your commit came first for its epoch. Otherwise another commit won: discard yours, apply the newer commits and try again.
+    pub accepted: bool,
+    /// Where the IRC server put your commit.
+    pub position: E2EEPosition,
+    /// Channel changes that failed after the commit won.
+    pub warnings: Vec<String>,
+    /// The first commit for the epoch.
+    pub winner: E2EEPosition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum E2EEChatKind {
+    #[serde(rename = "direct")]
+    Direct,
+    #[serde(rename = "group")]
+    Group,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// invited until you join; a joined chat refuses plaintext from you.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum E2EEChatState {
+    #[serde(rename = "invited")]
+    Invited,
+    #[serde(rename = "joined")]
+    Joined,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEChatWelcome {
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    pub epoch: i64,
+    #[serde(rename = "groupId")]
+    pub group_id: String,
+    pub id: i64,
+    pub kind: E2EEChatWelcomeKind,
+    pub position: E2EEPosition,
+    /// direct: the group this one replaces. When both sides started a chat at once, the Welcome with the earlier position wins.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<String>,
+    /// The IRC account that sent the Welcome.
+    pub sender: String,
+    /// The inviter's nick, or the group's channel.
+    pub target: String,
+    pub welcome: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum E2EEChatWelcomeKind {
+    #[serde(rename = "direct")]
+    Direct,
+    #[serde(rename = "group")]
+    Group,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct E2EEClaim {
     pub account: String,
+    #[serde(rename = "deviceList", skip_serializing_if = "Option::is_none")]
+    pub device_list: Option<E2EEDeviceList>,
     pub generation: i64,
     #[serde(rename = "identityKey")]
     pub identity_key: String,
     /// One key package for each device that has one. Single-use packages are removed from the directory.
     pub items: Vec<E2EEClaimedPackage>,
+    /// Where the keys came from; see the person's directory.
+    pub source: E2EEClaimSource,
+}
+
+/// Where the keys came from; see the person's directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum E2EEClaimSource {
+    #[serde(rename = "server")]
+    Server,
+    #[serde(rename = "network")]
+    Network,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -1796,6 +1992,44 @@ pub struct E2EEConversation {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct E2EECreateChatInputBody {
+    /// direct: your direct conversation with the person.
+    #[serde(rename = "conversationId", skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    /// The epoch the creator reached, usually 1 after the commit that added everyone.
+    pub epoch: i64,
+    /// The MLS group ID in base64url, chosen by the creating client. A group's ID must be 16 random bytes; it also names the group's channel.
+    #[serde(rename = "groupId")]
+    pub group_id: String,
+    pub kind: E2EECreateChatInputBodyKind,
+    /// group: the accounts you add, with or without your own. Each gets a standing right to enter the channel and the Welcome.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub members: Option<Vec<String>>,
+    /// direct: the other person's account.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
+    /// direct: the earlier group this one replaces after someone started fresh.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<String>,
+    /// The MLS Welcome for everyone added. The server delivers it to each account's IRCord server and retries until that server confirms it, for 30 days.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub welcome: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum E2EECreateChatInputBodyKind {
+    #[serde(rename = "direct")]
+    Direct,
+    #[serde(rename = "group")]
+    Group,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct E2EECreateGroupInputBody {
     /// The epoch the creator reached, usually 1 after the commit that added the other devices.
     pub epoch: i64,
@@ -1808,6 +2042,14 @@ pub struct E2EECreateGroupInputBody {
     pub members: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub welcomes: Option<Vec<E2EEWelcomeInput>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EECreatedChat {
+    pub chat: E2EEChat,
+    /// Steps that did not complete, such as a member who could not be given the right to enter.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -1843,6 +2085,15 @@ pub struct E2EEDeviceInputBody {
     /// A reusable key package handed out when the device has no single-use package left. Omit to keep the stored one.
     #[serde(rename = "lastResort", skip_serializing_if = "Option::is_none")]
     pub last_resort: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEDeviceList {
+    /// Goes up with every new list. Clients refuse a list older than the newest one they have seen.
+    pub counter: i64,
+    /// The list of the account's current device IDs, signed by its identity key. Clients check the signature; the server does not.
+    pub list: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -1904,7 +2155,12 @@ pub struct E2EEKeyPackagesInputBody {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct E2EEOwnDirectory {
+    /// The newest signed device list your devices published.
+    #[serde(rename = "deviceList", skip_serializing_if = "Option::is_none")]
+    pub device_list: Option<E2EEDeviceList>,
     pub devices: Vec<E2EEDevice>,
+    /// Encryption for this account is set up on another IRCord server, and this one has no keys for it. Encrypted chats are readable only through that server; this server refuses to set up a second identity. This is the server's last answer: it asks again in the background and sends e2ee.changed when it finds keys elsewhere.
+    pub elsewhere: bool,
     /// Absent until the account's first device publishes an identity key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<E2EEIdentity>,
@@ -1926,10 +2182,62 @@ pub struct E2EEPeerDevice {
 #[serde(default)]
 pub struct E2EEPeerDirectory {
     pub account: String,
+    /// The person's newest signed device list, when their devices published one.
+    #[serde(rename = "deviceList", skip_serializing_if = "Option::is_none")]
+    pub device_list: Option<E2EEDeviceList>,
     pub devices: Vec<E2EEPeerDevice>,
     pub generation: i64,
     #[serde(rename = "identityKey")]
     pub identity_key: String,
+    /// server: this IRCord server holds the person's keys. network: the person's own IRCord server answered over IRC, so the keys passed through it and the IRC network; compare security codes to be sure.
+    pub source: E2EEPeerDirectorySource,
+}
+
+/// server: this IRCord server holds the person's keys. network: the person's own IRCord server answered over IRC, so the keys passed through it and the IRC network; compare security codes to be sure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum E2EEPeerDirectorySource {
+    #[serde(rename = "server")]
+    Server,
+    #[serde(rename = "network")]
+    Network,
+    /// A value this client does not know yet.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EEPosition {
+    /// The IRC server's time on the commit's last line.
+    pub at: String,
+    /// The IRC server's message ID on the commit's last line. Within one time, positions sort by it.
+    pub msgid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EERejoin {
+    /// The IRC account that asked.
+    pub account: String,
+    pub certificate: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "deviceId")]
+    pub device_id: String,
+    pub id: i64,
+    #[serde(rename = "keyPackage")]
+    pub key_package: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct E2EERejoinInputBody {
+    pub certificate: String,
+    #[serde(rename = "deviceId")]
+    pub device_id: String,
+    #[serde(rename = "keyPackage")]
+    pub key_package: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -2167,8 +2475,13 @@ pub enum EncryptedClass {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EncryptionCapability {
+    /// Encrypted chats reach people on other IRCord servers of the home network. Handshakes travel over IRC; see the /api/v1/e2ee/chats operations.
+    #[serde(rename = "acrossServers")]
+    pub across_servers: bool,
     /// The feature has not had its outside review yet; clients label it experimental.
     pub experimental: bool,
+    /// Encrypted groups in their own invite-only channels are available.
+    pub groups: bool,
     /// Largest base64url payload one encrypted message may carry.
     #[serde(rename = "maxPayload")]
     pub max_payload: i64,
@@ -2755,8 +3068,32 @@ pub struct ItemsE2EEApproval {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct ItemsE2EEChat {
+    pub items: Vec<E2EEChat>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsE2EEChatCommit {
+    pub items: Vec<E2EEChatCommit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsE2EEChatWelcome {
+    pub items: Vec<E2EEChatWelcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ItemsE2EECommit {
     pub items: Vec<E2EECommit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemsE2EERejoin {
+    pub items: Vec<E2EERejoin>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -3208,6 +3545,9 @@ pub struct Member {
     pub device: Option<MemberDevice>,
     #[serde(rename = "displayName")]
     pub display_name: String,
+    /// Set when the person's IRCord server accepts encrypted chats from other servers, from the ircord/e2ee metadata key: the handshake version. Shows the lock without asking anyone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headline: Option<String>,
     #[serde(rename = "homepageUrl", skip_serializing_if = "Option::is_none")]
