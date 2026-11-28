@@ -57,21 +57,33 @@ encryption-panel-verify = Mark { $name } as verified
 encryption-panel-unverify = Remove verification
 encryption-panel-search-title = Search this chat on this device
 encryption-panel-search = Search encrypted messages
-# Encrypted groups: the network menu, the picker, invitations, the panel,
+# Encrypted groups: the lock beside Direct messages, the picker, invitations, the panel,
 # the lock, the banner and the timeline line.
-encryption-group-new = New encrypted group…
 encryption-group-new-title = New encrypted group
+encryption-group-new-not-ready = New encrypted group: set up encryption on this device first, in Settings → Encryption.
 encryption-group-add-title = Add people
 encryption-group-title = Title
 encryption-group-title-placeholder = What the group is about (only its members see this)
 encryption-group-people = People
-encryption-group-nobody = Nobody with an account on this network is known here yet. Type their account names below.
-encryption-group-others = Other people, by account name (separated by commas)
-encryption-group-others-placeholder = alex, sam
+encryption-group-people-help = Find people by name or account, or type an account name. They can use any IRCord server on this network. Each gets an invitation to join.
+encryption-group-chosen = People chosen
+encryption-group-unchoose = Remove { $name }
+encryption-group-bot = Bots can't take part in encrypted groups.
+# Sent unencrypted to someone invited who has no encryption keys yet: it
+# names neither the group nor its people.
+encryption-group-invited-notice = I invited you to an encrypted group, but your account has no encryption set up yet. Set it up under Settings > Encryption and you will be added.
+encryption-group-pending-joined = { $name } set up encryption and was added to the group.
+encryption-group-pending = Waiting for encryption
+encryption-group-pending-help = Invited before they set up encryption. They are added once they do.
+encryption-group-pending-cancel = Cancel the invitation for { $name }
+encryption-group-pending-note = Someone you chose has no encryption set up yet. They get an ordinary message asking them to set it up, and are added once they have.
+encryption-group-no-keys = No encryption set up yet: gets an invitation message and is added once they set it up.
+encryption-group-pending-chip = { $name }, gets an invitation once they set up encryption
 encryption-group-create = Create group
 encryption-group-add = Add
 encryption-group-caveat = An encrypted group is only as safe as every device in it. Anyone who controls a device of any member can read it. Each member's keys reach you through that member's IRCord server, so verify the people who matter to you.
 encryption-group-needs-people = Pick at least one other person.
+encryption-group-nobody-ready = Nobody you chose has encryption set up yet, so the group can't start. Add at least one person who has.
 encryption-group-needs-update = { $name } needs to update IRCord on one of their devices to join encrypted groups.
 encryption-group-raced = Someone else changed the group at the same moment. Try again.
 encryption-group-not-admin = Only the group's creator and admins can do that.

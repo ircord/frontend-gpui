@@ -107,6 +107,9 @@ pub struct Group {
     pub creator: bool,
     /// What changed lately, oldest first.
     pub events: Vec<GroupEvent>,
+    /// Accounts invited by this account before they set up encryption:
+    /// added once their keys appear. Only the inviter's devices know them.
+    pub pending: Vec<String>,
 }
 
 impl Group {

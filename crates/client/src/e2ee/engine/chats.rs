@@ -18,7 +18,7 @@ use ircord_contract as c;
 
 use super::super::core::{Accepted, Body, Commit, ControlOp, Conversation as CoreConversation};
 use super::super::core::{DeviceRef, GroupIdBytes, Payload};
-use super::super::vault::{Conversation, Record};
+use super::super::vault::{Conversation, Invitee, Record};
 use super::{Engine, Inner, Result, api_err, core_err, group_hex, group_of, key32, view};
 use crate::api::ApiError;
 use crate::api::e2ee::{bytes, encode};
@@ -57,7 +57,15 @@ pub(super) struct Chats {
     pub inviters: BTreeMap<Vec<u8>, String>,
     /// (group, account) declines this device already acted on.
     pub declines_handled: BTreeSet<(Vec<u8>, String)>,
+    /// People this account invited before they had encryption keys, by the
+    /// group's backend name. Kept in the vault's `pending.sealed`.
+    pub pending: BTreeMap<String, Vec<Invitee>>,
+    /// When the pending invitees' keys were last looked for.
+    pub pending_checked: Option<std::time::Instant>,
 }
+
+/// How often the periodic tick looks for pending invitees' keys.
+const PENDING_EVERY: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// The name a new chat goes by on the backend: groups need base64url
 /// (their channel is derived from it), direct chats use the specification's
@@ -542,6 +550,12 @@ impl Engine {
                     .get(&group_id.0)
                     .cloned()
                     .unwrap_or_default(),
+                pending: inner
+                    .chats
+                    .pending
+                    .get(&chat.name)
+                    .map(|list| list.iter().map(|i| i.account.clone()).collect())
+                    .unwrap_or_default(),
             };
             records.push((conversation, chat.name.clone()));
             groups.push(group);
@@ -727,8 +741,69 @@ impl Engine {
     pub fn create_group(&self, title: &str, accounts: Vec<String>) {
         let title = title.trim().to_string();
         self.group_action("new", move |engine, inner| {
-            Box::pin(async move { engine.create_group_now(inner, &title, &accounts).await })
+            Box::pin(async move {
+                engine
+                    .create_group_now(inner, &title, &accounts, Vec::new())
+                    .await
+            })
         });
+    }
+
+    /// Start an encrypted group with these people. Those who have no
+    /// encryption keys yet are invited instead: each gets [`Texts::invited`]
+    /// as an ordinary message, and is added once their keys appear.
+    ///
+    /// [`Texts::invited`]: super::Texts::invited
+    pub fn create_group_inviting(&self, title: &str, people: Vec<Invitee>) {
+        let title = title.trim().to_string();
+        self.group_action("new", move |engine, inner| {
+            Box::pin(async move {
+                let (accounts, pending) = engine.split_by_keys(people).await?;
+                engine
+                    .create_group_now(inner, &title, &accounts, pending)
+                    .await
+            })
+        });
+    }
+
+    /// Add people to the group whose channel is `conversation`, inviting
+    /// those without encryption keys as [`Engine::create_group_inviting`]
+    /// does.
+    pub fn add_people_inviting(&self, conversation: &str, people: Vec<Invitee>) {
+        let conversation = conversation.to_string();
+        let key = self.group_key(&conversation);
+        self.group_action(&key, move |engine, inner| {
+            Box::pin(async move {
+                let g = engine.group_in(inner, &conversation)?;
+                let (accounts, mut pending) = engine.split_by_keys(people).await?;
+                engine.add_now(inner, &g, accounts).await?;
+                let name = inner.chats.list[&g.0].name.clone();
+                let known = inner.chats.pending.get(&name).cloned().unwrap_or_default();
+                pending.retain(|i| !known.iter().any(|p| p.account == i.account));
+                if !pending.is_empty() {
+                    engine.tell_invited(&pending).await;
+                    inner.chats.pending.entry(name).or_default().extend(pending);
+                    engine.save_pending(inner);
+                }
+                Ok(())
+            })
+        });
+    }
+
+    /// Who of `people` has encryption keys (their accounts), and who not.
+    async fn split_by_keys(&self, people: Vec<Invitee>) -> Result<(Vec<String>, Vec<Invitee>)> {
+        let (mut ready, mut pending) = (Vec::new(), Vec::new());
+        for person in people {
+            match self.api().e2ee_account(&person.account).await {
+                Ok(d) if !d.devices.is_empty() => ready.push(person.account),
+                Ok(_) | Err(ApiError::Http { status: 404, .. }) => pending.push(person),
+                Err(ApiError::Http { status: 504, .. }) => {
+                    return Err(format!("peer-no-answer:{}", person.account));
+                }
+                Err(e) => return Err(api_err(e)),
+            }
+        }
+        Ok((ready, pending))
     }
 
     async fn create_group_now(
@@ -736,6 +811,7 @@ impl Engine {
         inner: &mut Inner,
         title: &str,
         accounts: &[String],
+        mut pending: Vec<Invitee>,
     ) -> Result<()> {
         let mut people: Vec<String> = accounts
             .iter()
@@ -744,8 +820,17 @@ impl Engine {
             .collect();
         people.sort();
         people.dedup();
-        if people.is_empty() {
+        pending.retain(|i| {
+            !i.account.is_empty() && i.account != inner.account && !people.contains(&i.account)
+        });
+        pending.sort_by(|a, b| a.account.cmp(&b.account));
+        pending.dedup_by(|a, b| a.account == b.account);
+        if people.is_empty() && pending.is_empty() {
             return Err("group-needs-people".into());
+        }
+        // The core starts a group only with someone else in it.
+        if people.is_empty() {
+            return Err("group-nobody-ready".into());
         }
         let mut packages = self.packages_for(inner, &people).await?;
         packages.extend(self.own_packages(inner).await?);
@@ -794,7 +879,165 @@ impl Engine {
                 })
                 .collect(),
         );
+        if !pending.is_empty() {
+            let name = inner.chats.list[&g.0].name.clone();
+            self.tell_invited(&pending).await;
+            inner.chats.pending.insert(name, pending);
+            self.save_pending(inner);
+        }
         Ok(())
+    }
+
+    /// Send each invitee the ordinary message that says they were invited
+    /// and how to set up encryption, from the home network.
+    async fn tell_invited(&self, invitees: &[Invitee]) {
+        let network = {
+            let w = self.shared.handle.read();
+            w.networks
+                .iter()
+                .find(|n| n.features.encryption)
+                .map(|n| n.id.clone())
+        };
+        let Some(network) = network else {
+            return;
+        };
+        let text = (self.shared.texts.invited)();
+        let path = format!(
+            "/api/v1/networks/{}/commands",
+            crate::api::segment(&network)
+        );
+        for invitee in invitees {
+            let nick = if invitee.nick.is_empty() {
+                &invitee.account
+            } else {
+                &invitee.nick
+            };
+            // One word that names a person, never a channel or a second line.
+            if nick.is_empty()
+                || nick.starts_with(['#', '&', ':'])
+                || nick.contains(|c: char| c.is_whitespace() || c.is_control() || c == ',')
+            {
+                log::info!("e2ee: not telling an invitee with an unusable nick");
+                continue;
+            }
+            let body = c::SendRawRequest {
+                client_id: crate::client::random_id(),
+                line: format!("PRIVMSG {nick} :{text}"),
+            };
+            if let Err(e) = self
+                .api()
+                .call_empty(crate::api::Method::POST, &path, &body)
+                .await
+            {
+                log::info!("e2ee: telling an invitee: {e}");
+            }
+        }
+    }
+
+    fn save_pending(&self, inner: &mut Inner) {
+        inner.chats.pending.retain(|_, list| !list.is_empty());
+        if let Some(vault) = inner.vault.as_ref()
+            && let Err(e) = vault.set_pending(&inner.chats.pending)
+        {
+            log::warn!("e2ee: keeping pending invitees: {e}");
+        }
+    }
+
+    /// Stop waiting for `account` to set up encryption for the group whose
+    /// channel is `conversation`.
+    pub fn cancel_pending(&self, conversation: &str, account: &str) {
+        let (conversation, account) = (conversation.to_string(), account.to_string());
+        let key = self.group_key(&conversation);
+        self.group_action(&key, move |engine, inner| {
+            Box::pin(async move {
+                let g = engine.group_in(inner, &conversation)?;
+                let name = inner.chats.list[&g.0].name.clone();
+                if let Some(list) = inner.chats.pending.get_mut(&name) {
+                    list.retain(|i| i.account != account);
+                }
+                engine.save_pending(inner);
+                Ok(())
+            })
+        });
+    }
+
+    /// Look now whether the people invited to the group in `conversation`
+    /// before they had encryption keys have them, and add those who do; as
+    /// when the group is opened.
+    pub fn check_pending(&self, conversation: &str) {
+        let conversation = conversation.to_string();
+        self.spawn(move |engine| async move {
+            let mut inner = engine.shared.inner.lock().await;
+            let Ok(g) = engine.group_in(&inner, &conversation) else {
+                return;
+            };
+            engine.add_pending(&mut inner, Some(g)).await;
+            engine.publish_groups(&mut inner);
+        });
+    }
+
+    /// Add the pending invitees whose keys appeared: in `only`, or in every
+    /// group at most every [`PENDING_EVERY`].
+    pub(super) async fn add_pending(&self, inner: &mut Inner, only: Option<GroupIdBytes>) {
+        if inner.chats.pending.is_empty() {
+            return;
+        }
+        if only.is_none() {
+            if inner
+                .chats
+                .pending_checked
+                .is_some_and(|at| at.elapsed() < PENDING_EVERY)
+            {
+                return;
+            }
+            inner.chats.pending_checked = Some(std::time::Instant::now());
+        }
+        let groups: Vec<(GroupIdBytes, String, Option<String>)> = inner
+            .chats
+            .list
+            .iter()
+            .filter(|(g, _)| only.as_ref().is_none_or(|o| &o.0 == *g))
+            .filter(|(_, c)| inner.chats.pending.contains_key(&c.name))
+            .map(|(g, c)| {
+                (
+                    GroupIdBytes(g.clone()),
+                    c.name.clone(),
+                    c.conversation.clone(),
+                )
+            })
+            .collect();
+        let mut changed = false;
+        for (g, name, conversation) in groups {
+            let invitees = inner.chats.pending.get(&name).cloned().unwrap_or_default();
+            let mut ready = Vec::new();
+            for invitee in &invitees {
+                if let Ok(d) = self.api().e2ee_account(&invitee.account).await
+                    && !d.devices.is_empty()
+                {
+                    ready.push(invitee.account.clone());
+                }
+            }
+            if ready.is_empty() {
+                continue;
+            }
+            match self.add_now(inner, &g, ready.clone()).await {
+                Ok(()) => {
+                    if let Some(list) = inner.chats.pending.get_mut(&name) {
+                        list.retain(|i| !ready.contains(&i.account));
+                    }
+                    changed = true;
+                    if let Some(conversation) = &conversation {
+                        for account in &ready {
+                            self.send(conversation, &(self.shared.texts.joined)(account), None);
+                        }
+                    }
+                }
+                Err(e) => log::info!("e2ee: adding pending invitees: {e}"),
+            }
+        }
+        if changed {
+            self.save_pending(inner);
+        }
     }
 
     /// One key package for each device of these people, checked against
@@ -866,40 +1109,49 @@ impl Engine {
         self.group_action(&key, move |engine, inner| {
             Box::pin(async move {
                 let g = engine.group_in(inner, &conversation)?;
-                let mut people: Vec<String> = accounts
-                    .iter()
-                    .map(|a| a.trim().to_string())
-                    .filter(|a| !a.is_empty())
-                    .collect();
-                people.sort();
-                people.dedup();
-                let present: BTreeSet<String> = inner
-                    .device
-                    .as_ref()
-                    .and_then(|d| d.members(&g).ok())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|m| m.account)
-                    .collect();
-                people.retain(|a| !present.contains(a));
-                if people.is_empty() {
-                    return Ok(());
-                }
-                engine.settle(inner, &g).await?;
-                let packages = engine.packages_for(inner, &people).await?;
-                let device = inner.device.as_mut().ok_or("not-ready")?;
-                let commit = device.add_devices(&g, &packages).map_err(group_err)?;
-                let body = c::E2EEChatCommitInputBody {
-                    added: Some(people),
-                    ..Default::default()
-                };
-                if engine.send_commit(inner, &g, commit, body).await? {
-                    Ok(())
-                } else {
-                    Err("group-raced".into())
-                }
+                engine.add_now(inner, &g, accounts).await
             })
         });
+    }
+
+    async fn add_now(
+        &self,
+        inner: &mut Inner,
+        g: &GroupIdBytes,
+        accounts: Vec<String>,
+    ) -> Result<()> {
+        let mut people: Vec<String> = accounts
+            .iter()
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty())
+            .collect();
+        people.sort();
+        people.dedup();
+        let present: BTreeSet<String> = inner
+            .device
+            .as_ref()
+            .and_then(|d| d.members(g).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| m.account)
+            .collect();
+        people.retain(|a| !present.contains(a));
+        if people.is_empty() {
+            return Ok(());
+        }
+        self.settle(inner, g).await?;
+        let packages = self.packages_for(inner, &people).await?;
+        let device = inner.device.as_mut().ok_or("not-ready")?;
+        let commit = device.add_devices(g, &packages).map_err(group_err)?;
+        let body = c::E2EEChatCommitInputBody {
+            added: Some(people),
+            ..Default::default()
+        };
+        if self.send_commit(inner, g, commit, body).await? {
+            Ok(())
+        } else {
+            Err("group-raced".into())
+        }
     }
 
     /// Remove a person from the group whose channel is `conversation`.

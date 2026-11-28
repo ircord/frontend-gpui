@@ -31,6 +31,18 @@ const STATE: &str = "device.state";
 /// Bound into every frame, so a frame of one file cannot pass for the other.
 const AAD_LOG: &[u8] = b"ircord-gpui e2ee vault log v1";
 const AAD_STATE: &[u8] = b"ircord-gpui e2ee device state v1";
+/// People invited to a group before they set up encryption: a file of its
+/// own beside the log, so versions that do not know it still open the log.
+const PENDING: &str = "pending.sealed";
+const AAD_PENDING: &[u8] = b"ircord-gpui e2ee pending invitees v1";
+
+/// Someone invited to an encrypted group who has no encryption keys yet:
+/// their account, and the nick their notice went to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Invitee {
+    pub account: String,
+    pub nick: String,
+}
 /// A frame larger than this is damage, not data.
 const MAX_FRAME: usize = 1 << 24;
 
@@ -284,6 +296,24 @@ impl Vault {
             vault.compact()?;
         }
         Ok(vault)
+    }
+
+    /// The people invited to each group (by its backend name) who have no
+    /// encryption keys yet. Empty when the file is missing or does not open.
+    pub fn pending(&self) -> BTreeMap<String, Vec<Invitee>> {
+        let Ok(sealed) = fs::read(self.dir.join(PENDING)) else {
+            return BTreeMap::new();
+        };
+        self.key
+            .open(AAD_PENDING, &sealed)
+            .and_then(|plain| serde_json::from_slice(&plain).ok())
+            .unwrap_or_default()
+    }
+
+    /// Keep `pending` in place of what [`Vault::pending`] read.
+    pub fn set_pending(&self, pending: &BTreeMap<String, Vec<Invitee>>) -> Result<(), String> {
+        let plain = serde_json::to_vec(pending).expect("invitees serialise");
+        write_atomic(&self.dir.join(PENDING), &self.key.seal(AAD_PENDING, &plain))
     }
 
     /// Whether a store exists in `dir`.
@@ -683,6 +713,30 @@ mod tests {
         assert!(v.search("sailing", 10).is_empty());
         assert_eq!(v.by_inner("i2"), Some("m2"));
         assert!(v.sent("c1").is_none());
+    }
+
+    #[test]
+    fn pending_invitees_survive_a_reopen_sealed_and_beside_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = VaultKey::random();
+        let mut pending = BTreeMap::new();
+        pending.insert(
+            "g1".to_string(),
+            vec![Invitee {
+                account: "sam".into(),
+                nick: "sammy".into(),
+            }],
+        );
+        {
+            let v = Vault::open(dir.path(), key.clone()).unwrap();
+            assert!(v.pending().is_empty());
+            v.set_pending(&pending).unwrap();
+        }
+        let raw = std::fs::read(dir.path().join(PENDING)).unwrap();
+        assert!(!raw.windows(5).any(|w| w == b"sammy"));
+        assert_eq!(Vault::open(dir.path(), key).unwrap().pending(), pending);
+        let other = Vault::open(tempfile::tempdir().unwrap().path(), VaultKey::random()).unwrap();
+        assert!(other.pending().is_empty());
     }
 
     #[test]

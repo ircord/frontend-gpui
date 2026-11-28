@@ -18,7 +18,7 @@
 //! with the trust caveat and the security code, and approving a second device.
 //! `CAPTURE_ONLY=e2ee-group` captures an encrypted group with a member on a
 //! second IRCord server (`capture-e2ee-group.sh`): the invitation, joining,
-//! its messages and its panel.
+//! its messages and its panel, then New encrypted group with people chosen.
 //! `CAPTURE_ONLY=admin` makes the account a server owner and captures
 //! Administration → Encryption, Off then Experimental, and the person menu's
 //! Start encrypted chat on someone in the channel; `CAPTURE_ONLY=admin-locked`

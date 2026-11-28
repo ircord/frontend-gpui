@@ -12,6 +12,10 @@
 //! ```
 //!
 //! Or embed [`PeoplePicker`] in a form of your own with [`PeoplePicker::new`].
+//! An embedding form can hide people ([`PeoplePicker::hide`]), mark those
+//! who cannot be picked with the reason ([`PeoplePicker::blocked`]), and
+//! offer what is typed as an account name ([`PeoplePicker::typed_accounts`],
+//! for encrypted groups).
 
 use std::rc::Rc;
 
@@ -45,6 +49,10 @@ pub struct Picked {
 }
 
 pub type OnPick = Rc<dyn Fn(&Picked, &mut Window, &mut App)>;
+/// Whether an option is left out of the list.
+pub type Hide = Rc<dyn Fn(&Picked, &App) -> bool>;
+/// Why an option cannot be picked, if it cannot.
+pub type Blocked = Rc<dyn Fn(&Picked, &App) -> Option<SharedString>>;
 
 /// Where a picker looks.
 #[derive(Clone)]
@@ -72,6 +80,14 @@ pub struct PeoplePicker {
     searched: String,
     searching: bool,
     on_pick: OnPick,
+    /// Options left out of the list (people already chosen).
+    pub hide: Option<Hide>,
+    /// Options shown but not pickable, with the reason under the name.
+    pub blocked: Option<Blocked>,
+    /// A line under an option's name that does not stop it being picked.
+    pub note: Option<Blocked>,
+    /// Offer what is typed, when it matches nobody, as an account name.
+    pub typed_accounts: bool,
     _subscription: Subscription,
 }
 
@@ -143,6 +159,10 @@ impl PeoplePicker {
             searched: String::new(),
             searching: false,
             on_pick,
+            hide: None,
+            blocked: None,
+            note: None,
+            typed_accounts: false,
             _subscription: subscription,
         };
         this.lookup(cx);
@@ -228,6 +248,7 @@ impl PeoplePicker {
                 let known = options.iter().any(|o| {
                     (p.member_id.is_some() && o.member == p.member_id)
                         || (!nick.is_empty() && o.nick.eq_ignore_ascii_case(&nick))
+                        || (o.account.is_some() && o.account == p.services_account)
                 });
                 if known || options.len() >= LIMIT {
                     continue;
@@ -264,7 +285,24 @@ impl PeoplePicker {
             .iter()
             .filter_map(|id| w.member(id, &self.network))
             .any(|m| m.nick.eq_ignore_ascii_case(typed));
-        if !typed.is_empty()
+        if self.typed_accounts {
+            if !typed.is_empty()
+                && !typed.contains(|c: char| c.is_whitespace() || c == ',')
+                && !options.iter().any(|o| {
+                    o.account
+                        .as_deref()
+                        .is_some_and(|a| a.eq_ignore_ascii_case(typed))
+                })
+            {
+                options.push(Picked {
+                    member: None,
+                    nick: typed.to_string(),
+                    name: typed.to_string(),
+                    account: Some(typed.to_string()),
+                    typed: true,
+                });
+            }
+        } else if !typed.is_empty()
             && nickname_error(typed, limit).is_none()
             && !left_out
             && !options.iter().any(|o| o.nick.eq_ignore_ascii_case(typed))
@@ -278,13 +316,24 @@ impl PeoplePicker {
                 typed: true,
             });
         }
+        if let Some(hide) = &self.hide {
+            options.retain(|o| !hide(o, cx));
+        }
         options
+    }
+
+    /// Why `option` cannot be picked, if it cannot.
+    pub fn reason(&self, option: &Picked, cx: &App) -> Option<SharedString> {
+        self.blocked.as_ref().and_then(|b| b(option, cx))
     }
 
     fn choose(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(picked) = self.options(cx).get(index).cloned() else {
             return;
         };
+        if self.reason(&picked, cx).is_some() {
+            return;
+        }
         let on_pick = self.on_pick.clone();
         on_pick(&picked, window, cx);
     }
@@ -302,6 +351,13 @@ impl Render for PeoplePicker {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx).clone();
         let options = self.options(cx);
+        let reasons: Vec<Option<SharedString>> =
+            options.iter().map(|o| self.reason(o, cx)).collect();
+        let notes: Vec<Option<SharedString>> = options
+            .iter()
+            .map(|o| self.note.as_ref().and_then(|n| n(o, cx)))
+            .collect();
+        let server = self.session.read(cx).server().map(|s| s.url().clone());
         self.selected = self.selected.min(options.len().saturating_sub(1));
         let presence = |o: &Picked| -> Option<PersonPresence> {
             let session = self.session.read(cx);
@@ -332,17 +388,46 @@ impl Render for PeoplePicker {
         for (i, option) in options.iter().enumerate() {
             let selected = i == self.selected;
             let typed = option.typed;
-            let title = if typed {
+            let title = if typed && self.typed_accounts {
+                t!("people-picker-use-account", account = option.nick)
+            } else if typed {
                 t!("people-picker-use-nick", nick = option.nick)
             } else {
                 option.name.clone()
             };
             let detail = (!typed && option.name != option.nick).then(|| option.nick.clone());
-            let label = match &detail {
+            let blocked = reasons[i].is_some();
+            let reason = reasons[i].clone().or_else(|| notes[i].clone());
+            let mut label = match &detail {
                 Some(d) => format!("{title}, {d}"),
                 None => title.clone(),
             };
+            if let Some(reason) = &reason {
+                label = format!("{label}. {reason}");
+            }
             let dot = presence_color(presence(option), &theme);
+            let picture = {
+                let session = self.session.read(cx);
+                let w = session.client().map(|c| c.read());
+                let member = w
+                    .as_ref()
+                    .and_then(|w| option.member.as_ref().and_then(|id| w.members.get(id)));
+                let size = px(super::avatar::TINY);
+                match member {
+                    Some(m) => super::avatar::person(
+                        super::avatar::Person {
+                            member: m,
+                            name: &option.name,
+                            server: server.as_ref(),
+                            presence: false,
+                            key: &format!("people-picker-{i}"),
+                        },
+                        size,
+                        &theme,
+                    ),
+                    None => super::avatar::avatar(&option.name, None, size, &theme),
+                }
+            };
             list = list.child(
                 div()
                     .id(ElementId::Name(format!("people-picker-option-{i}").into()))
@@ -356,13 +441,34 @@ impl Render for PeoplePicker {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .cursor_pointer()
+                    .when(!blocked, |d| d.cursor_pointer())
                     .when(selected, |d| d.bg(theme.accent).text_color(theme.on_accent))
-                    .when(!selected, |d| d.hover(|d| d.bg(theme.accent.opacity(0.15))))
-                    .when(!typed, |d| {
-                        d.child(div().size(px(8.)).flex_none().rounded_full().bg(dot))
+                    .when(!selected && !blocked, |d| {
+                        d.hover(|d| d.bg(theme.accent.opacity(0.15)))
                     })
-                    .child(div().flex_1().truncate().child(title))
+                    .when(!typed, |d| {
+                        d.child(picture.opacity(if blocked { 0.5 } else { 1. }))
+                            .child(div().size(px(8.)).flex_none().rounded_full().bg(dot))
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .when(blocked && !selected, |d| d.text_color(theme.muted))
+                                    .child(title),
+                            )
+                            .children(reason.map(|r| {
+                                div()
+                                    .text_xs()
+                                    .when(!selected, |d| d.text_color(theme.muted))
+                                    .child(r)
+                            })),
+                    )
                     .children(detail.map(|d| div().text_xs().opacity(0.7).child(d)))
                     .on_click(cx.listener(move |this, _, window, cx| this.choose(i, window, cx))),
             );

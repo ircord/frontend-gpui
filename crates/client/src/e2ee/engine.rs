@@ -79,6 +79,12 @@ pub struct Texts {
     pub unreadable: Box<dyn Fn(&Unreadable) -> String + Send + Sync>,
     /// Someone left an encrypted group: their name, and whether it was you.
     pub left: LeftText,
+    /// The ordinary, unencrypted message to someone invited to a group who
+    /// has no encryption keys yet. It names neither the group nor its people.
+    pub invited: Box<dyn Fn() -> String + Send + Sync>,
+    /// Said in a group when someone invited before they set up encryption
+    /// is added: their account.
+    pub joined: Box<dyn Fn(&str) -> String + Send + Sync>,
 }
 
 /// A decrypted file, ready to show or save.
@@ -133,6 +139,8 @@ struct Shared {
     inner: AsyncMutex<Inner>,
     /// Messages being processed, so a burst of changes processes each once.
     inflight: Mutex<BTreeSet<String>>,
+    /// Accounts whose keys [`Engine::check_account`] is asking about.
+    asking: Mutex<BTreeSet<String>>,
     /// When [`Engine::poke`] last synced.
     poked: Mutex<Option<std::time::Instant>>,
     /// A sync the server asked for (`e2ee.changed`) is on its way.
@@ -384,6 +392,7 @@ impl Engine {
                 texts,
                 inner: AsyncMutex::new(Inner::default()),
                 inflight: Mutex::default(),
+                asking: Mutex::default(),
                 poked: Mutex::default(),
                 waking: AtomicBool::new(false),
                 queue,
@@ -1130,6 +1139,7 @@ impl Engine {
         };
         self.set_device(DeviceState::Starting);
         let vault = Vault::open(&self.shared.dir, self.shared.key.clone())?;
+        inner.chats.pending = vault.pending();
         // Which conversations are encrypted is known from here on, whatever
         // the network does next.
         inner.account = account.clone();
@@ -1827,12 +1837,34 @@ impl Engine {
             });
             return;
         }
+        self.check_account(&peer);
+    }
+
+    /// Ask once whether `account` has published encryption keys, for
+    /// [`blocked`] and the group picker; the answer lands in
+    /// `w.e2ee.peers`.
+    pub fn check_account(&self, account: &str) {
+        if account.is_empty() || self.shared.handle.read().e2ee.peers.contains_key(account) {
+            return;
+        }
+        if !self
+            .shared
+            .asking
+            .lock()
+            .unwrap()
+            .insert(account.to_string())
+        {
+            return;
+        }
+        let peer = account.to_string();
         self.spawn(move |engine| async move {
             let has = match engine.api().e2ee_account(&peer).await {
-                Ok(d) => !d.devices.is_empty(),
-                Err(ApiError::Http { status: 404, .. }) => false,
-                Err(_) => return,
+                Ok(d) => Some(!d.devices.is_empty()),
+                Err(ApiError::Http { status: 404, .. }) => Some(false),
+                Err(_) => None,
             };
+            engine.shared.asking.lock().unwrap().remove(&peer);
+            let Some(has) = has else { return };
             engine.change(|w| {
                 w.e2ee.peers.insert(peer, has);
                 Changes::topic(view::TOPIC)
@@ -2774,6 +2806,7 @@ impl Engine {
             self.sync_groups(&mut inner).await;
             self.add_approved(&mut inner).await;
             self.refresh_directory(&mut inner).await;
+            self.add_pending(&mut inner, None).await;
             self.count_waiting(&inner).await;
         }
         if inner.to_add.is_empty() {

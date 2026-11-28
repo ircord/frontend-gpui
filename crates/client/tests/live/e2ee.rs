@@ -47,6 +47,8 @@ pub(crate) fn wait_live(client: &Client) {
 
 pub(crate) fn texts() -> Texts {
     Texts {
+        invited: Box::new(|| "invited".to_string()),
+        joined: Box::new(|account| format!("{account} joined")),
         control: Box::new(|on, name, mine| format!("{name} on={on} mine={mine}")),
         unreadable: Box::new(|why| format!("unreadable {why:?}")),
         left: Box::new(|name, mine| format!("{name} left mine={mine}")),

@@ -76,12 +76,14 @@ the other one made.
 ## The device's store
 
 Each signed-in account has a folder under the app's settings folder,
-`e2ee/<server>/<account ID>/`, with two files:
+`e2ee/<server>/<account ID>/`, with these files:
 
 - `device.state`: the core's state blob (keys, groups, pinned identities),
   replaced atomically on every change;
 - `vault.log`: an append-only log of every encrypted message this device read
   or sent, as plaintext records, and the encrypted conversations.
+- `pending.sealed`, once this account invited someone without keys to a
+  group: who, by group (see "People without keys").
 
 Every frame of both files is XChaCha20-Poly1305 with a random nonce, under a
 32-byte key kept in the operating system's credential store (entry
@@ -226,6 +228,33 @@ IRC network, and groups of up to 32 accounts. The engine's side of it is
   losing step, letting someone who started fresh back into a group, and the
   group's history lines in the timeline (they are in the group's panel) are
   not done yet.
+
+## People without keys: pending invitees
+
+New encrypted group (the lock beside the sidebar's Direct messages heading)
+and Add people take anyone with an account; bots and people without an
+account are refused with the reason. At creation the engine asks the
+directory for each chosen account (`GET /e2ee/accounts/{account}`): those
+with a device are added to the group, those the directory answers 404 for
+(or lists no device) are invited instead
+(`Engine::create_group_inviting`, `Engine::add_people_inviting`). The core
+starts a group only with another account in it, so a group where nobody
+chosen has keys does not start (`group-nobody-ready`), and nobody is told.
+
+Each invitee gets one ordinary, unencrypted message on the home network, to
+their nick (a typed account: the account): the `encryption-group-invited-notice`
+text, which says only that they were invited and to set up encryption. It
+never names the group or its people. The invitees are kept per group, by the
+group's backend name, in `pending.sealed` beside the vault log (sealed with
+the vault key; a file of its own so an older version still opens the log),
+and shown in the group's panel under "Waiting for encryption" with Cancel.
+Only the inviting account's devices know them.
+
+The engine looks for their keys when the group is opened (at most every 15
+seconds while it stays open) and every two minutes on its tick; once an
+invitee has a device they are added as Add people does, dropped from the
+list, and the inviter sends `encryption-group-pending-joined` in the group.
+The web client keeps the same behaviour and wording.
 
 ## Testing
 
