@@ -141,6 +141,11 @@ pub enum Outcome {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         group: Option<String>,
     },
+    /// Someone left an encrypted group (`by`, an account).
+    Left {
+        by: String,
+        at: i64,
+    },
     /// Not shown: a part of a longer message, or an event this client does
     /// not show yet.
     Hidden,

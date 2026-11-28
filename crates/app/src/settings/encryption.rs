@@ -196,6 +196,7 @@ fn status_text(state: &DeviceState) -> String {
         DeviceState::Ready { approver: false } => t!("encryption-settings-ready").into(),
         DeviceState::Waiting { .. } => t!("encryption-settings-waiting").into(),
         DeviceState::ResetElsewhere => t!("encryption-settings-reset").into(),
+        DeviceState::OtherServer => t!("encryption-settings-other-server").into(),
         DeviceState::Failed(e) => t!("encryption-settings-failed", error = e),
     }
 }

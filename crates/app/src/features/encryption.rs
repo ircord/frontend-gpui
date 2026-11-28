@@ -20,8 +20,11 @@
 //!   not show are hidden, a run of messages from before this device was added
 //!   is one line, and a message that arrived unencrypted is drawn in red.
 //!
-//! Device set-up and approval are in Settings → Encryption
+//! Encrypted groups (starting one, invitations, their details) are in
+//! [`groups`]. Device set-up and approval are in Settings → Encryption
 //! (`settings/encryption.rs`). Everything is labelled experimental.
+
+mod groups;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -126,7 +129,11 @@ pub fn init(cx: &mut App) {
                 },
             )
             .icon(ui::icon::IconName::Eye)
-            .when(|ctx, cx| is_on(&ctx.session, &ctx.conversation, cx))
+            // A group is always encrypted: nobody turns it off.
+            .when(|ctx, cx| {
+                is_on(&ctx.session, &ctx.conversation, cx)
+                    && groups::group_of(&ctx.session, &ctx.conversation, cx).is_none()
+            })
             .order(menu_order::conversation::ENCRYPTION),
         );
         r.member_menu.add(
@@ -169,6 +176,7 @@ pub fn init(cx: &mut App) {
             order: 5,
             spans: Rc::new(unencrypted_spans),
         });
+        groups::register(r);
     });
 }
 
@@ -289,6 +297,13 @@ fn texts() -> ircord_client::e2ee::Texts {
             (false, false) => t!("encryption-line-off", name = name),
         }),
         unreadable: Box::new(unreadable_text),
+        left: Box::new(|name, mine| {
+            if mine {
+                t!("encryption-group-line-left-you").into()
+            } else {
+                t!("encryption-group-line-left", name = name)
+            }
+        }),
     }
 }
 
@@ -325,9 +340,12 @@ fn offered(ctx: &ConversationCtx, cx: &App) -> bool {
     .unwrap_or(false)
 }
 
-/// The other person's name in a direct conversation: the conversation is
-/// named after them.
+/// The other person's name in a direct conversation (it is named after
+/// them), or an encrypted group's title.
 fn peer_name(session: &Entity<Session>, conversation: &str, cx: &App) -> String {
+    if let Some(group) = groups::group_of(session, conversation, cx) {
+        return group.title;
+    }
     with(session, cx, |w| {
         let c = w.conversation(conversation)?;
         let member = c
@@ -362,6 +380,7 @@ pub fn blocked_text(blocked: &Blocked, name: &str) -> String {
         Blocked::Network => t!("encryption-blocked-network").into(),
         Blocked::NoAccount => t!("encryption-blocked-no-account").into(),
         Blocked::PeerNotSetUp => t!("encryption-blocked-peer", name = name),
+        Blocked::PeerNoAnswer => t!("encryption-blocked-no-answer", name = name),
     }
 }
 
@@ -546,6 +565,20 @@ pub enum Lock {
 
 /// What the lock shows for a conversation.
 pub fn lock_of(w: &Workspace, conversation: &str) -> Lock {
+    if let Some(group) = w.e2ee.group(conversation) {
+        let unencrypted = w
+            .e2ee
+            .conversation(conversation)
+            .is_some_and(|c| c.unencrypted);
+        let (verified, total) = group.verified();
+        return if unencrypted || group.members.iter().any(|m| m.started_fresh) {
+            Lock::Attention
+        } else if total > 0 && verified == total {
+            Lock::Verified
+        } else {
+            Lock::Closed
+        };
+    }
     match w.e2ee.conversation(conversation) {
         Some(c) if c.attention.is_some() || (c.on && c.unencrypted) => Lock::Attention,
         Some(c) if c.on && c.verified => Lock::Verified,
@@ -562,8 +595,9 @@ fn lock_button(ctx: &HeaderCtx, _window: &mut Window, cx: &mut App) -> Option<An
     let _ = guarded(&ctx.session, id, cx);
     let shown = with(&ctx.session, cx, |w| {
         w.capabilities.encryption.is_some()
-            && w.conversation(id)
-                .is_some_and(|c| c.kind == ircord_client::contract::ConversationKind::Direct)
+            && (w.e2ee.group(id).is_some()
+                || w.conversation(id)
+                    .is_some_and(|c| c.kind == ircord_client::contract::ConversationKind::Direct))
     })
     .unwrap_or(false);
     if !shown {
@@ -651,27 +685,43 @@ impl Watched {
         let lock =
             with(&self.session, cx, |w| lock_of(w, &self.conversation)).unwrap_or(Lock::Open);
         let name = peer_name(&self.session, &self.conversation, cx);
-        let (icon, label, color): (LucideIcon, SharedString, Hsla) = match lock {
-            Lock::Open => (
-                LucideIcon::LockOpen,
-                t!("encryption-lock-off").into(),
-                theme.muted,
-            ),
-            Lock::Closed => (
-                LucideIcon::Lock,
-                t!("encryption-lock-on").into(),
-                theme.online,
-            ),
-            Lock::Verified => (
+        let group = groups::group_of(&self.session, &self.conversation, cx);
+        let (icon, label, color): (LucideIcon, SharedString, Hsla) = match (lock, group) {
+            (Lock::Verified, Some(_)) => (
                 LucideIcon::ShieldCheck,
-                t!("encryption-lock-verified", name = name).into(),
+                t!("encryption-group-lock-verified").into(),
                 theme.online,
             ),
-            Lock::Attention => (
-                LucideIcon::ShieldAlert,
-                t!("encryption-lock-attention").into(),
-                theme.warning,
-            ),
+            (Lock::Closed, Some(g)) => {
+                let (verified, total) = g.verified();
+                (
+                    LucideIcon::Lock,
+                    t!("encryption-group-lock", count = verified, total = total).into(),
+                    theme.online,
+                )
+            }
+            (lock, _) => match lock {
+                Lock::Open => (
+                    LucideIcon::LockOpen,
+                    t!("encryption-lock-off").into(),
+                    theme.muted,
+                ),
+                Lock::Closed => (
+                    LucideIcon::Lock,
+                    t!("encryption-lock-on").into(),
+                    theme.online,
+                ),
+                Lock::Verified => (
+                    LucideIcon::ShieldCheck,
+                    t!("encryption-lock-verified", name = name).into(),
+                    theme.online,
+                ),
+                Lock::Attention => (
+                    LucideIcon::ShieldAlert,
+                    t!("encryption-lock-attention").into(),
+                    theme.warning,
+                ),
+            },
         };
         let session = self.session.clone();
         let open = session.read(cx).panel.as_deref() == Some(PANEL);
@@ -712,6 +762,31 @@ impl Watched {
         let name = peer_name(&self.session, &self.conversation, cx);
         let session = self.session.clone();
         let conversation = self.conversation.clone();
+        if let Some(group) = groups::group_of(&session, &conversation, cx)
+            && let Some(m) = group.members.iter().find(|m| m.started_fresh && !m.you)
+        {
+            let person = with(&session, cx, |w| groups::name_of(w, &m.account)).unwrap_or_default();
+            let mut strip =
+                strip("encryption-banner-group-fresh", theme.warning, theme).child(text_column(
+                    t!("encryption-group-banner-fresh", name = person.clone()),
+                    theme,
+                ));
+            if group.admin {
+                let (s, c, account) = (session.clone(), conversation.clone(), m.account.clone());
+                strip = strip.child(
+                    Button::new("encryption-banner-group-remove")
+                        .small()
+                        .danger()
+                        .label(t!("encryption-group-remove-person", name = person))
+                        .on_click(move |_, _, cx| {
+                            if let Some(engine) = engine(&s, cx) {
+                                engine.remove_person(&c, &account);
+                            }
+                        }),
+                );
+            }
+            return strip.test_support().into_any_element();
+        }
         if let Some(Attention::StartedFresh { .. }) = attention {
             let (s1, c1) = (session.clone(), conversation.clone());
             let (s2, c2) = (session.clone(), conversation.clone());
@@ -839,6 +914,8 @@ pub fn error_text(error: &str, name: &str) -> String {
         "not-ready" => t!("encryption-blocked-not-ready").into(),
         "started-fresh" => t!("encryption-error-started-fresh", name = name),
         "not-encrypted" => t!("encryption-error-not-encrypted").into(),
+        "peer-no-answer" => t!("encryption-blocked-no-answer", name = name),
+        "not-in-group" => t!("encryption-group-not-in").into(),
         other => t!("encryption-error", error = other),
     }
 }
@@ -1010,6 +1087,23 @@ fn panel(ctx: &PanelCtx, window: &mut Window, cx: &mut App) -> AnyElement {
         )
         .into_any_element();
     };
+    if groups::group_of(&ctx.session, &conversation, cx).is_some() {
+        let view = match cx.try_global::<GroupPanelView>() {
+            Some(GroupPanelView(view))
+                if *view.read(cx).session() == ctx.session
+                    && view.read(cx).conversation() == conversation =>
+            {
+                view.clone()
+            }
+            _ => {
+                let session = ctx.session.clone();
+                let view = cx.new(|cx| groups::Details::new(session, conversation, cx));
+                cx.set_global(GroupPanelView(view.clone()));
+                view
+            }
+        };
+        return view.into_any_element();
+    }
     let view = match cx.try_global::<PanelView>() {
         Some(PanelView(view))
             if view.read(cx).session == ctx.session
@@ -1030,6 +1124,10 @@ fn panel(ctx: &PanelCtx, window: &mut Window, cx: &mut App) -> AnyElement {
 struct PanelView(Entity<Details>);
 
 impl Global for PanelView {}
+
+struct GroupPanelView(Entity<groups::Details>);
+
+impl Global for GroupPanelView {}
 
 pub struct Details {
     session: Entity<Session>,

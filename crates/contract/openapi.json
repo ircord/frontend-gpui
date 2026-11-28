@@ -3162,6 +3162,341 @@
         ],
         "type": "object"
       },
+      "E2EEChange": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "description": "The account whose action or keys caused the change.",
+            "type": "string"
+          },
+          "groupId": {
+            "description": "The encrypted chat that changed.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "commit: new commits are settled; welcome: an invitation or Welcome arrived; declined: someone declined an invitation; rejoin: a device asks to be added again; notice: the account's devices or identity changed, so fetch its directory again.",
+            "enum": [
+              "commit",
+              "welcome",
+              "declined",
+              "rejoin",
+              "notice"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      },
+      "E2EEChangedEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/E2EEChange"
+          },
+          "seq": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "type": {
+            "enum": [
+              "e2ee.changed"
+            ],
+            "type": "string"
+          },
+          "v": {
+            "enum": [
+              1
+            ],
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v",
+          "seq",
+          "type",
+          "data"
+        ],
+        "type": "object"
+      },
+      "E2EEChat": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/E2EEChat.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "conversationId": {
+            "description": "Your conversation the chat is bound to: the direct conversation, or the group's channel.",
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "declined": {
+            "description": "Accounts that declined your invitation. Their clients remove them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "epoch": {
+            "description": "The epoch you joined at, raised as your own commits win.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "groupId": {
+            "type": "string"
+          },
+          "inviter": {
+            "description": "The account whose Welcome invited you; your own for chats you started.",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "direct",
+              "group"
+            ],
+            "type": "string"
+          },
+          "peer": {
+            "description": "The other person's account in a direct chat.",
+            "type": "string"
+          },
+          "replaces": {
+            "description": "A direct chat's earlier group, which this one replaces after someone started fresh.",
+            "type": "string"
+          },
+          "state": {
+            "description": "invited until you join; a joined chat refuses plaintext from you.",
+            "enum": [
+              "invited",
+              "joined"
+            ],
+            "type": "string"
+          },
+          "target": {
+            "description": "Where its commits go on IRC: the other person's nick, or the group's channel (#e2ee- and the group ID in hex).",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "groupId",
+          "kind",
+          "state",
+          "target",
+          "epoch",
+          "declined",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "E2EEChatCommit": {
+        "additionalProperties": false,
+        "properties": {
+          "commit": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "epoch": {
+            "description": "The epoch the commit was made in.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "position": {
+            "$ref": "#/components/schemas/E2EEPosition",
+            "description": "Candidates of one epoch are listed in position order; apply the first one your core accepts."
+          },
+          "sender": {
+            "description": "The IRC account that sent it, as the network attached it. Clients check the MLS sender's certificate against it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "epoch",
+          "sender",
+          "commit",
+          "position"
+        ],
+        "type": "object"
+      },
+      "E2EEChatCommitInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/E2EEChatCommitInputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "added": {
+            "description": "Accounts the commit adds. In a group they get the right to enter once it has won.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "admins": {
+            "description": "Accounts the commit makes admins. They get operator rights in the group's channel.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "commit": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "epoch": {
+            "description": "The epoch the commit was made in.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "members": {
+            "description": "Admins the commit makes ordinary members again.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "removed": {
+            "description": "Accounts the commit removes. In a group they lose the right to enter and are kicked once it has won.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "welcome": {
+            "contentEncoding": "base64",
+            "description": "The Welcome for the accounts the commit adds. Sent only if the commit wins its epoch.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "epoch",
+          "commit"
+        ],
+        "type": "object"
+      },
+      "E2EEChatCommitResult": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/E2EEChatCommitResult.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "accepted": {
+            "description": "Your commit came first for its epoch. Otherwise another commit won: discard yours, apply the newer commits and try again.",
+            "type": "boolean"
+          },
+          "position": {
+            "$ref": "#/components/schemas/E2EEPosition",
+            "description": "Where the IRC server put your commit."
+          },
+          "warnings": {
+            "description": "Channel changes that failed after the commit won.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "winner": {
+            "$ref": "#/components/schemas/E2EEPosition",
+            "description": "The first commit for the epoch."
+          }
+        },
+        "required": [
+          "accepted",
+          "position",
+          "winner",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "E2EEChatWelcome": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "epoch": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "groupId": {
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "direct",
+              "group"
+            ],
+            "type": "string"
+          },
+          "position": {
+            "$ref": "#/components/schemas/E2EEPosition"
+          },
+          "replaces": {
+            "description": "direct: the group this one replaces. When both sides started a chat at once, the Welcome with the earlier position wins.",
+            "type": "string"
+          },
+          "sender": {
+            "description": "The IRC account that sent the Welcome.",
+            "type": "string"
+          },
+          "target": {
+            "description": "The inviter's nick, or the group's channel.",
+            "type": "string"
+          },
+          "welcome": {
+            "contentEncoding": "base64",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "groupId",
+          "epoch",
+          "kind",
+          "target",
+          "sender",
+          "welcome",
+          "position",
+          "createdAt"
+        ],
+        "type": "object"
+      },
       "E2EEClaim": {
         "additionalProperties": false,
         "properties": {
@@ -3177,6 +3512,9 @@
           "account": {
             "type": "string"
           },
+          "deviceList": {
+            "$ref": "#/components/schemas/E2EEDeviceList"
+          },
           "generation": {
             "format": "int64",
             "type": "integer"
@@ -3191,13 +3529,22 @@
               "$ref": "#/components/schemas/E2EEClaimedPackage"
             },
             "type": "array"
+          },
+          "source": {
+            "description": "Where the keys came from; see the person's directory.",
+            "enum": [
+              "server",
+              "network"
+            ],
+            "type": "string"
           }
         },
         "required": [
           "account",
           "identityKey",
           "generation",
-          "items"
+          "items",
+          "source"
         ],
         "type": "object"
       },
@@ -3331,6 +3678,74 @@
         ],
         "type": "object"
       },
+      "E2EECreateChatInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/E2EECreateChatInputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "conversationId": {
+            "description": "direct: your direct conversation with the person.",
+            "maxLength": 200,
+            "type": "string"
+          },
+          "epoch": {
+            "description": "The epoch the creator reached, usually 1 after the commit that added everyone.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "groupId": {
+            "description": "The MLS group ID in base64url, chosen by the creating client. A group's ID must be 16 random bytes; it also names the group's channel.",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "direct",
+              "group"
+            ],
+            "type": "string"
+          },
+          "members": {
+            "description": "group: the accounts you add, with or without your own. Each gets a standing right to enter the channel and the Welcome.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "peer": {
+            "description": "direct: the other person's account.",
+            "maxLength": 100,
+            "type": "string"
+          },
+          "replaces": {
+            "description": "direct: the earlier group this one replaces after someone started fresh.",
+            "maxLength": 128,
+            "type": "string"
+          },
+          "welcome": {
+            "contentEncoding": "base64",
+            "description": "The MLS Welcome for everyone added. The server delivers it to each account's IRCord server and retries until that server confirms it, for 30 days.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "groupId",
+          "kind",
+          "epoch"
+        ],
+        "type": "object"
+      },
       "E2EECreateGroupInputBody": {
         "additionalProperties": false,
         "properties": {
@@ -3381,6 +3796,35 @@
           "groupId",
           "members",
           "epoch"
+        ],
+        "type": "object"
+      },
+      "E2EECreatedChat": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/E2EECreatedChat.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "chat": {
+            "$ref": "#/components/schemas/E2EEChat"
+          },
+          "warnings": {
+            "description": "Steps that did not complete, such as a member who could not be given the right to enter.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "chat",
+          "warnings"
         ],
         "type": "object"
       },
@@ -3462,6 +3906,35 @@
         "required": [
           "generation",
           "certificate"
+        ],
+        "type": "object"
+      },
+      "E2EEDeviceList": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/E2EEDeviceList.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "counter": {
+            "description": "Goes up with every new list. Clients refuse a list older than the newest one they have seen.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "list": {
+            "contentEncoding": "base64",
+            "description": "The list of the account's current device IDs, signed by its identity key. Clients check the signature; the server does not.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "list",
+          "counter"
         ],
         "type": "object"
       },
@@ -3640,11 +4113,19 @@
             "readOnly": true,
             "type": "string"
           },
+          "deviceList": {
+            "$ref": "#/components/schemas/E2EEDeviceList",
+            "description": "The newest signed device list your devices published."
+          },
           "devices": {
             "items": {
               "$ref": "#/components/schemas/E2EEDevice"
             },
             "type": "array"
+          },
+          "elsewhere": {
+            "description": "Encryption for this account is set up on another IRCord server, and this one has no keys for it. Encrypted chats are readable only through that server; this server refuses to set up a second identity. This is the server's last answer: it asks again in the background and sends e2ee.changed when it finds keys elsewhere.",
+            "type": "boolean"
           },
           "identity": {
             "$ref": "#/components/schemas/E2EEIdentity",
@@ -3652,7 +4133,8 @@
           }
         },
         "required": [
-          "devices"
+          "devices",
+          "elsewhere"
         ],
         "type": "object"
       },
@@ -3697,6 +4179,10 @@
           "account": {
             "type": "string"
           },
+          "deviceList": {
+            "$ref": "#/components/schemas/E2EEDeviceList",
+            "description": "The person's newest signed device list, when their devices published one."
+          },
           "devices": {
             "items": {
               "$ref": "#/components/schemas/E2EEPeerDevice"
@@ -3710,13 +4196,112 @@
           "identityKey": {
             "contentEncoding": "base64",
             "type": "string"
+          },
+          "source": {
+            "description": "server: this IRCord server holds the person's keys. network: the person's own IRCord server answered over IRC, so the keys passed through it and the IRC network; compare security codes to be sure.",
+            "enum": [
+              "server",
+              "network"
+            ],
+            "type": "string"
           }
         },
         "required": [
           "account",
           "identityKey",
           "generation",
-          "devices"
+          "devices",
+          "source"
+        ],
+        "type": "object"
+      },
+      "E2EEPosition": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "The IRC server's time on the commit's last line.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "msgid": {
+            "description": "The IRC server's message ID on the commit's last line. Within one time, positions sort by it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "msgid"
+        ],
+        "type": "object"
+      },
+      "E2EERejoin": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "description": "The IRC account that asked.",
+            "type": "string"
+          },
+          "certificate": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deviceId": {
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "keyPackage": {
+            "contentEncoding": "base64",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account",
+          "deviceId",
+          "certificate",
+          "keyPackage",
+          "createdAt"
+        ],
+        "type": "object"
+      },
+      "E2EERejoinInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/E2EERejoinInputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "certificate": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "deviceId": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "type": "string"
+          },
+          "keyPackage": {
+            "contentEncoding": "base64",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deviceId",
+          "certificate",
+          "keyPackage"
         ],
         "type": "object"
       },
@@ -4304,8 +4889,16 @@
       "EncryptionCapability": {
         "additionalProperties": false,
         "properties": {
+          "acrossServers": {
+            "description": "Encrypted chats reach people on other IRCord servers of the home network. Handshakes travel over IRC; see the /api/v1/e2ee/chats operations.",
+            "type": "boolean"
+          },
           "experimental": {
             "description": "The feature has not had its outside review yet; clients label it experimental.",
+            "type": "boolean"
+          },
+          "groups": {
+            "description": "Encrypted groups in their own invite-only channels are available.",
             "type": "boolean"
           },
           "maxPayload": {
@@ -4316,7 +4909,9 @@
         },
         "required": [
           "experimental",
-          "maxPayload"
+          "maxPayload",
+          "groups",
+          "acrossServers"
         ],
         "type": "object"
       },
@@ -4751,6 +5346,9 @@
           },
           {
             "$ref": "#/components/schemas/ChannelServicesUpdatedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/E2EEChangedEvent"
           },
           {
             "$ref": "#/components/schemas/NetworkUpdatedEvent"
@@ -5831,6 +6429,78 @@
         ],
         "type": "object"
       },
+      "ItemsE2EEChat": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/ItemsE2EEChat.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/E2EEChat"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "ItemsE2EEChatCommit": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/ItemsE2EEChatCommit.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/E2EEChatCommit"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "ItemsE2EEChatWelcome": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/ItemsE2EEChatWelcome.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/E2EEChatWelcome"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
       "ItemsE2EECommit": {
         "additionalProperties": false,
         "properties": {
@@ -5846,6 +6516,30 @@
           "items": {
             "items": {
               "$ref": "#/components/schemas/E2EECommit"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "ItemsE2EERejoin": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/ItemsE2EERejoin.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/E2EERejoin"
             },
             "type": "array"
           }
@@ -6737,6 +7431,13 @@
             "type": "string"
           },
           "displayName": {
+            "type": "string"
+          },
+          "encryption": {
+            "description": "Set when the person's IRCord server accepts encrypted chats from other servers, from the ircord/e2ee metadata key: the handshake version. Shows the lock without asking anyone.",
+            "enum": [
+              "2"
+            ],
             "type": "string"
           },
           "headline": {
@@ -10365,6 +11066,7 @@
             "conversation.removed": "#/components/schemas/ConversationRemovedEvent",
             "conversation.updated": "#/components/schemas/ConversationUpdatedEvent",
             "devices.updated": "#/components/schemas/DevicesUpdatedEvent",
+            "e2ee.changed": "#/components/schemas/E2EEChangedEvent",
             "emotes.updated": "#/components/schemas/EmotesUpdatedEvent",
             "history.gap": "#/components/schemas/HistoryGapEvent",
             "history.sync.failed": "#/components/schemas/HistoryFailedEvent",
@@ -10418,6 +11120,9 @@
           },
           {
             "$ref": "#/components/schemas/ChannelServicesUpdatedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/E2EEChangedEvent"
           },
           {
             "$ref": "#/components/schemas/NetworkUpdatedEvent"
@@ -25421,7 +26126,7 @@
     },
     "/api/v1/e2ee/accounts/{account}": {
       "get": {
-        "description": "The identity public key and device certificates someone on this server published. A client starts an encrypted chat only when the person has a device, and checks each certificate against the identity key it pinned. Labels are left out. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "description": "The identity public key, signed device list and device certificates of anyone on the home network. When this server holds the person's keys it answers itself; otherwise it asks over IRC, and the person's own IRCord server answers (source network). A client starts an encrypted chat only when the person has a device, and checks each certificate against the identity key it pinned. Labels are left out. 404 means the person hasn't set up encryption or their server doesn't support encrypted chats with other servers yet; 504 means their server did not answer. Experimental; answers 404 while the server operator has not turned encryption on.",
         "operationId": "get-e2ee-account",
         "parameters": [
           {
@@ -25582,7 +26287,7 @@
     },
     "/api/v1/e2ee/accounts/{account}/key-packages/claim": {
       "post": {
-        "description": "Takes one key package for each of the person's devices, or that device's last-resort package when it has no other. Your own account can be claimed too, to add your other devices. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "description": "Takes one key package for each of the person's devices, or that device's last-resort package when it has no other. Your own account can be claimed too, to add your other devices. For someone whose keys are on another IRCord server, the request goes over IRC; that server hands out at most 10 single-use packages a minute to one account, then only last-resort ones. Experimental; answers 404 while the server operator has not turned encryption on.",
         "operationId": "claim-e2ee-key-packages",
         "parameters": [
           {
@@ -26045,6 +26750,1785 @@
           }
         ],
         "summary": "Remove a read approval message",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/v1/e2ee/chat-welcomes/{id}": {
+      "delete": {
+        "description": "Removes one of your devices' Welcomes that arrived over IRC. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "operationId": "delete-e2ee-chat-welcome",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Remove a processed Welcome",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/v1/e2ee/chats": {
+      "get": {
+        "description": "Your encrypted direct chats and groups carried over IRC, with invitations you have not answered yet. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "operationId": "list-e2ee-chats",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemsE2EEChat"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "List your encrypted chats",
+        "tags": [
+          "Chat"
+        ]
+      },
+      "post": {
+        "description": "Starts an encrypted direct chat with anyone on the home network, or an encrypted group. A direct chat binds your direct conversation, which then refuses plaintext from you. A group gets its own registered, invite-only, secret channel named after its ID; each member gets a standing right to enter it. The Welcome goes to everyone added, in the background. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "operationId": "create-e2ee-chat",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/E2EECreateChatInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/E2EECreatedChat"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Start an encrypted chat",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/v1/e2ee/chats/{groupId}": {
+      "delete": {
+        "description": "Leaves a group's channel, or accepts plaintext in a direct conversation again, and forgets the chat's commits on this server. Send your encrypted notice first, so the others see that you left; an admin's client then removes you from the group. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "operationId": "leave-e2ee-chat",
+        "parameters": [
+          {
+            "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+            "in": "path",
+            "name": "groupId",
+            "required": true,
+            "schema": {
+              "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "group: you founded it and close it for everyone: its channel registration is removed before you leave.",
+            "explode": false,
+            "in": "query",
+            "name": "close",
+            "schema": {
+              "description": "group: you founded it and close it for everyone: its channel registration is removed before you leave.",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Leave an encrypted chat",
+        "tags": [
+          "Chat"
+        ]
+      },
+      "get": {
+        "description": "One of your encrypted chats. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "operationId": "get-e2ee-chat",
+        "parameters": [
+          {
+            "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+            "in": "path",
+            "name": "groupId",
+            "required": true,
+            "schema": {
+              "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/E2EEChat"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Read an encrypted chat",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/v1/e2ee/chats/{groupId}/commits": {
+      "get": {
+        "description": "Every complete commit this server saw for the chat from an epoch on: by epoch, and within an epoch in position order. Work through them in this order, together with messages, after time offline. The server keeps a chat's last 1,000 commits. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "operationId": "list-e2ee-chat-commits",
+        "parameters": [
+          {
+            "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+            "in": "path",
+            "name": "groupId",
+            "required": true,
+            "schema": {
+              "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The epoch this device is at; commits made in that epoch come first.",
+            "explode": false,
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "description": "The epoch this device is at; commits made in that epoch come first.",
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemsE2EEChatCommit"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "List an encrypted chat's commits",
+        "tags": [
+          "Chat"
+        ]
+      },
+      "post": {
+        "description": "Sends the commit over IRC and answers once it has settled, about two seconds after the IRC server echoed it. Of the commits for one epoch, the one the server stamped first wins everywhere: accepted tells you whether that is yours. Only a winning commit's Welcome is sent and its channel changes made. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "operationId": "post-e2ee-chat-commit",
+        "parameters": [
+          {
+            "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+            "in": "path",
+            "name": "groupId",
+            "required": true,
+            "schema": {
+              "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/E2EEChatCommitInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/E2EEChatCommitResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Send a commit to an encrypted chat",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/v1/e2ee/chats/{groupId}/decline": {
+      "post": {
+        "description": "Forgets the invitation and its Welcomes, and tells the inviter's IRCord server, whose client then removes you. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "operationId": "decline-e2ee-chat",
+        "parameters": [
+          {
+            "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+            "in": "path",
+            "name": "groupId",
+            "required": true,
+            "schema": {
+              "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Decline an invitation",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/v1/e2ee/chats/{groupId}/join": {
+      "post": {
+        "description": "Enters the group's channel, or binds your direct conversation with the inviter, and asks another member for the commits you missed. Joining again changes nothing. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "operationId": "join-e2ee-chat",
+        "parameters": [
+          {
+            "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+            "in": "path",
+            "name": "groupId",
+            "required": true,
+            "schema": {
+              "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/E2EEChat"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Join an encrypted chat you were invited to",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/v1/e2ee/chats/{groupId}/rejoin": {
+      "post": {
+        "description": "For a device that fell out of step with a chat: sends its certificate and a fresh key package to the chat. One of your own devices, or else an admin's, removes the stale device and adds it again. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "operationId": "request-e2ee-rejoin",
+        "parameters": [
+          {
+            "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+            "in": "path",
+            "name": "groupId",
+            "required": true,
+            "schema": {
+              "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/E2EERejoinInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Ask to be added to a chat again",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/v1/e2ee/chats/{groupId}/rejoins": {
+      "get": {
+        "description": "Devices of other members, or of your own account, that asked to be added to the chat again. They expire after 7 days; remove each one once handled. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "operationId": "list-e2ee-rejoins",
+        "parameters": [
+          {
+            "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+            "in": "path",
+            "name": "groupId",
+            "required": true,
+            "schema": {
+              "description": "The MLS group ID in base64url. A group's ID is 16 random bytes.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemsE2EERejoin"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "List requests to be added again",
         "tags": [
           "Chat"
         ]
@@ -26549,6 +29033,163 @@
         ]
       }
     },
+    "/api/v1/e2ee/device-list": {
+      "put": {
+        "description": "Stores the list of your current device IDs, signed by your identity key, and tells your encrypted chats that it changed. The counter must go up; publishing the same list again changes nothing. Others see the list in your directory and refuse an older one, so a signed-out device can't be passed off as current. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "operationId": "put-e2ee-device-list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/E2EEDeviceList"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/E2EEDeviceList"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Publish your signed device list",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
     "/api/v1/e2ee/devices/{deviceId}": {
       "delete": {
         "description": "Removes one of your devices with its key packages, waiting Welcomes and approval messages. Your other devices then remove it from every group, which rotates the keys. Experimental; answers 404 while the server operator has not turned encryption on.",
@@ -27024,6 +29665,168 @@
           }
         ],
         "summary": "List approval messages for a device",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/v1/e2ee/devices/{deviceId}/chat-welcomes": {
+      "get": {
+        "description": "Welcomes for encrypted chats carried over IRC, in position order. Remove each one after processing it. They expire after 30 days. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "operationId": "list-e2ee-chat-welcomes",
+        "parameters": [
+          {
+            "description": "Client-chosen device ID, for example derived from the device key: 1 to 64 base64url characters.",
+            "in": "path",
+            "name": "deviceId",
+            "required": true,
+            "schema": {
+              "description": "Client-chosen device ID, for example derived from the device key: 1 to 64 base64url characters.",
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemsE2EEChatWelcome"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "List Welcomes that arrived over IRC for a device",
         "tags": [
           "Chat"
         ]
@@ -28335,6 +31138,158 @@
           }
         ],
         "summary": "Publish your identity key, or start fresh",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/v1/e2ee/rejoins/{id}": {
+      "delete": {
+        "description": "Removes one of your chats' rejoin requests. Experimental; answers 404 while the server operator has not turned encryption on.",
+        "operationId": "delete-e2ee-rejoin",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Request failed; see the problem detail."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Remove a handled rejoin request",
         "tags": [
           "Chat"
         ]

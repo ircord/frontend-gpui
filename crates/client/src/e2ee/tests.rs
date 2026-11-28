@@ -30,6 +30,7 @@ fn texts() -> Texts {
             )
         }),
         unreadable: Box::new(|why| format!("unreadable: {why:?}")),
+        left: Box::new(|name, mine| format!("{name} left (mine: {mine})")),
     }
 }
 
@@ -802,4 +803,216 @@ fn a_conversation_from_before_hex_group_ids_keeps_its_group() {
     assert!(!reads.is_empty(), "no reads of {commits}");
     assert!(reads.iter().all(|p| p.contains(&legacy)), "{reads:?}");
     assert!(backend.plaintext().is_empty());
+}
+
+/// The conversation of `d`'s only encrypted group, once it has one.
+fn group_conversation(d: &Device) -> String {
+    wait_until(&d.client, WAIT, "a group", |w| !w.e2ee.groups.is_empty());
+    let id = d.client.read().e2ee.groups.keys().next().unwrap().clone();
+    d.client.open(&id);
+    id
+}
+
+#[test]
+fn an_encrypted_group_across_two_servers_from_invitation_to_leaving() {
+    let rt = runtime().unwrap();
+    let backend = E2eeBackend::new();
+    let dirs: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+    let keys: Vec<_> = (0..3).map(|_| VaultKey::random()).collect();
+    let alice = person(
+        &rt,
+        &backend,
+        "alice",
+        "dm-bob",
+        "m-bob",
+        "bob",
+        dirs[0].path(),
+        &keys[0],
+    );
+    let bob = person(
+        &rt,
+        &backend,
+        "bob",
+        "dm-alice",
+        "m-alice",
+        "alice",
+        dirs[1].path(),
+        &keys[1],
+    );
+    // Carol's keys are on another IRCord server of the same network.
+    backend.elsewhere("carol");
+    let carol = person(
+        &rt,
+        &backend,
+        "carol",
+        "dm-x",
+        "m-x",
+        "x",
+        dirs[2].path(),
+        &keys[2],
+    );
+    for d in [&alice, &bob, &carol] {
+        ready(d);
+    }
+    // Each account's identity signs its list of devices.
+    wait_until(&carol.client, WAIT, "carol's device list", |_| {
+        backend.device_list("carol").is_some()
+    });
+
+    alice
+        .engine
+        .create_group("Weekend plans", vec!["bob".into(), "carol".into()]);
+    let a = group_conversation(&alice);
+    {
+        let w = alice.client.read();
+        let g = &w.e2ee.groups[&a];
+        assert_eq!(g.title, "Weekend plans");
+        assert!(g.creator && g.admin);
+        assert_eq!(g.members.len(), 3);
+        assert_eq!(g.verified(), (0, 2));
+        assert!(w.e2ee.is_on(&a));
+        assert!(crate::store::e2ee::guarded(&w, &a), "never in the clear");
+    }
+    let chat = alice.client.read().e2ee.groups[&a].chat.clone();
+    assert_eq!(backend.channel_members(&chat), vec!["alice".to_string()]);
+
+    // An invitation to answer, with the title only members can read.
+    for d in [&bob, &carol] {
+        wait_until(&d.client, WAIT, "the invitation", |w| {
+            w.e2ee
+                .invitations
+                .iter()
+                .any(|i| i.title == "Weekend plans" && i.inviter == "alice" && i.people == 3)
+        });
+        d.engine.accept_invitation(&chat);
+    }
+    let b = group_conversation(&bob);
+    let c = group_conversation(&carol);
+    wait_until(&bob.client, WAIT, "no invitation left", |w| {
+        w.e2ee.invitations.is_empty()
+    });
+    assert_eq!(
+        crate::store::parties::title(
+            &bob.client.read(),
+            bob.client.read().conversation(&b).unwrap()
+        ),
+        "Weekend plans",
+        "listed by its title"
+    );
+
+    alice.engine.send(&a, "hello group", None);
+    for (d, conv) in [(&bob, &b), (&carol, &c)] {
+        wait_until(&d.client, WAIT, "the group message", |w| {
+            has_text(w, conv, "hello group")
+        });
+    }
+    carol.engine.send(&c, "hi from the other server", None);
+    for (d, conv) in [(&alice, &a), (&bob, &b)] {
+        wait_until(&d.client, WAIT, "carol's message", |w| {
+            has_text(w, conv, "hi from the other server")
+        });
+    }
+
+    // Only the creator and admins remove people; bob is neither.
+    assert!(!bob.client.read().e2ee.groups[&b].admin);
+    alice.engine.remove_person(&a, "carol");
+    wait_until(&carol.client, WAIT, "carol out of the group", |w| {
+        w.e2ee.groups.is_empty()
+    });
+    wait_until(&alice.client, WAIT, "two people left", |w| {
+        w.e2ee.groups[&a].members.len() == 2
+    });
+    alice.engine.send(&a, "without carol", None);
+    wait_until(&bob.client, WAIT, "bob reads on", |w| {
+        has_text(w, &b, "without carol")
+    });
+    assert!(!has_text(&carol.client.read(), &c, "without carol"));
+    assert!(
+        alice.client.read().e2ee.groups[&a]
+            .events
+            .iter()
+            .any(|e| matches!(e, crate::store::e2ee::GroupEvent::Removed { account, .. } if account == "carol"))
+    );
+
+    // Bob leaves: alice's client sees his "left" and removes him.
+    bob.engine.leave_group(&b);
+    wait_until(&alice.client, WAIT, "the left line", |w| {
+        has_text(w, &a, "bob left (mine: false)")
+    });
+    wait_until(&alice.client, WAIT, "bob removed", |w| {
+        w.e2ee.groups[&a].members.len() == 1
+    });
+    wait_until(&bob.client, WAIT, "bob's group gone", |w| {
+        w.e2ee.groups.is_empty()
+    });
+
+    assert!(backend.plaintext().is_empty(), "{:?}", backend.plaintext());
+    for account in ["alice", "bob", "carol"] {
+        for m in backend.history(account) {
+            assert!(m.encrypted.is_some() && m.text == PLACEHOLDER, "{m:?}");
+        }
+    }
+}
+
+#[test]
+fn a_direct_chat_with_someone_on_another_server_goes_over_irc() {
+    let rt = runtime().unwrap();
+    let backend = E2eeBackend::new();
+    let (da, dd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (ka, kd) = (VaultKey::random(), VaultKey::random());
+    let alice = person(
+        &rt,
+        &backend,
+        "alice",
+        "dm-dave",
+        "m-dave",
+        "dave",
+        da.path(),
+        &ka,
+    );
+    backend.elsewhere("dave");
+    let dave = person(
+        &rt,
+        &backend,
+        "dave",
+        "dm-alice",
+        "m-alice",
+        "alice",
+        dd.path(),
+        &kd,
+    );
+    ready(&alice);
+    ready(&dave);
+
+    alice.engine.start_chat("dm-dave");
+    wait_until(&dave.client, WAIT, "dave's side on", |w| {
+        w.e2ee.is_on("dm-alice")
+    });
+    // No group log on this server: the chat is carried over IRC.
+    assert!(backend.groups().is_empty(), "{:?}", backend.groups());
+    let chats = backend.chats("alice");
+    assert_eq!(chats.len(), 1);
+    assert_eq!((chats[0].1.as_str(), chats[0].2), ("direct", true));
+    assert!(is_hex_group(&chats[0].0), "{}", chats[0].0);
+    wait_until(&dave.client, WAIT, "dave joined", |_| {
+        backend.chats("dave").first().is_some_and(|c| c.2)
+    });
+
+    alice.engine.send("dm-dave", "across servers", None);
+    wait_until(&dave.client, WAIT, "dave reads it", |w| {
+        has_text(w, "dm-alice", "across servers")
+    });
+    dave.engine.send("dm-alice", "and back", None);
+    wait_until(&alice.client, WAIT, "alice reads it", |w| {
+        has_text(w, "dm-dave", "and back")
+    });
+
+    alice.engine.turn_off("dm-dave");
+    wait_until(&dave.client, WAIT, "dave's side off", |w| {
+        !w.e2ee.is_on("dm-alice")
+    });
+    wait_until(&alice.client, WAIT, "alice's chat ended", |_| {
+        backend.chats("alice").is_empty()
+    });
+    assert!(backend.plaintext().is_empty(), "{:?}", backend.plaintext());
 }

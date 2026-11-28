@@ -24,6 +24,12 @@
 //! account gets the home network encryption works on. Ergo's API listens on
 //! loopback only, which the backend accepts in plain HTTP, so the backend and
 //! the proxy share Ergo's network namespace.
+//!
+//! With encryption a second backend joins them, as a second IRCord server
+//! on the same IRC network (taliesin beside chat.ircord.com): its own
+//! database, the same Ergo, listening on `127.0.0.1:8083` behind a proxy at
+//! `127.0.0.1:8082`, handed to the live cases as `IRCORD_IT_SERVER_B`. The
+//! live cases reach the IRC server as `127.0.0.1:6667` there.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -64,6 +70,13 @@ http {
 }
 "#;
 
+/// [`PROXY_CONF`] for a backend on another pair of ports.
+fn proxy_conf(listen: u16, backend: u16) -> String {
+    PROXY_CONF
+        .replace("127.0.0.1:8080", &format!("127.0.0.1:{listen}"))
+        .replace("127.0.0.1:8081", &format!("127.0.0.1:{backend}"))
+}
+
 struct Cleanup(Vec<Vec<String>>);
 
 impl Drop for Cleanup {
@@ -90,6 +103,8 @@ pub struct Backend {
     /// The operator token the backend accepts on `/api/v1/admin/*`.
     pub admin_token: String,
     proxy: String,
+    /// With encryption: the second backend and its proxy.
+    second: Option<(String, String)>,
     _cleanup: Cleanup,
 }
 
@@ -209,31 +224,80 @@ impl Backend {
             .push(vec!["rm".into(), "-f".into(), server.clone()]);
         // The namespace every other container joins.
         let ns = if e2ee { ergo.clone() } else { server.clone() };
+        let start_proxy = |name: &str, conf: &str, cleanup: &mut Cleanup| -> Result<()> {
+            docker(&[
+                "run",
+                "-d",
+                "--name",
+                name,
+                "--network",
+                &format!("container:{ns}"),
+                "-e",
+                &format!("IT_PROXY_CONF={conf}"),
+                "--entrypoint",
+                "sh",
+                PROXY_IMAGE,
+                "-c",
+                r#"printf '%s' "$IT_PROXY_CONF" > /etc/nginx/nginx.conf && exec nginx -g 'daemon off;'"#,
+            ])?;
+            cleanup
+                .0
+                .push(vec!["rm".into(), "-f".into(), name.to_string()]);
+            Ok(())
+        };
         let proxy = format!("ircord-gpui-it-proxy-{id}");
-        docker(&[
-            "run",
-            "-d",
-            "--name",
-            &proxy,
-            "--network",
-            &format!("container:{ns}"),
-            "-e",
-            &format!("IT_PROXY_CONF={PROXY_CONF}"),
-            "--entrypoint",
-            "sh",
-            PROXY_IMAGE,
-            "-c",
-            r#"printf '%s' "$IT_PROXY_CONF" > /etc/nginx/nginx.conf && exec nginx -g 'daemon off;'"#,
-        ])?;
-        cleanup
-            .0
-            .push(vec!["rm".into(), "-f".into(), proxy.clone()]);
+        start_proxy(&proxy, PROXY_CONF, &mut cleanup)?;
+        let second = if e2ee {
+            // A second IRCord server on the same IRC network.
+            let server_b = format!("ircord-gpui-it-backend-b-{id}");
+            let args: Vec<String> = [
+                "run",
+                "-d",
+                "--name",
+                &server_b,
+                "--network",
+                &place,
+                "--tmpfs",
+                "/data:uid=65532,gid=65532",
+                "-e",
+                "IRCORD_LISTEN=127.0.0.1:8083",
+                "-e",
+                "IRCORD_PUBLIC_URL=http://127.0.0.1:8082",
+                "-e",
+                "IRCORD_ALLOW_PRIVATE_IRC=true",
+                "-e",
+                "IRCORD_YTDLP_BINARY=disabled",
+                "-e",
+                "IRCORD_TRUSTED_PROXIES=127.0.0.1/32",
+                "-e",
+                &admin_env,
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .chain(
+                backend_env
+                    .iter()
+                    .map(|e| e.replace("http://localhost:8080", "http://localhost:8082")),
+            )
+            .chain([BACKEND_IMAGE.to_string()])
+            .collect();
+            docker(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
+            cleanup
+                .0
+                .push(vec!["rm".into(), "-f".into(), server_b.clone()]);
+            let proxy_b = format!("ircord-gpui-it-proxy-b-{id}");
+            start_proxy(&proxy_b, &proxy_conf(8082, 8083), &mut cleanup)?;
+            Some((server_b, proxy_b))
+        } else {
+            None
+        };
         Ok(Self {
             server,
             ns,
             ergo,
             admin_token,
             proxy,
+            second,
             _cleanup: cleanup,
         })
     }
@@ -258,6 +322,12 @@ impl Backend {
         let _ = Command::new("docker")
             .args(["logs", "--tail", "20", &self.proxy])
             .status();
+        if let Some((server_b, _)) = &self.second {
+            eprintln!("--- second backend log ---");
+            let _ = Command::new("docker")
+                .args(["logs", "--tail", "60", server_b])
+                .status();
+        }
     }
 }
 
@@ -266,7 +336,14 @@ pub fn run(root: &Path) -> Result<()> {
     let backend = Backend::start_with(root, e2ee)?;
     let mut extra = backend.network_args();
     if e2ee {
-        extra.extend(["-e".into(), "IRCORD_IT_E2EE=1".into()]);
+        extra.extend([
+            "-e".into(),
+            "IRCORD_IT_E2EE=1".into(),
+            "-e".into(),
+            "IRCORD_IT_SERVER_B=http://127.0.0.1:8082".into(),
+            "-e".into(),
+            "IRCORD_IT_IRC_FROM_TEST=127.0.0.1:6667".into(),
+        ]);
     }
     extra.extend([
         "-e".into(),

@@ -21,7 +21,9 @@ Nothing here has had an outside review.
 - `crates/client/src/store/e2ee.rs`: what the views show.
 - `crates/client/src/api/e2ee.rs`: the backend's `/api/v1/e2ee/` endpoints.
 - `crates/app/src/features/encryption.rs` and `settings/encryption.rs`: the
-  lock, the panel, banners, the composer, Settings → Encryption.
+  lock, the panel, banners, the composer, Settings → Encryption;
+  `features/encryption/groups.rs`: starting a group, invitations and a
+  group's details.
 
 ## Nothing in the clear
 
@@ -166,12 +168,68 @@ with the web client. Pictures are drawn from
 the decrypted bytes; other files are written to the downloads folder when
 opened.
 
+## Chats carried over IRC: other servers and groups
+
+Phase 2 of the design (the backend's `docs/e2ee-handshake.md`, the core's
+wire specification sections 7.4, 7.5 and 11) carries handshakes over IRC, so
+a chat can reach someone whose keys are on another IRCord server of the same
+IRC network, and groups of up to 32 accounts. The engine's side of it is
+`crates/client/src/e2ee/engine/chats.rs`, over `/api/v1/e2ee/chats`.
+
+- **Which path a direct chat takes.** When the person's keys come from this
+  server (`source: server` in the claim), a new direct chat uses the phase 1
+  group log, as before, so it still works with a web client that has not
+  learnt phase 2. When they come over IRC (`source: network`), it is a chat
+  carried over IRC. Both sides join a direct Welcome at once, as in phase 1.
+- **Settling commits.** In a chat carried over IRC this device never takes
+  the backend's word for which commit won. For each epoch it tries the
+  candidates the backend lists, in the IRC server's order, and applies the
+  first one its core accepts (`apply_candidates`), its own pending commit
+  among them. It drops its own commit only when the backend refused it
+  before it went out. `e2ee.changed` on the event socket makes it settle at
+  once instead of at the next half-minute sync.
+- **Groups.** A group is an invite-only channel `#e2ee-<hex ID>`; its title,
+  creator and admins live inside MLS (the core's group settings), so the
+  sidebar and header show the title only to members. Creating one claims a
+  key package for each device of each person, checked against their signed
+  device list. An invitation is a Welcome this device opens at once, to show
+  the title and inviter; Join enters the channel, Decline forgets it and the
+  inviter's client removes the person. The creator and the admins it
+  appoints add and remove people; everyone can leave (a signed `left`, then
+  the first admin by account removes them; a creator hands the group to an
+  admin, or else the first member, before leaving). Every joined group's
+  channel is guarded: nothing goes into it in the clear, and a plaintext line
+  someone else sent is drawn in red.
+- **Group IDs on the backend.** A group's chat is named by its ID in
+  base64url, because the backend derives the channel from that form
+  (`groupChannel`); a direct chat carried over IRC uses the specification's
+  hex form. Every device uses the name the creator chose, as it arrives in
+  the Welcome. This differs from the specification's section 7.6, which says
+  hex everywhere; the backend and the specification need to agree.
+- **One account, two servers.** When this server has no keys for the
+  account and the directory says `elsewhere`, the device sets nothing up and
+  Settings → Encryption says that encryption is set up on another IRCord
+  server.
+- **Device list.** The device holding the identity key signs the list of
+  the account's approved devices (`PUT /api/v1/e2ee/device-list`) whenever
+  it changes; a device claimed for a chat but missing from its account's
+  newest list is left out.
+- **Not yet.** A Welcome sent over IRC reaches other accounts only, so this
+  account's other devices are not added to chats carried over IRC (the
+  backend sends no Welcome to the sender's own account). Rejoining after
+  losing step, letting someone who started fresh back into a group, and the
+  group's history lines in the timeline (they are in the group's panel) are
+  not done yet.
+
 ## Testing
 
 - `cargo test -p ircord-client e2ee`: two and three devices against the
   fake backend in `crates/client/src/testing/e2ee.rs`.
 - `cargo test -p ircord-app --test ui encryption`: the views, with a peer.
 - `IRCORD_IT_E2EE=1 cargo xtask integration`: two accounts against the real
-  backend with encryption on and Ergo as its associated server.
+  backend with encryption on and Ergo as its associated server, and two
+  IRCord servers on that Ergo with two people each and a plain IRC user:
+  direct chats across the servers from either side, a group with members on
+  both, a member removed, and no plaintext on either server.
 - `CAPTURE_ONLY=e2ee cargo xtask capture`: screenshots of set-up, starting,
   the lock and panel, and approving a second device.

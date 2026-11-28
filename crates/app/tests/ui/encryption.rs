@@ -54,6 +54,7 @@ fn texts() -> Texts {
     Texts {
         control: Box::new(|on, name, _| format!("{name} turned {on}")),
         unreadable: Box::new(|why| format!("{why:?}")),
+        left: Box::new(|name, _| format!("{name} left")),
     }
 }
 
@@ -388,6 +389,7 @@ fn channel_snapshot() -> ircord_client::contract::Snapshot {
     s.capabilities.encryption = Some(ircord_client::contract::EncryptionCapability {
         experimental: true,
         max_payload: 3800,
+        ..Default::default()
     });
     let eve = s.members.iter_mut().find(|m| m.id == "m-eve").unwrap();
     eve.account = "*".into();
@@ -456,7 +458,7 @@ fn the_person_menu_starts_an_encrypted_chat(cx: &mut TestAppContext) {
     assert!(shown(&f, cx, "menu-unavailable-encryption-start-person"));
     assert_eq!(
         label(&f, cx, "menu-unavailable-reason-encryption-start-person"),
-        "Encryption works between people on this IRCord server for now."
+        "Encryption needs the other person to be signed in to an account on this network."
     );
     cx.update_window(f.window, |_, window, cx| window.press("escape", cx))
         .unwrap();
@@ -620,4 +622,154 @@ fn type_enter(f: &Fixture, cx: &mut TestAppContext, id: &'static str, text: &str
     })
     .unwrap();
     cx.run_until_parked();
+}
+
+/// An encrypted group from the views: Bob invites this account, the
+/// invitation card's Join enters it, the sidebar and header name it by its
+/// title, the lock counts who is verified, and the panel lists every person
+/// with their devices, the trust caveat and the security code to verify
+/// one. Each view passes the audit.
+#[gpui_kit::test]
+fn an_encrypted_group_from_invitation_to_its_panel(cx: &mut TestAppContext) {
+    let backend = E2eeBackend::new();
+    let shared = backend.clone();
+    let f = open_with(cx, true, move |server| {
+        shared.serve(server, "me", "d-bob", "m-bob", "bob");
+        server.snapshot(&e2ee_snapshot("me", "d-bob", "m-bob", "bob"));
+    });
+    let rt = ircord_client::client::runtime().unwrap();
+    let server = CannedServer::start(&rt);
+    backend.serve(&server, "bob", "d-me", "m-me", "me");
+    let bob = start_peer(
+        &rt,
+        server,
+        &e2ee_snapshot("bob", "d-me", "m-me", "me"),
+        "d-me",
+    );
+    wait_until(&bob.client, WAIT, "bob set up", |w| w.e2ee.device.ready());
+    wait(cx, "this device set up", |cx| {
+        f.session
+            .read(cx)
+            .client()
+            .is_some_and(|c| c.read().e2ee.device.ready())
+    });
+
+    bob.engine.create_group("Weekend plans", vec!["me".into()]);
+    wait(cx, "the invitation", |cx| {
+        f.session
+            .read(cx)
+            .client()
+            .is_some_and(|c| !c.read().e2ee.invitations.is_empty())
+    });
+    f.session
+        .update(cx, |s, cx| s.select_conversation("d-bob", cx));
+    draw(&f, cx);
+    assert!(shown(&f, cx, "encryption-invitation-0"));
+    assert_eq!(
+        label(&f, cx, "encryption-invitation-0"),
+        "bob invited you to the encrypted group \"Weekend plans\"."
+    );
+    audit(&f, cx, "an invitation to an encrypted group");
+    click(&f, cx, "encryption-invitation-join-0");
+    wait(cx, "the group", |cx| {
+        f.session
+            .read(cx)
+            .client()
+            .is_some_and(|c| !c.read().e2ee.groups.is_empty())
+    });
+    let group = app(&f, cx, |w| w.e2ee.groups.keys().next().unwrap().clone());
+    assert_eq!(
+        app(&f, cx, |w| ircord_client::store::parties::title(
+            w,
+            w.conversation(&group).unwrap()
+        )),
+        "Weekend plans"
+    );
+    assert!(app(&f, cx, |w| w.e2ee.invitations.is_empty()));
+    f.session
+        .update(cx, |s, cx| s.select_conversation(&group, cx));
+    draw(&f, cx);
+    assert!(shown(&f, cx, "encryption-lock"));
+    assert_eq!(
+        label(&f, cx, "encryption-lock"),
+        "Encrypted group, 0 of 1 people verified (experimental)"
+    );
+    click(&f, cx, "encryption-lock");
+    draw(&f, cx);
+    assert!(shown(&f, cx, "encryption-group-panel"));
+    assert_eq!(
+        label(&f, cx, "encryption-group-state"),
+        "Encrypted. 0 of 1 people verified."
+    );
+    assert!(
+        label(&f, cx, "encryption-group-caveat").starts_with("An encrypted group is only as safe")
+    );
+    assert!(present(&f, cx, "encryption-group-member-0"));
+    assert!(present(&f, cx, "encryption-group-member-1"));
+    // This account is neither creator nor admin: nothing to remove or add.
+    assert!(!present(&f, cx, "encryption-group-remove-0"));
+    assert!(!present(&f, cx, "encryption-group-add-people"));
+    audit(&f, cx, "an encrypted group's panel");
+
+    // Verify Bob from here: his code, then the mark.
+    let bob_row = app(&f, cx, |w| {
+        w.e2ee.groups[&group]
+            .members
+            .iter()
+            .position(|m| m.account == "bob")
+            .unwrap()
+    });
+    click(&f, cx, &format!("encryption-group-verify-{bob_row}"));
+    wait(cx, "the code", |cx| {
+        let mut seen = false;
+        let _ = cx.update_window(f.window, |_, window, cx| {
+            window.render_frame(cx);
+            seen = window.try_find("encryption-group-digits").is_some();
+        });
+        seen
+    });
+    for _ in 0..20 {
+        if shown(&f, cx, "encryption-group-mark") {
+            break;
+        }
+        cx.update_window(f.window, |_, window, cx| {
+            let down = gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                gpui_kit::px(0.),
+                gpui_kit::px(-120.),
+            ));
+            window.scroll("encryption-group-panel", down, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+    click(&f, cx, "encryption-group-mark");
+    wait(cx, "bob verified", |cx| {
+        f.session.read(cx).client().is_some_and(|c| {
+            c.read()
+                .e2ee
+                .groups
+                .values()
+                .any(|g| g.verified() == (1, 1))
+        })
+    });
+    draw(&f, cx);
+    assert_eq!(
+        label(&f, cx, "encryption-group-state"),
+        "Encrypted. You verified everyone in this group."
+    );
+
+    // Messages both ways, never in the clear.
+    bob.engine.send(
+        &bob.client.read().e2ee.groups.keys().next().unwrap().clone(),
+        "hello from bob",
+        None,
+    );
+    wait(cx, "bob's message", |cx| {
+        f.session
+            .read(cx)
+            .client()
+            .is_some_and(|c| has_text(&c.read(), &group, "hello from bob"))
+    });
+    assert!(backend.plaintext().is_empty(), "{:?}", backend.plaintext());
 }

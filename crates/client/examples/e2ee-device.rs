@@ -70,6 +70,7 @@ fn main() {
                 format!("{name} turned encryption {}", if on { "on" } else { "off" })
             }),
             unreadable: Box::new(|why| format!("{why:?}")),
+            left: Box::new(|name, _| format!("{name} left")),
         },
     );
     match mode.as_str() {
